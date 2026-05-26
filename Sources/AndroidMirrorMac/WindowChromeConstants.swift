@@ -13,13 +13,11 @@ enum WindowChromeConstants {
     static let idleContentInset: CGFloat = 0
     static let hoverSideInset: CGFloat = 8
     static let hoverBottomInset: CGFloat = 8
-    static let hoverTopInset: CGFloat = 44
+    /// Gap between the toolbar and phone content when the chrome is revealed.
+    static let toolbarContentGap: CGFloat = 2
 
-    static let toolbarFadeInDuration: TimeInterval = 0.13
-    static let toolbarFadeOutDuration: TimeInterval = 0.10
-
-    static let contentInsetAnimationDuration: TimeInterval = 0.13
-    static let toolbarSlideDistance: CGFloat = 10
+    static let toolbarFadeInDuration: TimeInterval = ToolbarChromeAnimator.showDuration
+    static let toolbarFadeOutDuration: TimeInterval = ToolbarChromeAnimator.hideDuration
 
     static let trafficLightLeftPadding: CGFloat = 12
     static let trafficLightTopPadding: CGFloat = 12

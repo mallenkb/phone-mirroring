@@ -7,14 +7,16 @@ final class OuterFrameView: NSView {
     let toolbarChromeView: ToolbarChromeView
     let phoneMirrorContainerView: PhoneMirrorContainerView
 
-    private var phoneTopConstraint: NSLayoutConstraint!
+    private var toolbarHeightConstraint: NSLayoutConstraint!
+    private var phoneTopGapConstraint: NSLayoutConstraint!
     private var phoneLeadingConstraint: NSLayoutConstraint!
     private var phoneTrailingConstraint: NSLayoutConstraint!
     private var phoneBottomConstraint: NSLayoutConstraint!
-    private var chromeTopConstraint: NSLayoutConstraint!
+
+    private var isChromeVisible = false
 
     init(model: AppModel, mirroredPhoneView: MirrorRenderView) {
-        toolbarChromeView = ToolbarChromeView(model: model)
+        toolbarChromeView = ToolbarChromeView(frame: .zero)
         phoneMirrorContainerView = PhoneMirrorContainerView(contentView: mirroredPhoneView)
         super.init(frame: .zero)
         setupView()
@@ -27,42 +29,45 @@ final class OuterFrameView: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
 
     func applyChromeVisibility(_ isVisible: Bool, animated: Bool) {
-        phoneTopConstraint.constant = WindowChromeConstants.idleContentInset
-        phoneLeadingConstraint.constant = WindowChromeConstants.idleContentInset
-        phoneTrailingConstraint.constant = -WindowChromeConstants.idleContentInset
-        phoneBottomConstraint.constant = -WindowChromeConstants.idleContentInset
-        chromeTopConstraint.constant = isVisible ? 0 : -WindowChromeConstants.toolbarSlideDistance
+        guard !animated || isChromeVisible != isVisible else { return }
+        isChromeVisible = isVisible
 
-        toolbarChromeView.isHidden = false
-        phoneMirrorContainerView.setChromeVisible(isVisible)
+        if isVisible {
+            toolbarChromeView.isHidden = false
+        }
+
+        let sideInset = isVisible ? WindowChromeConstants.hoverSideInset : WindowChromeConstants.idleContentInset
+        let bottomInset = isVisible ? WindowChromeConstants.hoverBottomInset : WindowChromeConstants.idleContentInset
+        let topGap = isVisible ? WindowChromeConstants.toolbarContentGap : 0
+        let toolbarHeight = isVisible ? WindowChromeConstants.toolbarHeight : 0
+        let toolbarAlpha: CGFloat = isVisible ? 1 : 0
 
         let updates = {
-            self.layer?.cornerRadius = isVisible
-                ? WindowChromeConstants.cornerRadiusHover
-                : WindowChromeConstants.cornerRadiusIdle
+            self.toolbarHeightConstraint.constant = toolbarHeight
+            self.phoneTopGapConstraint.constant = topGap
+            self.phoneLeadingConstraint.constant = sideInset
+            self.phoneTrailingConstraint.constant = -sideInset
+            self.phoneBottomConstraint.constant = -bottomInset
+
+            self.toolbarChromeView.alphaValue = toolbarAlpha
+            self.phoneMirrorContainerView.setChromeVisible(isVisible)
+
+            self.layer?.cornerRadius = WindowChromeConstants.cornerRadiusIdle
             self.layer?.borderWidth = isVisible ? 1 : 0
             self.layer?.backgroundColor = isVisible
                 ? NSColor.windowBackgroundColor.withAlphaComponent(0.22).cgColor
                 : NSColor(calibratedRed: 0.04, green: 0.05, blue: 0.07, alpha: 1).cgColor
-            self.toolbarChromeView.animator().alphaValue = isVisible ? 1 : 0
+
             self.layoutSubtreeIfNeeded()
         }
 
         if animated {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = isVisible
-                    ? WindowChromeConstants.toolbarFadeInDuration
-                    : WindowChromeConstants.toolbarFadeOutDuration
-                context.allowsImplicitAnimation = true
-                context.timingFunction = CAMediaTimingFunction(name: isVisible ? .easeOut : .easeIn)
-                updates()
-            } completionHandler: {
+            ToolbarChromeAnimator.run(visible: isVisible, animations: updates) {
                 if !isVisible {
                     self.toolbarChromeView.isHidden = true
                 }
             }
         } else {
-            toolbarChromeView.alphaValue = isVisible ? 1 : 0
             updates()
             toolbarChromeView.isHidden = !isVisible
         }
@@ -84,25 +89,25 @@ final class OuterFrameView: NSView {
         addSubview(phoneMirrorContainerView)
         addSubview(toolbarChromeView)
 
-        phoneTopConstraint = phoneMirrorContainerView.topAnchor.constraint(equalTo: topAnchor)
+        toolbarHeightConstraint = toolbarChromeView.heightAnchor.constraint(equalToConstant: 0)
+        phoneTopGapConstraint = phoneMirrorContainerView.topAnchor.constraint(
+            equalTo: toolbarChromeView.bottomAnchor,
+            constant: 0
+        )
         phoneLeadingConstraint = phoneMirrorContainerView.leadingAnchor.constraint(equalTo: leadingAnchor)
         phoneTrailingConstraint = phoneMirrorContainerView.trailingAnchor.constraint(equalTo: trailingAnchor)
         phoneBottomConstraint = phoneMirrorContainerView.bottomAnchor.constraint(equalTo: bottomAnchor)
-        chromeTopConstraint = toolbarChromeView.topAnchor.constraint(
-            equalTo: topAnchor,
-            constant: -WindowChromeConstants.toolbarSlideDistance
-        )
 
         NSLayoutConstraint.activate([
-            phoneTopConstraint,
+            toolbarChromeView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            toolbarChromeView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            toolbarChromeView.topAnchor.constraint(equalTo: topAnchor),
+            toolbarHeightConstraint,
+
+            phoneTopGapConstraint,
             phoneLeadingConstraint,
             phoneTrailingConstraint,
             phoneBottomConstraint,
-
-            chromeTopConstraint,
-            toolbarChromeView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            toolbarChromeView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            toolbarChromeView.heightAnchor.constraint(equalToConstant: WindowChromeConstants.toolbarHeight),
         ])
     }
 }

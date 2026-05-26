@@ -75,7 +75,7 @@ final class RootWindowView: NSView {
             }
         }
         hideWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.035, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
     }
 
     private func setupView() {

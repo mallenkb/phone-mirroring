@@ -18,7 +18,7 @@ final class WindowController: NSWindowController, NSWindowDelegate {
                 width: WindowChromeConstants.windowWidth,
                 height: WindowChromeConstants.windowHeight
             ),
-            styleMask: [.borderless, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -78,6 +78,8 @@ final class WindowController: NSWindowController, NSWindowDelegate {
     private func configure(window: NSWindow) {
         window.delegate = self
         window.title = "Android Mirror"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
         window.backgroundColor = .clear
         window.isOpaque = false

@@ -14,6 +14,8 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     static let defaultMirrorAspect: CGFloat = 1080.0 / 2340.0
     static let minimumScreenHeightRatio: CGFloat = 0.45
     static let maximumScreenHeightRatio: CGFloat = 0.90
+    static let chromeHideDelay: TimeInterval = 0.030
+    static let chromeHideAnimationDuration: TimeInterval = 0.16
 
     private let model: AppModel
     private weak var session: MirrorSession?
@@ -22,12 +24,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private let rootView = MirrorRootView()
     private let chromeBar = MirrorChromeBar()
     private var renderTopConstraint: NSLayoutConstraint?
-    private var chromeTopConstraint: NSLayoutConstraint?
-    private var globalMouseMonitor: Any?
     private var hideWorkItem: DispatchWorkItem?
     private var chromeVisible = false
     private var isDraggingChrome = false
     private var isPointerInTopZone = false
+    private var isInFullscreen = false
     private var mirrorAspect: CGFloat? = defaultMirrorAspect
 
     init(model: AppModel, session: MirrorSession) {
@@ -38,11 +39,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             x: 0,
             y: 0,
             width: initialWidth,
-            height: initialWidth / Self.defaultMirrorAspect
+            height: initialWidth / Self.defaultMirrorAspect + Self.chromeHeight
         )
         let window = NSWindow(
             contentRect: frame,
-            styleMask: [.borderless, .fullSizeContentView],
+            styleMask: [.borderless, .closable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -50,14 +51,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         window.delegate = self
         configure(window: window)
         installContent()
-        installHoverMonitors()
     }
 
     required init?(coder: NSCoder) { nil }
-
-    deinit {
-        if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
-    }
 
     // MARK: - Public
 
@@ -72,24 +68,29 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         renderView.setStreamSize(width: width, height: height)
         let aspect = CGFloat(width) / CGFloat(height)
         mirrorAspect = aspect
+        guard !isInFullscreen else {
+            window.contentAspectRatio = .zero
+            return
+        }
         applyWindowSizeLimits(to: window, aspect: aspect)
 
         let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
-        let maxContentHeight = min(visible.height - 80, 900)
+        let maxContentHeight = max(1, visible.height - 80 - Self.chromeHeight)
         let targetWidth = max(280, min(visible.width - 80, maxContentHeight * aspect))
         let mirrorHeight = targetWidth / aspect
         window.contentAspectRatio = NSSize(width: targetWidth, height: mirrorHeight)
         let newFrame = NSRect(
             x: window.frame.midX - targetWidth / 2,
-            y: window.frame.midY - mirrorHeight / 2,
+            y: window.frame.midY - (mirrorHeight + Self.chromeHeight) / 2,
             width: targetWidth,
-            height: mirrorHeight
+            height: mirrorHeight + Self.chromeHeight
         )
         window.setFrame(newFrame, display: true, animate: false)
     }
 
     func scaleWindow(by scale: CGFloat) {
         guard let window else { return }
+        guard !isInFullscreen else { return }
         let aspect = mirrorAspect ?? Self.defaultMirrorAspect
         let limits = Self.sizeLimits(
             visibleFrame: window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame,
@@ -199,12 +200,13 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         chromeBar.configure(
             onClose: { [weak self] in self?.session?.stop() },
             onMinimize: { [weak self] in self?.window?.miniaturize(nil) },
-            onMaximize: { [weak self] in self?.window?.toggleFullScreen(nil) },
+            onMaximize: { [weak self] in self?.toggleFullScreenFromChrome() },
             onRecents: { [weak self] in self?.session?.sendAndroidKey(.appSwitch) },
             onScreenshot: { [weak self] in self?.session?.takeScreenshot() }
         )
         chromeBar.alphaValue = 0
         chromeBar.isHidden = true
+        chromeVisible = false
         chromeBar.onDragStateChange = { [weak self] isDragging in
             self?.setChromeDragging(isDragging)
         }
@@ -214,14 +216,13 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         chromeBar.onHoverChange = { [weak self] isInside in
             self?.handleChromeHover(isInside)
         }
+
         rootView.addSubview(chromeBar)
 
-        let renderTopConstraint = renderView.topAnchor.constraint(equalTo: rootView.topAnchor)
-        let chromeTopConstraint = chromeBar.topAnchor.constraint(equalTo: rootView.topAnchor)
+        let renderTopConstraint = renderView.topAnchor.constraint(equalTo: rootView.topAnchor, constant: Self.chromeHeight)
         self.renderTopConstraint = renderTopConstraint
-        self.chromeTopConstraint = chromeTopConstraint
         NSLayoutConstraint.activate([
-            chromeTopConstraint,
+            chromeBar.topAnchor.constraint(equalTo: rootView.topAnchor),
             chromeBar.leadingAnchor.constraint(equalTo: rootView.leadingAnchor),
             chromeBar.trailingAnchor.constraint(equalTo: rootView.trailingAnchor),
             chromeBar.heightAnchor.constraint(equalToConstant: Self.chromeHeight),
@@ -245,15 +246,13 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         }
     }
 
-    private func installHoverMonitors() {
-        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
-            self?.updateHoverActivation(at: NSEvent.mouseLocation)
-        }
-    }
-
     // MARK: - Hover
 
     private func handleHover(_ inTopZone: Bool) {
+        guard !isInFullscreen else {
+            hideChromeImmediately()
+            return
+        }
         isPointerInTopZone = inTopZone
         if inTopZone {
             hideWorkItem?.cancel()
@@ -264,6 +263,10 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     private func handleChromeHover(_ isInside: Bool) {
+        guard !isInFullscreen else {
+            hideChromeImmediately()
+            return
+        }
         isPointerInTopZone = isInside
         if isInside {
             hideWorkItem?.cancel()
@@ -277,94 +280,124 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         handleHover(false)
     }
 
-    func updateHoverActivationForTesting(at screenPoint: NSPoint) {
-        updateHoverActivation(at: screenPoint)
+    var isChromeVisibleForTesting: Bool {
+        chromeVisible && !chromeBar.isHidden
     }
 
-    private func updateHoverActivation(at screenPoint: NSPoint) {
-        guard !chromeVisible else { return }
-        handleHover(activationFrameForHiddenChrome().contains(screenPoint))
+    var isChromeBarHiddenForTesting: Bool {
+        chromeBar.isHidden
     }
 
-    private func activationFrameForHiddenChrome() -> NSRect {
-        guard let window else { return .zero }
-        var frame = window.frame
-        if chromeVisibleBeforeAnimationHeight(frame.height) {
-            frame.size.height = max(1, frame.height - Self.chromeHeight)
-        }
-        return NSRect(
-            x: frame.minX,
-            y: frame.maxY,
-            width: frame.width,
-            height: Self.chromeActivationZone
-        )
+    var renderTopInsetForTesting: CGFloat {
+        renderTopConstraint?.constant ?? 0
+    }
+
+    var isFullscreenChromeSuppressedForTesting: Bool {
+        isInFullscreen
     }
 
     private func scheduleHide() {
-        guard !isDraggingChrome, !isPointerInTopZone else { return }
+        guard !isDraggingChrome, !isPointerInTopZone, !isMouseCurrentlyInToolbarBand() else {
+            isPointerInTopZone = true
+            return
+        }
         hideWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, !self.isDraggingChrome, !self.isPointerInTopZone else { return }
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, !self.isDraggingChrome else { return }
+            if self.isPointerInTopZone || self.isMouseCurrentlyInToolbarBand() {
+                self.isPointerInTopZone = true
+                return
+            }
             self.setChromeVisible(false)
         }
-        hideWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.035, execute: work)
+        hideWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.chromeHideDelay, execute: workItem)
+    }
+
+    private func isMouseCurrentlyInToolbarBand() -> Bool {
+        guard !isInFullscreen else { return false }
+        guard let window else { return false }
+        let screenPoint = NSEvent.mouseLocation
+        let windowPoint = window.convertPoint(fromScreen: screenPoint)
+        return windowPoint.x >= 0
+            && windowPoint.x <= window.frame.width
+            && windowPoint.y > window.frame.height - Self.chromeHeight
+            && windowPoint.y <= window.frame.height
     }
 
     private func setChromeVisible(_ visible: Bool) {
         guard chromeVisible != visible else { return }
         chromeVisible = visible
+
         if visible {
             chromeBar.isHidden = false
             chromeBar.alphaValue = 0
+            chromeBar.setBarBackgroundVisible(true)
         }
-        rootView.stableHoverBandHeight = visible ? Self.chromeHeight : 0
-        if let window, let mirrorAspect {
-            applyWindowSizeLimits(to: window, aspect: mirrorAspect)
-        }
-        let targetFrame = frameForChromeVisibility(visible)
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = visible ? 0.13 : 0.10
-            ctx.allowsImplicitAnimation = true
-            ctx.timingFunction = CAMediaTimingFunction(name: visible ? .easeOut : .easeIn)
-            if let targetFrame {
-                window?.animator().setFrame(targetFrame, display: true)
-            }
-            renderTopConstraint?.animator().constant = visible ? Self.visibleChromeRenderTopInset : 0
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = visible ? 0.10 : Self.chromeHideAnimationDuration
+            context.timingFunction = CAMediaTimingFunction(name: visible ? .easeOut : .easeInEaseOut)
             rootView.layer?.backgroundColor = visible
                 ? NSColor.windowBackgroundColor.cgColor
                 : NSColor.clear.cgColor
             chromeBar.animator().alphaValue = visible ? 1 : 0
-            rootView.layoutSubtreeIfNeeded()
         } completionHandler: { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                if !visible {
-                    self.chromeBar.isHidden = true
-                    self.rootView.layer?.backgroundColor = NSColor.clear.cgColor
-                    self.rootView.stableHoverBandHeight = 0
-                }
+            guard let self else { return }
+            if !visible {
+                self.chromeBar.isHidden = true
+                self.chromeBar.setBarBackgroundVisible(false)
+                self.rootView.layer?.backgroundColor = NSColor.clear.cgColor
             }
         }
     }
 
-    private func frameForChromeVisibility(_ visible: Bool) -> NSRect? {
-        guard let window, chromeVisibleBeforeAnimationHeight(window.frame.height) != visible else {
-            return window?.frame
-        }
-        var frame = window.frame
-        if visible {
-            frame.size.height += Self.chromeHeight
-        } else {
-            frame.size.height = max(1, frame.height - Self.chromeHeight)
-        }
-        return frame
+    private func hideChromeImmediately() {
+        hideWorkItem?.cancel()
+        chromeVisible = false
+        isPointerInTopZone = false
+        chromeBar.isHidden = true
+        chromeBar.alphaValue = 0
+        chromeBar.setBarBackgroundVisible(false, animated: false)
+        rootView.layer?.backgroundColor = NSColor.clear.cgColor
     }
 
-    private func chromeVisibleBeforeAnimationHeight(_ height: CGFloat) -> Bool {
-        guard let aspect = mirrorAspect, let window else { return chromeVisible }
-        let expectedMirrorHeight = window.frame.width / aspect
-        return height > expectedMirrorHeight + Self.chromeHeight / 2
+    private func toggleFullScreenFromChrome() {
+        guard let window else { return }
+        hideChromeImmediately()
+        setFullscreenChromeSuppressed(true)
+        window.toggleFullScreen(nil)
+    }
+
+    private func setFullscreenChromeSuppressed(_ suppressed: Bool) {
+        guard isInFullscreen != suppressed else { return }
+        isInFullscreen = suppressed
+        rootView.chromeRevealEnabled = !suppressed
+
+        if suppressed {
+            hideChromeImmediately()
+            renderTopConstraint?.constant = 0
+            window?.contentAspectRatio = .zero
+            window?.minSize = NSSize(width: 1, height: 1)
+            window?.maxSize = NSSize(
+                width: CGFloat.greatestFiniteMagnitude,
+                height: CGFloat.greatestFiniteMagnitude
+            )
+        } else {
+            renderTopConstraint?.constant = Self.chromeHeight
+            if let window, let aspect = mirrorAspect {
+                window.contentAspectRatio = NSSize(width: aspect, height: 1)
+                applyWindowSizeLimits(to: window, aspect: aspect)
+            }
+        }
+
+        rootView.needsLayout = true
+        rootView.layoutSubtreeIfNeeded()
+        renderView.updateVideoLayerFrame()
+    }
+
+    func setFullscreenChromeSuppressedForTesting(_ suppressed: Bool) {
+        setFullscreenChromeSuppressed(suppressed)
     }
 
     private func dragWindowFromChrome(with event: NSEvent) {
@@ -407,29 +440,47 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     // MARK: - NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
-        if let globalMouseMonitor {
-            NSEvent.removeMonitor(globalMouseMonitor)
-            self.globalMouseMonitor = nil
-        }
+        hideWorkItem?.cancel()
         session?.stop()
     }
 
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        guard !isInFullscreen else { return frameSize }
         guard let mirrorAspect, mirrorAspect > 0, frameSize.width > 0 else {
             return frameSize
         }
 
         return NSSize(
             width: frameSize.width,
-            height: frameSize.width / mirrorAspect + (chromeVisible ? Self.chromeHeight : 0)
+            height: frameSize.width / mirrorAspect + Self.chromeHeight
         )
     }
 
-    func windowDidMove(_ notification: Notification) {}
+    func windowDidMove(_ notification: Notification) {
+    }
 
     func windowDidResize(_ notification: Notification) {
         rootView.layoutSubtreeIfNeeded()
         renderView.updateVideoLayerFrame()
+    }
+
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        setFullscreenChromeSuppressed(true)
+    }
+
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        guard let window, let screenFrame = window.screen?.frame else { return }
+        window.setFrame(screenFrame, display: true, animate: false)
+        rootView.layoutSubtreeIfNeeded()
+        renderView.updateVideoLayerFrame()
+    }
+
+    func windowWillExitFullScreen(_ notification: Notification) {
+        hideChromeImmediately()
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        setFullscreenChromeSuppressed(false)
     }
 }
 
@@ -438,7 +489,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 /// Root view — rounded mask, cursor tracking for chrome reveal.
 final class MirrorRootView: NSView {
     var onHoverChange: ((Bool) -> Void)?
-    var stableHoverBandHeight: CGFloat = 0
+    var chromeRevealEnabled = true
     private var trackingArea: NSTrackingArea?
 
     override var mouseDownCanMoveWindow: Bool { false }
@@ -456,18 +507,17 @@ final class MirrorRootView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) { update(with: event) }
-    override func mouseEntered(with event: NSEvent) { update(with: event) }
+    override func mouseEntered(with event: NSEvent) {}
     override func mouseExited(with event: NSEvent) { onHoverChange?(false) }
 
     private func update(with event: NSEvent) {
-        guard stableHoverBandHeight > 0 else {
+        guard chromeRevealEnabled else {
             onHoverChange?(false)
             return
         }
-
         let point = convert(event.locationInWindow, from: nil)
-        let stableZone = bounds.height - stableHoverBandHeight
-        onHoverChange?(point.y >= stableZone)
+        let toolbarZoneMinY = bounds.height - MirrorContentWindowController.chromeHeight
+        onHoverChange?(point.y > toolbarZoneMinY)
     }
 }
 
@@ -477,6 +527,23 @@ final class MirrorRootView: NSView {
 /// Traffic lights at the left (20 pt inset), outline action buttons at the right.
 /// Background is a solid default AppKit surface so desktop content never bleeds through.
 final class MirrorChromeBar: NSView {
+    /// How small the bar shrinks when hidden. A more pronounced ratio makes
+    /// the growing effect actually read on screen.
+    static let barHiddenScale: CGFloat = 0.82
+    /// Reveal is slightly longer than hide so the bar "lands" into place;
+    /// hide is a hair quicker so the chrome doesn't overstay its welcome.
+    static let barRevealDuration: CFTimeInterval = 0.32
+    static let barHideDuration: CFTimeInterval = 0.24
+
+    /// `cubic-bezier(0.16, 1, 0.3, 1)` — "ease-out-expo", the velvet curve
+    /// many Apple-style sheet/popover entrances use. Front-loaded velocity
+    /// that decelerates into a soft stop, so the bar feels like it gently
+    /// lands into position.
+    private static let revealTiming = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+    /// `cubic-bezier(0.5, 0, 0.75, 0)` — gentle ease-in that accelerates as
+    /// it disappears, so the exit feels graceful rather than abrupt.
+    private static let hideTiming = CAMediaTimingFunction(controlPoints: 0.5, 0, 0.75, 0)
+
     private let backgroundView = NSView()
     private let dragArea = MirrorWindowDragArea()
     var onDragStateChange: ((Bool) -> Void)?
@@ -484,7 +551,7 @@ final class MirrorChromeBar: NSView {
     var onHoverChange: ((Bool) -> Void)?
     private var trackingArea: NSTrackingArea?
 
-    private let closeBtn    = MirrorTrafficLight(kind: .close)
+    private let closeBtn = MirrorTrafficLight(kind: .close)
     private let minimizeBtn = MirrorTrafficLight(kind: .minimize)
     private let maximizeBtn = MirrorTrafficLight(kind: .zoom)
     private let screenshotBtn = MirrorChromeOutlineButton(symbol: "camera")
@@ -505,11 +572,12 @@ final class MirrorChromeBar: NSView {
         onRecents: @escaping () -> Void,
         onScreenshot: @escaping () -> Void
     ) {
-        closeBtn.action    = onClose
-        minimizeBtn.action = onMinimize
-        maximizeBtn.action = onMaximize
         recentsBtn.action  = onRecents
         screenshotBtn.action = onScreenshot
+
+        closeBtn.action = onClose
+        minimizeBtn.action = onMinimize
+        maximizeBtn.action = onMaximize
     }
 
     private func setup() {
@@ -521,10 +589,23 @@ final class MirrorChromeBar: NSView {
         backgroundView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(backgroundView)
 
-        // Traffic lights — exactly like macOS: red / yellow / green, 12 pt, 8 pt gap.
+        // Hide the bar background by default. The buttons (traffic lights +
+        // outline icons) stay visible — only this background panel scales
+        // in/out as the cursor enters/leaves the chrome region.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        backgroundView.layer?.opacity = 0
+        backgroundView.layer?.transform = CATransform3DMakeScale(
+            Self.barHiddenScale, Self.barHiddenScale, 1
+        )
+        CATransaction.commit()
+
+        // Traffic lights — each button uses its native intrinsic size; the
+        // stack uses the macOS-default 6 pt gap between buttons.
         let lightsStack = NSStackView(views: [closeBtn, minimizeBtn, maximizeBtn])
         lightsStack.orientation = .horizontal
-        lightsStack.spacing = 8
+        lightsStack.spacing = 6
+        lightsStack.alignment = .centerY
         lightsStack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(lightsStack)
 
@@ -551,7 +632,7 @@ final class MirrorChromeBar: NSView {
             backgroundView.topAnchor.constraint(equalTo: topAnchor),
             backgroundView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            lightsStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            lightsStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             lightsStack.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             rightStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
@@ -584,33 +665,50 @@ final class MirrorChromeBar: NSView {
     override func mouseExited(with event: NSEvent) {
         onHoverChange?(false)
     }
+
+    /// Reveals or hides the bar's solid background with an ultra-smooth
+    /// growing-scale + fade animation. The transform and opacity changes
+    /// share one CATransaction so they stay perfectly synchronized, and the
+    /// custom cubic-bezier curves give it that velvety, organic feel. If a
+    /// previous animation is still in flight, Core Animation interpolates
+    /// from the current presentation values, so rapid hover-in/out reads
+    /// fluidly with no snap.
+    func setBarBackgroundVisible(_ visible: Bool, animated: Bool = true) {
+        CATransaction.begin()
+        if !animated {
+            CATransaction.setDisableActions(true)
+        }
+        CATransaction.setAnimationDuration(animated ? (visible ? Self.barRevealDuration : Self.barHideDuration) : 0)
+        CATransaction.setAnimationTimingFunction(visible ? Self.revealTiming : Self.hideTiming)
+        backgroundView.layer?.transform = visible
+            ? CATransform3DIdentity
+            : CATransform3DMakeScale(Self.barHiddenScale, Self.barHiddenScale, 1)
+        backgroundView.layer?.opacity = visible ? 1 : 0
+        CATransaction.commit()
+    }
 }
 
 // MARK: - Traffic light
 
-enum TrafficLightKind {
-    case close, minimize, zoom
+private enum TrafficLightKind {
+    case close
+    case minimize
+    case zoom
 
     var color: NSColor {
         switch self {
-        case .close:    return NSColor(srgbRed: 1.000, green: 0.373, blue: 0.337, alpha: 1)
-        case .minimize: return NSColor(srgbRed: 0.996, green: 0.737, blue: 0.180, alpha: 1)
-        case .zoom:     return NSColor(srgbRed: 0.157, green: 0.784, blue: 0.251, alpha: 1)
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .close:    return "xmark"
-        case .minimize: return "minus"
-        case .zoom:     return "plus"
+        case .close:
+            return NSColor(red: 1.0, green: 0.37, blue: 0.34, alpha: 1)
+        case .minimize:
+            return NSColor(red: 1.0, green: 0.74, blue: 0.18, alpha: 1)
+        case .zoom:
+            return NSColor(red: 0.20, green: 0.78, blue: 0.28, alpha: 1)
         }
     }
 }
 
-final class MirrorTrafficLight: NSView {
+private final class MirrorTrafficLight: NSView {
     private let kind: TrafficLightKind
-    private let symbolView = NSImageView()
     var action: (() -> Void)?
 
     init(kind: TrafficLightKind) {
@@ -624,45 +722,12 @@ final class MirrorTrafficLight: NSView {
         ])
         layer?.cornerRadius = 6
         layer?.backgroundColor = kind.color.cgColor
-
-        symbolView.image = NSImage(systemSymbolName: kind.symbol, accessibilityDescription: nil)
-        symbolView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 6, weight: .bold)
-        symbolView.contentTintColor = NSColor.black.withAlphaComponent(0.42)
-        symbolView.translatesAutoresizingMaskIntoConstraints = false
-        symbolView.alphaValue = 0
-        addSubview(symbolView)
-        NSLayoutConstraint.activate([
-            symbolView.centerXAnchor.constraint(equalTo: centerXAnchor),
-            symbolView.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
     }
+
     required init?(coder: NSCoder) { nil }
 
     override var mouseDownCanMoveWindow: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea(_:))
-        addTrackingArea(NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-            owner: self, userInfo: nil
-        ))
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.08
-            symbolView.animator().alphaValue = 1
-        }
-    }
-    override func mouseExited(with event: NSEvent) {
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.12
-            symbolView.animator().alphaValue = 0
-        }
-    }
     override func mouseDown(with event: NSEvent) {}
     override func mouseUp(with event: NSEvent) { action?() }
 }
