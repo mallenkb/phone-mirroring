@@ -23,6 +23,9 @@ final class AppModel: ObservableObject {
     private lazy var discovery = DiscoveryService(adb: adb)
 
     private weak var connectionWindow: NSWindow?
+    private(set) weak var mirrorWindowController: WindowController?
+    private var mirrorFrameWindowController: MirrorFrameWindowController?
+    private var mirrorSession: MirrorSession?
     private var mirrorDragStartFrame: CGRect?
     private var mirrorExpandedRestoreFrame: CGRect?
     private var autoConnectAttempted = false
@@ -40,6 +43,11 @@ final class AppModel: ObservableObject {
     func registerConnectionWindow(_ window: NSWindow?) {
         guard let window else { return }
         connectionWindow = window
+    }
+
+    func registerMirrorWindowController(_ controller: WindowController?) {
+        mirrorWindowController = controller
+        registerConnectionWindow(controller?.window)
     }
 
     // MARK: - Discovery → auto-reconnect
@@ -179,7 +187,8 @@ final class AppModel: ObservableObject {
 
             self.isPairing = false
             self.append("adb connect: \(Self.oneLine(connectOutput))")
-            self.launchScrcpy(arguments: ["--tcpip=\(target)"])
+            self.selectedDevice.adbSerial = target
+            self.startMirroring()
         }
     }
 
@@ -245,19 +254,49 @@ final class AppModel: ObservableObject {
     func startMirroring() {
         guard !isMirroring else { return }
         let serial = selectedDevice.adbSerial
-        append(serial == nil ? "Starting scrcpy with default adb target..." : "Starting scrcpy for \(serial!)...")
-        var arguments: [String] = []
-        if let serial, !serial.isEmpty {
-            arguments.insert(contentsOf: ["--serial", serial], at: 0)
-        }
-        launchScrcpy(arguments: arguments)
+        append(serial == nil ? "Starting native mirror..."
+                              : "Starting native mirror for \(serial!)...")
+        launchNativeMirror(serial: serial)
     }
 
     func stopMirroring() {
+        mirrorSession?.onSessionEnded = nil
+        mirrorSession?.stop()
+        mirrorSession = nil
         scrcpy.stop()
         isMirroring = false
         detachMirrorChrome()
         append("Requested mirror stop.")
+    }
+
+    private func launchNativeMirror(serial: String?) {
+        let session = MirrorSession(model: self, serial: serial)
+        session.onSessionEnded = { [weak self, weak session] in
+            guard let self else { return }
+            if self.mirrorSession === session {
+                self.mirrorSession = nil
+            }
+            self.isMirroring = false
+            self.detachMirrorChrome()
+            self.append("Mirror session ended.")
+        }
+
+        do {
+            mirrorSession = session
+            isMirroring = true
+            selectedDevice.states = [.mirroringReady, .companionConnected]
+            try session.start()
+            hideConnectionWindowForNativeMirror()
+            append("Native mirror launched.")
+        } catch {
+            session.onSessionEnded = nil
+            session.stop()
+            if mirrorSession === session {
+                mirrorSession = nil
+            }
+            isMirroring = false
+            append("Could not launch native mirror: \(error.localizedDescription)")
+        }
     }
 
     private func launchScrcpy(arguments: [String]) {
@@ -291,10 +330,13 @@ final class AppModel: ObservableObject {
 
     private func attachMirrorChrome(pid: pid_t) {
         detachMirrorChrome(reopenConnectionWindow: false)
+        mirrorFrameWindowController = MirrorFrameWindowController(model: self, scrcpyPid: pid)
         hideConnectionWindowForLiveMirror(pid: pid)
     }
 
     private func detachMirrorChrome(reopenConnectionWindow: Bool = true) {
+        mirrorFrameWindowController?.close()
+        mirrorFrameWindowController = nil
         mirrorDragStartFrame = nil
         mirrorExpandedRestoreFrame = nil
         if isRecording {
@@ -310,6 +352,10 @@ final class AppModel: ObservableObject {
     }
 
     func minimizeMirrorWindow() {
+        if mirrorSession != nil {
+            connectionWindow?.miniaturize(nil)
+            return
+        }
         guard let pid = scrcpy.activePid else { return }
         guard ensureMirrorAccessibility(for: "minimize the mirror") else { return }
 
@@ -321,6 +367,10 @@ final class AppModel: ObservableObject {
     }
 
     func toggleMirrorFullscreen() {
+        if mirrorSession != nil {
+            connectionWindow?.toggleFullScreen(nil)
+            return
+        }
         guard let pid = scrcpy.activePid else {
             resizeConnectionWindow(scale: 1.10)
             return
@@ -374,25 +424,49 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func dragMirrorWindow(translation: CGSize) {
+    @discardableResult
+    func dragMirrorWindow(translation: CGSize) -> CGSize? {
         guard let pid = scrcpy.activePid,
-              let startFrame = mirrorDragStartFrame else { return }
+              let startFrame = mirrorDragStartFrame else { return nil }
 
-        let frame = CGRect(
+        let proposedFrame = CGRect(
             x: startFrame.minX + translation.width,
             y: startFrame.minY + translation.height,
             width: startFrame.width,
             height: startFrame.height
         )
+        let frame = constrainedMirrorDragFrame(proposedFrame)
         let result = ScrcpyController.setWindowFrame(pid: pid, frame: frame)
         if result != .success {
             mirrorDragStartFrame = nil
             append("Could not drag the mirror window yet (\(result)). Check Accessibility permission for Android Mirror.")
+            return nil
         }
+
+        return CGSize(
+            width: frame.minX - startFrame.minX,
+            height: frame.minY - startFrame.minY
+        )
     }
 
     func endMirrorWindowDrag() {
         mirrorDragStartFrame = nil
+    }
+
+    private func constrainedMirrorDragFrame(_ proposedFrame: CGRect) -> CGRect {
+        guard let primary = NSScreen.screens.first else { return proposedFrame }
+        let screenHeight = primary.frame.height
+        let proposedNSPoint = NSPoint(
+            x: proposedFrame.midX,
+            y: screenHeight - proposedFrame.midY
+        )
+        let targetScreen = NSScreen.screens.first(where: { $0.frame.contains(proposedNSPoint) }) ?? primary
+        return MirrorWindowChromeLayout.scrcpyFrameKeepingHoverChromeVisible(
+            proposedFrame,
+            inVisibleFrame: targetScreen.visibleFrame,
+            screenHeight: screenHeight,
+            chromeHeight: MirrorFrameWindowController.chromeHeight
+        )
     }
 
     private func ensureMirrorAccessibility(for action: String) -> Bool {
@@ -409,6 +483,11 @@ final class AppModel: ObservableObject {
             .activate(options: [.activateIgnoringOtherApps])
     }
 
+    private func hideConnectionWindowForNativeMirror() {
+        connectionWindow?.orderOut(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     private func showConnectionWindow() {
         guard let connectionWindow else { return }
         connectionWindow.makeKeyAndOrderFront(nil)
@@ -418,6 +497,11 @@ final class AppModel: ObservableObject {
     // MARK: - Resize
 
     func resizeMirror(scale: CGFloat) {
+        if let mirrorSession {
+            mirrorSession.scaleWindow(by: scale)
+            return
+        }
+
         guard let pid = scrcpy.activePid else {
             resizeConnectionWindow(scale: scale)
             return

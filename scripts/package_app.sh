@@ -5,8 +5,10 @@ APP="${1:-dist/Android Mirror Scrcpy.app}"
 BUILD_DIR="scrcpy-source/build-mac"
 SCRCPY_BIN="$BUILD_DIR/app/scrcpy"
 SCRCPY_SERVER="$BUILD_DIR/server/scrcpy-server"
+HOST_BIN=".build/release/AndroidMirrorMac"
 BIN_DIR="$APP/Contents/MacOS"
 
+swift build -c release
 ninja -C "$BUILD_DIR" app/scrcpy
 
 TMP_HELPERS="$(mktemp -d)"
@@ -23,6 +25,9 @@ fi
 
 rm -rf "$APP"
 mkdir -p "$BIN_DIR" "$APP/Contents/Resources"
+
+cp "$HOST_BIN" "$BIN_DIR/AndroidMirrorMac"
+chmod +x "$BIN_DIR/AndroidMirrorMac"
 
 cp "$SCRCPY_BIN" "$BIN_DIR/scrcpy"
 chmod +x "$BIN_DIR/scrcpy"
@@ -47,7 +52,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key>
-  <string>scrcpy</string>
+  <string>AndroidMirrorMac</string>
   <key>CFBundleIdentifier</key>
   <string>com.mallenkb.AndroidMirrorScrcpy</string>
   <key>CFBundleName</key>

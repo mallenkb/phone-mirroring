@@ -1,169 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// Floating toolbar overlay shown alongside the live scrcpy mirror window.
-struct MirrorToolbarView: View {
-    @ObservedObject var model: AppModel
-    @State private var isHovering = false
-
-    var body: some View {
-        HStack(spacing: 2) {
-            MirrorToolbarIconButton(icon: "arrow-left", help: "Back") {
-                model.sendAndroidKey("KEYCODE_BACK")
-            }
-            MirrorToolbarIconButton(icon: "house", help: "Home") {
-                model.sendAndroidKey("KEYCODE_HOME")
-            }
-            MirrorToolbarIconButton(icon: "layout-grid", help: "Recents") {
-                model.sendAndroidKey("KEYCODE_APP_SWITCH")
-            }
-
-            separator
-
-            MirrorToolbarIconButton(icon: "camera", help: "Screenshot to Desktop") {
-                model.takeScreenshot()
-            }
-
-            MirrorToolbarIconButton(
-                icon: model.isRecording ? "square" : "circle",
-                iconSize: model.isRecording ? 14 : 16,
-                tint: .toolbarRecord,
-                background: .clear,
-                help: model.isRecording ? "Stop recording" : "Record screen"
-            ) {
-                model.toggleScreenRecording()
-            }
-
-            separator
-
-            MirrorToolbarTextButton(title: "-", help: "Make mirror smaller") {
-                model.resizeMirror(scale: 0.90)
-            }
-            MirrorToolbarTextButton(title: "+", help: "Make mirror bigger") {
-                model.resizeMirror(scale: 1.10)
-            }
-
-            separator
-
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(model.isRecording ? Color.toolbarRecord : Color.successGreen)
-                    .frame(width: 6, height: 6)
-                Text(model.isRecording ? "Recording" : "Mirroring")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.toolbarIconMuted)
-            }
-            .padding(.trailing, 6)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(
-            ZStack {
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .fill(Color.toolbarSurface.opacity(isHovering ? 0.98 : 0.92))
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .strokeBorder(Color.toolbarStroke, lineWidth: 1)
-            }
-        )
-        .shadow(color: .black.opacity(isHovering ? 0.22 : 0.16), radius: isHovering ? 22 : 16, y: 8)
-        .fixedSize()
-        .onHover { isHovering = $0 }
-    }
-
-    private var separator: some View {
-        Rectangle()
-            .fill(Color.black.opacity(0.10))
-            .frame(width: 1, height: 22)
-            .padding(.horizontal, 8)
-    }
-}
-
-struct MirrorToolbarIconButton: View {
-    let icon: String
-    var iconSize: CGFloat = 18
-    var tint: Color = .toolbarIcon
-    var background: Color = .clear
-    var help: String? = nil
-    let action: () -> Void
-
-    @State private var isHovering = false
-    @State private var isPressed = false
-
-    var body: some View {
-        Button(action: action) {
-            LucideIcon(name: icon, size: iconSize)
-                .foregroundStyle(tint)
-                .frame(width: 42, height: 38)
-                .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(background.opacity(background == .clear ? 0 : 1))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color.black.opacity(highlightOpacity))
-                )
-                .contentShape(Rectangle())
-                .scaleEffect(isPressed ? 0.94 : 1.0)
-                .animation(.easeOut(duration: 0.12), value: isPressed)
-                .animation(.easeOut(duration: 0.12), value: isHovering)
-        }
-        .buttonStyle(.plain)
-        .help(help ?? "")
-        .onHover { isHovering = $0 }
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { _ in isPressed = true }
-                .onEnded { _ in isPressed = false }
-        )
-    }
-
-    private var highlightOpacity: Double {
-        if isPressed { return 0.10 }
-        if isHovering { return 0.06 }
-        return 0
-    }
-}
-
-struct MirrorToolbarTextButton: View {
-    let title: String
-    var help: String? = nil
-    let action: () -> Void
-
-    @State private var isHovering = false
-    @State private var isPressed = false
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 20, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.toolbarIcon)
-                .frame(width: 42, height: 38)
-                .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color.black.opacity(highlightOpacity))
-                )
-                .contentShape(Rectangle())
-                .scaleEffect(isPressed ? 0.94 : 1.0)
-                .animation(.easeOut(duration: 0.12), value: isPressed)
-                .animation(.easeOut(duration: 0.12), value: isHovering)
-        }
-        .buttonStyle(.plain)
-        .help(help ?? "")
-        .onHover { isHovering = $0 }
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { _ in isPressed = true }
-                .onEnded { _ in isPressed = false }
-        )
-    }
-
-    private var highlightOpacity: Double {
-        if isPressed { return 0.10 }
-        if isHovering { return 0.06 }
-        return 0
-    }
-}
-
 /// Reflect-style hover chrome that overlays the top edge of the scrcpy
 /// window. Visibility is driven by the window controller (which polls the
 /// global cursor) so the controls only appear when the user mouses into the
@@ -171,8 +8,6 @@ struct MirrorToolbarTextButton: View {
 struct MirrorTopBarView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var visibility: MirrorFrameWindowController.Visibility
-
-    @State private var isDragging = false
 
     private let chromeHeight: CGFloat = MirrorFrameWindowController.chromeHeight
     private let cornerRadius: CGFloat = 14
@@ -188,7 +23,7 @@ struct MirrorTopBarView: View {
     }
 
     private var chromeBar: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 10) {
             HStack(spacing: 8) {
                 MirrorTrafficButton(color: Color(red: 1.00, green: 0.32, blue: 0.34), help: "Close mirror") {
                     model.closeMirrorWindow()
@@ -200,27 +35,16 @@ struct MirrorTopBarView: View {
                     model.toggleMirrorFullscreen()
                 }
             }
-            .padding(.leading, 14)
+            .padding(.leading, 12)
 
             dragHandle
 
-            HStack(spacing: 6) {
-                MirrorTopBarIconButton(
-                    systemName: "rectangle.on.rectangle",
-                    tint: Color(red: 0.18, green: 0.86, blue: 0.34),
-                    background: Color(red: 0.08, green: 0.34, blue: 0.12),
-                    help: "Expand mirror"
-                ) {
-                    model.toggleMirrorFullscreen()
-                }
+            HStack(spacing: 4) {
                 MirrorTopBarIconButton(systemName: "square.grid.3x3", help: "Recents") {
                     model.sendAndroidKey("KEYCODE_APP_SWITCH")
                 }
                 MirrorTopBarIconButton(systemName: "camera.viewfinder", help: "Screenshot to Desktop") {
                     model.takeScreenshot()
-                }
-                MirrorTopBarIconButton(systemName: "magnifyingglass", help: "Make mirror bigger") {
-                    model.resizeMirror(scale: 1.10)
                 }
             }
             .padding(.trailing, 10)
@@ -229,36 +53,75 @@ struct MirrorTopBarView: View {
         .frame(height: chromeHeight)
         .background(
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(Color.black.opacity(0.78))
+                .fill(Color.black.opacity(0.82))
                 .overlay(
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+                        .strokeBorder(Color.white.opacity(0.06), lineWidth: 0.5)
                 )
         )
     }
 
     private var dragHandle: some View {
-        // AppKit-native drag handle. Behaves exactly like a real NSWindow
-        // title bar: events stay anchored to the view that captured mouseDown
-        // until mouseUp, even if the cursor leaves the view rect mid-drag.
-        // Each mouseDragged moves BOTH scrcpy (via AX) and the panel directly
-        // so they stay locked together — no SwiftUI re-layout in the loop.
         MirrorTitleDragHandle(model: model, visibility: visibility)
             .frame(maxWidth: .infinity, minHeight: chromeHeight)
             .help("Drag mirror")
     }
 }
 
-/// SwiftUI bridge for `TitleBarDragNSView`.
+/// Non-interactive visual frame that sits around the external frameless
+/// scrcpy window. It deliberately draws only the chrome bands, leaving the
+/// center transparent so Android pixels remain visible and clickable.
+struct MirrorOuterFrameView: View {
+    private let chromeHeight: CGFloat = MirrorFrameWindowController.chromeHeight
+    private let sideInset: CGFloat = MirrorFrameWindowController.sideInset
+    private let bottomInset: CGFloat = MirrorFrameWindowController.bottomInset
+    private let cornerRadius: CGFloat = 18
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let height = proxy.size.height
+            let phoneHeight = max(0, height - chromeHeight - bottomInset)
+            let sideHeight = max(0, height - chromeHeight - bottomInset)
+
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
+                    .shadow(color: .black.opacity(0.30), radius: 22, y: 14)
+
+                Rectangle()
+                    .fill(Color.black.opacity(0.72))
+                    .frame(width: width, height: chromeHeight)
+
+                Rectangle()
+                    .fill(Color.black.opacity(0.72))
+                    .frame(width: sideInset, height: sideHeight)
+                    .offset(x: 0, y: chromeHeight)
+
+                Rectangle()
+                    .fill(Color.black.opacity(0.72))
+                    .frame(width: sideInset, height: sideHeight)
+                    .offset(x: width - sideInset, y: chromeHeight)
+
+                Rectangle()
+                    .fill(Color.black.opacity(0.72))
+                    .frame(width: width, height: bottomInset)
+                    .offset(x: 0, y: chromeHeight + phoneHeight)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 private struct MirrorTitleDragHandle: NSViewRepresentable {
     let model: AppModel
     let visibility: MirrorFrameWindowController.Visibility
 
     func makeNSView(context: Context) -> TitleBarDragNSView {
-        let v = TitleBarDragNSView()
-        v.model = model
-        v.visibility = visibility
-        return v
+        let view = TitleBarDragNSView()
+        view.model = model
+        view.visibility = visibility
+        return view
     }
 
     func updateNSView(_ nsView: TitleBarDragNSView, context: Context) {
@@ -267,54 +130,80 @@ private struct MirrorTitleDragHandle: NSViewRepresentable {
     }
 }
 
-/// AppKit-native title-bar drag area. Captures mouseDown and tracks
-/// mouseDragged in global screen coordinates until mouseUp — exactly how
-/// `NSWindow.performDrag(with:)` behaves internally. We move both scrcpy (via
-/// AX) and the host panel (via `setFrameOrigin`) on every event so the chrome
-/// stays glued to the mirror with no visible lag or oscillation.
 final class TitleBarDragNSView: NSView {
     weak var model: AppModel?
     weak var visibility: MirrorFrameWindowController.Visibility?
 
     private var startMouse: NSPoint?
     private var startPanelOrigin: NSPoint?
+    private var pendingCursorDelta: CGSize?
+    private var dragTimer: Timer?
+    private var dragID = 0
 
     override var mouseDownCanMoveWindow: Bool { false }
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
+        dragID += 1
         startMouse = NSEvent.mouseLocation
         startPanelOrigin = window?.frame.origin
+        pendingCursorDelta = .zero
         visibility?.isDragging = true
+        visibility?.isVisible = true
+        window?.ignoresMouseEvents = false
+        window?.orderFrontRegardless()
         model?.beginMirrorWindowDrag()
+        startDragTimer()
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let start = startMouse,
-              let panelOrigin = startPanelOrigin else { return }
+        guard let start = startMouse else { return }
         let now = NSEvent.mouseLocation
-        let dx = now.x - start.x
-        let dyNS = now.y - start.y  // NS: +Y is up
-
-        // 1. Move scrcpy. The model's API takes a CG translation where +Y is
-        // DOWN, so flip the Y sign.
-        model?.dragMirrorWindow(translation: CGSize(width: dx, height: -dyNS))
-
-        // 2. Move the host panel in lockstep. setFrameOrigin uses NS coords.
-        // Doing this directly here (instead of waiting for the next tick
-        // poll) is what eliminates the "bar lags / disappears" feel.
-        window?.setFrameOrigin(NSPoint(
-            x: panelOrigin.x + dx,
-            y: panelOrigin.y + dyNS
-        ))
+        // Coalesce: mouseDragged fires per cursor event (often >120/s).
+        // Just record the latest delta; the 60Hz timer drives the AX move and
+        // panel reposition together so the cursor, the scrcpy window, and the
+        // chrome panel can never diverge mid-drag.
+        pendingCursorDelta = CGSize(width: now.x - start.x, height: -(now.y - start.y))
     }
 
     override func mouseUp(with event: NSEvent) {
+        let completedDragID = dragID
+        stopDragTimer()
+        applyPendingDrag()
         startMouse = nil
         startPanelOrigin = nil
-        visibility?.isDragging = false
+        pendingCursorDelta = nil
+        visibility?.isVisible = true
         model?.endMirrorWindowDrag()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { [weak self, weak visibility] in
+            guard self?.dragID == completedDragID else { return }
+            visibility?.isDragging = false
+        }
+    }
+
+    private func startDragTimer() {
+        stopDragTimer()
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.applyPendingDrag()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        dragTimer = timer
+    }
+
+    private func stopDragTimer() {
+        dragTimer?.invalidate()
+        dragTimer = nil
+    }
+
+    private func applyPendingDrag() {
+        guard let delta = pendingCursorDelta,
+              let panelOrigin = startPanelOrigin else { return }
+        let appliedTranslation = model?.dragMirrorWindow(translation: delta) ?? delta
+        window?.setFrameOrigin(NSPoint(
+            x: panelOrigin.x + appliedTranslation.width,
+            y: panelOrigin.y - appliedTranslation.height
+        ))
     }
 }
 

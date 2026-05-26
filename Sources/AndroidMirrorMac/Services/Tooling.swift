@@ -6,12 +6,60 @@ enum Tooling {
         let candidates = [
             Bundle.main.resourceURL?.appendingPathComponent("bin/\(name)").path(percentEncoded: false),
             Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/\(name)").path(percentEncoded: false),
+            localScrcpyBuildPath(toolName: name),
             "/opt/homebrew/bin/\(name)",
             "/usr/local/bin/\(name)",
             "/usr/bin/\(name)"
         ].compactMap { $0 }
 
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    /// During `swift run` the bundled `dist/.app` isn't used, so the brewed
+    /// scrcpy would be picked up instead of the customized build in
+    /// `scrcpy-source/build-mac/app/`. Walk up from the executable until we
+    /// find a sibling `scrcpy-source/build-mac/app/<name>` and prefer it.
+    private static func localScrcpyBuildPath(toolName: String) -> String? {
+        guard toolName == "scrcpy" else { return nil }
+        var url = Bundle.main.bundleURL
+        for _ in 0..<8 {
+            let candidate = url
+                .appendingPathComponent("scrcpy-source")
+                .appendingPathComponent("build-mac/app/\(toolName)")
+                .path(percentEncoded: false)
+            if FileManager.default.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+            url = url.deletingLastPathComponent()
+            if url.path == "/" { break }
+        }
+        return nil
+    }
+
+    /// Path to the `scrcpy-server` dex/jar shipped in the app bundle. The
+    /// in-process renderer pushes this to the phone via `adb push`.
+    static func scrcpyServerPath() -> String? {
+        if let url = Bundle.module.url(forResource: "scrcpy-server", withExtension: nil),
+           FileManager.default.fileExists(atPath: url.path) {
+            return url.path
+        }
+        // Fallback for `swift run` and unit tests — walk up to the repo root.
+        var url = Bundle.main.bundleURL
+        for _ in 0..<8 {
+            let candidates = [
+                url.appendingPathComponent("Sources/AndroidMirrorMac/Resources/scrcpy-server"),
+                url.appendingPathComponent("scrcpy-source/build-mac/server/scrcpy-server")
+            ]
+            for candidate in candidates {
+                let path = candidate.path(percentEncoded: false)
+                if FileManager.default.fileExists(atPath: path) {
+                    return path
+                }
+            }
+            url = url.deletingLastPathComponent()
+            if url.path == "/" { break }
+        }
+        return nil
     }
 
     static func run(_ name: String, arguments: [String]) -> String {

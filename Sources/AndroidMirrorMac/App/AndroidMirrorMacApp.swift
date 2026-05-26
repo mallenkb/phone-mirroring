@@ -1,7 +1,6 @@
 import SwiftUI
 
-@main
-struct AndroidMirrorMacApp: App {
+struct AndroidMirrorMacSwiftUIPreviewApp: App {
     @StateObject private var model = AppModel()
 
     var body: some Scene {

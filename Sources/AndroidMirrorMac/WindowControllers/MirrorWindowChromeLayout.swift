@@ -15,18 +15,46 @@ enum MirrorWindowChromeLayout {
         )
     }
 
+    static func scrcpyFrameKeepingHoverChromeVisible(
+        _ proposed: CGRect,
+        inVisibleFrame visibleFrame: NSRect,
+        screenHeight: CGFloat,
+        chromeHeight: CGFloat
+    ) -> CGRect {
+        guard proposed.width > 0, proposed.height > 0 else { return proposed }
+
+        var frame = proposed
+        let minYWithRoomForChrome = screenHeight - visibleFrame.maxY + chromeHeight
+        let maxYKeepingBottomVisible = screenHeight - visibleFrame.minY - frame.height
+
+        if maxYKeepingBottomVisible >= minYWithRoomForChrome {
+            frame.origin.y = min(max(frame.origin.y, minYWithRoomForChrome), maxYKeepingBottomVisible)
+        } else {
+            frame.origin.y = max(frame.origin.y, minYWithRoomForChrome)
+        }
+
+        let maxXKeepingRightVisible = visibleFrame.maxX - frame.width
+        if maxXKeepingRightVisible >= visibleFrame.minX {
+            frame.origin.x = min(max(frame.origin.x, visibleFrame.minX), maxXKeepingRightVisible)
+        } else {
+            frame.origin.x = visibleFrame.minX
+        }
+        return frame
+    }
+
     static func overlayFrame(
         forScrcpyBounds bounds: CGRect,
         screenHeight: CGFloat,
         titleHeight: CGFloat,
-        outset: CGFloat
+        sideInset: CGFloat,
+        bottomInset: CGFloat
     ) -> NSRect {
         let scrcpyBottomNS = screenHeight - bounds.maxY
         return NSRect(
-            x: bounds.minX - outset,
-            y: scrcpyBottomNS - outset,
-            width: bounds.width + outset * 2,
-            height: bounds.height + outset * 2 + titleHeight
+            x: bounds.minX - sideInset,
+            y: scrcpyBottomNS - bottomInset,
+            width: bounds.width + sideInset * 2,
+            height: bounds.height + bottomInset + titleHeight
         )
     }
 
@@ -40,7 +68,8 @@ enum MirrorWindowChromeLayout {
             forScrcpyBounds: bounds,
             screenHeight: screenHeight,
             titleHeight: titleHeight,
-            outset: outset
+            sideInset: outset,
+            bottomInset: outset
         )
         return NSRect(
             x: overlay.minX,

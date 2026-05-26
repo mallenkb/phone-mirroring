@@ -16,7 +16,7 @@ final class ScrcpyController {
         "--max-size=1600",
         "--video-bit-rate=8M",
         "--window-width=520",
-        "--no-window-aspect-ratio-lock"
+        "--window-borderless"
     ]
 
     var isRunning: Bool { process?.isRunning ?? false }
@@ -75,10 +75,7 @@ final class ScrcpyController {
             guard layer == 0 else { continue }
 
             let ownerPid = info[kCGWindowOwnerPID as String] as? pid_t
-            let ownerName = (info[kCGWindowOwnerName as String] as? String ?? "").lowercased()
-            let pidMatches = ownerPid == pid
-            let nameMatches = ownerName.contains("scrcpy")
-            guard pidMatches || nameMatches else { continue }
+            guard ownerPid == pid else { continue }
 
             guard let boundsDict = info[kCGWindowBounds as String] as? [String: Any],
                   let rect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) else { continue }

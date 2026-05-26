@@ -22,8 +22,11 @@ final class MirrorFrameWindowController {
     private let onMirrorWindowFound: (() -> Void)?
     private let visibility = Visibility()
     private var titleBarWindow: NSPanel?
+    private var frameWindow: NSPanel?
     private var trackingTimer: Timer?
     private var lastTitleBarFrame: NSRect = .zero
+    private var lastFrameWindowFrame: NSRect = .zero
+    private var lastScrcpyBounds: CGRect = .zero
     private var loggedFoundScrcpy = false
 
     /// Height of the chrome overlay (drops down from the top of the scrcpy
@@ -34,7 +37,9 @@ final class MirrorFrameWindowController {
     static let titleHeight: CGFloat = chromeHeight
     static let collapsedTitleHeight: CGFloat = chromeHeight
     static let expandedTitleHeight: CGFloat = chromeHeight
-    static let outset: CGFloat = 8
+    static let sideInset: CGFloat = 8
+    static let bottomInset: CGFloat = 8
+    static let outset: CGFloat = sideInset
 
     init(model: AppModel, scrcpyPid: pid_t, onMirrorWindowFound: (() -> Void)? = nil) {
         self.model = model
@@ -48,6 +53,8 @@ final class MirrorFrameWindowController {
         trackingTimer = nil
         titleBarWindow?.orderOut(nil)
         titleBarWindow = nil
+        frameWindow?.orderOut(nil)
+        frameWindow = nil
     }
 
     private func present() {
@@ -70,8 +77,26 @@ final class MirrorFrameWindowController {
         )
         configure(panel: titlePanel)
         titlePanel.contentView = titleHosting
-        titlePanel.orderFrontRegardless()
         titleBarWindow = titlePanel
+
+        let frameHosting = NSHostingView(rootView: MirrorOuterFrameView())
+        frameHosting.frame = NSRect(
+            origin: .zero,
+            size: NSSize(width: 420 + Self.sideInset * 2, height: 820 + Self.bottomInset + Self.chromeHeight)
+        )
+        frameHosting.autoresizingMask = [.width, .height]
+
+        let framePanel = NSPanel(
+            contentRect: frameHosting.frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        configureFrame(panel: framePanel)
+        framePanel.contentView = frameHosting
+        framePanel.orderFrontRegardless()
+        frameWindow = framePanel
+        titlePanel.orderFrontRegardless()
 
         startTracking()
     }
@@ -84,6 +109,18 @@ final class MirrorFrameWindowController {
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         // Start in pass-through mode so the phone screen stays interactive.
+        panel.ignoresMouseEvents = true
+        panel.hidesOnDeactivate = false
+        panel.becomesKeyOnlyIfNeeded = true
+    }
+
+    private func configureFrame(panel: NSPanel) {
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.ignoresMouseEvents = true
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
@@ -106,17 +143,25 @@ final class MirrorFrameWindowController {
         // possibly-stale CGWindow bounds) race each other and produce visible
         // jitter. The next non-drag tick will resync the panel to scrcpy.
         if visibility.isDragging {
+            updateFrameWindowDuringDrag()
             return
         }
         guard let bounds = ScrcpyController.windowBounds(pid: scrcpyPid) else {
             titleBarWindow.orderOut(nil)
+            frameWindow?.orderOut(nil)
             lastTitleBarFrame = .zero
+            lastFrameWindowFrame = .zero
+            lastScrcpyBounds = .zero
             if visibility.isVisible { visibility.isVisible = false }
             titleBarWindow.ignoresMouseEvents = true
             return
         }
+        lastScrcpyBounds = bounds
         if !titleBarWindow.isVisible {
             titleBarWindow.orderFrontRegardless()
+        }
+        if let frameWindow, !frameWindow.isVisible {
+            frameWindow.orderFrontRegardless()
         }
 
         if !loggedFoundScrcpy {
@@ -133,9 +178,9 @@ final class MirrorFrameWindowController {
         // screen (notification swipes, status bar taps, etc.).
         let scrcpyTopNS = primaryHeight - bounds.minY
         var titleBarFrame = NSRect(
-            x: bounds.minX,
+            x: bounds.minX - Self.sideInset,
             y: scrcpyTopNS,
-            width: bounds.width,
+            width: bounds.width + Self.sideInset * 2,
             height: Self.chromeHeight
         )
 
@@ -143,7 +188,8 @@ final class MirrorFrameWindowController {
         let targetScreen = NSScreen.screens.first(where: { $0.frame.contains(scrcpyNSPoint) }) ?? primary
         let visible = targetScreen.visibleFrame
         if titleBarFrame.maxY > visible.maxY {
-            titleBarFrame.origin.y = visible.maxY - titleBarFrame.height
+            handleNoRoomAboveMirror()
+            return
         }
         if titleBarFrame.minY < visible.minY {
             titleBarFrame.origin.y = visible.minY
@@ -153,8 +199,55 @@ final class MirrorFrameWindowController {
             lastTitleBarFrame = titleBarFrame
             titleBarWindow.setFrame(titleBarFrame, display: true)
         }
+        updateFrameWindow(forScrcpyBounds: bounds, screenHeight: primaryHeight)
 
         updateHoverState(panelFrame: titleBarFrame)
+    }
+
+    private func handleNoRoomAboveMirror() {
+        guard let titleBarWindow else { return }
+        if visibility.isVisible {
+            titleBarWindow.orderFrontRegardless()
+            frameWindow?.orderFrontRegardless()
+            titleBarWindow.ignoresMouseEvents = false
+            return
+        }
+
+        if visibility.isVisible { visibility.isVisible = false }
+        titleBarWindow.ignoresMouseEvents = true
+        titleBarWindow.orderOut(nil)
+        frameWindow?.orderOut(nil)
+        lastTitleBarFrame = .zero
+        lastFrameWindowFrame = .zero
+    }
+
+    private func updateFrameWindow(forScrcpyBounds bounds: CGRect, screenHeight: CGFloat) {
+        guard let frameWindow else { return }
+        let frame = MirrorWindowChromeLayout.overlayFrame(
+            forScrcpyBounds: bounds,
+            screenHeight: screenHeight,
+            titleHeight: Self.chromeHeight,
+            sideInset: Self.sideInset,
+            bottomInset: Self.bottomInset
+        )
+        if !frame.equalTo(lastFrameWindowFrame) {
+            lastFrameWindowFrame = frame
+            frameWindow.setFrame(frame, display: true)
+        }
+    }
+
+    private func updateFrameWindowDuringDrag() {
+        guard let titleBarWindow, let frameWindow, !lastScrcpyBounds.equalTo(.zero) else { return }
+        let frame = NSRect(
+            x: titleBarWindow.frame.minX,
+            y: titleBarWindow.frame.minY - lastScrcpyBounds.height - Self.bottomInset,
+            width: titleBarWindow.frame.width,
+            height: lastScrcpyBounds.height + Self.bottomInset + Self.chromeHeight
+        )
+        if !frame.equalTo(lastFrameWindowFrame) {
+            lastFrameWindowFrame = frame
+            frameWindow.setFrame(frame, display: true)
+        }
     }
 
     /// Global mouse poll — works even when the panel is set to ignore mouse
