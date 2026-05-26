@@ -500,6 +500,22 @@ final class MirrorWindowChromeTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testFullscreenSizedRestoredWindowUsesPhoneOnlyPresentation() throws {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+        let window = try XCTUnwrap(controller.window)
+        let screenFrame = try XCTUnwrap(NSScreen.main?.frame)
+
+        window.setFrame(screenFrame, display: true, animate: false)
+        controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
+
+        XCTAssertTrue(controller.isFullscreenChromeSuppressedForTesting)
+        XCTAssertEqual(controller.renderTopInsetForTesting, 0, accuracy: 0.001)
+        XCTAssertFalse(controller.isChromeVisibleForTesting)
+    }
+
     func testExpandedFramePreservesAspectRatioAndLeavesRoomForTopBar() {
         let current = CGRect(x: 320, y: 160, width: 520, height: 1040)
         let visibleFrame = NSRect(x: 0, y: 40, width: 1440, height: 860)

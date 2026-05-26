@@ -61,6 +61,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         guard let window else { return }
         window.center()
         window.makeKeyAndOrderFront(nil)
+        updateFullscreenPresentationIfNeeded()
     }
 
     func setStreamSize(width: UInt32, height: UInt32) {
@@ -142,6 +143,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
+        window.isRestorable = false
         window.isMovable = true
         window.isMovableByWindowBackground = false
         window.acceptsMouseMovedEvents = true
@@ -359,7 +361,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         chromeBar.isHidden = true
         chromeBar.alphaValue = 0
         chromeBar.setBarBackgroundVisible(false, animated: false)
-        rootView.layer?.backgroundColor = NSColor.clear.cgColor
+        rootView.layer?.backgroundColor = isInFullscreen
+            ? NSColor.black.cgColor
+            : NSColor.clear.cgColor
     }
 
     private func toggleFullScreenFromChrome() {
@@ -369,6 +373,26 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         window.toggleFullScreen(nil)
     }
 
+    private func updateFullscreenPresentationIfNeeded() {
+        guard let window else { return }
+        let shouldSuppress = window.styleMask.contains(.fullScreen)
+            || isEffectivelyFullscreen(window)
+        if shouldSuppress != isInFullscreen {
+            setFullscreenChromeSuppressed(shouldSuppress)
+        }
+    }
+
+    private func isEffectivelyFullscreen(_ window: NSWindow) -> Bool {
+        guard let screen = window.screen else { return false }
+        let frame = window.frame
+        let screenFrame = screen.frame
+        let visibleFrame = screen.visibleFrame
+        let widthMatches = abs(frame.width - screenFrame.width) <= 2
+        let heightMatchesScreen = abs(frame.height - screenFrame.height) <= 2
+        let heightMatchesVisible = abs(frame.height - visibleFrame.height) <= 2
+        return widthMatches && (heightMatchesScreen || heightMatchesVisible)
+    }
+
     private func setFullscreenChromeSuppressed(_ suppressed: Bool) {
         guard isInFullscreen != suppressed else { return }
         isInFullscreen = suppressed
@@ -376,6 +400,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
         if suppressed {
             hideChromeImmediately()
+            window?.backgroundColor = .black
+            rootView.layer?.cornerRadius = 0
+            rootView.layer?.backgroundColor = NSColor.black.cgColor
             renderTopConstraint?.constant = 0
             window?.contentAspectRatio = .zero
             window?.minSize = NSSize(width: 1, height: 1)
@@ -384,6 +411,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
                 height: CGFloat.greatestFiniteMagnitude
             )
         } else {
+            window?.backgroundColor = .clear
+            rootView.layer?.cornerRadius = Self.cornerRadius
+            rootView.layer?.backgroundColor = NSColor.clear.cgColor
             renderTopConstraint?.constant = Self.chromeHeight
             if let window, let aspect = mirrorAspect {
                 window.contentAspectRatio = NSSize(width: aspect, height: 1)
@@ -457,9 +487,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     func windowDidMove(_ notification: Notification) {
+        updateFullscreenPresentationIfNeeded()
     }
 
     func windowDidResize(_ notification: Notification) {
+        updateFullscreenPresentationIfNeeded()
         rootView.layoutSubtreeIfNeeded()
         renderView.updateVideoLayerFrame()
     }
