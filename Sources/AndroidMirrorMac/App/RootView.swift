@@ -33,7 +33,10 @@ struct WindowRegistrationView: NSViewRepresentable {
     private func configure(window: NSWindow?) {
         guard let window else { return }
         model.registerConnectionWindow(window)
+        window.styleMask.remove(.titled)
         window.styleMask.insert(.resizable)
-        window.minSize = NSSize(width: 300, height: 560)
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.minSize = NSSize(width: 308, height: 689)
     }
 }

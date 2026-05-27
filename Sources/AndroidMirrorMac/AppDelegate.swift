@@ -1,15 +1,37 @@
 import AppKit
+import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var windowController: WindowController?
+    private var window: NSWindow?
     private let model = AppModel()
     private var keyMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let controller = WindowController(model: model)
-        controller.show()
-        windowController = controller
+        let rootView = RootView()
+            .environmentObject(model)
+        let hostingView = NSHostingView(rootView: rootView)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 308, height: 689),
+            styleMask: [.borderless, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Android Mirror"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isReleasedWhenClosed = false
+        window.isOpaque = false
+        window.hasShadow = false
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = .clear
+        window.contentView = hostingView
+        window.minSize = NSSize(width: 308, height: 689)
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        model.registerConnectionWindow(window)
+        self.window = window
+
         installMainMenu()
         installKeyboardScaling()
         NSApp.activate(ignoringOtherApps: true)

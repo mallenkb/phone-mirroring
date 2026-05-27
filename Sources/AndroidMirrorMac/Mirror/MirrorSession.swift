@@ -36,6 +36,8 @@ final class MirrorSession {
 
     private var serverHost: ScrcpyServerHost?
     private var stream: ScrcpyVideoStream?
+    private var audioPlayer = ScrcpyAudioPlayer()
+    private lazy var audioRelay = ScrcpyAudioRelay(serial: serial)
     private var decoder = H264VideoToolboxDecoder()
     private(set) var controlChannel: ScrcpyControlChannel?
     private var windowController: MirrorContentWindowController?
@@ -68,6 +70,9 @@ final class MirrorSession {
         stream.onPacket = { [weak self] packet in
             self?.decoder.feed(packet)
         }
+        stream.onAudioPacket = { [weak self] packet in
+            self?.audioPlayer.enqueue(packet)
+        }
         stream.onResize = { [weak self] width, height in
             Task { @MainActor in self?.handleResize(width: width, height: height) }
         }
@@ -92,6 +97,7 @@ final class MirrorSession {
                 }
             }
             self.serverHost = host
+            audioRelay.startIfEnabled()
         } catch let error as ScrcpyServerHost.HostError {
             stream.stop()
             throw SessionError.start(error.description)
@@ -111,6 +117,8 @@ final class MirrorSession {
         isStopping = true
         controlChannel?.close()
         controlChannel = nil
+        audioPlayer.stop()
+        audioRelay.stop()
         stream?.stop()
         stream = nil
         serverHost?.stop()
@@ -135,6 +143,14 @@ final class MirrorSession {
         windowController?.scaleWindow(by: scale)
     }
 
+    func setMirrorVolume(_ volume: Float) {
+        audioPlayer.setVolume(volume)
+    }
+
+    func setMirrorAudioEnabled(_ enabled: Bool) {
+        audioRelay.setEnabled(enabled)
+    }
+
     func forwardPointerEvent(_ event: MirrorRenderView.PointerEvent,
                              in view: MirrorRenderView) {
         guard let controlChannel else { return }
@@ -157,11 +173,21 @@ final class MirrorSession {
     }
 
     func forwardKeyEvent(_ event: NSEvent) {
-        // Map a handful of macOS key codes onto Android keycodes so basic
-        // shortcuts work. Full keyboard support requires the UHID path.
-        guard let mapped = Self.androidKey(for: event) else { return }
-        controlChannel?.sendKeyEvent(mapped,
-                                     action: event.type == .keyDown ? .down : .up)
+        guard let controlChannel else { return }
+        if let mapped = Self.androidKey(for: event) {
+            controlChannel.sendKeyEvent(mapped, action: event.type == .keyDown ? .down : .up)
+            return
+        }
+
+        guard event.type == .keyDown,
+              !event.isARepeat,
+              event.modifierFlags.intersection(.deviceIndependentFlagsMask).isSubset(of: [.shift]),
+              let text = event.characters,
+              !text.isEmpty else {
+            return
+        }
+
+        controlChannel.sendText(text)
     }
 
     // MARK: - Stream lifecycle
@@ -194,6 +220,14 @@ final class MirrorSession {
         // macOS virtual key codes (kVK_*). Only a minimal mapping for now.
         switch event.keyCode {
         case 0x35: return .back     // Escape
+        case 0x30: return .tab
+        case 0x24, 0x4C: return .enter
+        case 0x33: return .delete
+        case 0x75: return .forwardDelete
+        case 0x7E: return .dpadUp
+        case 0x7D: return .dpadDown
+        case 0x7B: return .dpadLeft
+        case 0x7C: return .dpadRight
         case 0x53: return .home     // Keypad 1 — placeholder; user-configurable later
         default: return nil
         }

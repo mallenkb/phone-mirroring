@@ -7,9 +7,9 @@ struct AndroidMirrorMacSwiftUIPreviewApp: App {
         WindowGroup("Android Mirror") {
             RootView()
                 .environmentObject(model)
-                .frame(minWidth: 300, idealWidth: 514, minHeight: 560, idealHeight: 1147)
+                .frame(minWidth: 257, idealWidth: 257, minHeight: 574, idealHeight: 574)
         }
-        .defaultSize(width: 514, height: 1147)
+        .defaultSize(width: 257, height: 574)
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Scan for Android Devices") { model.scanADBDevices() }

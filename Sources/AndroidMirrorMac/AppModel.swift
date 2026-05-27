@@ -66,6 +66,34 @@ final class AppModel: ObservableObject {
 
                 let devicesOutput = await Task.detached { adb.run(["devices", "-l"]) }.value
                 let authorizedDevices = Self.authorizedADBDevices(in: devicesOutput)
+
+                let rememberedWireless = Self.mostRecentWirelessRecord(in: self.pairedPhones)
+                if let rememberedWireless {
+                    let connectOutput = await Task.detached {
+                        adb.run(["connect", rememberedWireless.lastAddress])
+                    }.value
+                    if Self.adbConnectSucceeded(connectOutput) {
+                        self.autoConnectAttempted = true
+                        self.append("adb connect: \(Self.oneLine(connectOutput))")
+                        self.select(record: rememberedWireless)
+                        self.touchPairedPhone(
+                            id: rememberedWireless.id,
+                            displayName: rememberedWireless.displayName,
+                            address: rememberedWireless.lastAddress
+                        )
+                        self.startMirroring()
+                        return
+                    }
+                }
+
+                let livePhones = await Task.detached { adb.connectableMDNSTargets() }.value
+                let candidate = self.mostRecentPairedPhone(in: livePhones + self.discoveredPhones)
+                if let candidate {
+                    self.autoConnectAttempted = true
+                    self.connectAndMirror(phone: candidate)
+                    return
+                }
+
                 let rememberedUSB = authorizedDevices.first { device in
                     device.isUSB && self.pairedPhones.contains(where: { $0.id == device.serial })
                 }
@@ -78,16 +106,6 @@ final class AppModel: ObservableObject {
                         address: rememberedUSB.serial
                     )
                     self.startMirroring()
-                    return
-                }
-
-                let candidate = self.discoveredPhones.first(where: { p in
-                    p.kind == .connectable
-                        && self.pairedPhones.contains(where: { $0.id == p.id })
-                })
-                if let candidate {
-                    self.autoConnectAttempted = true
-                    self.connectAndMirror(phone: candidate)
                     return
                 }
             }
@@ -163,23 +181,88 @@ final class AppModel: ObservableObject {
             }
 
             if let usbDevice {
-                self.isPairing = false
                 self.select(device: usbDevice)
                 self.touchPairedPhone(
                     id: usbDevice.serial,
                     displayName: usbDevice.model,
                     address: usbDevice.serial
                 )
-                self.append("USB phone authorized. Remembered \(usbDevice.model) for next launch.")
+                self.append("USB phone authorized. Switching \(usbDevice.model) to Wi-Fi...")
+
+                let routeOutput = await Task.detached {
+                    adb.run(["-s", usbDevice.serial, "shell", "ip", "route"])
+                }.value
+                let usbWiFiAddress = Self.wifiIPAddress(in: routeOutput).map { "\($0):5555" }
+
+                let tcpipOutput = await Task.detached {
+                    adb.run(["-s", usbDevice.serial, "tcpip", "5555"])
+                }.value
+                self.append("adb tcpip: \(Self.oneLine(tcpipOutput))")
+
+                guard Self.adbTCPIPSucceeded(tcpipOutput) else {
+                    self.isPairing = false
+                    self.append("Could not switch to Wi-Fi. Starting USB mirror instead.")
+                    self.startMirroring()
+                    return
+                }
+
+                let wirelessPhone = await Self.waitForConnectableWirelessPhone(
+                    adb: adb,
+                    preferredAddress: usbWiFiAddress
+                )
+
+                guard let wirelessPhone else {
+                    self.isPairing = false
+                    self.append("Wi-Fi adb did not appear. Starting USB mirror instead.")
+                    self.startMirroring()
+                    return
+                }
+
+                let connectOutput = await Task.detached {
+                    adb.run(["connect", wirelessPhone.address])
+                }.value
+                self.append("adb connect: \(Self.oneLine(connectOutput))")
+
+                self.isPairing = false
+                guard Self.adbConnectSucceeded(connectOutput) else {
+                    self.append("Could not connect over Wi-Fi. Starting USB mirror instead.")
+                    self.startMirroring()
+                    return
+                }
+
+                self.touchPairedPhone(
+                    id: wirelessPhone.id,
+                    displayName: usbDevice.model,
+                    address: wirelessPhone.address
+                )
+                self.selectedDevice.adbSerial = wirelessPhone.address
+                self.selectedDevice.network = "Wireless debugging"
+                self.append("Wireless mirror ready. You can unplug the cable.")
                 self.startMirroring()
                 return
+            }
+
+            for record in Self.wirelessRecordsByMostRecent(self.pairedPhones) {
+                let connectOutput = await Task.detached { adb.run(["connect", record.lastAddress]) }.value
+                self.append("adb connect \(record.lastAddress): \(Self.oneLine(connectOutput))")
+                if Self.adbConnectSucceeded(connectOutput) {
+                    self.isPairing = false
+                    self.select(record: record)
+                    self.touchPairedPhone(
+                        id: record.id,
+                        displayName: record.displayName,
+                        address: record.lastAddress
+                    )
+                    self.startMirroring()
+                    return
+                }
             }
 
             let target = await Task.detached { adb.firstMDNSTarget(type: "_adb-tls-connect._tcp") }.value
 
             guard let target else {
                 self.isPairing = false
-                self.append("No cable or wireless adb device found. Plug in once, accept the Android USB debugging prompt, then try the wireless handoff again.")
+                self.append("No cable, saved Wi-Fi route, or wireless adb service found. Plug in once, accept the Android USB debugging prompt, then try again.")
                 return
             }
 
@@ -187,9 +270,22 @@ final class AppModel: ObservableObject {
 
             self.isPairing = false
             self.append("adb connect: \(Self.oneLine(connectOutput))")
+            guard Self.adbConnectSucceeded(connectOutput) else { return }
             self.selectedDevice.adbSerial = target
             self.startMirroring()
         }
+    }
+
+    private func mostRecentPairedPhone(in phones: [DiscoveredPhone]) -> DiscoveredPhone? {
+        let recordsByID = Dictionary(uniqueKeysWithValues: pairedPhones.map { ($0.id, $0) })
+        return phones
+            .filter { $0.kind == .connectable && recordsByID[$0.id] != nil }
+            .sorted {
+                let lhs = recordsByID[$0.id]?.lastConnected ?? .distantPast
+                let rhs = recordsByID[$1.id]?.lastConnected ?? .distantPast
+                return lhs > rhs
+            }
+            .first
     }
 
     private func applyADBOutput(_ output: String) {
@@ -217,6 +313,20 @@ final class AppModel: ObservableObject {
         )
     }
 
+    private func select(record: PairedPhoneRecord) {
+        selectedDevice = MirrorDevice(
+            id: record.id,
+            name: record.displayName,
+            model: "Android",
+            battery: selectedDevice.battery,
+            isCharging: selectedDevice.isCharging,
+            network: "Wireless debugging",
+            lastSeen: .now,
+            states: [.mirroringReady, .companionConnected],
+            adbSerial: record.lastAddress
+        )
+    }
+
     nonisolated static func authorizedADBDevices(in output: String) -> [AuthorizedADBDevice] {
         output
             .split(separator: "\n")
@@ -241,6 +351,63 @@ final class AppModel: ObservableObject {
                     isUSB: line.contains("usb:")
                 )
             }
+    }
+
+    nonisolated static func adbConnectSucceeded(_ output: String) -> Bool {
+        let lower = output.lowercased()
+        return lower.contains("connected to ") || lower.contains("already connected to ")
+    }
+
+    nonisolated static func adbTCPIPSucceeded(_ output: String) -> Bool {
+        output.lowercased().contains("restarting in tcp mode port:")
+    }
+
+    nonisolated static func mostRecentWirelessRecord(in records: [PairedPhoneRecord]) -> PairedPhoneRecord? {
+        wirelessRecordsByMostRecent(records).first
+    }
+
+    nonisolated static func wirelessRecordsByMostRecent(_ records: [PairedPhoneRecord]) -> [PairedPhoneRecord] {
+        records
+            .filter { $0.lastAddress.contains(":") }
+            .sorted { $0.lastConnected > $1.lastConnected }
+    }
+
+    nonisolated static func wifiIPAddress(in routeOutput: String) -> String? {
+        for line in routeOutput.split(whereSeparator: \.isNewline).map(String.init) {
+            guard line.contains("wlan"), line.contains(" src ") else { continue }
+            let parts = line.split(whereSeparator: \.isWhitespace).map(String.init)
+            guard let srcIndex = parts.firstIndex(of: "src"),
+                  parts.indices.contains(srcIndex + 1)
+            else { continue }
+            return parts[srcIndex + 1]
+        }
+        return nil
+    }
+
+    private static func waitForConnectableWirelessPhone(
+        adb: ADBController,
+        preferredAddress: String?
+    ) async -> DiscoveredPhone? {
+        for _ in 0..<8 {
+            if let preferredAddress {
+                let connectOutput = await Task.detached { adb.run(["connect", preferredAddress]) }.value
+                if adbConnectSucceeded(connectOutput) {
+                    return DiscoveredPhone(
+                        id: preferredAddress,
+                        address: preferredAddress,
+                        kind: .connectable,
+                        lastSeen: .now
+                    )
+                }
+            }
+
+            let phones = await Task.detached { adb.connectableMDNSTargets() }.value
+            if let phone = phones.first {
+                return phone
+            }
+            try? await Task.sleep(nanoseconds: 750_000_000)
+        }
+        return nil
     }
 
     private nonisolated static func value(after marker: String, in line: String) -> String? {
@@ -484,7 +651,7 @@ final class AppModel: ObservableObject {
     }
 
     private func hideConnectionWindowForNativeMirror() {
-        connectionWindow?.orderOut(nil)
+        connectionWindow?.close()
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -539,10 +706,12 @@ final class AppModel: ObservableObject {
 
         let frame = window.frame
         let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
-        let maxWidth = max(360, (visible?.width ?? 1200) - 40)
-        let maxHeight = max(620, (visible?.height ?? 1400) - 40)
-        let newWidth = min(max(frame.width * scale, 300), maxWidth)
-        let newHeight = min(max(frame.height * scale, 560), maxHeight)
+        let minWidth: CGFloat = 257
+        let minHeight: CGFloat = 574
+        let maxWidth = max(minWidth, (visible?.width ?? 1200) - 40)
+        let maxHeight = max(minHeight, (visible?.height ?? 1400) - 40)
+        let newWidth = min(max(frame.width * scale, minWidth), maxWidth)
+        let newHeight = min(max(frame.height * scale, minHeight), maxHeight)
         let newFrame = NSRect(
             x: frame.midX - newWidth / 2,
             y: frame.midY - newHeight / 2,
@@ -652,6 +821,7 @@ final class AppModel: ObservableObject {
     // MARK: - Diagnostics
 
     private func append(_ message: String) {
+        Logger.log("Diagnostic: \(message)")
         diagnostics.insert(DiagnosticLine(date: .now, message: message), at: 0)
         diagnostics = Array(diagnostics.prefix(8))
     }

@@ -35,8 +35,11 @@ final class MirrorRenderView: NSView {
         super.init(frame: frameRect)
         wantsLayer = true
         layerContentsRedrawPolicy = .duringViewResize
-        layer = sampleBufferDisplayLayer
-        sampleBufferDisplayLayer.videoGravity = .resize
+        layer = CALayer()
+        layer?.backgroundColor = NSColor.black.cgColor
+        layer?.masksToBounds = true
+        layer?.addSublayer(sampleBufferDisplayLayer)
+        sampleBufferDisplayLayer.videoGravity = .resizeAspect
         sampleBufferDisplayLayer.backgroundColor = NSColor.black.cgColor
         sampleBufferDisplayLayer.actions = [
             "bounds": NSNull(),
@@ -51,6 +54,11 @@ final class MirrorRenderView: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.makeFirstResponder(self)
+    }
 
     override func layout() {
         super.layout()
@@ -89,19 +97,24 @@ final class MirrorRenderView: NSView {
     func updateVideoLayerFrame() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        sampleBufferDisplayLayer.frame = Self.fittedVideoRect(for: aspect, in: bounds)
+        sampleBufferDisplayLayer.frame = Self.videoFrame(for: bounds)
         CATransaction.commit()
     }
 
     private func applyCornerMask() {
-        sampleBufferDisplayLayer.cornerRadius = cornerRadius
-        sampleBufferDisplayLayer.masksToBounds = cornerRadius > 0
-        sampleBufferDisplayLayer.setValue("continuous", forKey: "cornerCurve")
+        layer?.cornerRadius = cornerRadius
+        layer?.masksToBounds = cornerRadius > 0
+        layer?.setValue("continuous", forKey: "cornerCurve")
+        sampleBufferDisplayLayer.cornerRadius = 0
+        sampleBufferDisplayLayer.masksToBounds = false
     }
 
     // MARK: - Input
 
-    override func mouseDown(with event: NSEvent) { emit(event, kind: .down) }
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        emit(event, kind: .down)
+    }
     override func mouseDragged(with event: NSEvent) { emit(event, kind: .dragged) }
     override func mouseUp(with event: NSEvent) { emit(event, kind: .up) }
     override func mouseMoved(with event: NSEvent) {
@@ -119,6 +132,10 @@ final class MirrorRenderView: NSView {
     }
     override func keyDown(with event: NSEvent) { onKeyEvent?(event) }
     override func keyUp(with event: NSEvent) { onKeyEvent?(event) }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        onKeyEvent?(event)
+        return true
+    }
 
     private func emit(_ event: NSEvent, kind: PointerKind) {
         guard let point = normalizedPoint(for: event) else { return }
@@ -131,7 +148,7 @@ final class MirrorRenderView: NSView {
     private func normalizedPoint(for event: NSEvent) -> CGPoint? {
         guard aspect.width > 0, aspect.height > 0 else { return nil }
         let local = convert(event.locationInWindow, from: nil)
-        let renderedFrame = Self.fittedVideoRect(for: aspect, in: bounds)
+        let renderedFrame = Self.fittedVideoRect(for: aspect, in: Self.videoFrame(for: bounds))
         let nx = (local.x - renderedFrame.minX) / max(renderedFrame.width, 1)
         let ny = 1 - (local.y - renderedFrame.minY) / max(renderedFrame.height, 1)
         guard nx >= 0, nx <= 1, ny >= 0, ny <= 1 else { return nil }
@@ -158,5 +175,9 @@ final class MirrorRenderView: NSView {
             y: bounds.minY + (bounds.height - fittedSize.height) / 2
         )
         return CGRect(origin: origin, size: fittedSize)
+    }
+
+    static func videoFrame(for bounds: CGRect) -> CGRect {
+        bounds
     }
 }

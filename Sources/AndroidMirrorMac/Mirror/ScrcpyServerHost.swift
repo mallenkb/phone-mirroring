@@ -79,6 +79,8 @@ final class ScrcpyServerHost {
             throw HostError.adbCommandFailed(stage: "adb reverse", output: reverseOut)
         }
         reverseInstalled = true
+
+        wakeDevice()
     }
 
     /// Spawns the scrcpy server with `adb shell app_process …`. Returns
@@ -115,6 +117,7 @@ final class ScrcpyServerHost {
             "max_size=\(options.maxSize)",
             "max_fps=\(options.maxFps)",
             "stay_awake=true",
+            "power_on=true",
             "cleanup=true"
         ]
         process.arguments = args
@@ -162,5 +165,12 @@ final class ScrcpyServerHost {
             return ["-s", serial]
         }
         return []
+    }
+
+    private func wakeDevice() {
+        let output = Tooling.run("adb", arguments: adbBaseArgs() + ["shell", "input", "keyevent", "KEYCODE_WAKEUP"])
+        if output.localizedCaseInsensitiveContains("error") {
+            Logger.log("adb wake failed: \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
     }
 }

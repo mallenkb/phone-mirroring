@@ -36,6 +36,24 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertFalse(zoom.isHidden)
     }
 
+    @MainActor
+    func testNativeMirrorBorderlessWindowCanReceiveKeyboardFocus() throws {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+        let window = try XCTUnwrap(controller.window)
+
+        XCTAssertTrue(window.canBecomeKey)
+        XCTAssertTrue(window.canBecomeMain)
+        XCTAssertTrue(controller.renderView.acceptsFirstResponder)
+    }
+
+    func testScrcpyTextMessageEncodesUtf8Payload() {
+        let message = ScrcpyControlChannel.textMessage(for: "Hi")
+
+        XCTAssertEqual(Array(message), [1, 0, 0, 0, 2, 72, 105])
+    }
+
     func testMirrorRenderViewFitsPortraitStreamInsideWideBounds() {
         let rect = MirrorRenderView.fittedVideoRect(
             for: CGSize(width: 1080, height: 2400),
@@ -61,6 +79,21 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
+    func testMirrorRenderLayerUsesCenteredAspectGravityForLiveFrames() {
+        let renderView = MirrorRenderView()
+
+        XCTAssertEqual(renderView.sampleBufferDisplayLayer.videoGravity, .resizeAspect)
+    }
+
+    func testMirrorRenderVideoLayerStaysCenteredInBounds() {
+        let frame = MirrorRenderView.videoFrame(for: CGRect(x: 0, y: 0, width: 400, height: 900))
+
+        XCTAssertEqual(frame.minX, 0)
+        XCTAssertEqual(frame.width, 400)
+        XCTAssertEqual(frame.height, 900)
+    }
+
+    @MainActor
     func testNativeMirrorWindowDoesNotExposeEdgeResizeHandles() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
@@ -71,12 +104,86 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
+    func testNativeMirrorShellUsesNoPaddingAroundPhonePixels() {
+        XCTAssertEqual(MirrorContentWindowController.screenLeftInset, 0)
+        XCTAssertEqual(MirrorContentWindowController.screenRightInset, 0)
+        XCTAssertEqual(MirrorContentWindowController.screenBottomInset, 0)
+    }
+
+    @MainActor
+    func testNativeMirrorShellCentersInsideVisibleFrame() {
+        let frame = MirrorContentWindowController.centeredFrame(
+            size: NSSize(width: 514, height: 1148),
+            in: NSRect(x: 120, y: 40, width: 1440, height: 860)
+        )
+
+        XCTAssertEqual(frame.midX, 840, accuracy: 0.001)
+        XCTAssertEqual(frame.midY, 470, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testNativeMirrorShellExactlyMatchesRenderArea() throws {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+        controller.setStreamSize(width: 738, height: 1600)
+        let window = try XCTUnwrap(controller.window)
+        let rootView = try XCTUnwrap(window.contentView)
+
+        rootView.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(controller.renderView.frame.minX, 0, accuracy: 0.001)
+        XCTAssertEqual(rootView.bounds.maxX - controller.renderView.frame.maxX, 0, accuracy: 0.001)
+        XCTAssertEqual(controller.renderView.frame.minY, 0, accuracy: 0.001)
+        XCTAssertEqual(rootView.bounds.maxY - controller.renderView.frame.maxY, 0, accuracy: 0.25)
+
+        XCTAssertEqual(rootView.bounds.width, controller.renderView.frame.width, accuracy: 0.001)
+        XCTAssertEqual(rootView.bounds.height, controller.renderView.frame.height, accuracy: 0.25)
+        XCTAssertEqual(
+            window.contentAspectRatio.width / window.contentAspectRatio.height,
+            rootView.bounds.width / rootView.bounds.height,
+            accuracy: 0.001
+        )
+    }
+
+    @MainActor
+    func testNativeMirrorShellSizeWrapsActualStreamWithoutFixedWidthOrHeight() {
+        let visibleFrame = NSRect(x: 0, y: 0, width: 1000, height: 1200)
+        let streamSize = NSSize(width: 738, height: 1600)
+
+        let shellSize = MirrorContentWindowController.wrappedShellSize(
+            for: streamSize,
+            visibleFrame: visibleFrame,
+            screenMargin: 80
+        )
+        let maxMirrorHeight = visibleFrame.height - 80
+        let expectedMirrorWidth = maxMirrorHeight * streamSize.width / streamSize.height
+
+        XCTAssertEqual(shellSize.width, expectedMirrorWidth, accuracy: 0.001)
+        XCTAssertEqual(shellSize.height, maxMirrorHeight, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testNativeMirrorShellDoesNotUpscaleSmallStreamsToFixedMinimum() {
+        let shellSize = MirrorContentWindowController.wrappedShellSize(
+            for: NSSize(width: 120, height: 240),
+            visibleFrame: NSRect(x: 0, y: 0, width: 1000, height: 1200),
+            screenMargin: 80
+        )
+
+        XCTAssertEqual(shellSize.width, 120)
+        XCTAssertEqual(shellSize.height, 240)
+    }
+
+    @MainActor
     func testBlankNativeMirrorUsesDefaultPhoneAspectBeforeStreamHeader() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
         let window = try XCTUnwrap(controller.window)
         let defaultAspect = CGFloat(1080) / CGFloat(2340)
+        let verticalShellInset: CGFloat = 0
+        let horizontalShellInset: CGFloat = 0
 
         let initialRatio = window.contentAspectRatio.width / window.contentAspectRatio.height
         let constrained = controller.windowWillResize(
@@ -84,11 +191,11 @@ final class MirrorWindowChromeTests: XCTestCase {
             to: NSSize(width: 657, height: 900)
         )
 
-        XCTAssertEqual(initialRatio, defaultAspect, accuracy: 0.001)
+        XCTAssertEqual(initialRatio, window.frame.width / window.frame.height, accuracy: 0.001)
         XCTAssertEqual(constrained.width, 657)
         XCTAssertEqual(
             constrained.height,
-            657 / defaultAspect + MirrorContentWindowController.chromeHeight,
+            (657 - horizontalShellInset) / defaultAspect + verticalShellInset,
             accuracy: 0.001
         )
     }
@@ -100,6 +207,8 @@ final class MirrorWindowChromeTests: XCTestCase {
         let controller = MirrorContentWindowController(model: model, session: session)
         controller.setStreamSize(width: 1080, height: 2340)
         let window = try XCTUnwrap(controller.window)
+        let verticalShellInset: CGFloat = 0
+        let horizontalShellInset: CGFloat = 0
 
         let constrained = controller.windowWillResize(
             window,
@@ -110,21 +219,21 @@ final class MirrorWindowChromeTests: XCTestCase {
             in: CGRect(
                 x: 0,
                 y: 0,
-                width: constrained.width,
-                height: constrained.height - MirrorContentWindowController.chromeHeight
+                width: constrained.width - horizontalShellInset,
+                height: constrained.height - verticalShellInset
             )
         )
 
         XCTAssertEqual(constrained.width, 657)
         XCTAssertEqual(
             constrained.height,
-            1423.5 + MirrorContentWindowController.chromeHeight,
+            (657 - horizontalShellInset) / (1080.0 / 2340.0) + verticalShellInset,
             accuracy: 0.001
         )
         XCTAssertEqual(fitted.minY, 0, accuracy: 0.001)
         XCTAssertEqual(
             fitted.height,
-            constrained.height - MirrorContentWindowController.chromeHeight,
+            constrained.height - verticalShellInset,
             accuracy: 0.001
         )
     }
@@ -138,9 +247,9 @@ final class MirrorWindowChromeTests: XCTestCase {
         )
 
         XCTAssertEqual(limits.min.height, 450, accuracy: 0.001)
-        XCTAssertEqual(limits.max.height, 900, accuracy: 0.001)
+        XCTAssertEqual(limits.max.height, 980, accuracy: 0.001)
         XCTAssertEqual(limits.min.width, 450 * (1080.0 / 2340.0), accuracy: 0.001)
-        XCTAssertEqual(limits.max.width, 900 * (1080.0 / 2340.0), accuracy: 0.001)
+        XCTAssertEqual(limits.max.width, 980 * (1080.0 / 2340.0), accuracy: 0.001)
     }
 
     @MainActor
@@ -150,27 +259,36 @@ final class MirrorWindowChromeTests: XCTestCase {
         let controller = MirrorContentWindowController(model: model, session: session)
         controller.setStreamSize(width: 1080, height: 2340)
         let window = try XCTUnwrap(controller.window)
+        let verticalShellInset: CGFloat = 0
+        let horizontalShellInset: CGFloat = 0
+        let contentWidth = CGFloat(657) - horizontalShellInset
+        let contentHeight = contentWidth / (1080.0 / 2340.0)
 
         window.setFrame(
             NSRect(
                 x: 0,
                 y: 0,
                 width: 657,
-                height: 1423.5 + MirrorContentWindowController.chromeHeight
+                height: contentHeight + verticalShellInset
             ),
             display: true
         )
         controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
 
-        XCTAssertEqual(controller.renderView.sampleBufferDisplayLayer.frame.width, 657, accuracy: 0.001)
-        XCTAssertEqual(controller.renderView.sampleBufferDisplayLayer.frame.height, 1423.5, accuracy: 0.001)
+        XCTAssertEqual(controller.renderView.sampleBufferDisplayLayer.frame.minX, 0, accuracy: 0.001)
+        XCTAssertEqual(controller.renderView.sampleBufferDisplayLayer.frame.width, controller.renderView.bounds.width, accuracy: 0.001)
+        XCTAssertEqual(
+            controller.renderView.sampleBufferDisplayLayer.frame.height,
+            controller.renderView.bounds.height,
+            accuracy: 0.001
+        )
     }
 
     @MainActor
     func testVisibleChromeRenderInsetMatchesReservedChromeHeight() {
         XCTAssertEqual(
             MirrorContentWindowController.visibleChromeRenderTopInset,
-            MirrorContentWindowController.chromeHeight
+            0
         )
     }
 
@@ -267,7 +385,7 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testHiddenChromeDoesNotRevealFromBroadTopContentArea() throws {
+    func testHiddenChromeRevealsFromTopOverlayZone() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
@@ -276,7 +394,10 @@ final class MirrorWindowChromeTests: XCTestCase {
 
         let event = try XCTUnwrap(NSEvent.mouseEvent(
             with: .mouseMoved,
-            location: NSPoint(x: window.frame.width / 2, y: window.frame.height - 40),
+            location: NSPoint(
+                x: window.frame.width / 2,
+                y: window.frame.height - controller.renderTopInsetForTesting - 2
+            ),
             modifierFlags: [],
             timestamp: 0,
             windowNumber: 0,
@@ -288,11 +409,11 @@ final class MirrorWindowChromeTests: XCTestCase {
 
         rootView.mouseMoved(with: event)
 
-        XCTAssertFalse(controller.isChromeVisibleForTesting)
+        XCTAssertTrue(controller.isChromeVisibleForTesting)
     }
 
     @MainActor
-    func testHiddenChromeDoesNotRevealFromAnyMirrorContentPoint() throws {
+    func testHiddenChromeDoesNotRevealFromMirrorContentMiddle() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
@@ -304,7 +425,7 @@ final class MirrorWindowChromeTests: XCTestCase {
             with: .mouseMoved,
             location: NSPoint(
                 x: controller.renderView.frame.midX,
-                y: controller.renderView.frame.maxY - 2
+                y: controller.renderView.frame.midY
             ),
             modifierFlags: [],
             timestamp: 0,
@@ -321,7 +442,7 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testHiddenChromeDoesNotRevealAtMirrorContentBoundary() throws {
+    func testHiddenChromeDoesNotRevealBelowTopOverlayZone() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
@@ -333,7 +454,7 @@ final class MirrorWindowChromeTests: XCTestCase {
             with: .mouseMoved,
             location: NSPoint(
                 x: controller.renderView.frame.midX,
-                y: controller.renderView.frame.maxY
+                y: controller.renderView.frame.midY
             ),
             modifierFlags: [],
             timestamp: 0,
@@ -378,6 +499,34 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
+    func testHiddenChromeRevealsWhenPointerEntersToolbarBand() throws {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+        let window = try XCTUnwrap(controller.window)
+        let rootView = try XCTUnwrap(window.contentView)
+        let event = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .mouseMoved,
+            location: NSPoint(
+                x: window.frame.width / 2,
+                y: window.frame.height - MirrorContentWindowController.chromeHeight / 2
+            ),
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 0,
+            pressure: 0
+        ))
+
+        rootView.mouseEntered(with: event)
+
+        XCTAssertTrue(controller.isChromeVisibleForTesting)
+        XCTAssertFalse(controller.isChromeBarHiddenForTesting)
+    }
+
+    @MainActor
     func testVisibleChromeStaysStableWhenPointerIsInToolbarBand() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
@@ -412,8 +561,55 @@ final class MirrorWindowChromeTests: XCTestCase {
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
 
-        XCTAssertEqual(controller.renderView.cornerRadius, MirrorContentWindowController.cornerRadius)
-        XCTAssertTrue(controller.renderView.sampleBufferDisplayLayer.masksToBounds)
+        XCTAssertLessThanOrEqual(controller.renderView.cornerRadius, MirrorContentWindowController.maximumMirrorCornerRadius)
+        XCTAssertTrue(controller.renderView.layer?.masksToBounds ?? false)
+    }
+
+    @MainActor
+    func testInnerMirrorRadiusLeavesVisibleAppKitShellPadding() throws {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+
+        XCTAssertEqual(
+            controller.renderView.cornerRadius,
+            controller.shellCornerRadiusForTesting - controller.renderBottomInsetForTesting,
+            accuracy: 0.001
+        )
+    }
+
+    @MainActor
+    func testInsetsAndCornerRadiiScaleWithWindowSize() throws {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+        let window = try XCTUnwrap(controller.window)
+
+        controller.setStreamSize(width: 1080, height: 2340)
+
+        window.setFrame(NSRect(origin: window.frame.origin, size: window.maxSize), display: true, animate: false)
+        controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let largeBottomInset = controller.renderBottomInsetForTesting
+        let largeShellRadius = controller.shellCornerRadiusForTesting
+        let largeMirrorRadius = controller.renderView.cornerRadius
+
+        window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: true, animate: false)
+        controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(controller.renderBottomInsetForTesting, 0)
+        XCTAssertEqual(controller.renderView.frame.minY, 0, accuracy: 0.01)
+        XCTAssertEqual(controller.renderView.frame.minX, 0, accuracy: 0.01)
+        XCTAssertEqual(largeBottomInset, 0)
+        XCTAssertLessThan(controller.shellCornerRadiusForTesting, largeShellRadius)
+        XCTAssertLessThan(controller.renderView.cornerRadius, largeMirrorRadius)
+        XCTAssertEqual(controller.renderView.cornerRadius, MirrorContentWindowController.minimumMirrorCornerRadius, accuracy: 0.01)
+        XCTAssertEqual(
+            controller.shellCornerRadiusForTesting,
+            controller.renderView.cornerRadius + controller.renderBottomInsetForTesting,
+            accuracy: 0.001
+        )
     }
 
     @MainActor
@@ -445,6 +641,10 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(
             ScrcpyController.chromeArguments.contains("--window-borderless"),
             "The phone pixels should not include scrcpy's native draggable titlebar region."
+        )
+        XCTAssertFalse(
+            ScrcpyController.chromeArguments.contains("--turn-screen-off"),
+            "Launching the mirror must never blank the phone display."
         )
     }
 
@@ -493,11 +693,29 @@ final class MirrorWindowChromeTests: XCTestCase {
         controller.setFullscreenChromeSuppressedForTesting(false)
 
         XCTAssertFalse(controller.isFullscreenChromeSuppressedForTesting)
-        XCTAssertEqual(
-            controller.renderTopInsetForTesting,
-            MirrorContentWindowController.chromeHeight,
-            accuracy: 0.001
-        )
+        XCTAssertEqual(controller.renderTopInsetForTesting, 0)
+    }
+
+    @MainActor
+    func testLeavingFullscreenRestoresPreviousWindowFrame() throws {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+        let window = try XCTUnwrap(controller.window)
+        let normalFrame = NSRect(x: 120, y: 140, width: 520, height: 980)
+        let fullscreenFrame = NSRect(x: 0, y: 0, width: 1920, height: 1080)
+
+        window.setFrame(normalFrame, display: true, animate: false)
+        controller.setFullscreenChromeSuppressedForTesting(true)
+        window.setFrame(fullscreenFrame, display: true, animate: false)
+
+        controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
+
+        XCTAssertFalse(controller.isFullscreenChromeSuppressedForTesting)
+        XCTAssertEqual(window.frame.origin.x, normalFrame.origin.x, accuracy: 0.001)
+        XCTAssertEqual(window.frame.origin.y, normalFrame.origin.y, accuracy: 0.001)
+        XCTAssertEqual(window.frame.width, normalFrame.width, accuracy: 0.001)
+        XCTAssertEqual(window.frame.height, normalFrame.height, accuracy: 0.001)
     }
 
     @MainActor

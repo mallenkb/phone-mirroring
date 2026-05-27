@@ -4,17 +4,40 @@ import Foundation
 /// per-device record Bluetooth keeps between sessions.
 struct PairedPhoneStore {
     private static let defaultsKey = "AndroidMirror.PairedPhones.v1"
+    private static let legacySuites = [
+        "com.mallenkb.AndroidMirrorMac",
+        "AndroidMirrorMac"
+    ]
 
     func load() -> [PairedPhoneRecord] {
-        guard let data = UserDefaults.standard.data(forKey: Self.defaultsKey),
-              let decoded = try? JSONDecoder().decode([PairedPhoneRecord].self, from: data)
-        else { return [] }
-        return decoded
+        var storedRecords = records(in: .standard)
+
+        for suite in Self.legacySuites {
+            guard let defaults = UserDefaults(suiteName: suite) else { continue }
+            for record in records(in: defaults) where !storedRecords.contains(where: { existing in
+                existing.id == record.id || existing.lastAddress == record.lastAddress
+            }) {
+                storedRecords.append(record)
+            }
+        }
+
+        if !storedRecords.isEmpty {
+            save(storedRecords)
+        }
+
+        return storedRecords
     }
 
     func save(_ records: [PairedPhoneRecord]) {
         guard let data = try? JSONEncoder().encode(records) else { return }
         UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+    }
+
+    private func records(in defaults: UserDefaults) -> [PairedPhoneRecord] {
+        guard let data = defaults.data(forKey: Self.defaultsKey),
+              let decoded = try? JSONDecoder().decode([PairedPhoneRecord].self, from: data)
+        else { return [] }
+        return decoded
     }
 
     /// Returns the records with `id` inserted or refreshed.

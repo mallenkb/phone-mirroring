@@ -11,7 +11,6 @@ final class ScrcpyController {
 
     nonisolated static let chromeArguments = [
         "--background-color=05070A",
-        "--turn-screen-off",
         "--stay-awake",
         "--max-size=1600",
         "--video-bit-rate=8M",

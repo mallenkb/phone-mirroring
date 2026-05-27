@@ -29,6 +29,10 @@ struct ADBController {
         Self.firstMDNSTarget(type: type, in: run(["mdns", "services"]))
     }
 
+    func connectableMDNSTargets() -> [DiscoveredPhone] {
+        mdnsServices().filter { $0.kind == .connectable }
+    }
+
     /// Parses `adb mdns services` output into a deduped list of phones.
     /// If both pairing and connect services exist for the same instance,
     /// keep the connect entry (more useful for the UI).
