@@ -73,6 +73,8 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private var normalWindowFrameBeforeFullscreen: NSRect?
     private var mirrorAspect: CGFloat? = defaultMirrorAspect
     private var recordingStateCancellable: AnyCancellable?
+    private var captureCueCancellable: AnyCancellable?
+    private var activeCaptureCueView: MirrorCaptureCueView?
 
     init(model: AppModel, session: MirrorSession) {
         self.model = model
@@ -275,6 +277,18 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = scale >= 1 ? 0.18 : 0.14
             context.timingFunction = CAMediaTimingFunction(name: scale >= 1 ? .easeOut : .easeInEaseOut)
+            window.animator().setFrame(targetFrame, display: true)
+        }
+    }
+
+    func centerWindow() {
+        guard let window else { return }
+        guard !isInFullscreen else { return }
+        let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame
+        let targetFrame = Self.centeredFrame(size: window.frame.size, in: visible)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             window.animator().setFrame(targetFrame, display: true)
         }
     }
@@ -484,6 +498,12 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
                     self.evaluateRevealZone()
                 }
             }
+        captureCueCancellable = model.$captureCue
+            .receive(on: RunLoop.main)
+            .sink { [weak self] cue in
+                guard let cue else { return }
+                self?.showCaptureCue(cue)
+            }
         chromeBar.onClose = { NSApplication.shared.terminate(nil) }
         chromeBar.onMinimize = { [weak self] in self?.window?.miniaturize(nil) }
         chromeBar.onZoom = { [weak self] in self?.toggleFullScreenFromChrome() }
@@ -539,6 +559,43 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         guard !isInFullscreen else { return }
         rootView.layer?.backgroundColor = Self.normalShellColor(for: rootView)
         rootView.layer?.borderColor = Self.shellBorderColor(for: rootView)
+    }
+
+    private func showCaptureCue(_ cue: AppModel.CaptureCue) {
+        activeCaptureCueView?.removeFromSuperview()
+
+        let cueView = MirrorCaptureCueView(cue: cue)
+        rootView.addSubview(cueView)
+        activeCaptureCueView = cueView
+
+        NSLayoutConstraint.activate([
+            cueView.centerXAnchor.constraint(equalTo: rootView.centerXAnchor),
+            cueView.topAnchor.constraint(equalTo: rootView.topAnchor, constant: 18),
+        ])
+
+        cueView.alphaValue = 0
+        cueView.layer?.transform = CATransform3DMakeScale(0.94, 0.94, 1)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            cueView.animator().alphaValue = 1
+            cueView.layer?.transform = CATransform3DIdentity
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.15) { [weak self, weak cueView] in
+            guard let self, let cueView, self.activeCaptureCueView === cueView else { return }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.18
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                cueView.animator().alphaValue = 0
+            } completionHandler: { [weak self, weak cueView] in
+                Task { @MainActor [weak self, weak cueView] in
+                    guard let self, let cueView, self.activeCaptureCueView === cueView else { return }
+                    cueView.removeFromSuperview()
+                    self.activeCaptureCueView = nil
+                }
+            }
+        }
     }
 
     private func handleRenderMouseMoved(_ event: NSEvent) {
@@ -1036,6 +1093,55 @@ final class MirrorRootView: NSView {
         let toolbarZoneMinY = bounds.height - chromeActivationHeight
         onHoverChange?(point.y > toolbarZoneMinY)
     }
+}
+
+// MARK: - Capture cue
+
+private final class MirrorCaptureCueView: NSView {
+    init(cue: AppModel.CaptureCue) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        translatesAutoresizingMaskIntoConstraints = false
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
+        layer?.cornerRadius = 8
+        layer?.setValue("continuous", forKey: "cornerCurve")
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = 0.18
+        layer?.shadowRadius = 12
+        layer?.shadowOffset = NSSize(width: 0, height: -3)
+
+        let imageView = NSImageView()
+        imageView.image = NSImage(systemSymbolName: cue.symbolName, accessibilityDescription: nil)
+        imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        imageView.contentTintColor = cue.kind == .recordingStarted ? .systemRed : .white
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+
+        let label = NSTextField(labelWithString: cue.title)
+        label.font = .systemFont(ofSize: 13, weight: .semibold)
+        label.textColor = .white
+        label.lineBreakMode = .byTruncatingTail
+
+        let stack = NSStackView(views: [imageView, label])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            imageView.widthAnchor.constraint(equalToConstant: 16),
+            imageView.heightAnchor.constraint(equalToConstant: 16),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+            widthAnchor.constraint(lessThanOrEqualToConstant: 240),
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 // MARK: - Chrome bar
@@ -1618,99 +1724,6 @@ final class MirrorChromeOutlineButton: NSView {
         guard minimumActionInterval <= 0 || now - lastActionTime >= minimumActionInterval else { return }
         lastActionTime = now
         action?()
-    }
-}
-
-// MARK: - Audio toggle
-
-final class MirrorChromeAudioToggleButton: NSView {
-    private let iconView = NSImageView()
-    private var isAudioEnabled = true
-
-    var onEnabledChange: ((Bool) -> Void)?
-    var chromeScale: CGFloat = 1 {
-        didSet { applyScale() }
-    }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        setup()
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    override var mouseDownCanMoveWindow: Bool { false }
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-    private func setup() {
-        wantsLayer = true
-        translatesAutoresizingMaskIntoConstraints = false
-        layer?.cornerRadius = 6
-        layer?.setValue("continuous", forKey: "cornerCurve")
-
-        toolTip = "Mute phone audio on this Mac"
-
-        iconView.image = Self.audioImage(isEnabled: true)
-        iconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
-        iconView.imageScaling = .scaleProportionallyUpOrDown
-        iconView.contentTintColor = NSColor.white.withAlphaComponent(0.72)
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(iconView)
-
-        NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 28),
-            heightAnchor.constraint(equalToConstant: 22),
-
-            iconView.centerXAnchor.constraint(equalTo: centerXAnchor),
-            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 16),
-            iconView.heightAnchor.constraint(equalToConstant: 16),
-        ])
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea(_:))
-        addTrackingArea(NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        ))
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        layer?.backgroundColor = nil
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        guard bounds.contains(point) else { return }
-        isAudioEnabled.toggle()
-        iconView.image = Self.audioImage(isEnabled: isAudioEnabled)
-        toolTip = isAudioEnabled ? "Mute phone audio on this Mac" : "Play phone audio on this Mac"
-        onEnabledChange?(isAudioEnabled)
-    }
-
-    private static func audioImage(isEnabled: Bool) -> NSImage? {
-        if isEnabled,
-           let url = Bundle.module.url(forResource: "chrome-speaker", withExtension: "svg") {
-            let image = NSImage(contentsOf: url)
-            image?.isTemplate = true
-            return image
-        }
-        return NSImage(systemSymbolName: "speaker.slash.circle.fill", accessibilityDescription: "Phone audio")
-    }
-
-    private func applyScale() {
-        iconView.symbolConfiguration = NSImage.SymbolConfiguration(
-            pointSize: min(16, max(13, 13 * chromeScale)),
-            weight: .regular
-        )
     }
 }
 

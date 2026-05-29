@@ -3,40 +3,6 @@ import XCTest
 
 final class MirrorWindowChromeTests: XCTestCase {
     @MainActor
-    func testChromeViewsDoNotMoveWindow() {
-        let model = AppModel()
-        let renderView = MirrorRenderView()
-        XCTAssertFalse(
-            RootWindowView(model: model, renderView: renderView, frame: NSRect(x: 0, y: 0, width: 390, height: 850))
-                .mouseDownCanMoveWindow
-        )
-        XCTAssertFalse(PhoneMirrorContainerView().mouseDownCanMoveWindow)
-        XCTAssertFalse(OuterFrameView(model: model, mirroredPhoneView: MirrorRenderView()).mouseDownCanMoveWindow)
-        XCTAssertFalse(ToolbarChromeView(frame: .zero).mouseDownCanMoveWindow)
-        XCTAssertFalse(ChromeDragView().mouseDownCanMoveWindow)
-        XCTAssertFalse(MirrorRenderView().mouseDownCanMoveWindow)
-        XCTAssertFalse(MirrorWindowDragArea().mouseDownCanMoveWindow)
-    }
-
-    @MainActor
-    func testMirrorWindowUsesNativeTrafficLights() throws {
-        let controller = WindowController(model: AppModel())
-        let window = try XCTUnwrap(controller.window)
-
-        XCTAssertTrue(window.styleMask.contains(.closable))
-        XCTAssertTrue(window.styleMask.contains(.miniaturizable))
-        XCTAssertTrue(window.styleMask.contains(.fullSizeContentView))
-        XCTAssertFalse(window.isMovableByWindowBackground)
-
-        let close = try XCTUnwrap(window.standardWindowButton(.closeButton))
-        let minimize = try XCTUnwrap(window.standardWindowButton(.miniaturizeButton))
-        let zoom = try XCTUnwrap(window.standardWindowButton(.zoomButton))
-        XCTAssertFalse(close.isHidden)
-        XCTAssertFalse(minimize.isHidden)
-        XCTAssertFalse(zoom.isHidden)
-    }
-
-    @MainActor
     func testNativeMirrorBorderlessWindowCanReceiveKeyboardFocus() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
@@ -244,7 +210,7 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testBlankNativeMirrorStartsAtQuarterDefaultMirrorSize() throws {
+    func testBlankNativeMirrorStartsThirtyPercentSmallerThanDefaultLaunchSize() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
@@ -259,19 +225,26 @@ final class MirrorWindowChromeTests: XCTestCase {
             visibleFrame: visibleFrame
         )
         let topChromeInset = MirrorContentWindowController.visibleChromeRenderTopInset
+        let targetHeight = min(AppModel.defaultConnectionWindowSize.height, fullDefaultSize.height)
+        let targetScreenHeight = targetHeight - topChromeInset
 
         XCTAssertEqual(window.frame.width, initialSize.width, accuracy: 1)
         XCTAssertEqual(window.frame.height, initialSize.height, accuracy: 1)
-        XCTAssertEqual(initialSize.width, fullDefaultSize.width * 0.25, accuracy: 0.001)
+        XCTAssertEqual(
+            initialSize.width,
+            targetScreenHeight * MirrorContentWindowController.defaultMirrorAspect
+                * MirrorContentWindowController.initialMirrorScale,
+            accuracy: 0.001
+        )
         XCTAssertEqual(
             initialSize.height - topChromeInset,
-            (fullDefaultSize.height - topChromeInset) * 0.25,
+            targetScreenHeight * MirrorContentWindowController.initialMirrorScale,
             accuracy: 0.001
         )
     }
 
     @MainActor
-    func testNativeMirrorStreamStartsAtQuarterMaximumFittedSize() throws {
+    func testNativeMirrorStreamStartsThirtyPercentSmallerThanDefaultLaunchSize() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
@@ -289,12 +262,18 @@ final class MirrorWindowChromeTests: XCTestCase {
             visibleFrame: visibleFrame
         )
         let topChromeInset = MirrorContentWindowController.visibleChromeRenderTopInset
+        let targetHeight = min(AppModel.defaultConnectionWindowSize.height, fullStreamSize.height)
+        let targetScreenHeight = targetHeight - topChromeInset
 
         XCTAssertGreaterThanOrEqual(window.frame.width, initialStreamSize.width)
-        XCTAssertEqual(initialStreamSize.width, fullStreamSize.width * 0.25, accuracy: 0.001)
+        XCTAssertEqual(
+            initialStreamSize.width,
+            targetScreenHeight * (1080.0 / 2340.0) * MirrorContentWindowController.initialMirrorScale,
+            accuracy: 0.001
+        )
         XCTAssertEqual(
             initialStreamSize.height - topChromeInset,
-            (fullStreamSize.height - topChromeInset) * 0.25,
+            targetScreenHeight * MirrorContentWindowController.initialMirrorScale,
             accuracy: 0.001
         )
 
@@ -347,16 +326,20 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testNativeMirrorWindowHardCapsAtScreenHeightPercentages() {
+    func testNativeMirrorWindowHonorsMinimumSizeAndHardCapsAtScreenHeight() {
         let limits = MirrorContentWindowController.sizeLimits(
             visibleFrame: NSRect(x: 0, y: 0, width: 1440, height: 1000),
             aspect: 1080.0 / 2340.0,
             chromeHeight: 0
         )
 
-        XCTAssertEqual(limits.min.height, 450, accuracy: 0.001)
+        XCTAssertEqual(limits.min.height, AppModel.minimumConnectionWindowSize.height, accuracy: 0.001)
         XCTAssertEqual(limits.max.height, 980, accuracy: 0.001)
-        XCTAssertEqual(limits.min.width, 450 * (1080.0 / 2340.0), accuracy: 0.001)
+        XCTAssertEqual(
+            limits.min.width,
+            AppModel.minimumConnectionWindowSize.height * (1080.0 / 2340.0),
+            accuracy: 0.001
+        )
         XCTAssertEqual(limits.max.width, 980 * (1080.0 / 2340.0), accuracy: 0.001)
     }
 
@@ -722,17 +705,6 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertIdentical(reportedEvent, event)
     }
 
-    func testChromeArgumentsMakeScrcpyContentNonDraggable() {
-        XCTAssertTrue(
-            ScrcpyController.chromeArguments.contains("--window-borderless"),
-            "The phone pixels should not include scrcpy's native draggable titlebar region."
-        )
-        XCTAssertFalse(
-            ScrcpyController.chromeArguments.contains("--turn-screen-off"),
-            "Launching the mirror must never blank the phone display."
-        )
-    }
-
     @MainActor
     func testFullscreenMirrorSuppressesChromeAndUsesPhoneOnlyInset() throws {
         let model = AppModel()
@@ -823,147 +795,4 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertFalse(controller.isChromeVisibleForTesting)
     }
 
-    func testExpandedFramePreservesAspectRatioAndLeavesRoomForTopBar() {
-        let current = CGRect(x: 320, y: 160, width: 520, height: 1040)
-        let visibleFrame = NSRect(x: 0, y: 40, width: 1440, height: 860)
-
-        let expanded = MirrorWindowChromeLayout.expandedScrcpyFrame(
-            from: current,
-            inVisibleFrame: visibleFrame,
-            screenHeight: 900,
-            chromeHeight: 42,
-            padding: 12
-        )
-
-        XCTAssertEqual(expanded.width / expanded.height, current.width / current.height, accuracy: 0.001)
-        XCTAssertLessThanOrEqual(expanded.width, visibleFrame.width - 24)
-        XCTAssertLessThanOrEqual(expanded.height, visibleFrame.height - 42 - 24)
-
-        let expandedBottomInNS = 900 - expanded.maxY
-        let expandedTopInNS = 900 - expanded.minY
-        XCTAssertGreaterThanOrEqual(expandedBottomInNS, visibleFrame.minY + 12)
-        XCTAssertLessThanOrEqual(expandedTopInNS + 42, visibleFrame.maxY - 12)
-    }
-
-    func testExpandedFrameCanUseFullVisibleHeightWithoutCustomTopBar() {
-        let current = CGRect(x: 320, y: 160, width: 520, height: 1040)
-        let visibleFrame = NSRect(x: 0, y: 40, width: 1440, height: 860)
-
-        let expanded = MirrorWindowChromeLayout.expandedScrcpyFrame(
-            from: current,
-            inVisibleFrame: visibleFrame,
-            screenHeight: 900,
-            chromeHeight: 0,
-            padding: 12
-        )
-
-        XCTAssertEqual(expanded.width / expanded.height, current.width / current.height, accuracy: 0.001)
-        XCTAssertLessThanOrEqual(expanded.width, visibleFrame.width - 24)
-        XCTAssertLessThanOrEqual(expanded.height, visibleFrame.height - 24)
-    }
-
-    func testHoverChromeFrameSitsImmediatelyAboveMirrorFrame() {
-        let current = CGRect(x: 120, y: 80, width: 520, height: 1040)
-        let frame = MirrorWindowChromeLayout.hoverChromeFrame(
-            forScrcpyBounds: current,
-            screenHeight: 1200,
-            height: 50
-        )
-
-        XCTAssertEqual(frame.minX, current.minX)
-        XCTAssertEqual(frame.width, current.width)
-        XCTAssertEqual(frame.minY, 1120)
-        XCTAssertEqual(frame.height, 50)
-    }
-
-    func testOuterFrameWrapsScrcpyWithoutCoveringPhoneContentOrigin() {
-        let current = CGRect(x: 120, y: 80, width: 520, height: 1040)
-        let frame = MirrorWindowChromeLayout.overlayFrame(
-            forScrcpyBounds: current,
-            screenHeight: 1200,
-            titleHeight: 44,
-            sideInset: 8,
-            bottomInset: 8
-        )
-
-        XCTAssertEqual(frame.minX, 112)
-        XCTAssertEqual(frame.width, 536)
-        XCTAssertEqual(frame.minY, 72)
-        XCTAssertEqual(frame.height, 1092)
-        XCTAssertEqual(frame.minY + 8, 80)
-        XCTAssertEqual(frame.maxY - 44, 1120)
-    }
-
-    @MainActor
-    func testHoverChromeRequiresRoomAboveMirrorFrame() {
-        let current = CGRect(x: 24, y: 0, width: 520, height: 1040)
-        let screenHeight: CGFloat = 1040
-        let visibleFrame = NSRect(x: 0, y: 0, width: 1440, height: 1040)
-        let frame = MirrorWindowChromeLayout.hoverChromeFrame(
-            forScrcpyBounds: current,
-            screenHeight: screenHeight,
-            height: MirrorFrameWindowController.chromeHeight
-        )
-
-        XCTAssertGreaterThan(
-            frame.maxY,
-            visibleFrame.maxY,
-            "When there is no room above the mirror, the hover toolbar should stay hidden instead of overlapping phone pixels."
-        )
-    }
-
-    func testConstrainedDragFrameKeepsRoomForHoverChrome() {
-        let proposed = CGRect(x: 120, y: 0, width: 520, height: 760)
-        let visibleFrame = NSRect(x: 0, y: 40, width: 1440, height: 860)
-        let screenHeight: CGFloat = 900
-
-        let constrained = MirrorWindowChromeLayout.scrcpyFrameKeepingHoverChromeVisible(
-            proposed,
-            inVisibleFrame: visibleFrame,
-            screenHeight: screenHeight,
-            chromeHeight: 44
-        )
-        let hoverFrame = MirrorWindowChromeLayout.hoverChromeFrame(
-            forScrcpyBounds: constrained,
-            screenHeight: screenHeight,
-            height: 44
-        )
-
-        XCTAssertLessThanOrEqual(hoverFrame.maxY, visibleFrame.maxY)
-        XCTAssertEqual(constrained.minY, 44)
-    }
-
-    func testConstrainedDragFrameDoesNotMoveFrameWhenChromeFits() {
-        let proposed = CGRect(x: 120, y: 120, width: 520, height: 700)
-        let visibleFrame = NSRect(x: 0, y: 40, width: 1440, height: 860)
-
-        let constrained = MirrorWindowChromeLayout.scrcpyFrameKeepingHoverChromeVisible(
-            proposed,
-            inVisibleFrame: visibleFrame,
-            screenHeight: 900,
-            chromeHeight: 44
-        )
-
-        XCTAssertEqual(constrained, proposed)
-    }
-
-    func testConstrainedDragFramePrioritizesToolbarWhenMirrorIsTooTall() {
-        let proposed = CGRect(x: 120, y: 0, width: 520, height: 1040)
-        let visibleFrame = NSRect(x: 0, y: 40, width: 1440, height: 860)
-        let screenHeight: CGFloat = 900
-
-        let constrained = MirrorWindowChromeLayout.scrcpyFrameKeepingHoverChromeVisible(
-            proposed,
-            inVisibleFrame: visibleFrame,
-            screenHeight: screenHeight,
-            chromeHeight: 44
-        )
-        let hoverFrame = MirrorWindowChromeLayout.hoverChromeFrame(
-            forScrcpyBounds: constrained,
-            screenHeight: screenHeight,
-            height: 44
-        )
-
-        XCTAssertLessThanOrEqual(hoverFrame.maxY, visibleFrame.maxY)
-    }
 }

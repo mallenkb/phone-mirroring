@@ -48,6 +48,17 @@ struct PairedPhoneStore {
         }
     }
 
+    func clearAll() {
+        primaryDefaults.removeObject(forKey: Self.defaultsKey)
+        for suite in suiteNames {
+            UserDefaults(suiteName: suite)?.removeObject(forKey: Self.defaultsKey)
+        }
+    }
+
+    func removing(_ id: PairedPhoneRecord.ID, from records: [PairedPhoneRecord]) -> [PairedPhoneRecord] {
+        records.filter { $0.id != id }
+    }
+
     private func records(in defaults: UserDefaults) -> [PairedPhoneRecord] {
         guard let data = defaults.data(forKey: Self.defaultsKey),
               let decoded = try? JSONDecoder().decode([PairedPhoneRecord].self, from: data)

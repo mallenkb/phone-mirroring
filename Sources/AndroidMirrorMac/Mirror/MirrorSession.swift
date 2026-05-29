@@ -36,7 +36,6 @@ final class MirrorSession {
 
     private var serverHost: ScrcpyServerHost?
     private var stream: ScrcpyVideoStream?
-    private var audioPlayer = ScrcpyAudioPlayer()
     private var decoder = H264VideoToolboxDecoder()
     private(set) var controlChannel: ScrcpyControlChannel?
     private var windowController: MirrorContentWindowController?
@@ -53,10 +52,6 @@ final class MirrorSession {
         self.localPort = Self.allocatePort()
     }
 
-    nonisolated static func shouldEnableAudio(forSerial serial: String?) -> Bool {
-        false
-    }
-
     func start() throws {
         guard windowController == nil else { throw SessionError.alreadyRunning }
 
@@ -64,7 +59,7 @@ final class MirrorSession {
         let host = ScrcpyServerHost(options: ScrcpyServerHost.Options(
             scid: scid,
             localPort: localPort,
-            audio: Self.shouldEnableAudio(forSerial: serial),
+            audio: false,
             serial: serial
         ))
 
@@ -73,9 +68,6 @@ final class MirrorSession {
         }
         stream.onPacket = { [weak self] packet in
             self?.decoder.feed(packet)
-        }
-        stream.onAudioPacket = { [weak self] packet in
-            self?.audioPlayer.enqueue(packet)
         }
         stream.onResize = { [weak self] width, height in
             Task { @MainActor in self?.handleResize(width: width, height: height) }
@@ -120,7 +112,6 @@ final class MirrorSession {
         isStopping = true
         controlChannel?.close()
         controlChannel = nil
-        audioPlayer.stop()
         stream?.stop()
         stream = nil
         serverHost?.stop()
@@ -153,12 +144,8 @@ final class MirrorSession {
         windowController?.scaleWindow(by: scale)
     }
 
-    func setMirrorVolume(_ volume: Float) {
-        audioPlayer.setVolume(volume)
-    }
-
-    func setMirrorAudioEnabled(_ enabled: Bool) {
-        audioPlayer.setEnabled(enabled)
+    func centerWindow() {
+        windowController?.centerWindow()
     }
 
     func forwardPointerEvent(_ event: MirrorRenderView.PointerEvent,

@@ -10,6 +10,7 @@ final class AppModel: ObservableObject {
     @Published var isMirroring = false
     @Published var isRecording = false
     @Published var isPairing = false
+    @Published var captureCue: CaptureCue?
     static let onboardingWindowSize = NSSize(width: 500, height: 900)
     static let minimumConnectionWindowSize = NSSize(width: 384, height: 688)
     static let defaultConnectionWindowSize = NSSize(width: 650, height: 1170)
@@ -30,6 +31,33 @@ final class AppModel: ObservableObject {
     private var lastUSBHandoffSerial: String?
     private var qrPairingTask: Task<Void, Never>?
     private var screenRecordingMonitorTask: Task<Void, Never>?
+
+    enum CaptureCueKind: Equatable {
+        case screenshot
+        case recordingStarted
+        case recordingStopped
+    }
+
+    struct CaptureCue: Equatable, Identifiable {
+        let id = UUID()
+        let kind: CaptureCueKind
+
+        var title: String {
+            switch kind {
+            case .screenshot: return "Screenshot captured"
+            case .recordingStarted: return "Recording started"
+            case .recordingStopped: return "Recording saved"
+            }
+        }
+
+        var symbolName: String {
+            switch kind {
+            case .screenshot: return "camera.fill"
+            case .recordingStarted: return "record.circle.fill"
+            case .recordingStopped: return "checkmark.circle.fill"
+            }
+        }
+    }
 
     init() {
         pairedPhones = store.load()
@@ -1058,10 +1086,41 @@ final class AppModel: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    private func presentCaptureCue(_ kind: CaptureCueKind) {
+        captureCue = CaptureCue(kind: kind)
+        if NSSound(named: NSSound.Name("Grab"))?.play() == true {
+            return
+        }
+        if NSSound(named: NSSound.Name("Pop"))?.play() == true {
+            return
+        }
+        NSSound.beep()
+    }
+
     // MARK: - Resize
 
     func resizeMirror(scale: CGFloat) {
         mirrorSession?.scaleWindow(by: scale)
+    }
+
+    func centerMirrorWindow() {
+        mirrorSession?.centerWindow()
+    }
+
+    func forgetPairedPhone(id: PairedPhoneRecord.ID) {
+        pairedPhones = store.removing(id, from: pairedPhones)
+        store.save(pairedPhones)
+        if selectedDevice.id == id {
+            selectedDevice = .demo
+        }
+        append("Forgot paired device.")
+    }
+
+    func forgetAllPairedPhones() {
+        pairedPhones = []
+        store.clearAll()
+        selectedDevice = .demo
+        append("Forgot all paired devices. Reconnect from scratch to mirror again.")
     }
 
     // MARK: - Android input
@@ -1081,6 +1140,7 @@ final class AppModel: ObservableObject {
 
     func takeScreenshot() {
         let serial = selectedDevice.adbSerial
+        presentCaptureCue(.screenshot)
         append("Saving screenshot to Downloads/Android Mirroring...")
         Task { [weak self] in
             let result = await Task.detached { () -> Result<URL, ScreenshotError> in
@@ -1144,6 +1204,7 @@ final class AppModel: ObservableObject {
 
     private func startScreenRecording() {
         isRecording = true
+        presentCaptureCue(.recordingStarted)
         let adb = self.adb
         let serial = selectedDevice.adbSerial
         Task { [weak self] in
@@ -1217,6 +1278,7 @@ final class AppModel: ObservableObject {
 
             switch result {
             case .success(let url):
+                self?.presentCaptureCue(.recordingStopped)
                 self?.append("Saved screen recording: \(url.lastPathComponent)")
             case .failure(.pullFailed(let message)):
                 self?.append("Screen recording save failed: \(message)")

@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
+    private var settingsWindow: NSWindow?
     private let model = AppModel()
     private var keyMonitor: Any?
 
@@ -58,6 +59,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         appMenu.addItem(
             NSMenuItem(
+                title: "Settings...",
+                action: #selector(showSettings(_:)),
+                keyEquivalent: ","
+            )
+        )
+        appMenu.addItem(.separator())
+        appMenu.addItem(
+            NSMenuItem(
                 title: "Quit Android Mirroring",
                 action: #selector(NSApplication.terminate(_:)),
                 keyEquivalent: "q"
@@ -85,6 +94,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(.separator())
         viewMenu.addItem(
             NSMenuItem(
+                title: "Go Home",
+                action: #selector(goHome(_:)),
+                keyEquivalent: "h"
+            )
+        )
+        viewMenu.addItem(
+            NSMenuItem(
+                title: "Back",
+                action: #selector(goBack(_:)),
+                keyEquivalent: "["
+            )
+        )
+        viewMenu.addItem(
+            NSMenuItem(
+                title: "Take Screenshot",
+                action: #selector(takeScreenshot(_:)),
+                keyEquivalent: "S"
+            )
+        )
+        viewMenu.addItem(
+            NSMenuItem(
+                title: "Start or Stop Screen Recording",
+                action: #selector(toggleScreenRecording(_:)),
+                keyEquivalent: "R"
+            )
+        )
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(
+            NSMenuItem(
                 title: "Zoom In",
                 action: #selector(zoomIn(_:)),
                 keyEquivalent: "+"
@@ -95,6 +133,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 title: "Zoom Out",
                 action: #selector(zoomOut(_:)),
                 keyEquivalent: "-"
+            )
+        )
+        viewMenu.addItem(
+            NSMenuItem(
+                title: "Center Mirror",
+                action: #selector(centerMirror(_:)),
+                keyEquivalent: "0"
             )
         )
         viewItem.submenu = viewMenu
@@ -108,18 +153,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   let key = event.charactersIgnoringModifiers else {
                 return event
             }
+            let hasShift = event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift)
 
-            switch key {
-            case "r":
+            switch (key, hasShift) {
+            case ("s", true):
+                self?.model.takeScreenshot()
+                return nil
+            case ("r", true):
+                self?.model.toggleScreenRecording()
+                return nil
+            case ("r", false):
                 self?.scanForAndroidDevices(nil)
                 return nil
-            case "m":
+            case ("m", false):
                 self?.toggleMirroring(nil)
                 return nil
-            case "+", "=":
+            case ("+", false), ("=", false):
                 self?.zoomIn(nil)
                 return nil
-            case "-":
+            case ("-", false):
                 self?.zoomOut(nil)
                 return nil
             default:
@@ -132,8 +184,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.scanADBDevices()
     }
 
+    @objc private func showSettings(_ sender: Any?) {
+        if let settingsWindow {
+            settingsWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let hostingView = NSHostingView(rootView: SettingsView(model: model))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 430),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Android Mirroring Settings"
+        window.contentView = hostingView
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow = window
+    }
+
     @objc private func toggleMirroring(_ sender: Any?) {
         model.isMirroring ? model.stopMirroring() : model.startMirroring()
+    }
+
+    @objc private func goHome(_ sender: Any?) {
+        model.sendAndroidKey("KEYCODE_HOME")
+    }
+
+    @objc private func goBack(_ sender: Any?) {
+        model.sendAndroidKey("KEYCODE_BACK")
+    }
+
+    @objc private func takeScreenshot(_ sender: Any?) {
+        model.takeScreenshot()
+    }
+
+    @objc private func toggleScreenRecording(_ sender: Any?) {
+        model.toggleScreenRecording()
     }
 
     @objc private func zoomIn(_ sender: Any?) {
@@ -142,5 +233,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func zoomOut(_ sender: Any?) {
         model.resizeMirror(scale: 0.90)
+    }
+
+    @objc private func centerMirror(_ sender: Any?) {
+        model.centerMirrorWindow()
     }
 }

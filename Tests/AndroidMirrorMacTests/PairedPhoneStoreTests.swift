@@ -106,4 +106,39 @@ final class PairedPhoneStoreTests: XCTestCase {
             [record]
         )
     }
+
+    func testClearRemovesRecordsFromPrimaryAndCompatibilitySuites() {
+        let primarySuite = "AndroidMirrorMacTests.primary.\(UUID().uuidString)"
+        let compatibilitySuite = "AndroidMirrorMacTests.compat.\(UUID().uuidString)"
+        defer {
+            UserDefaults.standard.removePersistentDomain(forName: primarySuite)
+            UserDefaults.standard.removePersistentDomain(forName: compatibilitySuite)
+        }
+        guard let primaryDefaults = UserDefaults(suiteName: primarySuite),
+              let compatibilityDefaults = UserDefaults(suiteName: compatibilitySuite)
+        else {
+            return XCTFail("Expected test UserDefaults suites to be available")
+        }
+
+        let record = PairedPhoneRecord(
+            id: "phone-1",
+            displayName: "Pixel",
+            lastAddress: "10.0.0.5:5555",
+            firstPaired: referenceDate,
+            lastConnected: referenceDate
+        )
+        let store = PairedPhoneStore(
+            primaryDefaults: primaryDefaults,
+            suiteNames: [compatibilitySuite]
+        )
+
+        store.save([record])
+        store.clearAll()
+
+        XCTAssertEqual(store.load(), [])
+        XCTAssertEqual(
+            PairedPhoneStore(primaryDefaults: compatibilityDefaults, suiteNames: []).load(),
+            []
+        )
+    }
 }
