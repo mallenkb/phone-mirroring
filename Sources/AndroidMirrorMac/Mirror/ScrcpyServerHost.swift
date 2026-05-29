@@ -35,6 +35,7 @@ final class ScrcpyServerHost {
         var videoBitRate: UInt32 = 8_000_000
         var maxSize: UInt16 = 1600
         var maxFps: UInt16 = 60
+        var audio: Bool = false
         var serial: String?
     }
 
@@ -90,36 +91,13 @@ final class ScrcpyServerHost {
         guard let adbPath = Tooling.toolPath(named: "adb") else {
             throw HostError.missingAdb
         }
-        let scidHex = String(format: "%08x", options.scid)
-
         let process = Process()
         let stdout = Pipe()
         let stderr = Pipe()
         process.executableURL = URL(fileURLWithPath: adbPath)
 
         var args = adbBaseArgs()
-        args += [
-            "shell",
-            "CLASSPATH=\(Self.devicePath)",
-            "app_process",
-            "/",
-            "com.genymobile.scrcpy.Server",
-            Self.serverVersion,
-            "scid=\(scidHex)",
-            "log_level=info",
-            "audio=false",
-            "video=true",
-            "control=true",
-            "tunnel_forward=false",
-            "send_dummy_byte=false",
-            "video_codec=h264",
-            "video_bit_rate=\(options.videoBitRate)",
-            "max_size=\(options.maxSize)",
-            "max_fps=\(options.maxFps)",
-            "stay_awake=true",
-            "power_on=true",
-            "cleanup=true"
-        ]
+        args += Self.serverArguments(for: options)
         process.arguments = args
         process.standardOutput = stdout
         process.standardError = stderr
@@ -147,6 +125,41 @@ final class ScrcpyServerHost {
 
         try process.run()
         self.process = process
+    }
+
+    static func serverArguments(for options: Options) -> [String] {
+        let scidHex = String(format: "%08x", options.scid)
+        var args = [
+            "shell",
+            "CLASSPATH=\(Self.devicePath)",
+            "app_process",
+            "/",
+            "com.genymobile.scrcpy.Server",
+            Self.serverVersion,
+            "scid=\(scidHex)",
+            "log_level=info",
+            "audio=\(options.audio ? "true" : "false")",
+            "video=true",
+            "control=true",
+            "tunnel_forward=false",
+            "send_dummy_byte=false",
+            "video_codec=h264",
+            "video_bit_rate=\(options.videoBitRate)",
+            "max_size=\(options.maxSize)",
+            "max_fps=\(options.maxFps)",
+            "stay_awake=true",
+            "power_on=true",
+            "cleanup=true"
+        ]
+
+        if options.audio {
+            args += [
+                "audio_codec=raw",
+                "audio_source=output"
+            ]
+        }
+
+        return args
     }
 
     func stop() {

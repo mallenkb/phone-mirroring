@@ -52,6 +52,39 @@ struct DiscoveredPhone: Identifiable, Equatable, Hashable {
     var lastSeen: Date
 }
 
+struct ADBQRCodePairingSession: Equatable, Hashable {
+    static let servicePrefix = "studio-"
+    private static let randomCharacters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+
+    let serviceName: String
+    let password: String
+
+    var payload: String {
+        "WIFI:T:ADB;S:\(serviceName);P:\(password);;"
+    }
+
+    static func random() -> ADBQRCodePairingSession {
+        ADBQRCodePairingSession(
+            serviceName: servicePrefix + randomString(length: 10),
+            password: randomString(length: 12)
+        )
+    }
+
+    static func pairingService(named serviceName: String, in phones: [DiscoveredPhone]) -> DiscoveredPhone? {
+        phones.first { phone in
+            phone.id == serviceName && phone.kind == .pairable
+        }
+    }
+
+    private static func randomString(length: Int) -> String {
+        var generator = SystemRandomNumberGenerator()
+        let characters = (0..<length).compactMap { _ in
+            randomCharacters.randomElement(using: &generator)
+        }
+        return String(characters)
+    }
+}
+
 struct AuthorizedADBDevice: Identifiable, Equatable, Hashable {
     var id: String { serial }
     let serial: String

@@ -4,7 +4,7 @@ import Foundation
 /// Plays scrcpy RAW audio packets (PCM signed 16-bit little-endian) through
 /// the Mac's default audio output.
 final class ScrcpyAudioPlayer {
-    static let rawCodecID: UInt32 = 0x7261_7720 // "raw "
+    static let rawCodecID: UInt32 = 0x0072_6177 // "\0raw" (scrcpy AudioCodec.RAW)
 
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
@@ -17,6 +17,8 @@ final class ScrcpyAudioPlayer {
     private let queue = DispatchQueue(label: "scrcpy.audio.player", qos: .userInteractive)
     private var started = false
     private var volume: Float = 1
+    private var gain: Float = 1.8
+    private var enabled = true
 
     init() {
         engine.attach(player)
@@ -37,6 +39,7 @@ final class ScrcpyAudioPlayer {
         let payload = packet.payload
         queue.async { [weak self] in
             guard let self else { return }
+            guard self.enabled else { return }
             self.ensureStarted()
             guard let buffer = self.makeBuffer(from: payload) else { return }
             self.player.scheduleBuffer(buffer, completionHandler: nil)
@@ -49,6 +52,18 @@ final class ScrcpyAudioPlayer {
             guard let self else { return }
             self.volume = clamped
             self.player.volume = clamped
+        }
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.enabled = enabled
+            if enabled {
+                self.ensureStarted()
+            } else {
+                self.player.stop()
+            }
         }
     }
 
@@ -80,10 +95,14 @@ final class ScrcpyAudioPlayer {
                 let offset = frame * bytesPerFrame
                 let leftBits = UInt16(base[offset]) | (UInt16(base[offset + 1]) << 8)
                 let rightBits = UInt16(base[offset + 2]) | (UInt16(base[offset + 3]) << 8)
-                channels[0][frame] = Float(Int16(bitPattern: leftBits)) / 32768.0
-                channels[1][frame] = Float(Int16(bitPattern: rightBits)) / 32768.0
+                channels[0][frame] = Self.limitedSample(Float(Int16(bitPattern: leftBits)) / 32768.0 * gain)
+                channels[1][frame] = Self.limitedSample(Float(Int16(bitPattern: rightBits)) / 32768.0 * gain)
             }
         }
         return buffer
+    }
+
+    private static func limitedSample(_ sample: Float) -> Float {
+        max(-1, min(1, sample))
     }
 }

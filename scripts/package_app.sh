@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP="${1:-dist/Android Mirror Scrcpy.app}"
+APP="${1:-dist/AndroidMirrorMac.app}"
 BUILD_DIR="scrcpy-source/build-mac"
-SCRCPY_BIN="$BUILD_DIR/app/scrcpy"
 SCRCPY_SERVER="$BUILD_DIR/server/scrcpy-server"
+RESOURCE_SCRCPY_SERVER="Sources/AndroidMirrorMac/Resources/scrcpy-server"
 HOST_BIN=".build/release/AndroidMirrorMac"
 BIN_DIR="$APP/Contents/MacOS"
 
 swift build -c release
-ninja -C "$BUILD_DIR" app/scrcpy
 
 TMP_HELPERS="$(mktemp -d)"
 cleanup() {
@@ -29,17 +28,22 @@ mkdir -p "$BIN_DIR" "$APP/Contents/Resources"
 cp "$HOST_BIN" "$BIN_DIR/AndroidMirrorMac"
 chmod +x "$BIN_DIR/AndroidMirrorMac"
 
-cp "$SCRCPY_BIN" "$BIN_DIR/scrcpy"
-chmod +x "$BIN_DIR/scrcpy"
-
-cp "$SCRCPY_SERVER" "$BIN_DIR/scrcpy-server"
+# Audio and video are handled in-process; only the scrcpy-server jar (pushed to
+# the device) and adb are needed. The standalone scrcpy CLI is no longer bundled.
+if [ -f "$SCRCPY_SERVER" ]; then
+  cp "$SCRCPY_SERVER" "$BIN_DIR/scrcpy-server"
+elif [ -f "$RESOURCE_SCRCPY_SERVER" ]; then
+  cp "$RESOURCE_SCRCPY_SERVER" "$BIN_DIR/scrcpy-server"
+else
+  echo "warning: scrcpy-server was not found; mirroring will fail until it is bundled" >&2
+fi
 
 if [ -x "$TMP_HELPERS/adb" ]; then
   cp "$TMP_HELPERS/adb" "$BIN_DIR/adb"
 elif command -v adb >/dev/null 2>&1; then
   cp "$(command -v adb)" "$BIN_DIR/adb"
 else
-  echo "warning: adb was not found; the app will require adb beside scrcpy" >&2
+  echo "warning: adb was not found; device discovery will require adb in the app bundle" >&2
 fi
 
 if [ -f "$BIN_DIR/adb" ]; then
@@ -72,5 +76,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+if command -v codesign >/dev/null 2>&1; then
+  codesign --force --sign - "$BIN_DIR/adb" 2>/dev/null || true
+  codesign --force --deep --sign - "$APP" 2>/dev/null || true
+fi
 
 open "$APP"

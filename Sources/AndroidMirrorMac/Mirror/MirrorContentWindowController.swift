@@ -17,18 +17,21 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     /// Standard macOS titlebar height. Anything larger and the AppKit chrome
     /// reads as a heavy banner instead of a window's title bar.
     static let chromeHeight: CGFloat = 28
+    /// Compact windows keep the standard macOS titlebar height; large windows
+    /// let the hover toolbar grow up to 60% taller so it stays readable.
     static let maximumChromeScale: CGFloat = 1.6
     static var maximumChromeHeight: CGFloat { chromeHeight * maximumChromeScale }
     static let chromeActivationZone: CGFloat = chromeHeight
-    static let visibleChromeRenderTopInset: CGFloat = 0
-    /// The AppKit shell must match the phone mirror exactly. Chrome floats
-    /// over the stream instead of reserving extra pixels around it.
+    static var visibleChromeRenderTopInset: CGFloat { chromeHeight }
+    /// Keep phone pixels edge-to-edge horizontally and at the bottom. The
+    /// toolbar owns a separate top band so it never covers mirrored app UI.
     static let screenSideInset: CGFloat = 0
     static let minimumScreenSideInset: CGFloat = 0
     static let screenLeftInset: CGFloat = screenSideInset
     static let screenRightInset: CGFloat = screenSideInset
     static let screenBottomInset: CGFloat = 0
     static let defaultMirrorSize = NSSize(width: 1080, height: 2340)
+    static let defaultInitialMirrorScale: CGFloat = 0.5
     static let defaultMirrorAspect: CGFloat = 1080.0 / 2340.0
     static let minimumMirrorCornerRadius: CGFloat = 16
     static let maximumMirrorCornerRadius: CGFloat = 38
@@ -61,7 +64,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         self.model = model
         self.session = session
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 390, height: 850)
-        let initialSize = Self.wrappedShellSize(
+        let initialSize = Self.initialWrappedShellSize(
             for: Self.defaultMirrorSize,
             visibleFrame: visible
         )
@@ -73,7 +76,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         )
         let window = MirrorContentWindow(
             contentRect: frame,
-            styleMask: [.borderless, .closable, .miniaturizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -86,7 +89,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     required init?(coder: NSCoder) { nil }
 
     private static var verticalShellInset: CGFloat {
-        0
+        visibleChromeRenderTopInset + screenBottomInset
     }
 
     private static var horizontalShellInset: CGFloat {
@@ -126,6 +129,24 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         return NSSize(
             width: screenWidth + horizontalShellInset,
             height: screenHeight + verticalShellInset
+        )
+    }
+
+    static func initialWrappedShellSize(
+        for streamSize: NSSize,
+        visibleFrame: NSRect,
+        screenMargin: CGFloat = 24
+    ) -> NSSize {
+        let fullSize = wrappedShellSize(
+            for: streamSize,
+            visibleFrame: visibleFrame,
+            screenMargin: screenMargin
+        )
+        let screenWidth = max(1, fullSize.width - horizontalShellInset)
+        let screenHeight = max(1, fullSize.height - verticalShellInset)
+        return NSSize(
+            width: screenWidth * defaultInitialMirrorScale + horizontalShellInset,
+            height: screenHeight * defaultInitialMirrorScale + verticalShellInset
         )
     }
 
@@ -223,11 +244,24 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         minHeight: CGFloat,
         maxHeight: CGFloat
     ) -> NSRect {
-        let contentHeight = max(1, frame.height - chromeHeight)
-        let minContentHeight = max(1, minHeight - chromeHeight)
-        let maxContentHeight = max(minContentHeight, maxHeight - chromeHeight)
+        let minimumChromeHeight = max(0, chromeHeight)
+        let maximumChromeHeight = minimumChromeHeight > 0 ? minimumChromeHeight * maximumChromeScale : 0
+        let currentChromeHeight = interpolatedChromeHeight(
+            forWindowHeight: frame.height,
+            minimumChromeHeight: minimumChromeHeight,
+            maximumChromeHeight: maximumChromeHeight,
+            minHeight: minHeight,
+            maxHeight: maxHeight
+        )
+        let contentHeight = max(1, frame.height - currentChromeHeight)
+        let minContentHeight = max(1, minHeight - minimumChromeHeight)
+        let maxContentHeight = max(minContentHeight, maxHeight - maximumChromeHeight)
         let scaledContentHeight = min(max(contentHeight * scale, minContentHeight), maxContentHeight)
-        let height = scaledContentHeight + chromeHeight
+        let contentRange = max(1, maxContentHeight - minContentHeight)
+        let progress = min(1, max(0, (scaledContentHeight - minContentHeight) / contentRange))
+        let targetChromeHeight = minimumChromeHeight
+            + (maximumChromeHeight - minimumChromeHeight) * progress
+        let height = scaledContentHeight + targetChromeHeight
         let width = scaledContentHeight * max(aspect, 0.001) + horizontalChromeWidth
         return NSRect(
             x: frame.midX - width / 2,
@@ -235,6 +269,18 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             width: width,
             height: height
         )
+    }
+
+    private static func interpolatedChromeHeight(
+        forWindowHeight height: CGFloat,
+        minimumChromeHeight: CGFloat,
+        maximumChromeHeight: CGFloat,
+        minHeight: CGFloat,
+        maxHeight: CGFloat
+    ) -> CGFloat {
+        let heightRange = max(1, maxHeight - minHeight)
+        let progress = min(1, max(0, (height - minHeight) / heightRange))
+        return minimumChromeHeight + (maximumChromeHeight - minimumChromeHeight) * progress
     }
 
     // MARK: - Setup
@@ -248,7 +294,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         window.isMovable = true
         window.isMovableByWindowBackground = false
         window.acceptsMouseMovedEvents = true
-        let defaultShellSize = Self.wrappedShellSize(
+        let defaultShellSize = Self.initialWrappedShellSize(
             for: Self.defaultMirrorSize,
             visibleFrame: window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame
         )
@@ -256,10 +302,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         applyWindowSizeLimits(to: window, aspect: Self.defaultMirrorAspect)
         window.level = .normal
         window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
         window.collectionBehavior = [.fullScreenPrimary, .managed]
-        window.standardWindowButton(.closeButton)?.isHidden = true
-        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        window.standardWindowButton(.zoomButton)?.isHidden = true
+        window.standardWindowButton(.closeButton)?.isHidden = false
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = false
+        window.standardWindowButton(.zoomButton)?.isHidden = false
     }
 
     private func applyWindowSizeLimits(to window: NSWindow, aspect: CGFloat) {
@@ -285,15 +332,17 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     private func scaledChromeHeight(for window: NSWindow) -> CGFloat {
-        let limits = Self.sizeLimits(
-            visibleFrame: window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame,
-            aspect: mirrorAspect ?? Self.defaultMirrorAspect,
-            chromeHeight: Self.verticalShellInset,
-            horizontalChromeWidth: Self.horizontalShellInset
-        )
-        let range = max(1, limits.max.height - limits.min.height)
-        let progress = min(1, max(0, (window.frame.height - limits.min.height) / range))
-        return Self.chromeHeight + (Self.maximumChromeHeight - Self.chromeHeight) * progress
+        let heightRange = max(1, window.maxSize.height - window.minSize.height)
+        let progress: CGFloat
+        if window.frame.height <= window.minSize.height + 1 {
+            progress = 0
+        } else if window.frame.height >= window.maxSize.height - 1 {
+            progress = 1
+        } else {
+            progress = min(1, max(0, (window.frame.height - window.minSize.height) / heightRange))
+        }
+        let scale = 1 + (Self.maximumChromeScale - 1) * progress
+        return Self.chromeHeight * scale
     }
 
     private func currentChromeHeight() -> CGFloat {
@@ -305,6 +354,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         guard let window, !isInFullscreen else { return }
         let height = scaledChromeHeight(for: window)
         chromeHeightConstraint?.constant = height
+        renderTopConstraint?.constant = height
         rootView.chromeActivationHeight = height
         chromeBar.chromeHeight = height
     }
@@ -323,7 +373,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         renderLeadingConstraint?.constant = inset
         renderTrailingConstraint?.constant = -inset
         renderBottomConstraint?.constant = -inset
-        renderTopConstraint?.constant = 0
+        renderTopConstraint?.constant = currentChromeHeight()
         rootView.layer?.cornerRadius = shellRadius
         renderView.cornerRadius = mirrorRadius
     }
@@ -337,8 +387,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         let visibleHeight = max(1, visibleFrame.height)
         let minHeight = visibleHeight * minimumScreenHeightRatio
         let maxHeight = visibleHeight * maximumScreenHeightRatio
+        let maxChromeHeight = chromeHeight > 0 ? chromeHeight * maximumChromeScale : 0
         let minContentHeight = max(1, minHeight - chromeHeight)
-        let maxContentHeight = max(minContentHeight, maxHeight - chromeHeight)
+        let maxContentHeight = max(minContentHeight, maxHeight - maxChromeHeight)
         return (
             min: NSSize(width: minContentHeight * aspect + horizontalChromeWidth, height: minHeight),
             max: NSSize(width: maxContentHeight * aspect + horizontalChromeWidth, height: maxHeight)
@@ -367,15 +418,14 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
         chromeBar.translatesAutoresizingMaskIntoConstraints = false
         chromeBar.configure(
-            onClose: { [weak self] in self?.session?.stop() },
-            onMinimize: { [weak self] in self?.window?.miniaturize(nil) },
-            onMaximize: { [weak self] in self?.toggleFullScreenFromChrome() },
-            onRecents: { [weak self] in self?.session?.sendAndroidKey(.appSwitch) },
+            deviceName: model.selectedDevice.name,
             onScreenshot: { [weak self] in self?.session?.takeScreenshot() },
             onAudioEnabledChange: { [weak self] enabled in self?.session?.setMirrorAudioEnabled(enabled) }
         )
-        chromeBar.alphaValue = 0
-        chromeBar.isHidden = true
+        chromeBar.alphaValue = 1
+        chromeBar.isHidden = false
+        chromeBar.setControlsVisible(true)
+        chromeBar.setBarBackgroundVisible(true, animated: false)
         chromeVisible = false
         chromeBar.onDragStateChange = { [weak self] isDragging in
             self?.setChromeDragging(isDragging)
@@ -389,7 +439,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
         rootView.addSubview(chromeBar)
 
-        let renderTopConstraint = renderView.topAnchor.constraint(equalTo: rootView.topAnchor)
+        let renderTopConstraint = renderView.topAnchor.constraint(equalTo: rootView.topAnchor, constant: Self.visibleChromeRenderTopInset)
         let chromeHeightConstraint = chromeBar.heightAnchor.constraint(equalToConstant: Self.chromeHeight)
         let renderLeadingConstraint = renderView.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: Self.screenLeftInset)
         let renderTrailingConstraint = renderView.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -Self.screenRightInset)
@@ -439,11 +489,12 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             hideChromeImmediately()
             return
         }
-        isPointerInTopZone = inTopZone
         if inTopZone {
+            isPointerInTopZone = true
             hideWorkItem?.cancel()
             setChromeVisible(true)
         } else {
+            isPointerInTopZone = false
             scheduleHide()
         }
     }
@@ -453,11 +504,12 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             hideChromeImmediately()
             return
         }
-        isPointerInTopZone = isInside
         if isInside {
+            isPointerInTopZone = true
             hideWorkItem?.cancel()
             setChromeVisible(true)
         } else {
+            isPointerInTopZone = false
             scheduleHide()
         }
     }
@@ -474,8 +526,16 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         chromeBar.isHidden
     }
 
+    var isChromeBarBackgroundVisibleForTesting: Bool {
+        chromeBar.isBackgroundVisibleForTesting
+    }
+
     var renderTopInsetForTesting: CGFloat {
         renderTopConstraint?.constant ?? 0
+    }
+
+    var chromeHeightForTesting: CGFloat {
+        chromeHeightConstraint?.constant ?? 0
     }
 
     var renderBottomInsetForTesting: CGFloat {
@@ -491,14 +551,14 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     private func scheduleHide() {
-        guard !isDraggingChrome, !isPointerInTopZone, !isMouseCurrentlyInToolbarBand() else {
+        guard !isDraggingChrome, !isPointerInTopZone else {
             isPointerInTopZone = true
             return
         }
         hideWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             guard let self, !self.isDraggingChrome else { return }
-            if self.isPointerInTopZone || self.isMouseCurrentlyInToolbarBand() {
+            if self.isPointerInTopZone {
                 self.isPointerInTopZone = true
                 return
             }
@@ -525,7 +585,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
         if visible {
             chromeBar.isHidden = false
-            chromeBar.alphaValue = 0
+            chromeBar.alphaValue = 1
+            chromeBar.setControlsVisible(true)
+            chromeBar.setBarBackgroundVisible(true)
+        } else {
+            chromeBar.setControlsVisible(true)
             chromeBar.setBarBackgroundVisible(true)
         }
 
@@ -533,13 +597,14 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             context.duration = visible ? 0.10 : Self.chromeHideAnimationDuration
             context.timingFunction = CAMediaTimingFunction(name: visible ? .easeOut : .easeInEaseOut)
             rootView.layer?.backgroundColor = Self.normalShellColor(for: rootView)
-            chromeBar.animator().alphaValue = visible ? 1 : 0
+            chromeBar.animator().alphaValue = 1
         } completionHandler: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
                 if !visible {
-                    self.chromeBar.isHidden = true
-                    self.chromeBar.setBarBackgroundVisible(false)
+                    self.chromeBar.setControlsVisible(true)
+                    self.chromeBar.isHidden = false
+                    self.chromeBar.setBarBackgroundVisible(true)
                     self.rootView.layer?.backgroundColor = Self.normalShellColor(for: self.rootView)
                 }
             }
@@ -552,6 +617,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         isPointerInTopZone = false
         chromeBar.isHidden = true
         chromeBar.alphaValue = 0
+        chromeBar.setControlsVisible(false)
         chromeBar.setBarBackgroundVisible(false, animated: false)
         rootView.layer?.backgroundColor = isInFullscreen
             ? NSColor.black.cgColor
@@ -632,6 +698,10 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             )
         } else {
             window?.backgroundColor = .clear
+            chromeBar.isHidden = false
+            chromeBar.alphaValue = 1
+            chromeBar.setControlsVisible(true)
+            chromeBar.setBarBackgroundVisible(true, animated: false)
             rootView.layer?.cornerRadius = Self.cornerRadius
             rootView.layer?.backgroundColor = Self.normalShellColor(for: rootView)
             rootView.layer?.borderColor = Self.shellBorderColor(for: rootView)
@@ -779,7 +849,8 @@ final class MirrorRootView: NSView {
 // MARK: - Chrome bar
 
 /// Full-width macOS-style chrome that occupies a separate top band on hover.
-/// Traffic lights at the left (20 pt inset), outline action buttons at the right.
+/// Traffic lights at the left, the device-name title just inside them, and the
+/// audio toggle + screenshot action at the trailing edge.
 /// Background is a solid default AppKit surface so desktop content never bleeds through.
 final class MirrorChromeBar: NSView {
     /// How small the bar shrinks when hidden. A more pronounced ratio makes
@@ -805,21 +876,22 @@ final class MirrorChromeBar: NSView {
     var onDragMouseDown: ((NSEvent) -> Void)?
     var onHoverChange: ((Bool) -> Void)?
     private var trackingArea: NSTrackingArea?
+    private var didInstallNativeTrafficLights = false
+    private var dragAreaLeadingConstraint: NSLayoutConstraint?
+    private var trafficLightLeadingConstraint: NSLayoutConstraint?
+    private var rightStackTrailingConstraint: NSLayoutConstraint?
+    private var nativeTrafficLights: [NSButton] = []
+    private var nativeTrafficLightsAreVisible = false
+    private static let horizontalPadding: CGFloat = 8
 
-    private let closeBtn = MirrorTrafficLight(kind: .close)
-    private let minimizeBtn = MirrorTrafficLight(kind: .minimize)
-    private let maximizeBtn = MirrorTrafficLight(kind: .zoom)
+    private let titleLabel = MirrorChromeTitleLabel(labelWithString: "")
     private let audioToggleBtn = MirrorChromeAudioToggleButton()
     private let screenshotBtn = MirrorChromeOutlineButton(symbol: "camera")
-    private let recentsBtn    = MirrorChromeOutlineButton(symbol: "square.grid.3x3")
+    private let rightStack: NSStackView
     var chromeHeight: CGFloat = MirrorContentWindowController.chromeHeight {
         didSet {
-            closeBtn.chromeScale = chromeScale
-            minimizeBtn.chromeScale = chromeScale
-            maximizeBtn.chromeScale = chromeScale
             audioToggleBtn.chromeScale = chromeScale
             screenshotBtn.chromeScale = chromeScale
-            recentsBtn.chromeScale = chromeScale
         }
     }
 
@@ -831,6 +903,7 @@ final class MirrorChromeBar: NSView {
     }
 
     override init(frame frameRect: NSRect) {
+        rightStack = NSStackView(views: [audioToggleBtn, screenshotBtn])
         super.init(frame: frameRect)
         setup()
     }
@@ -838,21 +911,24 @@ final class MirrorChromeBar: NSView {
 
     override var mouseDownCanMoveWindow: Bool { false }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        installNativeTrafficLightsIfNeeded()
+    }
+
     func configure(
-        onClose: @escaping () -> Void,
-        onMinimize: @escaping () -> Void,
-        onMaximize: @escaping () -> Void,
-        onRecents: @escaping () -> Void,
+        deviceName: String,
         onScreenshot: @escaping () -> Void,
         onAudioEnabledChange: @escaping (Bool) -> Void
     ) {
-        recentsBtn.action  = onRecents
+        titleLabel.stringValue = deviceName
         screenshotBtn.action = onScreenshot
         audioToggleBtn.onEnabledChange = onAudioEnabledChange
+    }
 
-        closeBtn.action = onClose
-        minimizeBtn.action = onMinimize
-        maximizeBtn.action = onMaximize
+    /// Updates the toolbar title (device name) shown beside the traffic lights.
+    func setDeviceName(_ name: String) {
+        titleLabel.stringValue = name
     }
 
     private func setup() {
@@ -864,31 +940,18 @@ final class MirrorChromeBar: NSView {
         backgroundView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(backgroundView)
 
-        // Hide the bar background by default. The buttons (traffic lights +
-        // outline icons) stay visible — only this background panel scales
-        // in/out as the cursor enters/leaves the chrome region. Pinning the
-        // anchor point to dead center guarantees the scale animation grows
-        // out of the middle, not from a corner.
+        // The toolbar strip stays visible in normal windowed mode. Pinning the
+        // anchor point to dead center keeps background reveal/suppress
+        // animations centered when fullscreen hides it.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         backgroundView.layer?.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-        backgroundView.layer?.opacity = 0
-        backgroundView.layer?.transform = CATransform3DMakeScale(
-            Self.barHiddenScale, Self.barHiddenScale, 1
-        )
+        backgroundView.layer?.opacity = 1
+        backgroundView.layer?.transform = CATransform3DIdentity
         CATransaction.commit()
 
-        // Traffic lights — each button uses its native intrinsic size; the
-        // stack uses the macOS-default 6 pt gap between buttons.
-        let lightsStack = NSStackView(views: [closeBtn, minimizeBtn, maximizeBtn])
-        lightsStack.orientation = .horizontal
-        lightsStack.spacing = 6
-        lightsStack.alignment = .centerY
-        lightsStack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(lightsStack)
-
-        // Right-side outline buttons.
-        let rightStack = NSStackView(views: [audioToggleBtn, screenshotBtn, recentsBtn])
+        // Right-side action buttons. The screenshot icon lives all the way at
+        // the trailing edge; the audio toggle sits just inside it.
         rightStack.orientation = .horizontal
         rightStack.spacing = 6
         rightStack.alignment = .centerY
@@ -904,6 +967,25 @@ final class MirrorChromeBar: NSView {
             self?.onDragMouseDown?(event)
         }
         addSubview(dragArea)
+        let dragAreaLeadingConstraint = dragArea.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 78)
+        self.dragAreaLeadingConstraint = dragAreaLeadingConstraint
+
+        // Window title (device name), shown leading just after the traffic
+        // lights — the macOS title-bar look. Non-interactive so window drags
+        // pass straight through to the drag area beneath it.
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = NSColor.labelColor
+        titleLabel.alignment = .left
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(titleLabel)
+
+        let rightStackTrailingConstraint = rightStack.trailingAnchor.constraint(
+            equalTo: trailingAnchor,
+            constant: -Self.horizontalPadding
+        )
+        self.rightStackTrailingConstraint = rightStackTrailingConstraint
 
         NSLayoutConstraint.activate([
             backgroundView.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -911,17 +993,87 @@ final class MirrorChromeBar: NSView {
             backgroundView.topAnchor.constraint(equalTo: topAnchor),
             backgroundView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            lightsStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
-            lightsStack.centerYAnchor.constraint(equalTo: centerYAnchor),
-
-            rightStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            rightStackTrailingConstraint,
             rightStack.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            dragArea.leadingAnchor.constraint(equalTo: lightsStack.trailingAnchor, constant: 8),
+            dragAreaLeadingConstraint,
             dragArea.trailingAnchor.constraint(equalTo: rightStack.leadingAnchor, constant: -8),
             dragArea.topAnchor.constraint(equalTo: topAnchor),
             dragArea.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            titleLabel.leadingAnchor.constraint(equalTo: dragArea.leadingAnchor),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: rightStack.leadingAnchor, constant: -8),
         ])
+    }
+
+    private func installNativeTrafficLightsIfNeeded() {
+        guard !didInstallNativeTrafficLights, let window else { return }
+        guard let close = window.standardWindowButton(.closeButton),
+              let minimize = window.standardWindowButton(.miniaturizeButton),
+              let zoom = window.standardWindowButton(.zoomButton) else { return }
+
+        didInstallNativeTrafficLights = true
+        nativeTrafficLights = [close, minimize, zoom]
+
+        dragAreaLeadingConstraint?.isActive = false
+        for button in nativeTrafficLights {
+            button.isHidden = !nativeTrafficLightsAreVisible
+            button.translatesAutoresizingMaskIntoConstraints = false
+            if button.superview !== self {
+                button.removeFromSuperview()
+                addSubview(button)
+            }
+        }
+
+        let trafficLightLeadingConstraint = close.leadingAnchor.constraint(
+            equalTo: leadingAnchor,
+            constant: Self.horizontalPadding
+        )
+        self.trafficLightLeadingConstraint = trafficLightLeadingConstraint
+
+        NSLayoutConstraint.activate([
+            trafficLightLeadingConstraint,
+            close.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            minimize.leadingAnchor.constraint(equalTo: close.trailingAnchor, constant: 6),
+            minimize.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            zoom.leadingAnchor.constraint(equalTo: minimize.trailingAnchor, constant: 6),
+            zoom.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            dragArea.leadingAnchor.constraint(equalTo: zoom.trailingAnchor, constant: 10),
+        ])
+    }
+
+    func setNativeTrafficLightsVisible(_ visible: Bool) {
+        nativeTrafficLightsAreVisible = visible
+        for button in nativeTrafficLights {
+            button.isHidden = !visible
+        }
+    }
+
+    func setControlsVisible(_ visible: Bool) {
+        setNativeTrafficLightsVisible(visible)
+        titleLabel.isHidden = !visible
+        audioToggleBtn.isHidden = !visible
+        screenshotBtn.isHidden = !visible
+    }
+
+    var isBackgroundVisibleForTesting: Bool {
+        (backgroundView.layer?.opacity ?? 0) > 0.5
+    }
+
+    var horizontalPaddingForTesting: CGFloat {
+        Self.horizontalPadding
+    }
+
+    var trafficLightLeadingPaddingForTesting: CGFloat {
+        trafficLightLeadingConstraint?.constant ?? 0
+    }
+
+    var trailingActionsPaddingForTesting: CGFloat {
+        abs(rightStackTrailingConstraint?.constant ?? 0)
     }
 
     override func updateTrackingAreas() {
@@ -942,6 +1094,11 @@ final class MirrorChromeBar: NSView {
     }
 
     override func mouseExited(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard !bounds.contains(point) else {
+            onHoverChange?(true)
+            return
+        }
         onHoverChange?(false)
     }
 
@@ -980,74 +1137,13 @@ final class MirrorChromeBar: NSView {
     }
 }
 
-// MARK: - Traffic light
+// MARK: - Title label
 
-private enum TrafficLightKind {
-    case close
-    case minimize
-    case zoom
-
-    var color: NSColor {
-        switch self {
-        case .close:
-            return NSColor(red: 1.0, green: 0.37, blue: 0.34, alpha: 1)
-        case .minimize:
-            return NSColor(red: 1.0, green: 0.74, blue: 0.18, alpha: 1)
-        case .zoom:
-            return NSColor(red: 0.20, green: 0.78, blue: 0.28, alpha: 1)
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .close:
-            return "xmark"
-        case .minimize:
-            return "minus"
-        case .zoom:
-            return "plus"
-        }
-    }
-}
-
-private final class MirrorTrafficLight: NSView {
-    private static let diameter: CGFloat = 14
-    private let imageView = NSImageView()
-    private let kind: TrafficLightKind
-    var action: (() -> Void)?
-    var chromeScale: CGFloat = 1
-
-    init(kind: TrafficLightKind) {
-        self.kind = kind
-        super.init(frame: .zero)
-        wantsLayer = true
-        translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: Self.diameter),
-            heightAnchor.constraint(equalToConstant: Self.diameter),
-        ])
-        layer?.cornerRadius = Self.diameter / 2
-        layer?.backgroundColor = kind.color.cgColor
-
-        imageView.image = NSImage(systemSymbolName: kind.symbol, accessibilityDescription: nil)
-        imageView.contentTintColor = NSColor.black.withAlphaComponent(0.52)
-        imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 7.5, weight: .bold)
-        imageView.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(imageView)
-        NSLayoutConstraint.activate([
-            imageView.centerXAnchor.constraint(equalTo: centerXAnchor),
-            imageView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            imageView.widthAnchor.constraint(equalToConstant: 8),
-            imageView.heightAnchor.constraint(equalToConstant: 8),
-        ])
-    }
-
-    required init?(coder: NSCoder) { nil }
-
+/// Non-interactive title label (device name) for the chrome bar. Returns `nil`
+/// from `hitTest` so window-drag gestures pass through to the drag area below.
+private final class MirrorChromeTitleLabel: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override var mouseDownCanMoveWindow: Bool { false }
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-    override func mouseDown(with event: NSEvent) {}
-    override func mouseUp(with event: NSEvent) { action?() }
 }
 
 // MARK: - Outline icon button

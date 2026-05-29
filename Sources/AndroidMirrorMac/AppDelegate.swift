@@ -6,13 +6,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private let model = AppModel()
     private var keyMonitor: Any?
+    private let minimumConnectionWindowSize = NSSize(width: 308, height: 671)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let rootView = RootView()
             .environmentObject(model)
         let hostingView = NSHostingView(rootView: rootView)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 308, height: 689),
+            contentRect: NSRect(origin: .zero, size: minimumConnectionWindowSize),
             styleMask: [.borderless, .resizable],
             backing: .buffered,
             defer: false
@@ -26,7 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.isMovableByWindowBackground = true
         window.backgroundColor = .clear
         window.contentView = hostingView
-        window.minSize = NSSize(width: 308, height: 689)
+        window.minSize = minimumConnectionWindowSize
+        window.contentMinSize = minimumConnectionWindowSize
         window.center()
         window.makeKeyAndOrderFront(nil)
         model.registerConnectionWindow(window)

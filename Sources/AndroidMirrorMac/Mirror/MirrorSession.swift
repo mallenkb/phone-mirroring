@@ -37,7 +37,6 @@ final class MirrorSession {
     private var serverHost: ScrcpyServerHost?
     private var stream: ScrcpyVideoStream?
     private var audioPlayer = ScrcpyAudioPlayer()
-    private lazy var audioRelay = ScrcpyAudioRelay(serial: serial)
     private var decoder = H264VideoToolboxDecoder()
     private(set) var controlChannel: ScrcpyControlChannel?
     private var windowController: MirrorContentWindowController?
@@ -97,7 +96,6 @@ final class MirrorSession {
                 }
             }
             self.serverHost = host
-            audioRelay.startIfEnabled()
         } catch let error as ScrcpyServerHost.HostError {
             stream.stop()
             throw SessionError.start(error.description)
@@ -118,7 +116,6 @@ final class MirrorSession {
         controlChannel?.close()
         controlChannel = nil
         audioPlayer.stop()
-        audioRelay.stop()
         stream?.stop()
         stream = nil
         serverHost?.stop()
@@ -148,7 +145,7 @@ final class MirrorSession {
     }
 
     func setMirrorAudioEnabled(_ enabled: Bool) {
-        audioRelay.setEnabled(enabled)
+        audioPlayer.setEnabled(enabled)
     }
 
     func forwardPointerEvent(_ event: MirrorRenderView.PointerEvent,

@@ -86,4 +86,102 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         XCTAssertNil(AppModel.wifiIPAddress(in: output))
     }
+
+    func testWirelessPhoneMatchingUSBRoutePrefersSameWiFiHost() {
+        let routeOutput = "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+        let other = DiscoveredPhone(
+            id: "adb-other",
+            address: "192.168.1.22:39111",
+            kind: .connectable,
+            lastSeen: Date(timeIntervalSince1970: 100)
+        )
+        let matching = DiscoveredPhone(
+            id: "adb-matching",
+            address: "192.168.1.44:42111",
+            kind: .connectable,
+            lastSeen: Date(timeIntervalSince1970: 200)
+        )
+
+        let selected = AppModel.wirelessPhoneMatchingUSBRoute(
+            routeOutput,
+            phones: [other, matching]
+        )
+
+        XCTAssertEqual(selected, matching)
+    }
+
+    func testWirelessPhoneMatchingUSBRouteIgnoresPairingOnlyServices() {
+        let routeOutput = "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+        let pairingOnly = DiscoveredPhone(
+            id: "adb-pairing",
+            address: "192.168.1.44:39111",
+            kind: .pairable,
+            lastSeen: Date(timeIntervalSince1970: 100)
+        )
+
+        let selected = AppModel.wirelessPhoneMatchingUSBRoute(
+            routeOutput,
+            phones: [pairingOnly]
+        )
+
+        XCTAssertNil(selected)
+    }
+
+    func testWirelessDebuggingAddressCombinesUSBWiFiIPAndTLSPort() {
+        let routeOutput = "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+
+        XCTAssertEqual(
+            AppModel.wirelessDebuggingAddress(routeOutput: routeOutput, tlsPortOutput: "42111\n"),
+            "192.168.1.44:42111"
+        )
+    }
+
+    func testWirelessDebuggingAddressIgnoresInvalidTLSPort() {
+        let routeOutput = "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+
+        XCTAssertNil(
+            AppModel.wirelessDebuggingAddress(routeOutput: routeOutput, tlsPortOutput: "-1\n")
+        )
+    }
+
+    func testWirelessDebuggingAddressFallsBackToLegacyTCPPort() {
+        let routeOutput = "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+
+        XCTAssertEqual(
+            AppModel.wirelessDebuggingAddress(
+                routeOutput: routeOutput,
+                tlsPortOutput: "\n",
+                tcpPortOutput: "5555\n"
+            ),
+            "192.168.1.44:5555"
+        )
+    }
+
+    func testUSBHandoffCandidateReturnsNewAuthorizedUSBDevice() {
+        let output = """
+        List of devices attached
+        R5CT123ABC device usb:336592896X product:raven model:Pixel_6_Pro device:raven transport_id:1
+        """
+
+        let candidate = AppModel.usbHandoffCandidate(
+            in: output,
+            lastAttemptedSerial: nil
+        )
+
+        XCTAssertEqual(candidate?.serial, "R5CT123ABC")
+    }
+
+    func testUSBHandoffCandidateIgnoresAlreadyAttemptedSerial() {
+        let output = """
+        List of devices attached
+        R5CT123ABC device usb:336592896X product:raven model:Pixel_6_Pro device:raven transport_id:1
+        """
+
+        let candidate = AppModel.usbHandoffCandidate(
+            in: output,
+            lastAttemptedSerial: "R5CT123ABC"
+        )
+
+        XCTAssertNil(candidate)
+    }
 }

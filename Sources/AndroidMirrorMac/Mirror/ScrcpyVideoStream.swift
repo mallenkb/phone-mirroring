@@ -18,7 +18,7 @@ import Network
 ///         bytes 0..7 pts_flags (bit 62 = config, bit 61 = keyframe,
 ///         lower 62 bits = pts µs), bytes 8..11 packet size, then payload.
 ///   socket 2 (audio):
-///     [ 4 bytes codec id big-endian ("raw " for PCM 16-bit LE) ]
+///     [ 4 bytes codec id big-endian (0x00726177 "\0raw" for PCM 16-bit LE) ]
 ///     loop: [ 12 bytes packet header ] [ payload bytes ]
 ///   socket 3 (control):
 ///     bidirectional control message stream (handled by ScrcpyControlChannel).

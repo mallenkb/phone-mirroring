@@ -37,6 +37,7 @@ struct WindowRegistrationView: NSViewRepresentable {
         window.styleMask.insert(.resizable)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.minSize = NSSize(width: 308, height: 689)
+        window.minSize = NSSize(width: 308, height: 671)
+        window.contentMinSize = NSSize(width: 308, height: 671)
     }
 }
