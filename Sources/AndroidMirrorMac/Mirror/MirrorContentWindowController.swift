@@ -464,11 +464,12 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
         chromeBar.configure(
             deviceName: model.selectedDevice.name,
-            onScreenshot: { [weak self] in self?.session?.takeScreenshot() },
-            onRecordingToggle: { [weak self] in self?.session?.toggleScreenRecording() },
-            onAudioEnabledChange: { [weak self] enabled in self?.session?.setMirrorAudioEnabled(enabled) }
+            onHome: { [weak self] in self?.model.sendAndroidKey("KEYCODE_HOME") },
+            onBack: { [weak self] in self?.model.sendAndroidKey("KEYCODE_BACK") },
+            onScreenshot: { [weak self] in self?.model.takeScreenshot() },
+            onRecordingToggle: { [weak self] in self?.model.toggleScreenRecording() }
         )
-        chromeBar.onClose = { [weak self] in self?.window?.performClose(nil) }
+        chromeBar.onClose = { NSApplication.shared.terminate(nil) }
         chromeBar.onMinimize = { [weak self] in self?.window?.miniaturize(nil) }
         chromeBar.onZoom = { [weak self] in self?.toggleFullScreenFromChrome() }
         chromeBar.chromeHeight = Self.toolbarBarHeight
@@ -1061,23 +1062,38 @@ final class MirrorChromeBar: NSView {
     private static let barCornerRadius: CGFloat = 9
 
     private let titleLabel = MirrorChromeTitleLabel(labelWithString: "")
-    private let audioToggleBtn = MirrorChromeAudioToggleButton()
+    private let homeBtn = MirrorChromeOutlineButton(
+        resource: "chrome-home",
+        accessibilityDescription: "Home"
+    )
+    private let backBtn = MirrorChromeOutlineButton(
+        resource: "chrome-back",
+        accessibilityDescription: "Back"
+    )
     private let recordingBtn = MirrorChromeOutlineButton(
-        symbol: "record.circle",
+        resource: "chrome-record",
         accessibilityDescription: "Screen recording"
     )
-    private let screenshotBtn = MirrorChromeOutlineButton(symbol: "camera")
+    private let screenshotBtn = MirrorChromeOutlineButton(
+        resource: "chrome-screenshot",
+        accessibilityDescription: "Screenshot"
+    )
     private let rightStack: NSStackView
     private var isRecording = false {
         didSet {
-            recordingBtn.setSymbol(isRecording ? "stop.circle.fill" : "record.circle")
+            if isRecording {
+                recordingBtn.setSymbol("stop.circle.fill")
+            } else {
+                recordingBtn.setResource("chrome-record")
+            }
             recordingBtn.isActive = isRecording
             recordingBtn.toolTip = isRecording ? "Stop screen recording" : "Start screen recording"
         }
     }
     var chromeHeight: CGFloat = MirrorContentWindowController.chromeHeight {
         didSet {
-            audioToggleBtn.chromeScale = chromeScale
+            homeBtn.chromeScale = chromeScale
+            backBtn.chromeScale = chromeScale
             recordingBtn.chromeScale = chromeScale
             screenshotBtn.chromeScale = chromeScale
         }
@@ -1091,7 +1107,7 @@ final class MirrorChromeBar: NSView {
     }
 
     override init(frame frameRect: NSRect) {
-        rightStack = NSStackView(views: [audioToggleBtn, recordingBtn, screenshotBtn])
+        rightStack = NSStackView(views: [recordingBtn, screenshotBtn, homeBtn, backBtn])
         super.init(frame: frameRect)
         setup()
     }
@@ -1101,11 +1117,17 @@ final class MirrorChromeBar: NSView {
 
     func configure(
         deviceName: String,
+        onHome: @escaping () -> Void,
+        onBack: @escaping () -> Void,
         onScreenshot: @escaping () -> Void,
-        onRecordingToggle: @escaping () -> Void,
-        onAudioEnabledChange: @escaping (Bool) -> Void
+        onRecordingToggle: @escaping () -> Void
     ) {
         titleLabel.stringValue = deviceName
+        homeBtn.toolTip = "Go to Android home"
+        homeBtn.action = onHome
+        homeBtn.minimumActionInterval = 0.35
+        backBtn.toolTip = "Android back"
+        backBtn.action = onBack
         screenshotBtn.toolTip = "Save screenshot to Desktop"
         screenshotBtn.action = onScreenshot
         recordingBtn.toolTip = "Start screen recording"
@@ -1114,7 +1136,6 @@ final class MirrorChromeBar: NSView {
             self.isRecording.toggle()
             onRecordingToggle()
         }
-        audioToggleBtn.onEnabledChange = onAudioEnabledChange
     }
 
     /// Updates the toolbar title (device name) shown beside the traffic lights.
@@ -1214,9 +1235,10 @@ final class MirrorChromeBar: NSView {
     func setControlsVisible(_ visible: Bool) {
         trafficLights.isHidden = !visible
         titleLabel.isHidden = !visible
-        audioToggleBtn.isHidden = !visible
+        backBtn.isHidden = !visible
         recordingBtn.isHidden = !visible
         screenshotBtn.isHidden = !visible
+        homeBtn.isHidden = !visible
     }
 
     var isBackgroundVisibleForTesting: Bool {
@@ -1442,9 +1464,16 @@ private final class MirrorChromeTitleLabel: NSTextField {
 
 /// Small outline-style button for the right side of the chrome bar.
 final class MirrorChromeOutlineButton: NSView {
+    private enum IconSource: Equatable {
+        case system(String)
+        case resource(String)
+    }
+
     private let imageView = NSImageView()
-    private var symbolName: String
+    private var iconSource: IconSource
+    private var lastActionTime: TimeInterval = 0
     var action: (() -> Void)?
+    var minimumActionInterval: TimeInterval = 0
     var chromeScale: CGFloat = 1 {
         didSet { needsLayout = true }
     }
@@ -1453,8 +1482,18 @@ final class MirrorChromeOutlineButton: NSView {
     }
 
     init(symbol: String, accessibilityDescription: String? = nil) {
-        symbolName = symbol
+        iconSource = .system(symbol)
         super.init(frame: .zero)
+        setup(accessibilityDescription: accessibilityDescription)
+    }
+
+    init(resource: String, accessibilityDescription: String? = nil) {
+        iconSource = .resource(resource)
+        super.init(frame: .zero)
+        setup(accessibilityDescription: accessibilityDescription)
+    }
+
+    private func setup(accessibilityDescription: String?) {
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -1464,14 +1503,17 @@ final class MirrorChromeOutlineButton: NSView {
         layer?.cornerRadius = 6
         layer?.setValue("continuous", forKey: "cornerCurve")
 
-        imageView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: accessibilityDescription)
+        imageView.image = Self.image(for: iconSource, accessibilityDescription: accessibilityDescription)
         imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+        imageView.imageScaling = .scaleProportionallyUpOrDown
         imageView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(imageView)
         applyTint()
         NSLayoutConstraint.activate([
             imageView.centerXAnchor.constraint(equalTo: centerXAnchor),
             imageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            imageView.widthAnchor.constraint(equalToConstant: 18),
+            imageView.heightAnchor.constraint(equalToConstant: 18),
         ])
     }
     required init?(coder: NSCoder) { nil }
@@ -1486,10 +1528,36 @@ final class MirrorChromeOutlineButton: NSView {
     }
 
     func setSymbol(_ symbol: String) {
-        guard symbolName != symbol else { return }
-        symbolName = symbol
-        imageView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: imageView.image?.accessibilityDescription)
+        setIconSource(.system(symbol))
+    }
+
+    func setResource(_ resource: String) {
+        setIconSource(.resource(resource))
+    }
+
+    private func setIconSource(_ source: IconSource) {
+        guard iconSource != source else { return }
+        iconSource = source
+        imageView.image = Self.image(
+            for: source,
+            accessibilityDescription: imageView.image?.accessibilityDescription
+        )
+        applyTint()
         needsLayout = true
+    }
+
+    private static func image(for source: IconSource, accessibilityDescription: String?) -> NSImage? {
+        switch source {
+        case .system(let symbol):
+            return NSImage(systemSymbolName: symbol, accessibilityDescription: accessibilityDescription)
+        case .resource(let name):
+            guard let url = Bundle.module.url(forResource: name, withExtension: "svg") else {
+                return nil
+            }
+            let image = NSImage(contentsOf: url)
+            image?.isTemplate = true
+            return image
+        }
     }
 
     private func applyTint() {
@@ -1520,7 +1588,11 @@ final class MirrorChromeOutlineButton: NSView {
     override func mouseUp(with event: NSEvent) {
         layer?.backgroundColor = nil
         let p = convert(event.locationInWindow, from: nil)
-        if bounds.contains(p) { action?() }
+        guard bounds.contains(p) else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard minimumActionInterval <= 0 || now - lastActionTime >= minimumActionInterval else { return }
+        lastActionTime = now
+        action?()
     }
 }
 
@@ -1553,8 +1625,9 @@ final class MirrorChromeAudioToggleButton: NSView {
 
         toolTip = "Mute phone audio on this Mac"
 
-        iconView.image = NSImage(systemSymbolName: "speaker.wave.2", accessibilityDescription: "Phone audio")
+        iconView.image = Self.audioImage(isEnabled: true)
         iconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        iconView.imageScaling = .scaleProportionallyUpOrDown
         iconView.contentTintColor = NSColor.white.withAlphaComponent(0.72)
         iconView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(iconView)
@@ -1593,12 +1666,19 @@ final class MirrorChromeAudioToggleButton: NSView {
         let point = convert(event.locationInWindow, from: nil)
         guard bounds.contains(point) else { return }
         isAudioEnabled.toggle()
-        iconView.image = NSImage(
-            systemSymbolName: isAudioEnabled ? "speaker.wave.2" : "speaker.slash",
-            accessibilityDescription: "Phone audio"
-        )
+        iconView.image = Self.audioImage(isEnabled: isAudioEnabled)
         toolTip = isAudioEnabled ? "Mute phone audio on this Mac" : "Play phone audio on this Mac"
         onEnabledChange?(isAudioEnabled)
+    }
+
+    private static func audioImage(isEnabled: Bool) -> NSImage? {
+        if isEnabled,
+           let url = Bundle.module.url(forResource: "chrome-speaker", withExtension: "svg") {
+            let image = NSImage(contentsOf: url)
+            image?.isTemplate = true
+            return image
+        }
+        return NSImage(systemSymbolName: "speaker.slash.circle.fill", accessibilityDescription: "Phone audio")
     }
 
     private func applyScale() {

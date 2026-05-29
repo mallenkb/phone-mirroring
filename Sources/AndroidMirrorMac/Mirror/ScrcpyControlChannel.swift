@@ -111,6 +111,13 @@ final class ScrcpyControlChannel {
         }
     }
 
+    func sendBackOrScreenOn() {
+        var buf = Data(capacity: 2)
+        buf.append(MessageType.backOrScreenOn.rawValue)
+        buf.append(KeyAction.down.rawValue)
+        write(buf)
+    }
+
     func sendText(_ text: String) {
         let message = Self.textMessage(for: text)
         guard !message.isEmpty else { return }

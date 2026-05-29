@@ -12,12 +12,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environmentObject(model)
         let hostingView = NSHostingView(rootView: rootView)
         let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: AppModel.defaultConnectionWindowSize),
-            styleMask: [.borderless, .resizable],
+            contentRect: NSRect(origin: .zero, size: AppModel.onboardingWindowSize),
+            styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
-        window.title = "Android device"
+        window.title = "Android Mirroring"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
@@ -26,8 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.isMovableByWindowBackground = true
         window.backgroundColor = .clear
         window.contentView = hostingView
-        window.minSize = AppModel.minimumConnectionWindowSize
-        window.contentMinSize = AppModel.minimumConnectionWindowSize
+        window.minSize = AppModel.onboardingWindowSize
+        window.contentMinSize = AppModel.onboardingWindowSize
+        window.maxSize = AppModel.onboardingWindowSize
+        window.contentMaxSize = AppModel.onboardingWindowSize
         window.center()
         window.makeKeyAndOrderFront(nil)
         model.registerConnectionWindow(window)
@@ -56,7 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         appMenu.addItem(
             NSMenuItem(
-                title: "Quit Android Mirror Scrcpy",
+                title: "Quit Android Mirroring",
                 action: #selector(NSApplication.terminate(_:)),
                 keyEquivalent: "q"
             )

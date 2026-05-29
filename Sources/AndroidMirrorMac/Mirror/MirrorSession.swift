@@ -137,6 +137,10 @@ final class MirrorSession {
         controlChannel?.sendKeyEvent(key, action: .down)
     }
 
+    func sendAndroidBack() {
+        controlChannel?.sendBackOrScreenOn()
+    }
+
     func takeScreenshot() {
         model?.takeScreenshot()
     }

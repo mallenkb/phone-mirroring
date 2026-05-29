@@ -250,9 +250,9 @@ private final class MirrorLoadingView: NSView {
         layer = CALayer()
         layer?.masksToBounds = true
         gradientLayer.colors = [
-            NSColor(calibratedRed: 0.36, green: 0.75, blue: 0.80, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.09, green: 0.55, blue: 0.82, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.02, green: 0.21, blue: 0.51, alpha: 1).cgColor
+            NSColor(calibratedRed: 0.0, green: 0.48, blue: 0.43, alpha: 1).cgColor,
+            NSColor(calibratedRed: 0.0, green: 0.35, blue: 0.31, alpha: 1).cgColor,
+            NSColor(calibratedRed: 0.0, green: 0.22, blue: 0.19, alpha: 1).cgColor
         ]
         gradientLayer.locations = [0, 0.46, 1]
         gradientLayer.startPoint = CGPoint(x: 0.06, y: 1)

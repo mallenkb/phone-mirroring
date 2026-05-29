@@ -172,6 +172,29 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(selected, matching)
     }
 
+    func testRememberedConnectablePhoneUsesOnlyLiveConnectableWhenSavedRouteChanged() {
+        let record = PairedPhoneRecord(
+            id: "adb-samsung",
+            displayName: "Samsung",
+            lastAddress: "192.168.1.44:42111",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let currentRoute = DiscoveredPhone(
+            id: "adb-current-session",
+            address: "192.168.68.54:46507",
+            kind: .connectable,
+            lastSeen: Date(timeIntervalSince1970: 300)
+        )
+
+        let selected = AppModel.rememberedConnectablePhone(
+            for: record,
+            in: [currentRoute]
+        )
+
+        XCTAssertEqual(selected, currentRoute)
+    }
+
     func testWiFiIPAddressParsingPrefersWLANSourceAddress() {
         let output = """
         default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44

@@ -6,6 +6,7 @@ BUILD_DIR="scrcpy-source/build-mac"
 SCRCPY_SERVER="$BUILD_DIR/server/scrcpy-server"
 RESOURCE_SCRCPY_SERVER="Sources/AndroidMirrorMac/Resources/scrcpy-server"
 HOST_BIN=".build/release/AndroidMirrorMac"
+RESOURCE_BUNDLE=".build/release/AndroidMirrorMac_AndroidMirrorMac.bundle"
 BIN_DIR="$APP/Contents/MacOS"
 
 swift build -c release
@@ -27,6 +28,10 @@ mkdir -p "$BIN_DIR" "$APP/Contents/Resources"
 
 cp "$HOST_BIN" "$BIN_DIR/AndroidMirrorMac"
 chmod +x "$BIN_DIR/AndroidMirrorMac"
+
+if [ -d "$RESOURCE_BUNDLE" ]; then
+  cp -R "$RESOURCE_BUNDLE" "$APP/AndroidMirrorMac_AndroidMirrorMac.bundle"
+fi
 
 # Audio and video are handled in-process; only the scrcpy-server jar (pushed to
 # the device) and adb are needed. The standalone scrcpy CLI is no longer bundled.
@@ -60,9 +65,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key>
   <string>com.mallenkb.AndroidMirrorMac</string>
   <key>CFBundleName</key>
-  <string>Android Mirror Scrcpy</string>
+  <string>Android Mirroring</string>
   <key>CFBundleDisplayName</key>
-  <string>Android Mirror Scrcpy</string>
+  <string>Android Mirroring</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

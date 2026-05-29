@@ -7,25 +7,29 @@ import SwiftUI
 struct FigmaMirrorExperienceView: View {
     @EnvironmentObject private var model: AppModel
     private let phoneAspect: CGFloat = 894 / 1948
+    private let referenceHeight: CGFloat = 884
+    private var referenceWidth: CGFloat { referenceHeight * phoneAspect }
     private var isConnecting: Bool {
         model.isPairing || model.isScanning || model.isMirroring
     }
-    private let heroIconSize: CGFloat = 36
-    private let columnWidth: CGFloat = 286
+    private let heroIconSize: CGFloat = 42
+    private let columnWidth: CGFloat = 390
     private let ctaHeight: CGFloat = 42
     private let accent = Color(red: 0.22, green: 0.78, blue: 0.55)
-    private let primaryBlue = Color(red: 0.02, green: 0.46, blue: 0.92)
 
     var body: some View {
         GeometryReader { proxy in
-            let width = min(proxy.size.width, proxy.size.height * phoneAspect)
-            let height = min(proxy.size.height, width / phoneAspect)
+            let surfaceInset: CGFloat = 0
+            let availableWidth = max(0, proxy.size.width - surfaceInset * 2)
+            let availableHeight = max(0, proxy.size.height - surfaceInset * 2)
+            let scale = max(0.1, min(availableWidth / referenceWidth, availableHeight / referenceHeight))
 
             ZStack {
                 Color.clear
 
                 designSurface
-                    .frame(width: width, height: height)
+                    .frame(width: referenceWidth, height: referenceHeight)
+                    .scaleEffect(scale)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
@@ -45,131 +49,145 @@ struct FigmaMirrorExperienceView: View {
     }
 
     private var connectionContent: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 0) {
+            Spacer(minLength: 126)
+
             headerGroup
 
-            instructionsGroup
+            Spacer(minLength: 26)
+
+            usbConnectionAction
+
+            Text("or")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.66))
+                .padding(.vertical, 24)
+
+            connectionInstruction(
+                iconName: "qrcode.viewfinder",
+                title: "Scan QR code",
+                detail: "Turn on Wireless debugging, choose Pair device\nwith QR code, then scan below.",
+                iconColor: .white
+            )
 
             qrPairingPanel
+                .padding(.top, 26)
 
             ctaRow
+                .padding(.top, 16)
+
+            Spacer(minLength: 22)
+
+            devicePill
+
+            Spacer(minLength: 24)
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 26)
+        .padding(.horizontal, 34)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     private var headerGroup: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 22) {
             Image(systemName: "iphone.gen3.radiowaves.left.and.right")
                 .font(.system(size: heroIconSize, weight: .medium))
                 .foregroundStyle(accent)
 
             Text("Connect your Android Phone")
-                .font(.system(size: 19, weight: .bold))
-                .tracking(-0.2)
+                .font(.system(size: 24, weight: .bold))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private var instructionsGroup: some View {
-        VStack(spacing: 16) {
+    private var usbConnectionAction: some View {
+        Button(action: model.connectViaUSB) {
             connectionInstruction(
-                iconName: "cable.connector",
+                iconName: "cable.connector.horizontal",
                 title: "Connect via USB",
-                detail: "Turn on USB debugging, plug in the phone, and approve this Mac."
-            )
-
-            connectionInstruction(
-                iconName: "qrcode.viewfinder",
-                title: "Scan QR code",
-                detail: "Turn on Wireless debugging, choose Pair device with QR code, then scan below."
+                detail: "Use an authorized cable connection. Audio is only\nattempted on USB.",
+                iconColor: .white
             )
         }
-        .frame(maxWidth: columnWidth)
+        .buttonStyle(.plain)
+        .disabled(isConnecting)
     }
 
     private var ctaRow: some View {
-        HStack(spacing: 10) {
-            Button(action: model.connectViaUSB) {
-                HStack(spacing: 7) {
-                    if isConnecting {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(.white)
-                    }
-
-                    Text(isConnecting ? "Connecting" : "Connect via USB")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                }
+        Button(action: model.restartQRCodePairingSession) {
+            Text("New QR Code")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white.opacity(0.92))
+                .lineLimit(1)
                 .frame(maxWidth: .infinity, minHeight: ctaHeight)
                 .background(
                     Capsule(style: .continuous)
-                        .fill(primaryBlue)
+                        .fill(Color.white.opacity(0.13))
                 )
                 .overlay(
                     Capsule(style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+                        .strokeBorder(Color.white.opacity(0.20), lineWidth: 1)
                 )
-                .shadow(color: primaryBlue.opacity(0.35), radius: 8, y: 3)
-            }
-            .buttonStyle(.plain)
-            .disabled(isConnecting)
-
-            Button(action: model.restartQRCodePairingSession) {
-                Text("New QR Code")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, minHeight: ctaHeight)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(Color.white.opacity(0.10))
-                    )
-                    .overlay(
-                        Capsule(style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
-                    )
-            }
-            .buttonStyle(.plain)
-            .disabled(isConnecting)
         }
+        .buttonStyle(.plain)
+        .disabled(isConnecting)
         .frame(maxWidth: columnWidth)
     }
 
-    private func connectionInstruction(iconName: String, title: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: 13) {
-            Image(systemName: iconName)
-                .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(accent)
-                .frame(width: 24, alignment: .center)
+    private var devicePill: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(accent.opacity(0.9))
+                .frame(width: 8, height: 8)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .tracking(-0.1)
-                    .foregroundStyle(.white)
+            Text("Device")
+                .font(.system(size: 15, weight: .bold))
 
-                Text(detail)
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.66))
-                    .multilineTextAlignment(.leading)
-                    .lineSpacing(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Text(model.selectedDevice.name)
+                .font(.system(size: 15, weight: .bold))
+                .lineLimit(1)
         }
+        .foregroundStyle(accent.opacity(0.85))
+        .padding(.horizontal, 18)
+        .frame(height: 34)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.black.opacity(0.12))
+        )
+    }
+
+    private func connectionInstruction(
+        iconName: String,
+        title: String,
+        detail: String,
+        iconColor: Color
+    ) -> some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 13) {
+                Image(systemName: iconName)
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(iconColor)
+                    .frame(width: 30, alignment: .center)
+
+                Text(title)
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+
+            Text(detail)
+                .font(.system(size: 15.5, weight: .regular))
+                .foregroundStyle(.white.opacity(0.78))
+                .multilineTextAlignment(.center)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: columnWidth)
     }
 
     private var qrPairingPanel: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color.white)
-                .shadow(color: .black.opacity(0.28), radius: 12, y: 5)
 
             if let payload = model.qrPairingSession?.payload,
                let image = qrImage(from: payload, size: 188) {
@@ -214,23 +232,26 @@ struct FigmaPhoneFrame<Content: View>: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 40, style: .continuous)
+            let frameShape = RoundedRectangle(cornerRadius: 40, style: .continuous)
+
+            frameShape
                 .fill(
                     LinearGradient(
                         colors: [
-                            Color(red: 0.47, green: 0.41, blue: 0.27),
-                            Color(red: 0.18, green: 0.16, blue: 0.10)
+                            Color(red: 0.0, green: 0.48, blue: 0.43),
+                            Color(red: 0.0, green: 0.22, blue: 0.19)
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 40, style: .continuous)
+                    frameShape
                         .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
                 )
 
             content
         }
+        .clipShape(RoundedRectangle(cornerRadius: 40, style: .continuous))
     }
 }

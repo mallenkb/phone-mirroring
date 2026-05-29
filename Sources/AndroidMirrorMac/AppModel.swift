@@ -11,6 +11,7 @@ final class AppModel: ObservableObject {
     @Published var isRecording = false
     @Published var isPairing = false
     @Published var connectionScale: CGFloat = 0.56
+    static let onboardingWindowSize = NSSize(width: 500, height: 900)
     static let minimumConnectionWindowSize = NSSize(width: 384, height: 688)
     static let defaultConnectionWindowSize = NSSize(width: 500, height: 900)
     static let maximumConnectionWindowScale: CGFloat = 0.70
@@ -685,15 +686,12 @@ final class AppModel: ObservableObject {
     }
 
     private func mostRecentPairedPhone(in phones: [DiscoveredPhone]) -> DiscoveredPhone? {
-        let recordsByID = Dictionary(uniqueKeysWithValues: pairedPhones.map { ($0.id, $0) })
-        return phones
-            .filter { $0.kind == .connectable && recordsByID[$0.id] != nil }
-            .sorted {
-                let lhs = recordsByID[$0.id]?.lastConnected ?? .distantPast
-                let rhs = recordsByID[$1.id]?.lastConnected ?? .distantPast
-                return lhs > rhs
+        for record in Self.recordsByMostRecent(pairedPhones) where Self.isWirelessRecord(record) {
+            if let phone = Self.rememberedConnectablePhone(for: record, in: phones) {
+                return phone
             }
-            .first
+        }
+        return nil
     }
 
     private func applyADBOutput(_ output: String) {
@@ -818,9 +816,16 @@ final class AppModel: ObservableObject {
             return exact
         }
         guard let expectedHost = host(in: record.lastAddress) else {
-            return nil
+            return connectablePhones.count == 1 ? connectablePhones.first : nil
         }
-        return connectablePhones.first { host(in: $0.address) == expectedHost }
+        if let sameHost = connectablePhones.first(where: { host(in: $0.address) == expectedHost }) {
+            return sameHost
+        }
+        return connectablePhones.count == 1 ? connectablePhones.first : nil
+    }
+
+    nonisolated static func isWirelessADBTarget(_ target: String) -> Bool {
+        target.contains(":") || target.contains("._adb") || target.hasPrefix("adb-")
     }
 
     nonisolated static func wifiIPAddress(in routeOutput: String) -> String? {
@@ -937,9 +942,80 @@ final class AppModel: ObservableObject {
     func startMirroring() {
         guard !isMirroring else { return }
         let serial = selectedDevice.adbSerial
+        if let serial, Self.isWirelessADBTarget(serial) {
+            startWirelessMirroring(savedTarget: serial)
+            return
+        }
         append(serial == nil ? "Starting native mirror..."
                               : "Starting native mirror for \(serial!)...")
         launchNativeMirror(serial: serial)
+    }
+
+    private func startWirelessMirroring(savedTarget: String) {
+        guard !isPairing else { return }
+
+        let selectedID = selectedDevice.id
+        let selectedName = selectedDevice.name
+        let adb = self.adb
+
+        isPairing = true
+        append("Checking wireless route for \(savedTarget)...")
+
+        Task { [weak self] in
+            var target: String?
+
+            if savedTarget.contains(":") {
+                let connectOutput = await Task.detached {
+                    adb.run(["connect", savedTarget])
+                }.value
+
+                guard let self else { return }
+                self.append("adb connect: \(Self.oneLine(connectOutput))")
+                if Self.adbConnectSucceeded(connectOutput) {
+                    target = savedTarget
+                }
+            }
+
+            guard let self else { return }
+            if target == nil {
+                let livePhones = await Task.detached {
+                    adb.connectableMDNSTargets()
+                }.value
+                let phones = livePhones + self.discoveredPhones
+                let record = Self.recordsByMostRecent(self.pairedPhones).first { record in
+                    record.id == selectedID || record.lastAddress == savedTarget
+                }
+                let refreshedPhone = record.flatMap {
+                    Self.rememberedConnectablePhone(for: $0, in: phones)
+                } ?? (phones.filter { $0.kind == .connectable }.count == 1
+                    ? phones.first(where: { $0.kind == .connectable })
+                    : nil)
+
+                if let refreshedPhone {
+                    self.append("Wireless route changed. Trying \(refreshedPhone.address)...")
+                    let connectOutput = await Task.detached {
+                        adb.run(["connect", refreshedPhone.address])
+                    }.value
+                    self.append("adb connect: \(Self.oneLine(connectOutput))")
+                    if Self.adbConnectSucceeded(connectOutput) {
+                        target = refreshedPhone.address
+                        self.touchPairedPhone(
+                            id: refreshedPhone.id,
+                            displayName: record?.displayName ?? selectedName,
+                            address: refreshedPhone.address
+                        )
+                    }
+                }
+            }
+
+            self.isPairing = false
+            guard let target else {
+                self.append("Could not connect over Wi-Fi. Open Android Wireless debugging and pair or refresh the route.")
+                return
+            }
+            self.selectedDevice.adbSerial = target
+            self.launchNativeMirror(serial: target)
+        }
     }
 
     func stopMirroring() {
@@ -1243,8 +1319,14 @@ final class AppModel: ObservableObject {
 
     func sendAndroidKey(_ keycode: String) {
         let adb = self.adb
+        let serial = selectedDevice.adbSerial
         Task.detached {
-            adb.run(["shell", "input", "keyevent", keycode])
+            var arguments: [String] = []
+            if let serial, !serial.isEmpty {
+                arguments.append(contentsOf: ["-s", serial])
+            }
+            arguments.append(contentsOf: ["shell", "input", "keyevent", keycode])
+            adb.run(arguments)
         }
     }
 

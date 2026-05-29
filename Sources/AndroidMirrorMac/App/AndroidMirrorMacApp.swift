@@ -4,19 +4,21 @@ struct AndroidMirrorMacSwiftUIPreviewApp: App {
     @StateObject private var model = AppModel()
 
     var body: some Scene {
-        WindowGroup("Android device") {
+        WindowGroup("Android Mirroring") {
             RootView()
                 .environmentObject(model)
                 .frame(
-                    minWidth: AppModel.minimumConnectionWindowSize.width,
-                    idealWidth: AppModel.defaultConnectionWindowSize.width,
-                    minHeight: AppModel.minimumConnectionWindowSize.height,
-                    idealHeight: AppModel.defaultConnectionWindowSize.height
+                    minWidth: AppModel.onboardingWindowSize.width,
+                    idealWidth: AppModel.onboardingWindowSize.width,
+                    maxWidth: AppModel.onboardingWindowSize.width,
+                    minHeight: AppModel.onboardingWindowSize.height,
+                    idealHeight: AppModel.onboardingWindowSize.height,
+                    maxHeight: AppModel.onboardingWindowSize.height
                 )
         }
         .defaultSize(
-            width: AppModel.defaultConnectionWindowSize.width,
-            height: AppModel.defaultConnectionWindowSize.height
+            width: AppModel.onboardingWindowSize.width,
+            height: AppModel.onboardingWindowSize.height
         )
         .commands {
             CommandGroup(after: .appInfo) {

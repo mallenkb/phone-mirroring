@@ -34,16 +34,12 @@ struct WindowRegistrationView: NSViewRepresentable {
         guard let window else { return }
         model.registerConnectionWindow(window)
         window.styleMask.remove(.titled)
-        window.styleMask.insert(.resizable)
+        window.styleMask.remove(.resizable)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.minSize = AppModel.minimumConnectionWindowSize
-        window.contentMinSize = AppModel.minimumConnectionWindowSize
-        if let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
-            window.maxSize = NSSize(
-                width: max(window.minSize.width, (visibleFrame.width - 40) * AppModel.maximumConnectionWindowScale),
-                height: max(window.minSize.height, (visibleFrame.height - 40) * AppModel.maximumConnectionWindowScale)
-            )
-        }
+        window.minSize = AppModel.onboardingWindowSize
+        window.contentMinSize = AppModel.onboardingWindowSize
+        window.maxSize = AppModel.onboardingWindowSize
+        window.contentMaxSize = AppModel.onboardingWindowSize
     }
 }
