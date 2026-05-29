@@ -6,24 +6,15 @@ import SwiftUI
 /// size and scales it to fit the host window.
 struct FigmaMirrorExperienceView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var connectionMode: ConnectionMode = .wifi
-    @State private var wirelessHost = ""
-    @State private var wirelessPort = ""
-    @State private var wirelessPairingPort = ""
-    @State private var wirelessPairingCode = ""
     private let phoneAspect: CGFloat = 894 / 1948
     private var isConnecting: Bool {
         model.isPairing || model.isScanning || model.isMirroring
     }
-    private var contentSpacing: CGFloat {
-        connectionMode == .wifi ? 10 : 18
-    }
-    private var verticalPadding: CGFloat {
-        connectionMode == .wifi ? 24 : 34
-    }
-    private var heroIconSize: CGFloat {
-        connectionMode == .wifi ? 34 : 44
-    }
+    private let heroIconSize: CGFloat = 36
+    private let columnWidth: CGFloat = 286
+    private let ctaHeight: CGFloat = 42
+    private let accent = Color(red: 0.22, green: 0.78, blue: 0.55)
+    private let primaryBlue = Color(red: 0.02, green: 0.46, blue: 0.92)
 
     var body: some View {
         GeometryReader { proxy in
@@ -40,9 +31,7 @@ struct FigmaMirrorExperienceView: View {
             .clipped()
         }
         .onAppear {
-            if connectionMode == .wifi {
-                model.ensureQRCodePairingSession()
-            }
+            model.ensureQRCodePairingSession()
         }
         .onDisappear {
             model.stopQRCodePairingSession()
@@ -56,209 +45,169 @@ struct FigmaMirrorExperienceView: View {
     }
 
     private var connectionContent: some View {
-        VStack(spacing: contentSpacing) {
-            Spacer()
+        VStack(spacing: 20) {
+            headerGroup
 
+            instructionsGroup
+
+            qrPairingPanel
+
+            ctaRow
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 26)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    private var headerGroup: some View {
+        VStack(spacing: 10) {
             Image(systemName: "iphone.gen3.radiowaves.left.and.right")
                 .font(.system(size: heroIconSize, weight: .medium))
-                .foregroundStyle(Color(red: 0.20, green: 0.74, blue: 0.51))
+                .foregroundStyle(accent)
 
             Text("Connect your Android Phone")
-                .font(.system(size: 18, weight: .bold))
+                .font(.system(size: 19, weight: .bold))
+                .tracking(-0.2)
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
 
-            HStack(spacing: 6) {
-                connectionModeButton(.usb)
-                connectionModeButton(.wifi)
-                connectionModeButton(.manual)
-            }
-            .padding(4)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(Color.black.opacity(0.18))
-            )
-            .overlay(
-                Capsule(style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
+    private var instructionsGroup: some View {
+        VStack(spacing: 12) {
+            connectionInstruction(
+                iconName: "cable.connector",
+                title: "Connect via USB",
+                detail: "Turn on USB debugging, plug in the phone, and approve this Mac."
             )
 
-            VStack(spacing: 7) {
-                ForEach(connectionMode.descriptionLines, id: \.self) { line in
-                    Text(line)
-                }
-            }
-            .font(.system(size: 14, weight: .regular))
-            .foregroundStyle(.white.opacity(0.86))
-            .multilineTextAlignment(.center)
-            .lineLimit(nil)
+            orDivider
 
-            if connectionMode == .wifi {
-                qrPairingPanel
-            }
+            connectionInstruction(
+                iconName: "qrcode.viewfinder",
+                title: "Scan QR code",
+                detail: "Turn on Wireless debugging, choose Pair device with QR code, then scan below."
+            )
+        }
+        .frame(maxWidth: columnWidth)
+    }
 
-            if connectionMode == .manual {
-                manualWirelessFields
-            }
-
-            Button(action: connectSelectedMode) {
-                VStack(spacing: 5) {
-                    Text(isConnecting ? "Connecting" : connectionMode.buttonTitle)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-
+    private var ctaRow: some View {
+        HStack(spacing: 10) {
+            Button(action: model.connectViaUSB) {
+                HStack(spacing: 7) {
                     if isConnecting {
                         ProgressView()
-                            .progressViewStyle(.linear)
+                            .controlSize(.small)
                             .tint(.white)
-                            .frame(width: 118)
                     }
+
+                    Text(isConnecting ? "Connecting" : "Connect via USB")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
                 }
-                .frame(minWidth: 110, minHeight: 42)
-                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, minHeight: ctaHeight)
                 .background(
                     Capsule(style: .continuous)
-                        .fill(Color(red: 0.02, green: 0.46, blue: 0.92))
+                        .fill(primaryBlue)
                 )
                 .overlay(
                     Capsule(style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.20), lineWidth: 1)
+                        .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
                 )
+                .shadow(color: primaryBlue.opacity(0.35), radius: 8, y: 3)
             }
             .buttonStyle(.plain)
             .disabled(isConnecting)
-            .padding(.top, 4)
 
-            if let status = model.diagnostics.first?.message {
-                Text(status)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.72))
-                    .multilineTextAlignment(.center)
-                    .lineLimit(4)
-                    .padding(.horizontal, 28)
-                    .fixedSize(horizontal: false, vertical: true)
+            Button(action: model.restartQRCodePairingSession) {
+                Text("New QR Code")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, minHeight: ctaHeight)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color.white.opacity(0.10))
+                    )
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
+                    )
             }
-
-            Spacer()
+            .buttonStyle(.plain)
+            .disabled(isConnecting)
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, verticalPadding)
+        .frame(maxWidth: columnWidth)
     }
 
-    private func connectionModeButton(_ mode: ConnectionMode) -> some View {
-        let isSelected = connectionMode == mode
+    private func connectionInstruction(iconName: String, title: String, detail: String) -> some View {
+        VStack(spacing: 5) {
+            HStack(spacing: 7) {
+                Image(systemName: iconName)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .frame(width: 16, height: 16)
 
-        return Button {
-            let previousMode = connectionMode
-            connectionMode = mode
-            if mode == .wifi {
-                model.ensureQRCodePairingSession()
-            } else if previousMode == .wifi {
-                model.stopQRCodePairingSession()
-            }
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: mode.symbolName)
-                    .font(.system(size: 14, weight: .semibold))
-                Text(mode.title)
-                    .font(.system(size: 14, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .tracking(-0.1)
+                    .foregroundStyle(.white)
                     .lineLimit(1)
             }
-            .foregroundStyle(isSelected ? Color(red: 0.07, green: 0.08, blue: 0.07) : .white.opacity(0.78))
-            .frame(minWidth: 58, minHeight: 28)
-            .padding(.horizontal, 8)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(isSelected ? Color.white.opacity(0.92) : Color.clear)
-            )
+
+            Text(detail)
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(.white.opacity(0.72))
+                .multilineTextAlignment(.center)
+                .lineSpacing(2.5)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .buttonStyle(.plain)
-        .disabled(isConnecting)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private var orDivider: some View {
+        HStack(spacing: 10) {
+            dividerLine
+
+            Text("OR")
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(1.5)
+                .foregroundStyle(.white.opacity(0.5))
+                .lineLimit(1)
+                .fixedSize()
+
+            dividerLine
+        }
+    }
+
+    private var dividerLine: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.16))
+            .frame(height: 1)
     }
 
     private var qrPairingPanel: some View {
-        VStack(spacing: 9) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.white)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.70), lineWidth: 1)
-                    )
+        ZStack {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white)
+                .shadow(color: .black.opacity(0.28), radius: 12, y: 5)
 
-                if let payload = model.qrPairingSession?.payload,
-                   let image = qrImage(from: payload, size: 144) {
-                    Image(nsImage: image)
-                        .interpolation(.none)
-                        .resizable()
-                        .frame(width: 118, height: 118)
-                        .accessibilityLabel("ADB wireless pairing QR code")
-                } else {
-                    ProgressView()
-                        .controlSize(.small)
-                }
+            if let payload = model.qrPairingSession?.payload,
+               let image = qrImage(from: payload, size: 188) {
+                Image(nsImage: image)
+                    .interpolation(.none)
+                    .resizable()
+                    .frame(width: 188, height: 188)
+                    .accessibilityLabel("ADB wireless pairing QR code")
+            } else {
+                ProgressView()
+                    .controlSize(.small)
             }
-            .frame(width: 132, height: 132)
-
-            HStack(spacing: 6) {
-                if model.isQRCodePairingWaiting {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(.white)
-                }
-
-                Text(model.isQRCodePairingWaiting ? "Waiting for scan" : "Ready to scan")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.88))
-            }
-
-            Text("Open Wireless debugging > Pair device with QR code, then scan.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.66))
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(maxWidth: 238)
-        .padding(.vertical, 2)
-    }
-
-    private var manualWirelessFields: some View {
-        VStack(spacing: 8) {
-            TextField("Phone IP address", text: $wirelessHost)
-                .textFieldStyle(PlainTextFieldStyle())
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .frame(height: 34)
-                .background(fieldBackground)
-
-            TextField("Port", text: $wirelessPort)
-                .textFieldStyle(PlainTextFieldStyle())
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .frame(height: 34)
-                .background(fieldBackground)
-
-            TextField("Pairing port (optional)", text: $wirelessPairingPort)
-                .textFieldStyle(PlainTextFieldStyle())
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .frame(height: 34)
-                .background(fieldBackground)
-
-            TextField("Pairing code (optional)", text: $wirelessPairingCode)
-                .textFieldStyle(PlainTextFieldStyle())
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .frame(height: 34)
-                .background(fieldBackground)
-        }
-        .frame(maxWidth: 230)
+        .frame(width: 212, height: 212)
     }
 
     private func qrImage(from payload: String, size: CGFloat) -> NSImage? {
@@ -282,83 +231,6 @@ struct FigmaMirrorExperienceView: View {
         return NSImage(cgImage: cgImage, size: NSSize(width: size, height: size))
     }
 
-    private var fieldBackground: some View {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(Color.black.opacity(0.22))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
-            )
-    }
-
-    private func connectSelectedMode() {
-        switch connectionMode {
-        case .wifi:
-            model.restartQRCodePairingSession()
-        case .usb:
-            model.connectViaUSB()
-        case .manual:
-            model.connectWirelessly(
-                host: wirelessHost,
-                port: wirelessPort,
-                pairingPort: wirelessPairingPort,
-                pairingCode: wirelessPairingCode
-            )
-        }
-    }
-}
-
-private enum ConnectionMode: Equatable {
-    case wifi
-    case usb
-    case manual
-
-    var title: String {
-        switch self {
-        case .wifi: "Wi-Fi"
-        case .usb: "USB"
-        case .manual: "Manual"
-        }
-    }
-
-    var symbolName: String {
-        switch self {
-        case .wifi: "wifi"
-        case .usb: "cable.connector"
-        case .manual: "number"
-        }
-    }
-
-    var buttonTitle: String {
-        switch self {
-        case .wifi: "New QR Code"
-        case .usb: "Connect USB"
-        case .manual: "Connect Manual"
-        }
-    }
-
-    var descriptionLines: [String] {
-        switch self {
-        case .wifi:
-            [
-                "Open Android Wireless debugging.",
-                "Tap Pair device with QR code and scan.",
-                "The app pairs and starts Wi-Fi mirroring."
-            ]
-        case .usb:
-            [
-                "On Android, open Developer options,",
-                "turn on USB debugging, then approve this Mac.",
-                "Keep your phone plugged in while mirroring."
-            ]
-        case .manual:
-            [
-                "Enter IP and wireless connect port.",
-                "Add pairing port and code for first-time setup.",
-                "Use this when discovery does not find the phone."
-            ]
-        }
-    }
 }
 
 struct FigmaPhoneFrame<Content: View>: View {

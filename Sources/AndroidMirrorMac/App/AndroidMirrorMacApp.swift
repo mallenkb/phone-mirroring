@@ -4,12 +4,20 @@ struct AndroidMirrorMacSwiftUIPreviewApp: App {
     @StateObject private var model = AppModel()
 
     var body: some Scene {
-        WindowGroup("Android Mirror") {
+        WindowGroup("Android device") {
             RootView()
                 .environmentObject(model)
-                .frame(minWidth: 257, idealWidth: 257, minHeight: 574, idealHeight: 574)
+                .frame(
+                    minWidth: AppModel.minimumConnectionWindowSize.width,
+                    idealWidth: AppModel.defaultConnectionWindowSize.width,
+                    minHeight: AppModel.minimumConnectionWindowSize.height,
+                    idealHeight: AppModel.defaultConnectionWindowSize.height
+                )
         }
-        .defaultSize(width: 257, height: 574)
+        .defaultSize(
+            width: AppModel.defaultConnectionWindowSize.width,
+            height: AppModel.defaultConnectionWindowSize.height
+        )
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Scan for Android Devices") { model.scanADBDevices() }

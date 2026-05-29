@@ -77,7 +77,7 @@ final class WindowController: NSWindowController, NSWindowDelegate {
 
     private func configure(window: NSWindow) {
         window.delegate = self
-        window.title = "Android Mirror"
+        window.title = "Android device"
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false

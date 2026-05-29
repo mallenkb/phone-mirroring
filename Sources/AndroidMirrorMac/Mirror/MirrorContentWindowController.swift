@@ -31,7 +31,6 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     static let screenRightInset: CGFloat = screenSideInset
     static let screenBottomInset: CGFloat = 0
     static let defaultMirrorSize = NSSize(width: 1080, height: 2340)
-    static let defaultInitialMirrorScale: CGFloat = 0.5
     static let defaultMirrorAspect: CGFloat = 1080.0 / 2340.0
     static let minimumMirrorCornerRadius: CGFloat = 16
     static let maximumMirrorCornerRadius: CGFloat = 38
@@ -142,11 +141,16 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             visibleFrame: visibleFrame,
             screenMargin: screenMargin
         )
-        let screenWidth = max(1, fullSize.width - horizontalShellInset)
-        let screenHeight = max(1, fullSize.height - verticalShellInset)
+        let maxScreenWidth = max(1, fullSize.width - horizontalShellInset)
+        let maxScreenHeight = max(1, fullSize.height - verticalShellInset)
+        let targetShellHeight = min(AppModel.defaultConnectionWindowSize.height, fullSize.height)
+        let targetScreenHeight = max(1, targetShellHeight - verticalShellInset)
+        let streamAspect = streamSize.width / max(streamSize.height, 1)
+        let targetScreenWidth = min(maxScreenWidth, targetScreenHeight * streamAspect)
+        let screenHeight = min(maxScreenHeight, targetScreenWidth / max(streamAspect, 0.001))
         return NSSize(
-            width: screenWidth * defaultInitialMirrorScale + horizontalShellInset,
-            height: screenHeight * defaultInitialMirrorScale + verticalShellInset
+            width: targetScreenWidth + horizontalShellInset,
+            height: screenHeight + verticalShellInset
         )
     }
 
@@ -156,6 +160,28 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             y: visibleFrame.midY - size.height / 2,
             width: size.width,
             height: size.height
+        )
+    }
+
+    private static func centeredFrame(
+        forContentSize contentSize: NSSize,
+        in visibleFrame: NSRect,
+        window: NSWindow
+    ) -> NSRect {
+        let insets = measuredFrameInsets(for: window)
+        let frameSize = NSSize(
+            width: contentSize.width + insets.width,
+            height: contentSize.height + insets.height
+        )
+        return centeredFrame(size: frameSize, in: visibleFrame)
+    }
+
+    private static func measuredFrameInsets(for window: NSWindow) -> NSSize {
+        let contentSize = window.contentView?.bounds.size
+            ?? window.contentRect(forFrameRect: window.frame).size
+        return NSSize(
+            width: max(0, window.frame.width - contentSize.width),
+            height: max(0, window.frame.height - contentSize.height)
         )
     }
 
@@ -197,15 +223,16 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         applyWindowSizeLimits(to: window, aspect: aspect)
 
         let visible = Self.targetVisibleFrame(for: window)
-        let outerSize = Self.wrappedShellSize(
+        let outerSize = Self.initialWrappedShellSize(
             for: NSSize(width: CGFloat(width), height: CGFloat(height)),
             visibleFrame: visible
         )
         window.contentAspectRatio = outerSize
-        let newFrame = Self.centeredFrame(size: outerSize, in: visible)
+        let newFrame = Self.centeredFrame(forContentSize: outerSize, in: visible, window: window)
         Logger.log("MirrorContentWindow streamSize=\(width)x\(height) visible=\(visible) frame=\(newFrame)")
         window.setFrame(newFrame, display: true, animate: false)
         applyScaledRenderInsets()
+        tightenWindowAroundRenderContent()
     }
 
     func scaleWindow(by scale: CGFloat) {
@@ -286,7 +313,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     // MARK: - Setup
 
     private func configure(window: NSWindow) {
-        window.title = "Android Mirror"
+        window.title = "Android device"
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
@@ -378,6 +405,31 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         renderView.cornerRadius = mirrorRadius
     }
 
+    private func tightenWindowAroundRenderContent() {
+        guard let window, !isInFullscreen, let aspect = mirrorAspect, aspect > 0 else { return }
+
+        rootView.layoutSubtreeIfNeeded()
+        let contentWidth = max(1, rootView.bounds.width - Self.horizontalShellInset)
+        let targetRootHeight = contentWidth / aspect + currentChromeHeight() + Self.screenBottomInset
+        let frameInsets = Self.measuredFrameInsets(for: window)
+        let targetFrameSize = NSSize(
+            width: window.frame.width,
+            height: targetRootHeight + frameInsets.height
+        )
+
+        guard abs(window.frame.height - targetFrameSize.height) > 0.5 else { return }
+
+        window.contentAspectRatio = NSSize(width: rootView.bounds.width, height: targetRootHeight)
+        let targetFrame = NSRect(
+            x: window.frame.midX - targetFrameSize.width / 2,
+            y: window.frame.midY - targetFrameSize.height / 2,
+            width: targetFrameSize.width,
+            height: targetFrameSize.height
+        )
+        window.setFrame(targetFrame, display: true, animate: false)
+        applyScaledRenderInsets()
+    }
+
     static func sizeLimits(
         visibleFrame: NSRect,
         aspect: CGFloat,
@@ -385,8 +437,8 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         horizontalChromeWidth: CGFloat = 0
     ) -> (min: NSSize, max: NSSize) {
         let visibleHeight = max(1, visibleFrame.height)
-        let minHeight = visibleHeight * minimumScreenHeightRatio
         let maxHeight = visibleHeight * maximumScreenHeightRatio
+        let minHeight = min(maxHeight, max(AppModel.minimumConnectionWindowSize.height, visibleHeight * minimumScreenHeightRatio))
         let maxChromeHeight = chromeHeight > 0 ? chromeHeight * maximumChromeScale : 0
         let minContentHeight = max(1, minHeight - chromeHeight)
         let maxContentHeight = max(minContentHeight, maxHeight - maxChromeHeight)
@@ -425,7 +477,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         chromeBar.alphaValue = 1
         chromeBar.isHidden = false
         chromeBar.setControlsVisible(true)
-        chromeBar.setBarBackgroundVisible(true, animated: false)
+        chromeBar.setBarBackgroundVisible(false, animated: false)
         chromeVisible = false
         chromeBar.onDragStateChange = { [weak self] isDragging in
             self?.setChromeDragging(isDragging)
@@ -550,6 +602,10 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         isInFullscreen
     }
 
+    func setChromeVisibleForTesting(_ visible: Bool) {
+        setChromeVisible(visible)
+    }
+
     private func scheduleHide() {
         guard !isDraggingChrome, !isPointerInTopZone else {
             isPointerInTopZone = true
@@ -590,7 +646,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             chromeBar.setBarBackgroundVisible(true)
         } else {
             chromeBar.setControlsVisible(true)
-            chromeBar.setBarBackgroundVisible(true)
+            chromeBar.setBarBackgroundVisible(false)
         }
 
         NSAnimationContext.runAnimationGroup { context in
@@ -604,7 +660,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
                 if !visible {
                     self.chromeBar.setControlsVisible(true)
                     self.chromeBar.isHidden = false
-                    self.chromeBar.setBarBackgroundVisible(true)
+                    self.chromeBar.setBarBackgroundVisible(false, animated: false)
                     self.rootView.layer?.backgroundColor = Self.normalShellColor(for: self.rootView)
                 }
             }
@@ -617,7 +673,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         isPointerInTopZone = false
         chromeBar.isHidden = true
         chromeBar.alphaValue = 0
-        chromeBar.setControlsVisible(false)
+        chromeBar.setControlsVisible(true)
         chromeBar.setBarBackgroundVisible(false, animated: false)
         rootView.layer?.backgroundColor = isInFullscreen
             ? NSColor.black.cgColor
@@ -701,7 +757,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             chromeBar.isHidden = false
             chromeBar.alphaValue = 1
             chromeBar.setControlsVisible(true)
-            chromeBar.setBarBackgroundVisible(true, animated: false)
+            chromeBar.setBarBackgroundVisible(false, animated: false)
             rootView.layer?.cornerRadius = Self.cornerRadius
             rootView.layer?.backgroundColor = Self.normalShellColor(for: rootView)
             rootView.layer?.borderColor = Self.shellBorderColor(for: rootView)
@@ -756,9 +812,18 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             return frameSize
         }
 
+        let insets = Self.measuredFrameInsets(for: sender)
+        let proposedContentSize = NSSize(
+            width: max(1, frameSize.width - insets.width),
+            height: max(1, frameSize.height - insets.height)
+        )
+        let constrainedContentSize = NSSize(
+            width: proposedContentSize.width,
+            height: max(1, proposedContentSize.width - Self.horizontalShellInset) / mirrorAspect + Self.verticalShellInset
+        )
         return NSSize(
-            width: frameSize.width,
-            height: max(1, frameSize.width - Self.horizontalShellInset) / mirrorAspect + Self.verticalShellInset
+            width: constrainedContentSize.width + insets.width,
+            height: constrainedContentSize.height + insets.height
         )
     }
 

@@ -5,14 +5,15 @@ import Foundation
 @MainActor
 final class AppModel: ObservableObject {
     @Published var selectedDevice: MirrorDevice = .demo
-    @Published var diagnostics: [DiagnosticLine] = [
-        DiagnosticLine(date: .now, message: "Prototype ready. Connect an Android phone with USB debugging or wireless debugging, then scan for adb devices.")
-    ]
+    @Published var diagnostics: [DiagnosticLine] = []
     @Published var isScanning = false
     @Published var isMirroring = false
     @Published var isRecording = false
     @Published var isPairing = false
     @Published var connectionScale: CGFloat = 0.56
+    static let minimumConnectionWindowSize = NSSize(width: 384, height: 688)
+    static let defaultConnectionWindowSize = NSSize(width: 500, height: 900)
+    static let maximumConnectionWindowScale: CGFloat = 0.70
 
     @Published private(set) var discoveredPhones: [DiscoveredPhone] = []
     @Published private(set) var pairedPhones: [PairedPhoneRecord] = []
@@ -239,7 +240,6 @@ final class AppModel: ObservableObject {
               let session = qrPairingSession
         else { return }
 
-        append("Scan the QR code from Android Wireless debugging > Pair device with QR code.")
         isQRCodePairingWaiting = true
 
         let adb = self.adb
@@ -451,7 +451,7 @@ final class AppModel: ObservableObject {
                 return
             }
 
-            append("Wireless debugging endpoint did not accept this Mac. If this is the first time, use Manual with the pairing code once.")
+            append("Wireless debugging endpoint did not accept this Mac. If this is the first time, use Wi-Fi and scan a pairing QR code.")
         }
 
         let discoveredWirelessPhones = await Task.detached {
@@ -482,7 +482,7 @@ final class AppModel: ObservableObject {
 
         guard allowLegacyTCPIPFallback else {
             isPairing = false
-            append("USB is ready, but no paired Wireless debugging endpoint was available. Use Manual with a pairing code once, or press Wi-Fi to force the USB cable handoff.")
+            append("USB is ready, but no paired Wireless debugging endpoint was available. Use Wi-Fi and scan a pairing QR code, or press Wi-Fi to force the USB cable handoff.")
             return
         }
 
@@ -1151,7 +1151,7 @@ final class AppModel: ObservableObject {
             return
         }
 
-        let minWidth: CGFloat = 260
+        let minWidth: CGFloat = 400
         let screenMaxWidth = NSScreen.screens.first?.visibleFrame.width ?? 1200
         let maxWidth = min(screenMaxWidth - 48, 1100)
         let newWidth = min(max(bounds.width * scale, minWidth), maxWidth)
@@ -1173,10 +1173,10 @@ final class AppModel: ObservableObject {
 
         let frame = window.frame
         let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
-        let minWidth: CGFloat = 257
-        let minHeight: CGFloat = 574
-        let maxWidth = max(minWidth, (visible?.width ?? 1200) - 40)
-        let maxHeight = max(minHeight, (visible?.height ?? 1400) - 40)
+        let minWidth = Self.minimumConnectionWindowSize.width
+        let minHeight = Self.minimumConnectionWindowSize.height
+        let maxWidth = max(minWidth, ((visible?.width ?? 1200) - 40) * Self.maximumConnectionWindowScale)
+        let maxHeight = max(minHeight, ((visible?.height ?? 1400) - 40) * Self.maximumConnectionWindowScale)
         let newWidth = min(max(frame.width * scale, minWidth), maxWidth)
         let newHeight = min(max(frame.height * scale, minHeight), maxHeight)
         let newFrame = NSRect(

@@ -133,6 +133,10 @@ final class MirrorRenderView: NSView {
     override func keyDown(with event: NSEvent) { onKeyEvent?(event) }
     override func keyUp(with event: NSEvent) { onKeyEvent?(event) }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags.contains(.command) {
+            return false
+        }
         onKeyEvent?(event)
         return true
     }

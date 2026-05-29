@@ -6,19 +6,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private let model = AppModel()
     private var keyMonitor: Any?
-    private let minimumConnectionWindowSize = NSSize(width: 308, height: 671)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let rootView = RootView()
             .environmentObject(model)
         let hostingView = NSHostingView(rootView: rootView)
         let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: minimumConnectionWindowSize),
+            contentRect: NSRect(origin: .zero, size: AppModel.defaultConnectionWindowSize),
             styleMask: [.borderless, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Android Mirror"
+        window.title = "Android device"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
@@ -27,8 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.isMovableByWindowBackground = true
         window.backgroundColor = .clear
         window.contentView = hostingView
-        window.minSize = minimumConnectionWindowSize
-        window.contentMinSize = minimumConnectionWindowSize
+        window.minSize = AppModel.minimumConnectionWindowSize
+        window.contentMinSize = AppModel.minimumConnectionWindowSize
         window.center()
         window.makeKeyAndOrderFront(nil)
         model.registerConnectionWindow(window)
@@ -69,6 +68,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let viewMenu = NSMenu(title: "View")
         viewMenu.addItem(
             NSMenuItem(
+                title: "Scan for Android Devices",
+                action: #selector(scanForAndroidDevices(_:)),
+                keyEquivalent: "r"
+            )
+        )
+        viewMenu.addItem(
+            NSMenuItem(
+                title: "Start or Stop Mirroring",
+                action: #selector(toggleMirroring(_:)),
+                keyEquivalent: "m"
+            )
+        )
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(
+            NSMenuItem(
                 title: "Zoom In",
                 action: #selector(zoomIn(_:)),
                 keyEquivalent: "+"
@@ -94,6 +108,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             switch key {
+            case "r":
+                self?.scanForAndroidDevices(nil)
+                return nil
+            case "m":
+                self?.toggleMirroring(nil)
+                return nil
             case "+", "=":
                 self?.zoomIn(nil)
                 return nil
@@ -104,6 +124,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return event
             }
         }
+    }
+
+    @objc private func scanForAndroidDevices(_ sender: Any?) {
+        model.scanADBDevices()
+    }
+
+    @objc private func toggleMirroring(_ sender: Any?) {
+        model.isMirroring ? model.stopMirroring() : model.startMirroring()
     }
 
     @objc private func zoomIn(_ sender: Any?) {
