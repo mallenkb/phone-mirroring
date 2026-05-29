@@ -4,8 +4,8 @@ import Foundation
 /// from a detached Task and route results back via @MainActor.
 struct ADBController {
     @discardableResult
-    func run(_ arguments: [String]) -> String {
-        Tooling.run("adb", arguments: arguments)
+    func run(_ arguments: [String], timeout: TimeInterval? = nil) -> String {
+        Tooling.run("adb", arguments: arguments, timeout: timeout)
     }
 
     @discardableResult

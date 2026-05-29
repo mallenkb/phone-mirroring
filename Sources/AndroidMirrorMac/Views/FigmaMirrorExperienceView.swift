@@ -12,8 +12,8 @@ struct FigmaMirrorExperienceView: View {
     private var isConnecting: Bool {
         model.isPairing || model.isScanning || model.isMirroring
     }
-    private let heroIconSize: CGFloat = 42
-    private let columnWidth: CGFloat = 390
+    private let heroIconSize: CGFloat = 36
+    private let columnWidth: CGFloat = 330
     private let ctaHeight: CGFloat = 42
     private let accent = Color(red: 0.22, green: 0.78, blue: 0.55)
 
@@ -50,7 +50,7 @@ struct FigmaMirrorExperienceView: View {
 
     private var connectionContent: some View {
         VStack(spacing: 0) {
-            Spacer(minLength: 126)
+            Spacer(minLength: 130)
 
             headerGroup
 
@@ -59,14 +59,14 @@ struct FigmaMirrorExperienceView: View {
             usbConnectionAction
 
             Text("or")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.66))
-                .padding(.vertical, 24)
+                .padding(.vertical, 22)
 
             connectionInstruction(
                 iconName: "qrcode.viewfinder",
                 title: "Scan QR code",
-                detail: "Turn on Wireless debugging, choose Pair device\nwith QR code, then scan below.",
+                detail: "Turn on Wireless debugging, choose Pair device with QR code, then scan below.",
                 iconColor: .white
             )
 
@@ -76,24 +76,24 @@ struct FigmaMirrorExperienceView: View {
             ctaRow
                 .padding(.top, 16)
 
-            Spacer(minLength: 22)
+            Spacer(minLength: 24)
 
             devicePill
 
             Spacer(minLength: 24)
         }
-        .padding(.horizontal, 34)
+        .padding(.horizontal, 36)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     private var headerGroup: some View {
-        VStack(spacing: 22) {
+        VStack(spacing: 18) {
             Image(systemName: "iphone.gen3.radiowaves.left.and.right")
                 .font(.system(size: heroIconSize, weight: .medium))
                 .foregroundStyle(accent)
 
             Text("Connect your Android Phone")
-                .font(.system(size: 24, weight: .bold))
+                .font(.system(size: 21, weight: .bold))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -105,7 +105,7 @@ struct FigmaMirrorExperienceView: View {
             connectionInstruction(
                 iconName: "cable.connector.horizontal",
                 title: "Connect via USB",
-                detail: "Use an authorized cable connection. Audio is only\nattempted on USB.",
+                detail: "Use an authorized cable connection. Audio is only attempted on USB.",
                 iconColor: .white
             )
         }
@@ -116,7 +116,7 @@ struct FigmaMirrorExperienceView: View {
     private var ctaRow: some View {
         Button(action: model.restartQRCodePairingSession) {
             Text("New QR Code")
-                .font(.system(size: 15, weight: .bold))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.92))
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, minHeight: ctaHeight)
@@ -141,10 +141,10 @@ struct FigmaMirrorExperienceView: View {
                 .frame(width: 8, height: 8)
 
             Text("Device")
-                .font(.system(size: 15, weight: .bold))
+                .font(.system(size: 14, weight: .semibold))
 
             Text(model.selectedDevice.name)
-                .font(.system(size: 15, weight: .bold))
+                .font(.system(size: 14, weight: .semibold))
                 .lineLimit(1)
         }
         .foregroundStyle(accent.opacity(0.85))
@@ -162,24 +162,26 @@ struct FigmaMirrorExperienceView: View {
         detail: String,
         iconColor: Color
     ) -> some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 13) {
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
                 Image(systemName: iconName)
-                    .font(.system(size: 19, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(iconColor)
-                    .frame(width: 30, alignment: .center)
+                    .frame(width: 24, alignment: .center)
 
                 Text(title)
-                    .font(.system(size: 18, weight: .bold))
+                    .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(.white)
             }
+            .frame(maxWidth: .infinity, alignment: .center)
 
             Text(detail)
-                .font(.system(size: 15.5, weight: .regular))
+                .font(.system(size: 14, weight: .regular))
                 .foregroundStyle(.white.opacity(0.78))
                 .multilineTextAlignment(.center)
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(width: columnWidth)
         }
         .frame(maxWidth: columnWidth)
     }

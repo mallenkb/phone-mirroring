@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 private enum MirrorShellStyle {
     static var backgroundColor: NSColor { .windowBackgroundColor }
@@ -13,7 +14,7 @@ private enum MirrorShellStyle {
 /// at display refresh rate, exactly like Reflect.
 @MainActor
 final class MirrorContentWindowController: NSWindowController, NSWindowDelegate {
-    static let cornerRadius: CGFloat = WindowChromeConstants.cornerRadiusIdle
+    static let cornerRadius: CGFloat = 34
     /// Standard macOS titlebar height. Anything larger and the AppKit chrome
     /// reads as a heavy banner instead of a window's title bar.
     static let chromeHeight: CGFloat = 28
@@ -35,7 +36,8 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     static let screenBottomInset: CGFloat = 0
     static let defaultMirrorSize = NSSize(width: 1080, height: 2340)
     static let defaultMirrorAspect: CGFloat = 1080.0 / 2340.0
-    static let minimumMirrorCornerRadius: CGFloat = 16
+    static let initialMirrorScale: CGFloat = 0.70
+    static let minimumMirrorCornerRadius: CGFloat = 24
     static let maximumMirrorCornerRadius: CGFloat = 38
     static let minimumScreenHeightRatio: CGFloat = 0.45
     static let maximumScreenHeightRatio: CGFloat = 0.98
@@ -70,6 +72,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private var isInFullscreen = false
     private var normalWindowFrameBeforeFullscreen: NSRect?
     private var mirrorAspect: CGFloat? = defaultMirrorAspect
+    private var recordingStateCancellable: AnyCancellable?
 
     init(model: AppModel, session: MirrorSession) {
         self.model = model
@@ -160,7 +163,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         let targetShellHeight = min(AppModel.defaultConnectionWindowSize.height, fullSize.height)
         let targetScreenHeight = max(1, targetShellHeight - verticalShellInset)
         let streamAspect = streamSize.width / max(streamSize.height, 1)
-        let targetScreenWidth = min(maxScreenWidth, targetScreenHeight * streamAspect)
+        let targetScreenWidth = min(maxScreenWidth, targetScreenHeight * streamAspect) * initialMirrorScale
         let screenHeight = min(maxScreenHeight, targetScreenWidth / max(streamAspect, 0.001))
         return NSSize(
             width: targetScreenWidth + horizontalShellInset,
@@ -469,6 +472,18 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             onScreenshot: { [weak self] in self?.model.takeScreenshot() },
             onRecordingToggle: { [weak self] in self?.model.toggleScreenRecording() }
         )
+        recordingStateCancellable = model.$isRecording
+            .receive(on: RunLoop.main)
+            .sink { [weak self] isRecording in
+                guard let self else { return }
+                self.chromeBar.setRecording(isRecording)
+                if isRecording && !self.isInFullscreen {
+                    self.hideWorkItem?.cancel()
+                    self.setChromeVisible(true)
+                } else {
+                    self.evaluateRevealZone()
+                }
+            }
         chromeBar.onClose = { NSApplication.shared.terminate(nil) }
         chromeBar.onMinimize = { [weak self] in self?.window?.miniaturize(nil) }
         chromeBar.onZoom = { [weak self] in self?.toggleFullScreenFromChrome() }
@@ -614,6 +629,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             hideChromeImmediately()
             return
         }
+        guard !model.isRecording else {
+            hideWorkItem?.cancel()
+            setChromeVisible(true)
+            return
+        }
         if revealZoneContains(NSEvent.mouseLocation) {
             isPointerInTopZone = true
             hideWorkItem?.cancel()
@@ -688,6 +708,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     private func scheduleHide() {
+        guard !model.isRecording else {
+            hideWorkItem?.cancel()
+            setChromeVisible(true)
+            return
+        }
         guard !isDraggingChrome, !isPointerInTopZone else {
             isPointerInTopZone = true
             return
@@ -1128,14 +1153,14 @@ final class MirrorChromeBar: NSView {
         homeBtn.minimumActionInterval = 0.35
         backBtn.toolTip = "Android back"
         backBtn.action = onBack
-        screenshotBtn.toolTip = "Save screenshot to Desktop"
+        screenshotBtn.toolTip = "Save screenshot to Downloads"
         screenshotBtn.action = onScreenshot
         recordingBtn.toolTip = "Start screen recording"
-        recordingBtn.action = { [weak self] in
-            guard let self else { return }
-            self.isRecording.toggle()
-            onRecordingToggle()
-        }
+        recordingBtn.action = onRecordingToggle
+    }
+
+    func setRecording(_ isRecording: Bool) {
+        self.isRecording = isRecording
     }
 
     /// Updates the toolbar title (device name) shown beside the traffic lights.

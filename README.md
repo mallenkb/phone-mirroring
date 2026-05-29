@@ -1,4 +1,4 @@
-# Android Mirror for Mac
+# Android Mirroring
 
 Native SwiftUI macOS prototype for a local-first Android mirroring client.
 

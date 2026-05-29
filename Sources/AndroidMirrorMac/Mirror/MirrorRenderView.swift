@@ -260,11 +260,11 @@ private final class MirrorLoadingView: NSView {
         layer?.addSublayer(gradientLayer)
 
         statusLabel.font = .systemFont(ofSize: 19, weight: .semibold)
-        statusLabel.textColor = NSColor.black.withAlphaComponent(0.46)
+        statusLabel.textColor = NSColor.white.withAlphaComponent(0.70)
         statusLabel.alignment = .center
 
         deviceLabel.font = .systemFont(ofSize: 42, weight: .heavy)
-        deviceLabel.textColor = NSColor.black.withAlphaComponent(0.74)
+        deviceLabel.textColor = NSColor.white.withAlphaComponent(0.92)
         deviceLabel.alignment = .center
         deviceLabel.lineBreakMode = .byTruncatingTail
         deviceLabel.maximumNumberOfLines = 1

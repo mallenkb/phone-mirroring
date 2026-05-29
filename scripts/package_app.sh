@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP="${1:-dist/AndroidMirrorMac.app}"
+APP="${1:-dist/Android Mirroring.app}"
 BUILD_DIR="scrcpy-source/build-mac"
 SCRCPY_SERVER="$BUILD_DIR/server/scrcpy-server"
 RESOURCE_SCRCPY_SERVER="Sources/AndroidMirrorMac/Resources/scrcpy-server"
+APP_ICON="Sources/AndroidMirrorMac/Resources/AppIcon.icns"
+ASSET_CATALOG="Sources/AndroidMirrorMac/Resources/Assets.car"
 HOST_BIN=".build/release/AndroidMirrorMac"
 RESOURCE_BUNDLE=".build/release/AndroidMirrorMac_AndroidMirrorMac.bundle"
 BIN_DIR="$APP/Contents/MacOS"
@@ -26,11 +28,19 @@ fi
 rm -rf "$APP"
 mkdir -p "$BIN_DIR" "$APP/Contents/Resources"
 
-cp "$HOST_BIN" "$BIN_DIR/AndroidMirrorMac"
-chmod +x "$BIN_DIR/AndroidMirrorMac"
+cp "$HOST_BIN" "$BIN_DIR/Android Mirroring"
+chmod +x "$BIN_DIR/Android Mirroring"
 
 if [ -d "$RESOURCE_BUNDLE" ]; then
   cp -R "$RESOURCE_BUNDLE" "$APP/AndroidMirrorMac_AndroidMirrorMac.bundle"
+fi
+
+if [ -f "$APP_ICON" ]; then
+  cp "$APP_ICON" "$APP/Contents/Resources/AppIcon.icns"
+fi
+
+if [ -f "$ASSET_CATALOG" ]; then
+  cp "$ASSET_CATALOG" "$APP/Contents/Resources/Assets.car"
 fi
 
 # Audio and video are handled in-process; only the scrcpy-server jar (pushed to
@@ -61,13 +71,17 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key>
-  <string>AndroidMirrorMac</string>
+  <string>Android Mirroring</string>
   <key>CFBundleIdentifier</key>
-  <string>com.mallenkb.AndroidMirrorMac</string>
+  <string>com.mallenkb.AndroidMirroring</string>
   <key>CFBundleName</key>
   <string>Android Mirroring</string>
   <key>CFBundleDisplayName</key>
   <string>Android Mirroring</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundleIconName</key>
+  <string>AppIcon</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

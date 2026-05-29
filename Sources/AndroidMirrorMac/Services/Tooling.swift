@@ -69,7 +69,7 @@ enum Tooling {
         return nil
     }
 
-    static func run(_ name: String, arguments: [String]) -> String {
+    static func run(_ name: String, arguments: [String], timeout overrideTimeout: TimeInterval? = nil) -> String {
         guard let path = toolPath(named: name) else {
             return "\(name) is missing. Install or bundle \(name)."
         }
@@ -83,7 +83,7 @@ enum Tooling {
 
         do {
             try process.run()
-            let timeout: TimeInterval = name == "adb" ? 5 : 30
+            let timeout: TimeInterval = overrideTimeout ?? (name == "adb" ? 5 : 30)
             let deadline = Date().addingTimeInterval(timeout)
             while process.isRunning && Date() < deadline {
                 Thread.sleep(forTimeInterval: 0.05)
@@ -135,7 +135,7 @@ enum Logger {
         let timestamp = ISO8601DateFormatter().string(from: Date())
         let line = "[\(timestamp)] \(message)\n"
         FileHandle.standardError.write(line.data(using: .utf8) ?? Data())
-        let logPath = NSString(string: "~/Library/Logs/AndroidMirrorMac.log").expandingTildeInPath
+        let logPath = NSString(string: "~/Library/Logs/Android Mirroring.log").expandingTildeInPath
         if let data = line.data(using: .utf8) {
             if !FileManager.default.fileExists(atPath: logPath) {
                 FileManager.default.createFile(atPath: logPath, contents: nil)

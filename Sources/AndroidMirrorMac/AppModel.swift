@@ -10,11 +10,9 @@ final class AppModel: ObservableObject {
     @Published var isMirroring = false
     @Published var isRecording = false
     @Published var isPairing = false
-    @Published var connectionScale: CGFloat = 0.56
     static let onboardingWindowSize = NSSize(width: 500, height: 900)
     static let minimumConnectionWindowSize = NSSize(width: 384, height: 688)
-    static let defaultConnectionWindowSize = NSSize(width: 500, height: 900)
-    static let maximumConnectionWindowScale: CGFloat = 0.70
+    static let defaultConnectionWindowSize = NSSize(width: 650, height: 1170)
 
     @Published private(set) var discoveredPhones: [DiscoveredPhone] = []
     @Published private(set) var pairedPhones: [PairedPhoneRecord] = []
@@ -22,20 +20,16 @@ final class AppModel: ObservableObject {
     @Published private(set) var isQRCodePairingWaiting = false
 
     private let adb = ADBController()
-    private let scrcpy = ScrcpyController()
     private let store = PairedPhoneStore()
     private lazy var discovery = DiscoveryService(adb: adb)
 
     private weak var connectionWindow: NSWindow?
-    private(set) weak var mirrorWindowController: WindowController?
-    private var mirrorFrameWindowController: MirrorFrameWindowController?
     private var mirrorSession: MirrorSession?
-    private var mirrorDragStartFrame: CGRect?
-    private var mirrorExpandedRestoreFrame: CGRect?
     private var autoConnectAttempted = false
     private var usbHandoffTask: Task<Void, Never>?
     private var lastUSBHandoffSerial: String?
     private var qrPairingTask: Task<Void, Never>?
+    private var screenRecordingMonitorTask: Task<Void, Never>?
 
     init() {
         pairedPhones = store.load()
@@ -52,6 +46,7 @@ final class AppModel: ObservableObject {
     deinit {
         usbHandoffTask?.cancel()
         qrPairingTask?.cancel()
+        screenRecordingMonitorTask?.cancel()
     }
 
     // MARK: - Window registration
@@ -59,11 +54,6 @@ final class AppModel: ObservableObject {
     func registerConnectionWindow(_ window: NSWindow?) {
         guard let window else { return }
         connectionWindow = window
-    }
-
-    func registerMirrorWindowController(_ controller: WindowController?) {
-        mirrorWindowController = controller
-        registerConnectionWindow(controller?.window)
     }
 
     // MARK: - Discovery → auto-reconnect
@@ -1022,9 +1012,11 @@ final class AppModel: ObservableObject {
         mirrorSession?.onSessionEnded = nil
         mirrorSession?.stop()
         mirrorSession = nil
-        scrcpy.stop()
         isMirroring = false
-        detachMirrorChrome()
+        if isRecording {
+            isRecording = false
+            stopScreenRecordingCleanup()
+        }
         append("Requested mirror stop.")
     }
 
@@ -1036,7 +1028,10 @@ final class AppModel: ObservableObject {
                 self.mirrorSession = nil
             }
             self.isMirroring = false
-            self.detachMirrorChrome()
+            if self.isRecording {
+                self.isRecording = false
+                self.stopScreenRecordingCleanup()
+            }
             self.append("Mirror session ended.")
         }
 
@@ -1058,261 +1053,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func launchScrcpy(arguments: [String]) {
-        do {
-            let pid = try scrcpy.launch(extraArguments: arguments) { [weak self] output in
-                guard let self else { return }
-                self.scrcpy.clear()
-                self.detachMirrorChrome()
-                self.isMirroring = false
-                if output.contains("No route to host") {
-                    self.append("Wireless handoff failed because Wi-Fi blocked the phone. Falling back to USB mirror.")
-                    if arguments.contains(where: { $0.contains("--tcpip") }) {
-                        self.launchScrcpy(arguments: ["-d"])
-                    }
-                } else if output.contains("Could not connect") || output.contains("Server connection failed") {
-                    self.append("scrcpy failed: \(Self.oneLine(output))")
-                } else {
-                    self.append("Mirror session ended.")
-                }
-            }
-            isMirroring = true
-            selectedDevice.states = [.mirroringReady, .companionConnected]
-            attachMirrorChrome(pid: pid)
-            append("scrcpy launched with \(arguments.joined(separator: " ")).")
-        } catch {
-            append("Could not launch scrcpy: \(error.localizedDescription)")
-        }
-    }
-
-    // MARK: - Mirror window chrome (toolbar + frame)
-
-    private func attachMirrorChrome(pid: pid_t) {
-        detachMirrorChrome(reopenConnectionWindow: false)
-        mirrorFrameWindowController = MirrorFrameWindowController(model: self, scrcpyPid: pid)
-        hideConnectionWindowForLiveMirror(pid: pid)
-    }
-
-    private func detachMirrorChrome(reopenConnectionWindow: Bool = true) {
-        mirrorFrameWindowController?.close()
-        mirrorFrameWindowController = nil
-        mirrorDragStartFrame = nil
-        mirrorExpandedRestoreFrame = nil
-        if isRecording {
-            stopScreenRecordingCleanup()
-        }
-        if reopenConnectionWindow {
-            showConnectionWindow()
-        }
-    }
-
-    func closeMirrorWindow() {
-        stopMirroring()
-    }
-
-    func minimizeMirrorWindow() {
-        if mirrorSession != nil {
-            connectionWindow?.miniaturize(nil)
-            return
-        }
-        guard let pid = scrcpy.activePid else { return }
-        guard ensureMirrorAccessibility(for: "minimize the mirror") else { return }
-
-        let result = ScrcpyController.setWindowMinimized(pid: pid, minimized: true)
-        if result != .success {
-            NSRunningApplication(processIdentifier: pid)?.hide()
-            append("Minimized the mirror process. If it does not appear in the Dock, use Start Mirroring again.")
-        }
-    }
-
-    func toggleMirrorFullscreen() {
-        if mirrorSession != nil {
-            connectionWindow?.toggleFullScreen(nil)
-            return
-        }
-        guard let pid = scrcpy.activePid else {
-            resizeConnectionWindow(scale: 1.10)
-            return
-        }
-        guard ensureMirrorAccessibility(for: "expand the mirror") else { return }
-
-        let targetFrame: CGRect
-        let restoreFrame = mirrorExpandedRestoreFrame
-        let restoreCandidate: CGRect?
-        if let restoreFrame {
-            targetFrame = restoreFrame
-            restoreCandidate = nil
-        } else {
-            guard let bounds = ScrcpyController.windowBounds(pid: pid) else {
-                append("Mirror window is still opening. Try again in a moment.")
-                return
-            }
-            restoreCandidate = bounds
-            guard let primary = NSScreen.screens.first else { return }
-            let screenHeight = primary.frame.height
-            let scrcpyNSPoint = NSPoint(x: bounds.midX, y: screenHeight - bounds.midY)
-            let targetScreen = NSScreen.screens.first(where: { $0.frame.contains(scrcpyNSPoint) }) ?? primary
-            targetFrame = MirrorWindowChromeLayout.expandedScrcpyFrame(
-                from: bounds,
-                inVisibleFrame: targetScreen.visibleFrame,
-                screenHeight: screenHeight,
-                chromeHeight: 0,
-                padding: 12
-            )
-        }
-
-        let result = ScrcpyController.setWindowFrame(pid: pid, frame: targetFrame)
-        if result == .success {
-            if restoreFrame == nil {
-                mirrorExpandedRestoreFrame = restoreCandidate
-            } else {
-                mirrorExpandedRestoreFrame = nil
-            }
-        } else {
-            append("Could not expand the mirror window yet (\(result)). Check Accessibility permission for Android Mirror.")
-        }
-    }
-
-    func beginMirrorWindowDrag() {
-        guard let pid = scrcpy.activePid else { return }
-        guard ensureMirrorAccessibility(for: "drag the mirror") else { return }
-        mirrorExpandedRestoreFrame = nil
-        mirrorDragStartFrame = ScrcpyController.windowBounds(pid: pid)
-        if mirrorDragStartFrame == nil {
-            append("Mirror window is still opening. Try again in a moment.")
-        }
-    }
-
-    @discardableResult
-    func dragMirrorWindow(translation: CGSize) -> CGSize? {
-        guard let pid = scrcpy.activePid,
-              let startFrame = mirrorDragStartFrame else { return nil }
-
-        let proposedFrame = CGRect(
-            x: startFrame.minX + translation.width,
-            y: startFrame.minY + translation.height,
-            width: startFrame.width,
-            height: startFrame.height
-        )
-        let frame = constrainedMirrorDragFrame(proposedFrame)
-        let result = ScrcpyController.setWindowFrame(pid: pid, frame: frame)
-        if result != .success {
-            mirrorDragStartFrame = nil
-            append("Could not drag the mirror window yet (\(result)). Check Accessibility permission for Android Mirror.")
-            return nil
-        }
-
-        return CGSize(
-            width: frame.minX - startFrame.minX,
-            height: frame.minY - startFrame.minY
-        )
-    }
-
-    func endMirrorWindowDrag() {
-        mirrorDragStartFrame = nil
-    }
-
-    private func constrainedMirrorDragFrame(_ proposedFrame: CGRect) -> CGRect {
-        guard let primary = NSScreen.screens.first else { return proposedFrame }
-        let screenHeight = primary.frame.height
-        let proposedNSPoint = NSPoint(
-            x: proposedFrame.midX,
-            y: screenHeight - proposedFrame.midY
-        )
-        let targetScreen = NSScreen.screens.first(where: { $0.frame.contains(proposedNSPoint) }) ?? primary
-        return MirrorWindowChromeLayout.scrcpyFrameKeepingHoverChromeVisible(
-            proposedFrame,
-            inVisibleFrame: targetScreen.visibleFrame,
-            screenHeight: screenHeight,
-            chromeHeight: MirrorFrameWindowController.chromeHeight
-        )
-    }
-
-    private func ensureMirrorAccessibility(for action: String) -> Bool {
-        guard ScrcpyController.requestAccessibilityTrustIfNeeded() else {
-            append("Turn on Android Mirror in System Settings > Privacy & Security > Accessibility, then \(action) again.")
-            return false
-        }
-        return true
-    }
-
-    private func hideConnectionWindowForLiveMirror(pid: pid_t) {
-        connectionWindow?.orderOut(nil)
-        NSRunningApplication(processIdentifier: pid)?
-            .activate(options: [.activateIgnoringOtherApps])
-    }
-
     private func hideConnectionWindowForNativeMirror() {
         connectionWindow?.close()
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    private func showConnectionWindow() {
-        guard let connectionWindow else { return }
-        connectionWindow.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: - Resize
 
     func resizeMirror(scale: CGFloat) {
-        if let mirrorSession {
-            mirrorSession.scaleWindow(by: scale)
-            return
-        }
-
-        guard let pid = scrcpy.activePid else {
-            resizeConnectionWindow(scale: scale)
-            return
-        }
-
-        guard let bounds = ScrcpyController.windowBounds(pid: pid) else {
-            append("Mirror window is still opening. Try again in a moment.")
-            return
-        }
-
-        guard ScrcpyController.requestAccessibilityTrustIfNeeded() else {
-            append("Turn on Android Mirror in System Settings > Privacy & Security > Accessibility, then press + or - again.")
-            return
-        }
-
-        let minWidth: CGFloat = 400
-        let screenMaxWidth = NSScreen.screens.first?.visibleFrame.width ?? 1200
-        let maxWidth = min(screenMaxWidth - 48, 1100)
-        let newWidth = min(max(bounds.width * scale, minWidth), maxWidth)
-        let newHeight = newWidth * bounds.height / max(bounds.width, 1)
-        let newX = bounds.midX - newWidth / 2
-        let newY = bounds.midY - newHeight / 2
-
-        let result = ScrcpyController.setWindowFrame(
-            pid: pid,
-            frame: CGRect(x: newX, y: newY, width: newWidth, height: newHeight)
-        )
-        if result != .success {
-            append("Could not resize the mirror window yet (\(result)). You can also drag the mirror window edge directly.")
-        }
-    }
-
-    private func resizeConnectionWindow(scale: CGFloat) {
-        guard let window = connectionWindow else { return }
-
-        let frame = window.frame
-        let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
-        let minWidth = Self.minimumConnectionWindowSize.width
-        let minHeight = Self.minimumConnectionWindowSize.height
-        let maxWidth = max(minWidth, ((visible?.width ?? 1200) - 40) * Self.maximumConnectionWindowScale)
-        let maxHeight = max(minHeight, ((visible?.height ?? 1400) - 40) * Self.maximumConnectionWindowScale)
-        let newWidth = min(max(frame.width * scale, minWidth), maxWidth)
-        let newHeight = min(max(frame.height * scale, minHeight), maxHeight)
-        let newFrame = NSRect(
-            x: frame.midX - newWidth / 2,
-            y: frame.midY - newHeight / 2,
-            width: newWidth,
-            height: newHeight
-        )
-
-        connectionScale = min(max(newWidth / 918, 0.32), 1.30)
-        window.setFrame(newFrame, display: true, animate: true)
+        mirrorSession?.scaleWindow(by: scale)
     }
 
     // MARK: - Android input
@@ -1331,16 +1080,18 @@ final class AppModel: ObservableObject {
     }
 
     func takeScreenshot() {
-        append("Saving screenshot to Desktop...")
+        let serial = selectedDevice.adbSerial
+        append("Saving screenshot to Downloads/Android Mirroring...")
         Task { [weak self] in
-            let result = await Task.detached { () -> Result<Void, ScreenshotError> in
+            let result = await Task.detached { () -> Result<URL, ScreenshotError> in
                 guard let adbPath = Tooling.toolPath(named: "adb") else {
                     return .failure(.adbMissing)
                 }
                 let process = Process()
                 let pipe = Pipe()
                 process.executableURL = URL(fileURLWithPath: adbPath)
-                process.arguments = ["exec-out", "screencap", "-p"]
+                process.arguments = Self.adbDeviceArguments(serial: serial)
+                    + ["exec-out", "screencap", "-p"]
                 process.standardOutput = pipe
                 process.standardError = Pipe()
                 do {
@@ -1350,10 +1101,13 @@ final class AppModel: ObservableObject {
                     guard !data.isEmpty else {
                         return .failure(.emptyOutput)
                     }
-                    let url = FileManager.default.homeDirectoryForCurrentUser
-                        .appendingPathComponent("Desktop/android-mirror-screenshot.png")
+                    let directory = try Self.mediaOutputDirectory()
+                    let url = directory.appendingPathComponent(Self.mediaFilename(
+                        prefix: "Android Mirroring Screenshot",
+                        extension: "png"
+                    ))
                     try data.write(to: url)
-                    return .success(())
+                    return .success(url)
                 } catch {
                     return .failure(.runtime(error.localizedDescription))
                 }
@@ -1361,8 +1115,8 @@ final class AppModel: ObservableObject {
 
             guard let self else { return }
             switch result {
-            case .success:
-                self.append("Saved screenshot to Desktop.")
+            case .success(let url):
+                self.append("Saved screenshot: \(url.lastPathComponent)")
             case .failure(.adbMissing):
                 self.append("adb is missing.")
             case .failure(.emptyOutput):
@@ -1384,36 +1138,148 @@ final class AppModel: ObservableObject {
             isRecording = false
             stopScreenRecordingCleanup()
         } else {
-            isRecording = true
-            append("Started Android screen recording.")
-            let adb = self.adb
-            Task.detached {
-                adb.run([
-                    "shell",
-                    "rm -f /sdcard/android-mirror-record.mp4; screenrecord /sdcard/android-mirror-record.mp4 >/dev/null 2>&1 &"
-                ])
+            startScreenRecording()
+        }
+    }
+
+    private func startScreenRecording() {
+        isRecording = true
+        let adb = self.adb
+        let serial = selectedDevice.adbSerial
+        Task { [weak self] in
+            let alreadyRunning = await Task.detached {
+                Self.androidScreenRecordingIsRunning(adb: adb, serial: serial)
+            }.value
+
+            guard let self else { return }
+            if alreadyRunning {
+                self.append("Android screen recording is already active. Click again to stop and save it.")
+                self.startScreenRecordingMonitor()
+                return
             }
+
+            let output = await Task.detached {
+                adb.run(Self.adbDeviceArguments(serial: serial) + [
+                    "shell",
+                    "rm -f /sdcard/android-mirroring-record.mp4; screenrecord /sdcard/android-mirroring-record.mp4 >/dev/null 2>&1 & echo started"
+                ])
+            }.value
+
+            guard output.lowercased().contains("started") else {
+                self.isRecording = false
+                self.append("Could not start Android screen recording.")
+                return
+            }
+
+            self.isRecording = true
+            self.append("Started Android screen recording.")
+            self.startScreenRecordingMonitor()
         }
     }
 
     private func stopScreenRecordingCleanup() {
+        screenRecordingMonitorTask?.cancel()
+        screenRecordingMonitorTask = nil
         append("Stopping Android screen recording...")
         let adb = self.adb
+        let serial = selectedDevice.adbSerial
         Task { [weak self] in
             await Task.detached {
-                _ = adb.run(["shell", "pkill -2 screenrecord >/dev/null 2>&1"])
-            }.value
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            let home = FileManager.default.homeDirectoryForCurrentUser.path
-            await Task.detached {
-                _ = adb.run([
-                    "pull", "/sdcard/android-mirror-record.mp4",
-                    "\(home)/Desktop/android-mirror-record.mp4"
+                _ = adb.run(Self.adbDeviceArguments(serial: serial) + [
+                    "shell",
+                    "pkill -2 screenrecord >/dev/null 2>&1"
                 ])
-                _ = adb.run(["shell", "rm -f /sdcard/android-mirror-record.mp4 >/dev/null 2>&1"])
             }.value
-            self?.append("Saved screen recording to Desktop.")
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            let result = await Task.detached { () -> Result<URL, RecordingError> in
+                do {
+                    let directory = try Self.mediaOutputDirectory()
+                    let url = directory.appendingPathComponent(Self.mediaFilename(
+                        prefix: "Android Mirroring Screen Recording",
+                        extension: "mp4"
+                    ))
+                    let output = adb.run(Self.adbDeviceArguments(serial: serial) + [
+                        "pull", "/sdcard/android-mirroring-record.mp4",
+                        url.path
+                    ], timeout: 120)
+                    _ = adb.run(Self.adbDeviceArguments(serial: serial) + [
+                        "shell",
+                        "rm -f /sdcard/android-mirroring-record.mp4 >/dev/null 2>&1"
+                    ])
+                    guard FileManager.default.fileExists(atPath: url.path) else {
+                        return .failure(.pullFailed(Self.oneLine(output)))
+                    }
+                    return .success(url)
+                } catch {
+                    return .failure(.runtime(error.localizedDescription))
+                }
+            }.value
+
+            switch result {
+            case .success(let url):
+                self?.append("Saved screen recording: \(url.lastPathComponent)")
+            case .failure(.pullFailed(let message)):
+                self?.append("Screen recording save failed: \(message)")
+            case .failure(.runtime(let message)):
+                self?.append("Screen recording save failed: \(message)")
+            }
         }
+    }
+
+    private func startScreenRecordingMonitor() {
+        screenRecordingMonitorTask?.cancel()
+        let adb = self.adb
+        let serial = selectedDevice.adbSerial
+        screenRecordingMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard !Task.isCancelled else { return }
+                let running = await Task.detached {
+                    Self.androidScreenRecordingIsRunning(adb: adb, serial: serial)
+                }.value
+                guard let self else { return }
+                if self.isRecording && !running {
+                    self.isRecording = false
+                    self.screenRecordingMonitorTask = nil
+                    self.append("Android screen recording ended. Saving the recording...")
+                    self.stopScreenRecordingCleanup()
+                    return
+                }
+            }
+        }
+    }
+
+    nonisolated private static func androidScreenRecordingIsRunning(adb: ADBController, serial: String?) -> Bool {
+        let output = adb.run(Self.adbDeviceArguments(serial: serial) + [
+            "shell",
+            "if pgrep -x screenrecord >/dev/null 2>&1; then echo running; else echo stopped; fi"
+        ])
+        return output.lowercased().contains("running")
+    }
+
+    private enum RecordingError: Error {
+        case pullFailed(String)
+        case runtime(String)
+    }
+
+    nonisolated private static func adbDeviceArguments(serial: String?) -> [String] {
+        guard let serial, !serial.isEmpty else { return [] }
+        return ["-s", serial]
+    }
+
+    nonisolated private static func mediaOutputDirectory() throws -> URL {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Downloads", isDirectory: true)
+            .appendingPathComponent("Android Mirroring", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    nonisolated private static func mediaFilename(prefix: String, extension fileExtension: String) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        return "\(prefix) \(formatter.string(from: Date())).\(fileExtension)"
     }
 
     // MARK: - Diagnostics
@@ -1424,7 +1290,7 @@ final class AppModel: ObservableObject {
         diagnostics = Array(diagnostics.prefix(8))
     }
 
-    static func oneLine(_ text: String) -> String {
+    nonisolated static func oneLine(_ text: String) -> String {
         text
             .split(whereSeparator: \.isNewline)
             .map(String.init)
