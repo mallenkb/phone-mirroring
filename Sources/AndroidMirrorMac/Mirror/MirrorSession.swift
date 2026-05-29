@@ -53,6 +53,10 @@ final class MirrorSession {
         self.localPort = Self.allocatePort()
     }
 
+    nonisolated static func shouldEnableAudio(forSerial serial: String?) -> Bool {
+        false
+    }
+
     func start() throws {
         guard windowController == nil else { throw SessionError.alreadyRunning }
 
@@ -60,6 +64,7 @@ final class MirrorSession {
         let host = ScrcpyServerHost(options: ScrcpyServerHost.Options(
             scid: scid,
             localPort: localPort,
+            audio: Self.shouldEnableAudio(forSerial: serial),
             serial: serial
         ))
 
@@ -136,6 +141,10 @@ final class MirrorSession {
         model?.takeScreenshot()
     }
 
+    func toggleScreenRecording() {
+        model?.toggleScreenRecording()
+    }
+
     func scaleWindow(by scale: CGFloat) {
         windowController?.scaleWindow(by: scale)
     }
@@ -193,6 +202,7 @@ final class MirrorSession {
         streamWidth = header.width
         streamHeight = header.height
         Logger.log("MirrorSession header: device=\(header.deviceName) codec=\(String(format: "0x%08x", header.codecID)) size=\(header.width)x\(header.height)")
+        windowController?.renderView.setLoadingDeviceName(header.deviceName)
         windowController?.setStreamSize(width: header.width, height: header.height)
         controlChannel?.updateDeviceSize(width: header.width, height: header.height)
     }

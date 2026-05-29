@@ -13,4 +13,20 @@ final class ScrcpyServerHostTests: XCTestCase {
         XCTAssertFalse(arguments.contains("audio_codec=raw"))
         XCTAssertFalse(arguments.contains("audio_source=output"))
     }
+
+    func testWirelessMirrorServerArgumentsDisableAudioForStableNativeMirrorStartup() {
+        let options = ScrcpyServerHost.Options(
+            scid: 0x1234ABCD,
+            localPort: 37283,
+            audio: MirrorSession.shouldEnableAudio(forSerial: "192.168.1.24:40719"),
+            serial: "192.168.1.24:40719"
+        )
+
+        let arguments = ScrcpyServerHost.serverArguments(for: options)
+
+        XCTAssertTrue(arguments.contains("audio=false"))
+        XCTAssertFalse(arguments.contains("audio=true"))
+        XCTAssertFalse(arguments.contains("audio_codec=raw"))
+        XCTAssertFalse(arguments.contains("audio_source=output"))
+    }
 }

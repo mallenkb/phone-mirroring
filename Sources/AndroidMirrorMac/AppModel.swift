@@ -38,6 +38,9 @@ final class AppModel: ObservableObject {
 
     init() {
         pairedPhones = store.load()
+        if let mostRecentRecord = Self.recordsByMostRecent(pairedPhones).first {
+            select(record: mostRecentRecord)
+        }
         discovery.start { [weak self] phones in
             self?.discoveredPhones = phones
         }
@@ -64,37 +67,67 @@ final class AppModel: ObservableObject {
 
     // MARK: - Discovery → auto-reconnect
 
-    /// On launch, give mDNS a few seconds; if a previously-paired phone shows
-    /// up, or a remembered USB serial is authorized, mirror it immediately.
+    /// On launch, try saved adb routes immediately; if needed, give mDNS a few
+    /// seconds for a previously-paired phone to advertise its connect service.
     /// Bluetooth-style auto-reconnect.
     private func attemptAutoReconnect() {
         guard !pairedPhones.isEmpty else { return }
         let adb = self.adb
         Task { [weak self] in
-            for _ in 0..<6 {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            for attempt in 0..<6 {
+                if attempt > 0 {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
                 guard let self else { return }
-                if self.autoConnectAttempted || self.isMirroring || self.isQRCodePairingWaiting {
+                if self.autoConnectAttempted || self.isMirroring || self.isPairing {
                     return
                 }
 
                 let devicesOutput = await Task.detached { adb.run(["devices", "-l"]) }.value
                 let authorizedDevices = Self.authorizedADBDevices(in: devicesOutput)
 
-                let rememberedWireless = Self.mostRecentWirelessRecord(in: self.pairedPhones)
-                if let rememberedWireless {
-                    let connectOutput = await Task.detached {
-                        adb.run(["connect", rememberedWireless.lastAddress])
-                    }.value
-                    if Self.adbConnectSucceeded(connectOutput) {
+                if let authorizedDevice = authorizedDevices.first {
+                    self.autoConnectAttempted = true
+                    self.select(device: authorizedDevice)
+                    self.touchPairedPhone(
+                        id: authorizedDevice.serial,
+                        displayName: authorizedDevice.model,
+                        address: authorizedDevice.serial
+                    )
+                    self.stopQRCodePairingSession()
+                    self.startMirroring()
+                    return
+                }
+
+                for record in Self.recordsByMostRecent(self.pairedPhones) {
+                    if Self.isWirelessRecord(record) {
+                        let connectOutput = await Task.detached {
+                            adb.run(["connect", record.lastAddress])
+                        }.value
+                        if Self.adbConnectSucceeded(connectOutput) {
+                            self.autoConnectAttempted = true
+                            self.append("adb connect: \(Self.oneLine(connectOutput))")
+                            self.select(record: record)
+                            self.touchPairedPhone(
+                                id: record.id,
+                                displayName: record.displayName,
+                                address: record.lastAddress
+                            )
+                            self.stopQRCodePairingSession()
+                            self.startMirroring()
+                            return
+                        }
+                    } else if let rememberedUSB = authorizedDevices.first(where: { device in
+                        device.isUSB && (device.serial == record.id || device.serial == record.lastAddress)
+                    }) {
                         self.autoConnectAttempted = true
-                        self.append("adb connect: \(Self.oneLine(connectOutput))")
-                        self.select(record: rememberedWireless)
+                        self.select(device: rememberedUSB)
                         self.touchPairedPhone(
-                            id: rememberedWireless.id,
-                            displayName: rememberedWireless.displayName,
-                            address: rememberedWireless.lastAddress
+                            id: rememberedUSB.serial,
+                            displayName: rememberedUSB.model,
+                            address: rememberedUSB.serial
                         )
+                        self.stopQRCodePairingSession()
                         self.startMirroring()
                         return
                     }
@@ -104,22 +137,8 @@ final class AppModel: ObservableObject {
                 let candidate = self.mostRecentPairedPhone(in: livePhones + self.discoveredPhones)
                 if let candidate {
                     self.autoConnectAttempted = true
+                    self.stopQRCodePairingSession()
                     self.connectAndMirror(phone: candidate)
-                    return
-                }
-
-                let rememberedUSB = authorizedDevices.first { device in
-                    device.isUSB && self.pairedPhones.contains(where: { $0.id == device.serial })
-                }
-                if let rememberedUSB {
-                    self.autoConnectAttempted = true
-                    self.select(device: rememberedUSB)
-                    self.touchPairedPhone(
-                        id: rememberedUSB.serial,
-                        displayName: rememberedUSB.model,
-                        address: rememberedUSB.serial
-                    )
-                    self.startMirroring()
                     return
                 }
             }
@@ -144,6 +163,7 @@ final class AppModel: ObservableObject {
             if ok {
                 self.touchPairedPhone(id: serviceID, displayName: label, address: address)
                 self.selectedDevice.adbSerial = address
+                self.stopQRCodePairingSession()
                 self.startMirroring()
             } else {
                 self.append("Could not reach \(address). Re-pair from the Wireless debugging screen.")
@@ -708,7 +728,7 @@ final class AppModel: ObservableObject {
             model: "Android",
             battery: selectedDevice.battery,
             isCharging: selectedDevice.isCharging,
-            network: "Wireless debugging",
+            network: Self.isWirelessRecord(record) ? "Wireless debugging" : "USB debugging",
             lastSeen: .now,
             states: [.mirroringReady, .companionConnected],
             adbSerial: record.lastAddress
@@ -718,15 +738,22 @@ final class AppModel: ObservableObject {
     nonisolated static func authorizedADBDevices(in output: String) -> [AuthorizedADBDevice] {
         output
             .split(separator: "\n")
-            .dropFirst()
             .map(String.init)
-            .filter { line in
-                line.contains("device")
-                    && !line.contains("offline")
-                    && !line.contains("unauthorized")
-            }
             .compactMap { line in
-                guard let serial = line.split(whereSeparator: \.isWhitespace).first.map(String.init) else {
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                let lower = trimmed.lowercased()
+                guard !trimmed.isEmpty,
+                      !lower.hasPrefix("list of devices"),
+                      !lower.hasPrefix("* daemon")
+                else {
+                    return nil
+                }
+
+                let fields = trimmed.split(whereSeparator: \.isWhitespace).map(String.init)
+                guard fields.count >= 2,
+                      fields[1] == "device",
+                      let serial = fields.first
+                else {
                     return nil
                 }
                 let product = value(after: "product:", in: line) ?? "Android"
@@ -768,10 +795,32 @@ final class AppModel: ObservableObject {
         wirelessRecordsByMostRecent(records).first
     }
 
+    nonisolated static func recordsByMostRecent(_ records: [PairedPhoneRecord]) -> [PairedPhoneRecord] {
+        records.sorted { $0.lastConnected > $1.lastConnected }
+    }
+
     nonisolated static func wirelessRecordsByMostRecent(_ records: [PairedPhoneRecord]) -> [PairedPhoneRecord] {
         records
-            .filter { $0.lastAddress.contains(":") }
+            .filter(isWirelessRecord)
             .sorted { $0.lastConnected > $1.lastConnected }
+    }
+
+    nonisolated static func isWirelessRecord(_ record: PairedPhoneRecord) -> Bool {
+        record.lastAddress.contains(":")
+    }
+
+    nonisolated static func rememberedConnectablePhone(
+        for record: PairedPhoneRecord,
+        in phones: [DiscoveredPhone]
+    ) -> DiscoveredPhone? {
+        let connectablePhones = phones.filter { $0.kind == .connectable }
+        if let exact = connectablePhones.first(where: { $0.id == record.id }) {
+            return exact
+        }
+        guard let expectedHost = host(in: record.lastAddress) else {
+            return nil
+        }
+        return connectablePhones.first { host(in: $0.address) == expectedHost }
     }
 
     nonisolated static func wifiIPAddress(in routeOutput: String) -> String? {

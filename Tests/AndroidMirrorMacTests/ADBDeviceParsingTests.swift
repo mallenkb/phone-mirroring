@@ -32,6 +32,31 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(devices.map(\.serial), ["R5CT789GHI"])
     }
 
+    func testAuthorizedADBDevicesIgnoresDaemonStartupNoiseAndHeader() {
+        let output = """
+        * daemon not running; starting now at tcp:5037
+        * daemon started successfully
+        List of devices attached
+        192.168.68.54:5555 device product:g0sxxx model:SM_S906B device:g0s transport_id:1
+        """
+
+        let devices = AppModel.authorizedADBDevices(in: output)
+
+        XCTAssertEqual(devices.count, 1)
+        XCTAssertEqual(devices[0].serial, "192.168.68.54:5555")
+        XCTAssertEqual(devices[0].model, "SM S906B")
+    }
+
+    func testAuthorizedADBDevicesDoesNotTreatHeaderAsDeviceWhenDaemonNoisePrecedesIt() {
+        let output = """
+        * daemon not running; starting now at tcp:5037
+        * daemon started successfully
+        List of devices attached
+        """
+
+        XCTAssertTrue(AppModel.authorizedADBDevices(in: output).isEmpty)
+    }
+
     func testADBConnectResultParsing() {
         XCTAssertTrue(AppModel.adbConnectSucceeded("connected to 192.168.68.57:5555"))
         XCTAssertTrue(AppModel.adbConnectSucceeded("already connected to 192.168.68.57:5555"))
@@ -70,6 +95,81 @@ final class ADBDeviceParsingTests: XCTestCase {
         let selected = AppModel.mostRecentWirelessRecord(in: [older, newerUSBOnly, newerWireless])
 
         XCTAssertEqual(selected?.id, "new-phone")
+    }
+
+    func testRecordsByMostRecentIncludesUSBAndWireless() {
+        let olderWireless = PairedPhoneRecord(
+            id: "wifi-phone",
+            displayName: "Wi-Fi Pixel",
+            lastAddress: "192.168.1.22:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let newerUSB = PairedPhoneRecord(
+            id: "R5CT123ABC",
+            displayName: "USB Pixel",
+            lastAddress: "R5CT123ABC",
+            firstPaired: Date(timeIntervalSince1970: 300),
+            lastConnected: Date(timeIntervalSince1970: 900)
+        )
+
+        let selected = AppModel.recordsByMostRecent([olderWireless, newerUSB])
+
+        XCTAssertEqual(selected.map(\.id), ["R5CT123ABC", "wifi-phone"])
+        XCTAssertFalse(AppModel.isWirelessRecord(newerUSB))
+        XCTAssertTrue(AppModel.isWirelessRecord(olderWireless))
+    }
+
+    func testRememberedConnectablePhonePrefersStoredServiceID() {
+        let record = PairedPhoneRecord(
+            id: "adb-samsung",
+            displayName: "Samsung",
+            lastAddress: "192.168.1.44:42111",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let matching = DiscoveredPhone(
+            id: "adb-samsung",
+            address: "192.168.1.44:39001",
+            kind: .connectable,
+            lastSeen: Date(timeIntervalSince1970: 300)
+        )
+        let sameHostDifferentID = DiscoveredPhone(
+            id: "adb-other",
+            address: "192.168.1.44:42111",
+            kind: .connectable,
+            lastSeen: Date(timeIntervalSince1970: 400)
+        )
+
+        let selected = AppModel.rememberedConnectablePhone(
+            for: record,
+            in: [sameHostDifferentID, matching]
+        )
+
+        XCTAssertEqual(selected, matching)
+    }
+
+    func testRememberedConnectablePhoneFallsBackToStoredHost() {
+        let record = PairedPhoneRecord(
+            id: "adb-samsung",
+            displayName: "Samsung",
+            lastAddress: "192.168.1.44:42111",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let matching = DiscoveredPhone(
+            id: "adb-new-id",
+            address: "192.168.1.44:39001",
+            kind: .connectable,
+            lastSeen: Date(timeIntervalSince1970: 300)
+        )
+
+        let selected = AppModel.rememberedConnectablePhone(
+            for: record,
+            in: [matching]
+        )
+
+        XCTAssertEqual(selected, matching)
     }
 
     func testWiFiIPAddressParsingPrefersWLANSourceAddress() {

@@ -127,13 +127,14 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testNativeMirrorShellReservesTopChromeBandAbovePhonePixels() {
+    func testNativeMirrorShellLetsPhonePixelsFillToTopEdge() {
         XCTAssertEqual(MirrorContentWindowController.screenLeftInset, 0)
         XCTAssertEqual(MirrorContentWindowController.screenRightInset, 0)
-        XCTAssertEqual(
-            MirrorContentWindowController.visibleChromeRenderTopInset,
-            MirrorContentWindowController.chromeHeight
-        )
+        // The toolbar overlays the mirror, so no top band is reserved — the
+        // render fills the window to the top edge and there is no chrome strip.
+        XCTAssertEqual(MirrorContentWindowController.visibleChromeRenderTopInset, 0)
+        // The overlay still uses the standard titlebar height when revealed.
+        XCTAssertEqual(MirrorContentWindowController.chromeHeight, 28)
         XCTAssertEqual(MirrorContentWindowController.screenBottomInset, 0)
     }
 
@@ -408,49 +409,26 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testVisibleChromeReservesMirrorLayoutSpace() {
-        XCTAssertEqual(
-            MirrorContentWindowController.visibleChromeRenderTopInset,
-            MirrorContentWindowController.chromeHeight
-        )
+    func testOverlayChromeDoesNotReserveMirrorLayoutSpace() {
+        // The hover toolbar overlays the mirror rather than reserving a band,
+        // so it adds zero top inset to the rendered phone pixels.
+        XCTAssertEqual(MirrorContentWindowController.visibleChromeRenderTopInset, 0)
     }
 
     @MainActor
-    func testTopToolbarControlsStayVisibleWhenChromeIsNotHovered() throws {
+    func testTopToolbarStaysHiddenWhenChromeIsNotHovered() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
-        let window = try XCTUnwrap(controller.window)
-        let rootView = try XCTUnwrap(window.contentView)
-        let close = try XCTUnwrap(window.standardWindowButton(.closeButton))
-        let minimize = try XCTUnwrap(window.standardWindowButton(.miniaturizeButton))
-        let zoom = try XCTUnwrap(window.standardWindowButton(.zoomButton))
-        rootView.layoutSubtreeIfNeeded()
 
-        let event = try XCTUnwrap(NSEvent.mouseEvent(
-            with: .mouseMoved,
-            location: NSPoint(
-                x: controller.renderView.frame.midX,
-                y: controller.renderView.frame.midY
-            ),
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            eventNumber: 0,
-            clickCount: 0,
-            pressure: 0
-        ))
-
-        rootView.mouseMoved(with: event)
+        // Pointer over the phone (not the zone above) → the floating toolbar is
+        // hidden and the render fills the window to the top edge (no band).
+        controller.simulateRevealZoneHover(false)
 
         XCTAssertFalse(controller.isChromeVisibleForTesting)
-        XCTAssertFalse(controller.isChromeBarHiddenForTesting)
+        XCTAssertTrue(controller.isChromeBarHiddenForTesting)
         XCTAssertFalse(controller.isChromeBarBackgroundVisibleForTesting)
-        XCTAssertFalse(close.isHidden)
-        XCTAssertFalse(minimize.isHidden)
-        XCTAssertFalse(zoom.isHidden)
-        XCTAssertEqual(controller.renderTopInsetForTesting, controller.chromeHeightForTesting, accuracy: 0.001)
+        XCTAssertEqual(controller.renderTopInsetForTesting, 0, accuracy: 0.001)
     }
 
     @MainActor
@@ -460,8 +438,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         let controller = MirrorContentWindowController(model: model, session: session)
         controller.setStreamSize(width: 1080, height: 2340)
         let window = try XCTUnwrap(controller.window)
-        let rootView = try XCTUnwrap(window.contentView)
-        let chromeBar = try XCTUnwrap(rootView.subviews.compactMap { $0 as? MirrorChromeBar }.first)
+        let chromeBar = controller.chromeBarForTesting
 
         window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: true, animate: false)
         controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
@@ -477,46 +454,24 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testToolbarHeightScalesFromOneToMaximumChromeScale() throws {
+    func testFloatingToolbarUsesFixedBarHeightAndNeverInsetsRender() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
         controller.setStreamSize(width: 1080, height: 2340)
         let window = try XCTUnwrap(controller.window)
-        let rootView = try XCTUnwrap(window.contentView as? MirrorRootView)
 
         window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: true, animate: false)
         controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
-        XCTAssertEqual(rootView.chromeActivationHeight, MirrorContentWindowController.chromeHeight, accuracy: 0.001)
+        XCTAssertEqual(controller.chromeHeightForTesting, MirrorContentWindowController.toolbarBarHeight, accuracy: 0.001)
+        XCTAssertEqual(controller.renderTopInsetForTesting, 0, accuracy: 0.001)
 
         window.setFrame(NSRect(origin: window.frame.origin, size: window.maxSize), display: true, animate: false)
         controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
-        XCTAssertEqual(
-            rootView.chromeActivationHeight,
-            MirrorContentWindowController.chromeHeight * 1.6,
-            accuracy: 0.001
-        )
-
-        let revealEvent = try XCTUnwrap(NSEvent.mouseEvent(
-            with: .mouseMoved,
-            location: NSPoint(
-                x: window.frame.width / 2,
-                y: window.frame.height - MirrorContentWindowController.chromeHeight / 2
-            ),
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            eventNumber: 0,
-            clickCount: 0,
-            pressure: 0
-        ))
-
-        rootView.mouseMoved(with: revealEvent)
-        rootView.layoutSubtreeIfNeeded()
-
-        XCTAssertEqual(controller.chromeHeightForTesting, MirrorContentWindowController.maximumChromeHeight, accuracy: 0.001)
-        XCTAssertEqual(controller.renderTopInsetForTesting, MirrorContentWindowController.maximumChromeHeight, accuracy: 0.001)
+        // Fixed-height floating bar — it does not grow with the window, and it
+        // never reserves a top band in the mirror.
+        XCTAssertEqual(controller.chromeHeightForTesting, MirrorContentWindowController.toolbarBarHeight, accuracy: 0.001)
+        XCTAssertEqual(controller.renderTopInsetForTesting, 0, accuracy: 0.001)
     }
 
     @MainActor
@@ -625,250 +580,64 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertEqual(window.frame.origin.y, initialWindowFrame.origin.y, accuracy: 0.001)
         XCTAssertEqual(window.frame.width, initialWindowFrame.width, accuracy: 0.001)
         XCTAssertEqual(window.frame.height, initialWindowFrame.height, accuracy: 0.001)
-        XCTAssertEqual(controller.renderTopInsetForTesting, controller.chromeHeightForTesting, accuracy: 0.001)
+        XCTAssertEqual(controller.renderTopInsetForTesting, 0, accuracy: 0.001)
     }
 
     @MainActor
-    func testHiddenChromeRevealsFromToolbarBand() throws {
+    func testFloatingToolbarRevealsFromZoneAboveWindow() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
-        let window = try XCTUnwrap(controller.window)
-        let rootView = try XCTUnwrap(window.contentView as? MirrorRootView)
 
-        let event = try XCTUnwrap(NSEvent.mouseEvent(
-            with: .mouseMoved,
-            location: NSPoint(
-                x: window.frame.width / 2,
-                y: window.frame.height - MirrorContentWindowController.chromeHeight / 2
-            ),
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            eventNumber: 0,
-            clickCount: 0,
-            pressure: 0
-        ))
-
-        rootView.mouseMoved(with: event)
+        controller.simulateRevealZoneHover(true)
 
         XCTAssertTrue(controller.isChromeVisibleForTesting)
+        XCTAssertFalse(controller.isChromeBarHiddenForTesting)
+        XCTAssertTrue(controller.isToolbarWindowVisibleForTesting)
     }
 
     @MainActor
-    func testHiddenChromeDoesNotRevealFromMirrorContentMiddle() throws {
+    func testFloatingToolbarStaysHiddenOverMirrorContent() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
-        let window = try XCTUnwrap(controller.window)
-        let rootView = try XCTUnwrap(window.contentView)
-        rootView.layoutSubtreeIfNeeded()
 
-        let event = try XCTUnwrap(NSEvent.mouseEvent(
-            with: .mouseMoved,
-            location: NSPoint(
-                x: controller.renderView.frame.midX,
-                y: controller.renderView.frame.midY
-            ),
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            eventNumber: 0,
-            clickCount: 0,
-            pressure: 0
-        ))
-
-        rootView.mouseMoved(with: event)
+        // The pointer over the phone (not the zone above the window) keeps the
+        // toolbar fully hidden.
+        controller.simulateRevealZoneHover(false)
 
         XCTAssertFalse(controller.isChromeVisibleForTesting)
+        XCTAssertTrue(controller.isChromeBarHiddenForTesting)
     }
 
     @MainActor
-    func testHiddenChromeDoesNotRevealBelowTopOverlayZone() throws {
+    func testFloatingToolbarHidesAfterPointerLeavesZone() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
-        let window = try XCTUnwrap(controller.window)
-        let rootView = try XCTUnwrap(window.contentView)
-        rootView.layoutSubtreeIfNeeded()
 
-        let event = try XCTUnwrap(NSEvent.mouseEvent(
-            with: .mouseMoved,
-            location: NSPoint(
-                x: controller.renderView.frame.midX,
-                y: controller.renderView.frame.midY
-            ),
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            eventNumber: 0,
-            clickCount: 0,
-            pressure: 0
-        ))
+        controller.simulateRevealZoneHover(true)
+        XCTAssertTrue(controller.isChromeVisibleForTesting)
 
-        rootView.mouseMoved(with: event)
+        controller.simulateRevealZoneHover(false)
 
         XCTAssertFalse(controller.isChromeVisibleForTesting)
+        XCTAssertTrue(controller.isChromeBarHiddenForTesting)
     }
 
     @MainActor
-    func testHiddenChromeRevealsFromToolbarBandAboveMirrorContent() throws {
+    func testFloatingToolbarIsASeparateChildWindowAboveTheMirror() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
         let window = try XCTUnwrap(controller.window)
-        let rootView = try XCTUnwrap(window.contentView)
-        let event = try XCTUnwrap(NSEvent.mouseEvent(
-            with: .mouseMoved,
-            location: NSPoint(
-                x: window.frame.width / 2,
-                y: window.frame.height - MirrorContentWindowController.chromeHeight / 2
-            ),
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            eventNumber: 0,
-            clickCount: 0,
-            pressure: 0
-        ))
+        let toolbar = try XCTUnwrap(controller.toolbarWindowForTesting)
 
-        rootView.mouseMoved(with: event)
-
-        XCTAssertTrue(controller.isChromeVisibleForTesting)
-        XCTAssertFalse(controller.isChromeBarHiddenForTesting)
-    }
-
-    @MainActor
-    func testHiddenChromeRevealsWhenPointerEntersToolbarBand() throws {
-        let model = AppModel()
-        let session = MirrorSession(model: model, serial: nil)
-        let controller = MirrorContentWindowController(model: model, session: session)
-        let window = try XCTUnwrap(controller.window)
-        let rootView = try XCTUnwrap(window.contentView)
-        let event = try XCTUnwrap(NSEvent.mouseEvent(
-            with: .mouseMoved,
-            location: NSPoint(
-                x: window.frame.width / 2,
-                y: window.frame.height - MirrorContentWindowController.chromeHeight / 2
-            ),
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            eventNumber: 0,
-            clickCount: 0,
-            pressure: 0
-        ))
-
-        rootView.mouseEntered(with: event)
-
-        XCTAssertTrue(controller.isChromeVisibleForTesting)
-        XCTAssertFalse(controller.isChromeBarHiddenForTesting)
-    }
-
-    @MainActor
-    func testVisibleChromeStaysStableWhenPointerIsInToolbarBand() throws {
-        let model = AppModel()
-        let session = MirrorSession(model: model, serial: nil)
-        let controller = MirrorContentWindowController(model: model, session: session)
-        let window = try XCTUnwrap(controller.window)
-        let rootView = try XCTUnwrap(window.contentView)
-        let revealEvent = try XCTUnwrap(NSEvent.mouseEvent(
-            with: .mouseMoved,
-            location: NSPoint(
-                x: window.frame.width / 2,
-                y: window.frame.height - MirrorContentWindowController.chromeHeight / 2
-            ),
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            eventNumber: 0,
-            clickCount: 0,
-            pressure: 0
-        ))
-
-        rootView.mouseMoved(with: revealEvent)
-        rootView.mouseMoved(with: revealEvent)
-        RunLoop.current.run(until: Date().addingTimeInterval(0.20))
-
-        XCTAssertTrue(controller.isChromeVisibleForTesting)
-    }
-
-    @MainActor
-    func testChromeBarExitDoesNotHideActionsWhenCursorIsStillInToolbarBand() throws {
-        let model = AppModel()
-        let session = MirrorSession(model: model, serial: nil)
-        let controller = MirrorContentWindowController(model: model, session: session)
-        let window = try XCTUnwrap(controller.window)
-        let rootView = try XCTUnwrap(window.contentView)
-        let chromeBar = try XCTUnwrap(rootView.subviews.compactMap { $0 as? MirrorChromeBar }.first)
-        let toolbarPoint = NSPoint(
-            x: window.frame.width / 2,
-            y: window.frame.height - MirrorContentWindowController.chromeHeight / 2
-        )
-        let event = try XCTUnwrap(NSEvent.mouseEvent(
-            with: .mouseMoved,
-            location: toolbarPoint,
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            eventNumber: 0,
-            clickCount: 0,
-            pressure: 0
-        ))
-
-        rootView.mouseMoved(with: event)
-        rootView.layoutSubtreeIfNeeded()
-        chromeBar.mouseExited(with: event)
-        RunLoop.current.run(until: Date().addingTimeInterval(0.25))
-
-        XCTAssertTrue(controller.isChromeVisibleForTesting)
-    }
-
-    @MainActor
-    func testToolbarControlsRemainVisibleAfterPointerLeavesToolbar() throws {
-        let model = AppModel()
-        let session = MirrorSession(model: model, serial: nil)
-        let controller = MirrorContentWindowController(model: model, session: session)
-        let window = try XCTUnwrap(controller.window)
-        let rootView = try XCTUnwrap(window.contentView)
-        let close = try XCTUnwrap(window.standardWindowButton(.closeButton))
-        let minimize = try XCTUnwrap(window.standardWindowButton(.miniaturizeButton))
-        let zoom = try XCTUnwrap(window.standardWindowButton(.zoomButton))
-        let revealEvent = try XCTUnwrap(NSEvent.mouseEvent(
-            with: .mouseMoved,
-            location: NSPoint(
-                x: window.frame.width / 2,
-                y: window.frame.height - MirrorContentWindowController.chromeHeight / 2
-            ),
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            eventNumber: 0,
-            clickCount: 0,
-            pressure: 0
-        ))
-        rootView.layoutSubtreeIfNeeded()
-        rootView.mouseMoved(with: revealEvent)
-        XCTAssertFalse(close.isHidden)
-        XCTAssertFalse(minimize.isHidden)
-        XCTAssertFalse(zoom.isHidden)
-        XCTAssertTrue(controller.isChromeBarBackgroundVisibleForTesting)
-
-        controller.setChromeVisibleForTesting(false)
-
-        XCTAssertFalse(controller.isChromeBarHiddenForTesting)
-        XCTAssertFalse(controller.isChromeBarBackgroundVisibleForTesting)
-        XCTAssertFalse(close.isHidden)
-        XCTAssertFalse(minimize.isHidden)
-        XCTAssertFalse(zoom.isHidden)
+        // The toolbar is its own window attached to (not inside) the mirror.
+        XCTAssertTrue(window.childWindows?.contains(toolbar) ?? false)
+        XCTAssertFalse(controller.renderView.subviews.contains(controller.chromeBarForTesting))
+        XCTAssertEqual(toolbar.frame.width, window.frame.width, accuracy: 0.5)
+        XCTAssertEqual(toolbar.frame.height, MirrorContentWindowController.toolbarBarHeight, accuracy: 0.5)
     }
 
     @MainActor

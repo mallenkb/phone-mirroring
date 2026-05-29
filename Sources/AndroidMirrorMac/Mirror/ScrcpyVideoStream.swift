@@ -23,6 +23,14 @@ import Network
 ///   socket 3 (control):
 ///     bidirectional control message stream (handled by ScrcpyControlChannel).
 final class ScrcpyVideoStream {
+    enum ConnectionRole: Equatable {
+        case video
+        case probeAudioOrControl
+        case audio
+        case control
+        case reject
+    }
+
     struct StreamHeader {
         var deviceName: String
         var codecID: UInt32   // 0x68323634 ("h264"), 0x68323635 ("h265"), 0x00617631 ("av1")
@@ -131,20 +139,49 @@ final class ScrcpyVideoStream {
     }
 
     private func assignAndReceive(_ connection: NWConnection) {
-        if videoConnection == nil {
+        switch Self.roleForNextConnection(
+            hasVideo: videoConnection != nil,
+            hasAudio: audioConnection != nil,
+            hasPendingAudioProbe: pendingAudioConnection != nil,
+            hasControl: controlConnection != nil
+        ) {
+        case .video:
             Logger.log("ScrcpyVideoStream assigned video connection")
             videoConnection = connection
             readMore(on: connection, handler: { [weak self] data in self?.feedVideo(data) })
-        } else if audioConnection == nil, controlConnection == nil, pendingAudioConnection == nil {
+        case .probeAudioOrControl:
             probeAudioOrControl(connection)
-        } else if controlConnection == nil {
+        case .control:
             promotePendingAudioIfNeeded()
             Logger.log("ScrcpyVideoStream assigned control connection")
             controlConnection = connection
             onControl?(connection)
-        } else {
+        case .audio:
+            Logger.log("ScrcpyVideoStream assigned late audio connection")
+            audioConnection = connection
+            readMore(on: connection, handler: { [weak self] data in self?.feedAudio(data) })
+        case .reject:
             connection.cancel()
         }
+    }
+
+    static func roleForNextConnection(
+        hasVideo: Bool,
+        hasAudio: Bool,
+        hasPendingAudioProbe: Bool,
+        hasControl: Bool
+    ) -> ConnectionRole {
+        guard hasVideo else { return .video }
+        if !hasAudio, !hasControl, !hasPendingAudioProbe {
+            return .probeAudioOrControl
+        }
+        if !hasControl {
+            return .control
+        }
+        if !hasAudio, !hasPendingAudioProbe {
+            return .audio
+        }
+        return .reject
     }
 
     private func probeAudioOrControl(_ connection: NWConnection) {

@@ -38,4 +38,72 @@ final class PairedPhoneStoreTests: XCTestCase {
         let decoded = try JSONDecoder().decode([PairedPhoneRecord].self, from: encoded)
         XCTAssertEqual(decoded, [record])
     }
+
+    func testLoadMigratesRecordFromCompatibilitySuite() {
+        let primarySuite = "AndroidMirrorMacTests.primary.\(UUID().uuidString)"
+        let compatibilitySuite = "AndroidMirrorMacTests.compat.\(UUID().uuidString)"
+        defer {
+            UserDefaults.standard.removePersistentDomain(forName: primarySuite)
+            UserDefaults.standard.removePersistentDomain(forName: compatibilitySuite)
+        }
+        guard let primaryDefaults = UserDefaults(suiteName: primarySuite),
+              let compatibilityDefaults = UserDefaults(suiteName: compatibilitySuite)
+        else {
+            return XCTFail("Expected test UserDefaults suites to be available")
+        }
+
+        let record = PairedPhoneRecord(
+            id: "phone-1",
+            displayName: "Pixel",
+            lastAddress: "10.0.0.5:5555",
+            firstPaired: referenceDate,
+            lastConnected: referenceDate
+        )
+        PairedPhoneStore(primaryDefaults: compatibilityDefaults, suiteNames: [])
+            .save([record])
+
+        let store = PairedPhoneStore(
+            primaryDefaults: primaryDefaults,
+            suiteNames: [compatibilitySuite]
+        )
+
+        XCTAssertEqual(store.load(), [record])
+        XCTAssertEqual(
+            PairedPhoneStore(primaryDefaults: primaryDefaults, suiteNames: []).load(),
+            [record]
+        )
+    }
+
+    func testSaveWritesRecordToCompatibilitySuite() {
+        let primarySuite = "AndroidMirrorMacTests.primary.\(UUID().uuidString)"
+        let compatibilitySuite = "AndroidMirrorMacTests.compat.\(UUID().uuidString)"
+        defer {
+            UserDefaults.standard.removePersistentDomain(forName: primarySuite)
+            UserDefaults.standard.removePersistentDomain(forName: compatibilitySuite)
+        }
+        guard let primaryDefaults = UserDefaults(suiteName: primarySuite),
+              let compatibilityDefaults = UserDefaults(suiteName: compatibilitySuite)
+        else {
+            return XCTFail("Expected test UserDefaults suites to be available")
+        }
+
+        let record = PairedPhoneRecord(
+            id: "phone-1",
+            displayName: "Pixel",
+            lastAddress: "10.0.0.5:5555",
+            firstPaired: referenceDate,
+            lastConnected: referenceDate
+        )
+        let store = PairedPhoneStore(
+            primaryDefaults: primaryDefaults,
+            suiteNames: [compatibilitySuite]
+        )
+
+        store.save([record])
+
+        XCTAssertEqual(
+            PairedPhoneStore(primaryDefaults: compatibilityDefaults, suiteNames: []).load(),
+            [record]
+        )
+    }
 }

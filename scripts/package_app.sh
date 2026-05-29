@@ -58,7 +58,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key>
   <string>AndroidMirrorMac</string>
   <key>CFBundleIdentifier</key>
-  <string>com.mallenkb.AndroidMirrorScrcpy</string>
+  <string>com.mallenkb.AndroidMirrorMac</string>
   <key>CFBundleName</key>
   <string>Android Mirror Scrcpy</string>
   <key>CFBundleDisplayName</key>

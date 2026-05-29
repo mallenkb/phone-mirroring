@@ -75,14 +75,12 @@ struct FigmaMirrorExperienceView: View {
     }
 
     private var instructionsGroup: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 16) {
             connectionInstruction(
                 iconName: "cable.connector",
                 title: "Connect via USB",
                 detail: "Turn on USB debugging, plug in the phone, and approve this Mac."
             )
-
-            orDivider
 
             connectionInstruction(
                 iconName: "qrcode.viewfinder",
@@ -144,49 +142,27 @@ struct FigmaMirrorExperienceView: View {
     }
 
     private func connectionInstruction(iconName: String, title: String, detail: String) -> some View {
-        VStack(spacing: 5) {
-            HStack(spacing: 7) {
-                Image(systemName: iconName)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.92))
-                    .frame(width: 16, height: 16)
+        HStack(alignment: .top, spacing: 13) {
+            Image(systemName: iconName)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(accent)
+                .frame(width: 24, alignment: .center)
 
+            VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 13.5, weight: .semibold))
                     .tracking(-0.1)
                     .foregroundStyle(.white)
-                    .lineLimit(1)
+
+                Text(detail)
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.66))
+                    .multilineTextAlignment(.leading)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-
-            Text(detail)
-                .font(.system(size: 12, weight: .regular))
-                .foregroundStyle(.white.opacity(0.72))
-                .multilineTextAlignment(.center)
-                .lineSpacing(2.5)
-                .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .center)
-    }
-
-    private var orDivider: some View {
-        HStack(spacing: 10) {
-            dividerLine
-
-            Text("OR")
-                .font(.system(size: 10, weight: .semibold))
-                .tracking(1.5)
-                .foregroundStyle(.white.opacity(0.5))
-                .lineLimit(1)
-                .fixedSize()
-
-            dividerLine
-        }
-    }
-
-    private var dividerLine: some View {
-        Rectangle()
-            .fill(Color.white.opacity(0.16))
-            .frame(height: 1)
     }
 
     private var qrPairingPanel: some View {

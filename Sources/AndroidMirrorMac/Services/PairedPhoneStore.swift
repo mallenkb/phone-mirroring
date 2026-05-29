@@ -4,15 +4,27 @@ import Foundation
 /// per-device record Bluetooth keeps between sessions.
 struct PairedPhoneStore {
     private static let defaultsKey = "AndroidMirror.PairedPhones.v1"
-    private static let legacySuites = [
+    private static let compatibilitySuites = [
         "com.mallenkb.AndroidMirrorMac",
+        "com.mallenkb.AndroidMirrorScrcpy",
+        "local.androidmirrormac",
         "AndroidMirrorMac"
     ]
+    private let primaryDefaults: UserDefaults
+    private let suiteNames: [String]
+
+    init(
+        primaryDefaults: UserDefaults = .standard,
+        suiteNames: [String] = Self.compatibilitySuites
+    ) {
+        self.primaryDefaults = primaryDefaults
+        self.suiteNames = suiteNames
+    }
 
     func load() -> [PairedPhoneRecord] {
-        var storedRecords = records(in: .standard)
+        var storedRecords = records(in: primaryDefaults)
 
-        for suite in Self.legacySuites {
+        for suite in suiteNames {
             guard let defaults = UserDefaults(suiteName: suite) else { continue }
             for record in records(in: defaults) where !storedRecords.contains(where: { existing in
                 existing.id == record.id || existing.lastAddress == record.lastAddress
@@ -30,7 +42,10 @@ struct PairedPhoneStore {
 
     func save(_ records: [PairedPhoneRecord]) {
         guard let data = try? JSONEncoder().encode(records) else { return }
-        UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+        primaryDefaults.set(data, forKey: Self.defaultsKey)
+        for suite in suiteNames {
+            UserDefaults(suiteName: suite)?.set(data, forKey: Self.defaultsKey)
+        }
     }
 
     private func records(in defaults: UserDefaults) -> [PairedPhoneRecord] {

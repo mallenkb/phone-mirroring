@@ -21,8 +21,10 @@ final class MirrorRenderView: NSView {
     }
 
     let sampleBufferDisplayLayer = AVSampleBufferDisplayLayer()
+    private let loadingView = MirrorLoadingView()
     private var aspect: CGSize = .zero
     private var trackingArea: NSTrackingArea?
+    private var hasRenderedFirstFrame = false
     var cornerRadius: CGFloat = 0 {
         didSet { applyCornerMask() }
     }
@@ -46,6 +48,7 @@ final class MirrorRenderView: NSView {
             "frame": NSNull(),
             "position": NSNull()
         ]
+        setupLoadingView()
         applyCornerMask()
     }
 
@@ -63,6 +66,7 @@ final class MirrorRenderView: NSView {
     override func layout() {
         super.layout()
         updateVideoLayerFrame()
+        loadingView.frame = bounds
         applyCornerMask()
     }
 
@@ -84,12 +88,17 @@ final class MirrorRenderView: NSView {
             sampleBufferDisplayLayer.flush()
         }
         sampleBufferDisplayLayer.enqueue(sample)
+        hideLoadingViewIfNeeded()
     }
 
     func setStreamSize(width: UInt32, height: UInt32) {
         aspect = CGSize(width: CGFloat(width), height: CGFloat(height))
         needsLayout = true
         updateVideoLayerFrame()
+    }
+
+    func setLoadingDeviceName(_ deviceName: String) {
+        loadingView.deviceName = deviceName
     }
 
     var streamAspect: CGSize { aspect }
@@ -107,6 +116,28 @@ final class MirrorRenderView: NSView {
         layer?.setValue("continuous", forKey: "cornerCurve")
         sampleBufferDisplayLayer.cornerRadius = 0
         sampleBufferDisplayLayer.masksToBounds = false
+        loadingView.layer?.cornerRadius = cornerRadius
+        loadingView.layer?.masksToBounds = cornerRadius > 0
+        loadingView.layer?.setValue("continuous", forKey: "cornerCurve")
+    }
+
+    private func setupLoadingView() {
+        loadingView.frame = bounds
+        loadingView.autoresizingMask = [.width, .height]
+        loadingView.alphaValue = 1
+        addSubview(loadingView)
+    }
+
+    private func hideLoadingViewIfNeeded() {
+        guard !hasRenderedFirstFrame else { return }
+        hasRenderedFirstFrame = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.24
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            loadingView.animator().alphaValue = 0
+        } completionHandler: { [weak loadingView] in
+            loadingView?.isHidden = true
+        }
     }
 
     // MARK: - Input
@@ -183,5 +214,75 @@ final class MirrorRenderView: NSView {
 
     static func videoFrame(for bounds: CGRect) -> CGRect {
         bounds
+    }
+}
+
+private final class MirrorLoadingView: NSView {
+    private let gradientLayer = CAGradientLayer()
+    private let contentStack = NSStackView()
+    private let statusLabel = NSTextField(labelWithString: "Connecting")
+    private let deviceLabel = NSTextField(labelWithString: "")
+
+    var deviceName: String = "" {
+        didSet {
+            let trimmedName = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+            deviceLabel.stringValue = trimmedName.isEmpty ? "Android Device" : trimmedName
+        }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupView()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        gradientLayer.frame = bounds
+        CATransaction.commit()
+    }
+
+    private func setupView() {
+        wantsLayer = true
+        layer = CALayer()
+        layer?.masksToBounds = true
+        gradientLayer.colors = [
+            NSColor(calibratedRed: 0.36, green: 0.75, blue: 0.80, alpha: 1).cgColor,
+            NSColor(calibratedRed: 0.09, green: 0.55, blue: 0.82, alpha: 1).cgColor,
+            NSColor(calibratedRed: 0.02, green: 0.21, blue: 0.51, alpha: 1).cgColor
+        ]
+        gradientLayer.locations = [0, 0.46, 1]
+        gradientLayer.startPoint = CGPoint(x: 0.06, y: 1)
+        gradientLayer.endPoint = CGPoint(x: 0.96, y: 0)
+        layer?.addSublayer(gradientLayer)
+
+        statusLabel.font = .systemFont(ofSize: 19, weight: .semibold)
+        statusLabel.textColor = NSColor.black.withAlphaComponent(0.46)
+        statusLabel.alignment = .center
+
+        deviceLabel.font = .systemFont(ofSize: 42, weight: .heavy)
+        deviceLabel.textColor = NSColor.black.withAlphaComponent(0.74)
+        deviceLabel.alignment = .center
+        deviceLabel.lineBreakMode = .byTruncatingTail
+        deviceLabel.maximumNumberOfLines = 1
+        deviceLabel.stringValue = "Android Device"
+
+        contentStack.orientation = .vertical
+        contentStack.alignment = .centerX
+        contentStack.spacing = 6
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        contentStack.addArrangedSubview(statusLabel)
+        contentStack.addArrangedSubview(deviceLabel)
+        addSubview(contentStack)
+
+        NSLayoutConstraint.activate([
+            contentStack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            contentStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            contentStack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 24),
+            contentStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -24)
+        ])
     }
 }

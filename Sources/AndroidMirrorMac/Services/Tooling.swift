@@ -83,7 +83,19 @@ enum Tooling {
 
         do {
             try process.run()
-            process.waitUntilExit()
+            let timeout: TimeInterval = name == "adb" ? 5 : 30
+            let deadline = Date().addingTimeInterval(timeout)
+            while process.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if process.isRunning {
+                process.terminate()
+                Thread.sleep(forTimeInterval: 0.1)
+                if process.isRunning {
+                    process.interrupt()
+                }
+                return "\(name) timed out after \(Int(timeout))s: \(arguments.joined(separator: " "))"
+            }
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             return String(data: data, encoding: .utf8) ?? ""
         } catch {
