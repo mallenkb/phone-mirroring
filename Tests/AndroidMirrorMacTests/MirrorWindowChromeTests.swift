@@ -20,6 +20,62 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertEqual(Array(message), [1, 0, 0, 0, 2, 72, 105])
     }
 
+    @MainActor
+    func testFunctionVolumeKeysMapToAndroidVolumeControls() throws {
+        let mute = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: 0x6D
+        ))
+        let down = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: 0x67
+        ))
+        let up = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: 0x6F
+        ))
+
+        XCTAssertEqual(MirrorSession.androidKey(for: mute), .volumeMute)
+        XCTAssertEqual(MirrorSession.androidKey(for: down), .volumeDown)
+        XCTAssertEqual(MirrorSession.androidKey(for: up), .volumeUp)
+    }
+
+    @MainActor
+    func testHardwareVolumeKeysMapToAndroidVolumeControls() throws {
+        let up = try XCTUnwrap(Self.mediaKeyEvent(keyType: 0))
+        let down = try XCTUnwrap(Self.mediaKeyEvent(keyType: 1))
+        let mute = try XCTUnwrap(Self.mediaKeyEvent(keyType: 7))
+
+        XCTAssertEqual(MirrorSession.androidKey(for: up), .volumeUp)
+        XCTAssertEqual(MirrorSession.androidKey(for: down), .volumeDown)
+        XCTAssertEqual(MirrorSession.androidKey(for: mute), .volumeMute)
+        XCTAssertEqual(MirrorSession.androidKeyAction(for: up), ScrcpyControlChannel.KeyAction.down)
+    }
+
     func testMirrorRenderViewFitsPortraitStreamInsideWideBounds() {
         let rect = MirrorRenderView.fittedVideoRect(
             for: CGSize(width: 1080, height: 2400),
@@ -49,6 +105,24 @@ final class MirrorWindowChromeTests: XCTestCase {
         let renderView = MirrorRenderView()
 
         XCTAssertEqual(renderView.sampleBufferDisplayLayer.videoGravity, .resizeAspect)
+    }
+
+    @MainActor
+    func testMirrorLoadingProgressAnimatesStatusAndDeviceNameAsOneUnit() {
+        let renderView = MirrorRenderView(frame: NSRect(x: 0, y: 0, width: 390, height: 850))
+        renderView.setLoadingDeviceName("Pixel 8 Pro")
+
+        let progressViews = renderView.allSubviews.filter {
+            NSStringFromClass(type(of: $0)).contains("LoadingProgressTextView")
+        }
+
+        XCTAssertEqual(progressViews.count, 1)
+        XCTAssertEqual(progressViews.first?.allTextFieldValues, [
+            "Connecting",
+            "Pixel 8 Pro",
+            "Connecting",
+            "Pixel 8 Pro"
+        ])
     }
 
     @MainActor
@@ -795,4 +869,30 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertFalse(controller.isChromeVisibleForTesting)
     }
 
+}
+
+private extension NSView {
+    var allSubviews: [NSView] {
+        subviews + subviews.flatMap(\.allSubviews)
+    }
+
+    var allTextFieldValues: [String] {
+        allSubviews.compactMap { ($0 as? NSTextField)?.stringValue }
+    }
+}
+
+private extension MirrorWindowChromeTests {
+    static func mediaKeyEvent(keyType: Int, keyState: Int = 0xA) -> NSEvent? {
+        NSEvent.otherEvent(
+            with: .systemDefined,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            subtype: 8,
+            data1: (keyType << 16) | (keyState << 8),
+            data2: -1
+        )
+    }
 }

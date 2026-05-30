@@ -38,6 +38,7 @@ final class MirrorSession {
     private var stream: ScrcpyVideoStream?
     private var decoder = H264VideoToolboxDecoder()
     private(set) var controlChannel: ScrcpyControlChannel?
+    private var clipboardBridge: ClipboardBridge?
     private var windowController: MirrorContentWindowController?
     private var streamWidth: UInt32 = 0
     private var streamHeight: UInt32 = 0
@@ -55,10 +56,11 @@ final class MirrorSession {
     func start() throws {
         guard windowController == nil else { throw SessionError.alreadyRunning }
 
-        let stream = ScrcpyVideoStream(port: localPort)
+        let stream = ScrcpyVideoStream(port: localPort, expectsAudio: false)
         let host = ScrcpyServerHost(options: ScrcpyServerHost.Options(
             scid: scid,
             localPort: localPort,
+            audio: false,
             serial: serial
         ))
 
@@ -109,6 +111,8 @@ final class MirrorSession {
     func stop() {
         guard !isStopping else { return }
         isStopping = true
+        clipboardBridge?.stop()
+        clipboardBridge = nil
         controlChannel?.close()
         controlChannel = nil
         stream?.stop()
@@ -154,8 +158,19 @@ final class MirrorSession {
 
     func forwardKeyEvent(_ event: NSEvent) {
         guard let controlChannel else { return }
+
+        // ⌘V: push the current Mac clipboard and ask the phone to paste it into
+        // the focused field. Handled before key mapping so it can't be typed.
+        if event.type == .keyDown,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "v" {
+            clipboardBridge?.pasteToDevice()
+            return
+        }
+
         if let mapped = Self.androidKey(for: event) {
-            controlChannel.sendKeyEvent(mapped, action: event.type == .keyDown ? .down : .up)
+            guard let action = Self.androidKeyAction(for: event) else { return }
+            controlChannel.sendKeyEvent(mapped, action: action)
             return
         }
 
@@ -194,10 +209,26 @@ final class MirrorSession {
         if streamWidth > 0, streamHeight > 0 {
             channel.updateDeviceSize(width: streamWidth, height: streamHeight)
         }
+        channel.onDeviceClipboard = { [weak self] text in
+            Task { @MainActor in self?.clipboardBridge?.deviceClipboardChanged(text) }
+        }
         controlChannel = channel
+
+        let bridge = ClipboardBridge(channel: channel)
+        bridge.start()
+        clipboardBridge = bridge
     }
 
-    private static func androidKey(for event: NSEvent) -> ScrcpyControlChannel.AndroidKey? {
+    static func androidKey(for event: NSEvent) -> ScrcpyControlChannel.AndroidKey? {
+        if event.type == .systemDefined, event.subtype.rawValue == 8 {
+            switch (event.data1 >> 16) & 0xFFFF {
+            case 0: return .volumeUp
+            case 1: return .volumeDown
+            case 7: return .volumeMute
+            default: return nil
+            }
+        }
+
         // macOS virtual key codes (kVK_*). Only a minimal mapping for now.
         switch event.keyCode {
         case 0x35: return .back     // Escape
@@ -205,11 +236,30 @@ final class MirrorSession {
         case 0x24, 0x4C: return .enter
         case 0x33: return .delete
         case 0x75: return .forwardDelete
+        case 0x6F: return .volumeUp      // F12 / volume up
+        case 0x67: return .volumeDown    // F11 / volume down
+        case 0x6D: return .volumeMute    // F10 / mute
         case 0x7E: return .dpadUp
         case 0x7D: return .dpadDown
         case 0x7B: return .dpadLeft
         case 0x7C: return .dpadRight
         case 0x53: return .home     // Keypad 1 — placeholder; user-configurable later
+        default: return nil
+        }
+    }
+
+    static func androidKeyAction(for event: NSEvent) -> ScrcpyControlChannel.KeyAction? {
+        if event.type == .systemDefined, event.subtype.rawValue == 8 {
+            switch (event.data1 >> 8) & 0xFF {
+            case 0xA: return .down
+            case 0xB: return .up
+            default: return nil
+            }
+        }
+
+        switch event.type {
+        case .keyDown: return .down
+        case .keyUp: return .up
         default: return nil
         }
     }

@@ -135,19 +135,23 @@ struct FigmaMirrorExperienceView: View {
     }
 
     private var devicePill: some View {
-        HStack(spacing: 10) {
+        let online = model.isSelectedDeviceOnline
+        let statusColor = online ? accent : Color.white.opacity(0.48)
+        let statusText = online ? "Device" : "Offline"
+
+        return HStack(spacing: 10) {
             Circle()
-                .fill(accent.opacity(0.9))
+                .fill(statusColor.opacity(0.9))
                 .frame(width: 8, height: 8)
 
-            Text("Device")
+            Text(statusText)
                 .font(.system(size: 14, weight: .semibold))
 
             Text(model.selectedDevice.name)
                 .font(.system(size: 14, weight: .semibold))
                 .lineLimit(1)
         }
-        .foregroundStyle(accent.opacity(0.85))
+        .foregroundStyle(statusColor.opacity(0.85))
         .padding(.horizontal, 18)
         .frame(height: 34)
         .background(

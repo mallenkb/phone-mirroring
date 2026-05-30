@@ -25,6 +25,8 @@ final class MirrorRenderView: NSView {
     private var aspect: CGSize = .zero
     private var trackingArea: NSTrackingArea?
     private var hasRenderedFirstFrame = false
+    private var firstFrameReadyToDisplay = false
+    private var loadingStartedAt = Date()
     var cornerRadius: CGFloat = 0 {
         didSet { applyCornerMask() }
     }
@@ -122,13 +124,29 @@ final class MirrorRenderView: NSView {
     }
 
     private func setupLoadingView() {
+        loadingStartedAt = Date()
         loadingView.frame = bounds
         loadingView.autoresizingMask = [.width, .height]
         loadingView.alphaValue = 1
+        loadingView.startProgress(duration: 3)
         addSubview(loadingView)
     }
 
     private func hideLoadingViewIfNeeded() {
+        guard !hasRenderedFirstFrame, !firstFrameReadyToDisplay else { return }
+        firstFrameReadyToDisplay = true
+        let elapsed = Date().timeIntervalSince(loadingStartedAt)
+        let remaining = max(0, 3 - elapsed)
+        if remaining > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + remaining) { [weak self] in
+                self?.finishHidingLoadingView()
+            }
+            return
+        }
+        finishHidingLoadingView()
+    }
+
+    private func finishHidingLoadingView() {
         guard !hasRenderedFirstFrame else { return }
         hasRenderedFirstFrame = true
         NSAnimationContext.runAnimationGroup { context in
@@ -166,6 +184,12 @@ final class MirrorRenderView: NSView {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) {
+            // ⌘V pastes the Mac clipboard into the phone; let every other
+            // command shortcut (⌘Q, app menu, etc.) bubble up untouched.
+            if flags == .command, event.charactersIgnoringModifiers?.lowercased() == "v" {
+                onKeyEvent?(event)
+                return true
+            }
             return false
         }
         onKeyEvent?(event)
@@ -219,14 +243,12 @@ final class MirrorRenderView: NSView {
 
 private final class MirrorLoadingView: NSView {
     private let gradientLayer = CAGradientLayer()
-    private let contentStack = NSStackView()
-    private let statusLabel = NSTextField(labelWithString: "Connecting")
-    private let deviceLabel = NSTextField(labelWithString: "")
+    private let progressText = LoadingProgressTextView(deviceName: "Android Device")
 
     var deviceName: String = "" {
         didSet {
             let trimmedName = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
-            deviceLabel.stringValue = trimmedName.isEmpty ? "Android Device" : trimmedName
+            progressText.deviceName = trimmedName.isEmpty ? "Android Device" : trimmedName
         }
     }
 
@@ -243,6 +265,11 @@ private final class MirrorLoadingView: NSView {
         CATransaction.setDisableActions(true)
         gradientLayer.frame = bounds
         CATransaction.commit()
+        progressText.layoutSubtreeIfNeeded()
+    }
+
+    func startProgress(duration: TimeInterval) {
+        progressText.startProgress(duration: duration)
     }
 
     private func setupView() {
@@ -259,30 +286,147 @@ private final class MirrorLoadingView: NSView {
         gradientLayer.endPoint = CGPoint(x: 0.96, y: 0)
         layer?.addSublayer(gradientLayer)
 
-        statusLabel.font = .systemFont(ofSize: 19, weight: .semibold)
-        statusLabel.textColor = NSColor.white.withAlphaComponent(0.70)
-        statusLabel.alignment = .center
-
-        deviceLabel.font = .systemFont(ofSize: 42, weight: .heavy)
-        deviceLabel.textColor = NSColor.white.withAlphaComponent(0.92)
-        deviceLabel.alignment = .center
-        deviceLabel.lineBreakMode = .byTruncatingTail
-        deviceLabel.maximumNumberOfLines = 1
-        deviceLabel.stringValue = "Android Device"
-
-        contentStack.orientation = .vertical
-        contentStack.alignment = .centerX
-        contentStack.spacing = 6
-        contentStack.translatesAutoresizingMaskIntoConstraints = false
-        contentStack.addArrangedSubview(statusLabel)
-        contentStack.addArrangedSubview(deviceLabel)
-        addSubview(contentStack)
+        progressText.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(progressText)
 
         NSLayoutConstraint.activate([
-            contentStack.centerXAnchor.constraint(equalTo: centerXAnchor),
-            contentStack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            contentStack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 24),
-            contentStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -24)
+            progressText.centerXAnchor.constraint(equalTo: centerXAnchor),
+            progressText.centerYAnchor.constraint(equalTo: centerYAnchor),
+            progressText.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 24),
+            progressText.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -24)
         ])
+    }
+}
+
+private final class LoadingProgressTextView: NSView {
+    private let baseStack = NSStackView()
+    private let fillStack = NSStackView()
+    private let baseStatusLabel = NSTextField(labelWithString: "Connecting")
+    private let baseDeviceLabel: NSTextField
+    private let fillStatusLabel = NSTextField(labelWithString: "Connecting")
+    private let fillDeviceLabel: NSTextField
+    private let fillContainer = NSView()
+    private var fillExtentConstraint: NSLayoutConstraint?
+    private var progressTimer: Timer?
+    private var progress: CGFloat = 0 {
+        didSet { updateProgress() }
+    }
+
+    var deviceName: String {
+        get { baseDeviceLabel.stringValue }
+        set {
+            baseDeviceLabel.stringValue = newValue
+            fillDeviceLabel.stringValue = newValue
+            invalidateIntrinsicContentSize()
+            needsLayout = true
+        }
+    }
+
+    init(deviceName: String) {
+        baseDeviceLabel = NSTextField(labelWithString: deviceName)
+        fillDeviceLabel = NSTextField(labelWithString: deviceName)
+        super.init(frame: .zero)
+        setupView()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override var intrinsicContentSize: NSSize {
+        baseStack.intrinsicContentSize
+    }
+
+    override func layout() {
+        super.layout()
+        updateProgress()
+    }
+
+    func startProgress(duration: TimeInterval) {
+        progressTimer?.invalidate()
+        progress = 0
+        let startedAt = Date()
+        let timer = Timer(timeInterval: 1 / 60, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            let elapsed = Date().timeIntervalSince(startedAt)
+            self.progress = min(1, max(0, elapsed / duration))
+            if self.progress >= 1 {
+                timer.invalidate()
+                self.progressTimer = nil
+            }
+        }
+        progressTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func setupView() {
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+
+        [baseStatusLabel, fillStatusLabel].forEach { label in
+            label.font = .systemFont(ofSize: 19, weight: .semibold)
+            label.alignment = .center
+            label.lineBreakMode = .byTruncatingTail
+            label.maximumNumberOfLines = 1
+            label.translatesAutoresizingMaskIntoConstraints = false
+        }
+        [baseDeviceLabel, fillDeviceLabel].forEach { label in
+            label.font = .systemFont(ofSize: 42, weight: .heavy)
+            label.alignment = .center
+            label.lineBreakMode = .byTruncatingTail
+            label.maximumNumberOfLines = 1
+            label.translatesAutoresizingMaskIntoConstraints = false
+        }
+        [baseStatusLabel, baseDeviceLabel].forEach {
+            $0.textColor = NSColor.white.withAlphaComponent(0.34)
+        }
+        fillStatusLabel.textColor = NSColor.white.withAlphaComponent(0.86)
+        fillDeviceLabel.textColor = NSColor.white.withAlphaComponent(0.92)
+
+        [baseStack, fillStack].forEach { stack in
+            stack.orientation = .vertical
+            stack.alignment = .centerX
+            stack.spacing = 6
+            stack.translatesAutoresizingMaskIntoConstraints = false
+        }
+        baseStack.addArrangedSubview(baseStatusLabel)
+        baseStack.addArrangedSubview(baseDeviceLabel)
+        fillStack.addArrangedSubview(fillStatusLabel)
+        fillStack.addArrangedSubview(fillDeviceLabel)
+
+        fillContainer.translatesAutoresizingMaskIntoConstraints = false
+        fillContainer.wantsLayer = true
+        fillContainer.layer?.masksToBounds = true
+
+        addSubview(baseStack)
+        addSubview(fillContainer)
+        fillContainer.addSubview(fillStack)
+
+        fillExtentConstraint = fillContainer.heightAnchor.constraint(equalToConstant: 0)
+        fillExtentConstraint?.isActive = true
+
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalTo: baseStack.widthAnchor),
+            heightAnchor.constraint(equalTo: baseStack.heightAnchor),
+
+            baseStack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            baseStack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            baseStack.topAnchor.constraint(equalTo: topAnchor),
+            baseStack.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            fillContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
+            fillContainer.trailingAnchor.constraint(equalTo: trailingAnchor),
+            fillContainer.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            fillStack.leadingAnchor.constraint(equalTo: fillContainer.leadingAnchor),
+            fillStack.bottomAnchor.constraint(equalTo: fillContainer.bottomAnchor),
+            fillStack.widthAnchor.constraint(equalTo: baseStack.widthAnchor),
+            fillStack.heightAnchor.constraint(equalTo: baseStack.heightAnchor)
+        ])
+    }
+
+    private func updateProgress() {
+        fillExtentConstraint?.constant = bounds.height * progress
     }
 }

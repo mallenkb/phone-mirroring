@@ -28,4 +28,25 @@ final class ScrcpyServerHostTests: XCTestCase {
         XCTAssertFalse(arguments.contains("audio_codec=raw"))
         XCTAssertFalse(arguments.contains("audio_source=output"))
     }
+
+    func testServerArgumentsIgnoreAudioRequestsBecauseMacAudioFeatureIsRemoved() {
+        let arguments = ScrcpyServerHost.serverArguments(for: .init(
+            scid: 0x1234ABCD,
+            localPort: 37283,
+            audio: true
+        ))
+
+        XCTAssertTrue(arguments.contains("audio=false"))
+        XCTAssertFalse(arguments.contains("audio=true"))
+        XCTAssertFalse(arguments.contains("audio_codec=raw"))
+        XCTAssertFalse(arguments.contains("audio_source=playback"))
+        XCTAssertFalse(arguments.contains("audio_source=output"))
+    }
+
+    func testServerArgumentsNeverPassStayAwake() {
+        // stay_awake=true aborts the server natively on Samsung One UI.
+        let arguments = ScrcpyServerHost.serverArguments(for: .init(scid: 1, localPort: 1))
+
+        XCTAssertFalse(arguments.contains("stay_awake=true"))
+    }
 }

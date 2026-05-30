@@ -35,6 +35,7 @@ final class ScrcpyServerHost {
         var videoBitRate: UInt32 = 8_000_000
         var maxSize: UInt16 = 1600
         var maxFps: UInt16 = 60
+        var audio: Bool = false
         var serial: String?
     }
 
@@ -146,7 +147,10 @@ final class ScrcpyServerHost {
             "video_bit_rate=\(options.videoBitRate)",
             "max_size=\(options.maxSize)",
             "max_fps=\(options.maxFps)",
-            "stay_awake=true",
+            // NOTE: do NOT pass stay_awake=true. On Samsung One UI (e.g.
+            // SM-S906B) the server's stay-awake path aborts with native
+            // "stack corruption detected (-fstack-protector)" (exit 134),
+            // killing the session right after it loads.
             "power_on=true",
             "cleanup=true"
         ]
@@ -157,8 +161,12 @@ final class ScrcpyServerHost {
     func stop() {
         process?.terminate()
         process = nil
+        // Terminating the local `adb shell` does NOT necessarily kill the
+        // device-side server; a leftover process holds the encoder/display and
+        // makes the next launch abort. Kill it explicitly, scoped to this scid.
+        let scidHex = String(format: "%08x", options.scid)
+        _ = Tooling.run("adb", arguments: adbBaseArgs() + ["shell", "pkill", "-f", "scid=\(scidHex)"], timeout: 3)
         if reverseInstalled {
-            let scidHex = String(format: "%08x", options.scid)
             let socketName = "scrcpy_\(scidHex)"
             _ = Tooling.run("adb", arguments: adbBaseArgs() + ["reverse", "--remove", "localabstract:\(socketName)"])
             reverseInstalled = false

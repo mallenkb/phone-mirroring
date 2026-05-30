@@ -9,6 +9,7 @@ final class AppModel: ObservableObject {
     @Published var isMirroring = false
     @Published var isRecording = false
     @Published var isPairing = false
+    @Published private(set) var isSelectedDeviceOnline = false
     @Published var captureCue: CaptureCue?
     static let onboardingWindowSize = NSSize(width: 500, height: 900)
     static let minimumConnectionWindowSize = NSSize(width: 384, height: 688)
@@ -26,10 +27,24 @@ final class AppModel: ObservableObject {
     private weak var connectionWindow: NSWindow?
     private var mirrorSession: MirrorSession?
     private var autoConnectAttempted = false
+    private var devicePresenceTask: Task<Void, Never>?
     private var usbHandoffTask: Task<Void, Never>?
     private var lastUSBHandoffSerial: String?
     private var qrPairingTask: Task<Void, Never>?
     private var screenRecordingMonitorTask: Task<Void, Never>?
+    /// Holds the currently-playing capture cue sound so it isn't deallocated
+    /// mid-playback.
+    private var retainedCaptureSound: NSSound?
+    // Crash-loop breaker for flaky device-side servers.
+    private var lastMirrorStartAt: Date?
+    private var consecutiveQuickMirrorFailures = 0
+    private var autoMirrorBackoffUntil: Date?
+    /// True while a mirror session has ended but we're about to retry/reconnect
+    /// (e.g. audio→video fallback, or within the backoff window). Keeps the app
+    /// from terminating in the windowless gap between sessions.
+    private(set) var isAwaitingReconnect = false
+    /// A session that dies sooner than this counts as a "quick" failure.
+    static let quickMirrorFailureThreshold: TimeInterval = 12
 
     enum CaptureCueKind: Equatable {
         case screenshot
@@ -66,11 +81,13 @@ final class AppModel: ObservableObject {
         discovery.start { [weak self] phones in
             self?.discoveredPhones = phones
         }
+        startDevicePresenceWatcher()
         startUSBHandoffWatcher()
         attemptAutoReconnect()
     }
 
     deinit {
+        devicePresenceTask?.cancel()
         usbHandoffTask?.cancel()
         qrPairingTask?.cancel()
         screenRecordingMonitorTask?.cancel()
@@ -233,6 +250,19 @@ final class AppModel: ObservableObject {
                 self.lastUSBHandoffSerial = usbDevice.serial
                 self.isPairing = true
                 await self.prepareWirelessMirror(from: usbDevice)
+            }
+        }
+    }
+
+    private func startDevicePresenceWatcher() {
+        guard devicePresenceTask == nil else { return }
+        let adb = self.adb
+        devicePresenceTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let output = await Task.detached { adb.run(["devices", "-l"]) }.value
+                guard let self else { return }
+                self.applyDevicePresence(output)
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
             }
         }
     }
@@ -496,6 +526,7 @@ final class AppModel: ObservableObject {
     private func applyADBOutput(_ output: String) {
         guard let first = Self.authorizedADBDevices(in: output).first else {
             selectedDevice.states = [.wirelessDebuggingRequired, .usbAuthorizationRequired, .companionConnected]
+            isSelectedDeviceOnline = false
             return
         }
 
@@ -503,6 +534,7 @@ final class AppModel: ObservableObject {
     }
 
     private func select(device: AuthorizedADBDevice) {
+        isSelectedDeviceOnline = true
         selectedDevice = MirrorDevice(
             id: device.serial,
             name: device.model,
@@ -517,6 +549,7 @@ final class AppModel: ObservableObject {
     }
 
     private func select(record: PairedPhoneRecord) {
+        isSelectedDeviceOnline = false
         selectedDevice = MirrorDevice(
             id: record.id,
             name: record.displayName,
@@ -524,10 +557,33 @@ final class AppModel: ObservableObject {
             battery: selectedDevice.battery,
             isCharging: selectedDevice.isCharging,
             network: Self.isWirelessRecord(record) ? "Wireless debugging" : "USB debugging",
-            lastSeen: .now,
-            states: [.mirroringReady, .companionConnected],
+            lastSeen: record.lastConnected,
+            states: [.wirelessDebuggingRequired, .companionConnected],
             adbSerial: record.lastAddress
         )
+    }
+
+    private func applyDevicePresence(_ output: String) {
+        let devices = Self.authorizedADBDevices(in: output)
+        guard let serial = selectedDevice.adbSerial else {
+            isSelectedDeviceOnline = false
+            return
+        }
+
+        guard let liveDevice = devices.first(where: { $0.serial == serial }) else {
+            isSelectedDeviceOnline = false
+            if selectedDevice.states.contains(.mirroringReady) {
+                selectedDevice.states = [.wirelessDebuggingRequired, .companionConnected]
+            }
+            return
+        }
+
+        isSelectedDeviceOnline = true
+        selectedDevice.lastSeen = .now
+        selectedDevice.name = liveDevice.model
+        selectedDevice.model = liveDevice.product
+        selectedDevice.network = liveDevice.isUSB ? "USB debugging" : "Wireless debugging"
+        selectedDevice.states = [.mirroringReady, .companionConnected]
     }
 
     nonisolated static func authorizedADBDevices(in output: String) -> [AuthorizedADBDevice] {
@@ -722,8 +778,20 @@ final class AppModel: ObservableObject {
 
     // MARK: - Mirroring lifecycle
 
-    func startMirroring() {
+    /// - Parameter manual: `true` for a deliberate user action, which clears
+    ///   any crash-loop backoff. Auto-reconnect callers leave it `false` so a
+    ///   crashing server isn't relaunched in a tight loop.
+    func startMirroring(manual: Bool = false) {
         guard !isMirroring else { return }
+
+        if manual {
+            // A deliberate retry clears backoff.
+            consecutiveQuickMirrorFailures = 0
+            autoMirrorBackoffUntil = nil
+        } else if let until = autoMirrorBackoffUntil, Date() < until {
+            return
+        }
+
         let serial = selectedDevice.adbSerial
         if let serial, Self.isWirelessADBTarget(serial) {
             startWirelessMirroring(savedTarget: serial)
@@ -798,6 +866,10 @@ final class AppModel: ObservableObject {
         mirrorSession?.stop()
         mirrorSession = nil
         isMirroring = false
+        // A deliberate stop clears the crash-loop breaker.
+        consecutiveQuickMirrorFailures = 0
+        autoMirrorBackoffUntil = nil
+        isAwaitingReconnect = false
         if isRecording {
             isRecording = false
             stopScreenRecordingCleanup()
@@ -816,12 +888,15 @@ final class AppModel: ObservableObject {
                 self.isRecording = false
                 self.stopScreenRecordingCleanup()
             }
+            self.noteMirrorSessionEnded()
         }
 
         do {
             mirrorSession = session
             isMirroring = true
+            isAwaitingReconnect = false
             selectedDevice.states = [.mirroringReady, .companionConnected]
+            lastMirrorStartAt = Date()
             try session.start()
             hideConnectionWindowForNativeMirror()
         } catch {
@@ -834,6 +909,37 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Called when a native mirror session ends. Distinguishes a stable session
+    /// (resets all breakers) from a "quick" failure. Repeated quick failures
+    /// arm a growing reconnect backoff.
+    private func noteMirrorSessionEnded() {
+        let lived = lastMirrorStartAt.map { Date().timeIntervalSince($0) } ?? .greatestFiniteMagnitude
+        guard lived < Self.quickMirrorFailureThreshold else {
+            // Stable session — reset the reconnect backoff.
+            consecutiveQuickMirrorFailures = 0
+            autoMirrorBackoffUntil = nil
+            return
+        }
+
+        consecutiveQuickMirrorFailures += 1
+        let backoff = Self.mirrorBackoffInterval(forFailureCount: consecutiveQuickMirrorFailures)
+        guard backoff > 0 else { return }
+        autoMirrorBackoffUntil = Date().addingTimeInterval(backoff)
+        isAwaitingReconnect = true
+        Logger.log("Mirror keeps disconnecting right after it starts. Pausing auto-reconnect for \(Int(backoff))s.")
+    }
+
+    /// Backoff schedule keyed on consecutive quick failures. The first failure
+    /// is free (transient drops happen); repeats grow up to a 30s ceiling.
+    nonisolated static func mirrorBackoffInterval(forFailureCount count: Int) -> TimeInterval {
+        switch count {
+        case ..<2: return 0
+        case 2: return 10
+        case 3: return 20
+        default: return 30
+        }
+    }
+
     private func hideConnectionWindowForNativeMirror() {
         connectionWindow?.close()
         NSApp.activate(ignoringOtherApps: true)
@@ -841,19 +947,60 @@ final class AppModel: ObservableObject {
 
     private func presentCaptureCue(_ kind: CaptureCueKind) {
         captureCue = CaptureCue(kind: kind)
-        if NSSound(named: NSSound.Name("Grab"))?.play() == true {
-            return
+        playCaptureSound(for: kind)
+    }
+
+    /// Plays a distinct cue per capture action: the real macOS shutter for
+    /// screenshots, and the dedicated screen-recording start/stop chimes for
+    /// recording (distinct ascending "begin" and descending "end" tones). These
+    /// ship inside CoreAudio.component (not in `NSSound(named:)`'s search path),
+    /// so we load them by file path, then fall back to named system sounds, then
+    /// a beep. `retainedCaptureSound` keeps the player alive until playback
+    /// finishes (a local NSSound would be deallocated immediately).
+    private func playCaptureSound(for kind: CaptureCueKind) {
+        let fileCandidates: [String]
+        let namedFallbacks: [String]
+        switch kind {
+        case .screenshot:
+            fileCandidates = ["Grab.aif", "Shutter.aif"]   // real screenshot shutter
+            namedFallbacks = ["Tink", "Pop"]
+        case .recordingStarted:
+            fileCandidates = ["begin_record.caf"]           // recording-start chime
+            namedFallbacks = ["Bottle", "Pop"]
+        case .recordingStopped:
+            fileCandidates = ["end_record.caf"]             // recording-stop chime
+            namedFallbacks = ["Glass", "Submarine"]
         }
-        if NSSound(named: NSSound.Name("Pop"))?.play() == true {
-            return
+
+        for file in fileCandidates {
+            let path = Self.systemSoundsDirectory + file
+            if let sound = NSSound(contentsOfFile: path, byReference: true), sound.play() {
+                retainedCaptureSound = sound
+                return
+            }
+        }
+        for name in namedFallbacks {
+            if let sound = NSSound(named: NSSound.Name(name)), sound.play() {
+                retainedCaptureSound = sound
+                return
+            }
         }
         NSSound.beep()
     }
+
+    private static let systemSoundsDirectory =
+        "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/"
 
     // MARK: - Resize
 
     func resizeMirror(scale: CGFloat) {
         mirrorSession?.scaleWindow(by: scale)
+    }
+
+    func forwardKeyEventToMirrorSession(_ event: NSEvent) -> Bool {
+        guard mirrorSession != nil, MirrorSession.androidKey(for: event) != nil else { return false }
+        mirrorSession?.forwardKeyEvent(event)
+        return true
     }
 
     func centerMirrorWindow() {

@@ -42,7 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        !model.isMirroring
+        // Stay alive while mirroring or while a retry/reconnect is pending, so
+        // the windowless gap between sessions doesn't quit the app mid-recovery.
+        !model.isMirroring && !model.isAwaitingReconnect
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -54,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installMainMenu() {
         let mainMenu = NSMenu()
 
-        let appItem = NSMenuItem()
+        let appItem = NSMenuItem(title: "Android Mirroring", action: nil, keyEquivalent: "")
         mainMenu.addItem(appItem)
         let appMenu = NSMenu()
         appMenu.addItem(
@@ -74,7 +76,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         appItem.submenu = appMenu
 
-        let viewItem = NSMenuItem()
+        let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(
+            NSMenuItem(
+                title: "Phone Volume Up",
+                action: #selector(phoneVolumeUp(_:)),
+                keyEquivalent: ""
+            )
+        )
+        editMenu.addItem(
+            NSMenuItem(
+                title: "Phone Volume Down",
+                action: #selector(phoneVolumeDown(_:)),
+                keyEquivalent: ""
+            )
+        )
+        editMenu.addItem(
+            NSMenuItem(
+                title: "Mute Phone",
+                action: #selector(phoneVolumeMute(_:)),
+                keyEquivalent: ""
+            )
+        )
+        editItem.submenu = editMenu
+
+        let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
         mainMenu.addItem(viewItem)
         let viewMenu = NSMenu(title: "View")
         viewMenu.addItem(
@@ -148,7 +176,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func installKeyboardScaling() {
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .systemDefined]) { [weak self] event in
+            if event.type == .systemDefined, self?.model.forwardKeyEventToMirrorSession(event) == true {
+                return nil
+            }
+
             guard event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command),
                   let key = event.charactersIgnoringModifiers else {
                 return event
@@ -208,7 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func toggleMirroring(_ sender: Any?) {
-        model.isMirroring ? model.stopMirroring() : model.startMirroring()
+        model.isMirroring ? model.stopMirroring() : model.startMirroring(manual: true)
     }
 
     @objc private func goHome(_ sender: Any?) {
@@ -219,12 +251,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.sendAndroidKey("KEYCODE_BACK")
     }
 
+    @objc private func phoneVolumeUp(_ sender: Any?) {
+        model.sendAndroidKey("KEYCODE_VOLUME_UP")
+    }
+
+    @objc private func phoneVolumeDown(_ sender: Any?) {
+        model.sendAndroidKey("KEYCODE_VOLUME_DOWN")
+    }
+
+    @objc private func phoneVolumeMute(_ sender: Any?) {
+        model.sendAndroidKey("KEYCODE_VOLUME_MUTE")
+    }
+
     @objc private func takeScreenshot(_ sender: Any?) {
         model.takeScreenshot()
     }
 
     @objc private func toggleScreenRecording(_ sender: Any?) {
         model.toggleScreenRecording()
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(phoneVolumeUp(_:))
+            || menuItem.action == #selector(phoneVolumeDown(_:))
+            || menuItem.action == #selector(phoneVolumeMute(_:)) {
+            return model.selectedDevice.adbSerial != nil
+        }
+        return true
     }
 
     @objc private func zoomIn(_ sender: Any?) {
