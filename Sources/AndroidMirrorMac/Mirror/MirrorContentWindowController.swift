@@ -1148,7 +1148,7 @@ private final class MirrorCaptureCueView: NSView {
 
 /// Full-width macOS-style chrome that occupies a separate top band on hover.
 /// Traffic lights at the left, the device-name title just inside them, and the
-/// audio toggle + screenshot action at the trailing edge.
+/// screenshot/recording actions at the trailing edge.
 /// Background is a solid default AppKit surface so desktop content never bleeds through.
 final class MirrorChromeBar: NSView {
     /// How small the bar shrinks when hidden. A more pronounced ratio makes
@@ -1296,8 +1296,7 @@ final class MirrorChromeBar: NSView {
         backgroundView.layer?.transform = CATransform3DIdentity
         CATransaction.commit()
 
-        // Right-side action buttons. The screenshot icon lives all the way at
-        // the trailing edge; the audio toggle sits just inside it.
+        // Right-side capture actions live at the trailing edge.
         rightStack.orientation = .horizontal
         rightStack.spacing = 6
         rightStack.alignment = .centerY

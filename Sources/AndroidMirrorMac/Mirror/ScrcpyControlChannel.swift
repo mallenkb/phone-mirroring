@@ -28,11 +28,7 @@ final class ScrcpyControlChannel {
         case dpadDown = 20
         case dpadLeft = 21
         case dpadRight = 22
-        case appSwitch = 187
         case forwardDelete = 112
-        case volumeUp = 24
-        case volumeDown = 25
-        case power = 26
     }
 
     static let pointerIDMouse: UInt64 = 0xFFFF_FFFF_FFFF_FFFF

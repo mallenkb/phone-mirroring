@@ -59,15 +59,4 @@ final class MDNSParserTests: XCTestCase {
         XCTAssertEqual(phones.map(\.id), ["adb-AAA", "adb-ZZZ"])
     }
 
-    func testFirstMDNSTargetReturnsLastTokenOfMatchingLine() {
-        let output = """
-        adb-XYZ\t_adb-tls-pairing._tcp.\t192.168.1.42:39555
-        adb-XYZ\t_adb-tls-connect._tcp.\t192.168.1.42:5555
-        """
-        XCTAssertEqual(
-            ADBController.firstMDNSTarget(type: "_adb-tls-connect._tcp", in: output),
-            "192.168.1.42:5555"
-        )
-        XCTAssertNil(ADBController.firstMDNSTarget(type: "_adb._unknown", in: output))
-    }
 }

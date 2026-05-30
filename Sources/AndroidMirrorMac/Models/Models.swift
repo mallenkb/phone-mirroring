@@ -31,12 +31,6 @@ struct MirrorDevice: Identifiable, Equatable {
     )
 }
 
-struct DiagnosticLine: Identifiable {
-    let id = UUID()
-    let date: Date
-    let message: String
-}
-
 /// A phone seen on the local network via mDNS/Bonjour right now.
 struct DiscoveredPhone: Identifiable, Equatable, Hashable {
     enum Kind: String, Codable, Equatable {

@@ -6,8 +6,8 @@ import Foundation
 ///   2. Open an `adb reverse` from a `localabstract:scrcpy_<scid>` on the
 ///      device back to our local TCP listener.
 ///   3. Run `adb shell app_process` to launch the server. The server then
-///      opens 1..n local sockets (video, optional audio, optional control)
-///      and the device routes each connection to our listener.
+///      opens local sockets for video and control, and the device routes each
+///      connection to our listener.
 ///
 /// `ScrcpyServerHost` knows nothing about parsing the stream — that's done
 /// downstream by `ScrcpyVideoStream` and `ScrcpyControlChannel`.
@@ -35,7 +35,6 @@ final class ScrcpyServerHost {
         var videoBitRate: UInt32 = 8_000_000
         var maxSize: UInt16 = 1600
         var maxFps: UInt16 = 60
-        var audio: Bool = false
         var serial: String?
     }
 
@@ -129,7 +128,7 @@ final class ScrcpyServerHost {
 
     static func serverArguments(for options: Options) -> [String] {
         let scidHex = String(format: "%08x", options.scid)
-        var args = [
+        let args = [
             "shell",
             "CLASSPATH=\(Self.devicePath)",
             "app_process",
@@ -138,7 +137,7 @@ final class ScrcpyServerHost {
             Self.serverVersion,
             "scid=\(scidHex)",
             "log_level=info",
-            "audio=\(options.audio ? "true" : "false")",
+            "audio=false",
             "video=true",
             "control=true",
             "tunnel_forward=false",
@@ -151,13 +150,6 @@ final class ScrcpyServerHost {
             "power_on=true",
             "cleanup=true"
         ]
-
-        if options.audio {
-            args += [
-                "audio_codec=raw",
-                "audio_source=output"
-            ]
-        }
 
         return args
     }

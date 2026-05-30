@@ -59,7 +59,6 @@ final class MirrorSession {
         let host = ScrcpyServerHost(options: ScrcpyServerHost.Options(
             scid: scid,
             localPort: localPort,
-            audio: false,
             serial: serial
         ))
 
@@ -123,22 +122,6 @@ final class MirrorSession {
     }
 
     // MARK: - Forwarding API (called from chrome / render view)
-
-    func sendAndroidKey(_ key: ScrcpyControlChannel.AndroidKey) {
-        controlChannel?.sendKeyEvent(key, action: .down)
-    }
-
-    func sendAndroidBack() {
-        controlChannel?.sendBackOrScreenOn()
-    }
-
-    func takeScreenshot() {
-        model?.takeScreenshot()
-    }
-
-    func toggleScreenRecording() {
-        model?.toggleScreenRecording()
-    }
 
     func scaleWindow(by scale: CGFloat) {
         windowController?.scaleWindow(by: scale)

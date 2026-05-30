@@ -2,14 +2,21 @@ import XCTest
 @testable import AndroidMirrorMac
 
 final class ScrcpyVideoStreamTests: XCTestCase {
-    func testAcceptsLateAudioConnectionAfterControlWasAssigned() {
+    func testSecondConnectionBecomesControlWhenAudioIsDisabled() {
         let role = ScrcpyVideoStream.roleForNextConnection(
             hasVideo: true,
-            hasAudio: false,
-            hasPendingAudioProbe: false,
+            hasControl: false
+        )
+
+        XCTAssertEqual(role, .control)
+    }
+
+    func testRejectsExtraConnectionsAfterVideoAndControlAreAssigned() {
+        let role = ScrcpyVideoStream.roleForNextConnection(
+            hasVideo: true,
             hasControl: true
         )
 
-        XCTAssertEqual(role, .audio)
+        XCTAssertEqual(role, .reject)
     }
 }

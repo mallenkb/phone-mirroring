@@ -18,7 +18,6 @@ final class ScrcpyServerHostTests: XCTestCase {
         let options = ScrcpyServerHost.Options(
             scid: 0x1234ABCD,
             localPort: 37283,
-            audio: false,
             serial: "192.168.1.24:40719"
         )
 

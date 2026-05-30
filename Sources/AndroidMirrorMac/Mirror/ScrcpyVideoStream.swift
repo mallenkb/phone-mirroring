@@ -2,10 +2,10 @@ import Foundation
 import Network
 
 /// Local TCP listener that accepts the scrcpy server's reverse-tunneled
-/// sockets and parses the wire protocol into video packets, optional raw
-/// audio packets, and the control connection.
+/// sockets and parses the wire protocol into video packets and the control
+/// connection.
 ///
-/// Wire format (reverse tunnel mode, video=true audio=true control=true):
+/// Wire format (reverse tunnel mode, video=true audio=false control=true):
 ///   socket 1 (video):
 ///     [ 64 bytes device name UTF-8 NUL-padded ]
 ///     [ 4  bytes codec id big-endian ("h264", "h265", ...) ]
@@ -17,16 +17,11 @@ import Network
 ///       header byte 0 MSB=0 → media packet:
 ///         bytes 0..7 pts_flags (bit 62 = config, bit 61 = keyframe,
 ///         lower 62 bits = pts µs), bytes 8..11 packet size, then payload.
-///   socket 2 (audio):
-///     [ 4 bytes codec id big-endian (0x00726177 "\0raw" for PCM 16-bit LE) ]
-///     loop: [ 12 bytes packet header ] [ payload bytes ]
-///   socket 3 (control):
+///   socket 2 (control):
 ///     bidirectional control message stream (handled by ScrcpyControlChannel).
 final class ScrcpyVideoStream {
     enum ConnectionRole: Equatable {
         case video
-        case probeAudioOrControl
-        case audio
         case control
         case reject
     }
@@ -45,16 +40,8 @@ final class ScrcpyVideoStream {
         var payload: Data    // raw H.264 / H.265 Annex-B bytes
     }
 
-    struct AudioPacket {
-        var pts: UInt64?
-        var isConfig: Bool
-        var codecID: UInt32
-        var payload: Data
-    }
-
     typealias HeaderHandler = (StreamHeader) -> Void
     typealias PacketHandler = (VideoPacket) -> Void
-    typealias AudioPacketHandler = (AudioPacket) -> Void
     typealias ResizeHandler = (UInt32, UInt32) -> Void
     typealias ControlHandler = (NWConnection) -> Void
     typealias ErrorHandler = (Error) -> Void
@@ -62,23 +49,16 @@ final class ScrcpyVideoStream {
     private let port: UInt16
     private var listener: NWListener?
     private var videoConnection: NWConnection?
-    private var audioConnection: NWConnection?
-    private var pendingAudioConnection: NWConnection?
-    private var pendingAudioProbe: DispatchWorkItem?
     private var controlConnection: NWConnection?
     private var streamMetaParsed = false
     private var initialHeaderSent = false
     private var pendingDeviceName = ""
     private var pendingCodecID: UInt32 = 0
     private var videoBuffer = Data()
-    private var audioBuffer = Data()
-    private var audioCodecID: UInt32 = 0
-    private var audioMetaParsed = false
     private let queue = DispatchQueue(label: "scrcpy.video.stream", qos: .userInteractive)
 
     var onHeader: HeaderHandler?
     var onPacket: PacketHandler?
-    var onAudioPacket: AudioPacketHandler?
     var onResize: ResizeHandler?
     var onControl: ControlHandler?
     var onError: ErrorHandler?
@@ -111,12 +91,6 @@ final class ScrcpyVideoStream {
         listener = nil
         videoConnection?.cancel()
         videoConnection = nil
-        pendingAudioProbe?.cancel()
-        pendingAudioProbe = nil
-        pendingAudioConnection?.cancel()
-        pendingAudioConnection = nil
-        audioConnection?.cancel()
-        audioConnection = nil
         controlConnection?.cancel()
         controlConnection = nil
     }
@@ -141,25 +115,16 @@ final class ScrcpyVideoStream {
     private func assignAndReceive(_ connection: NWConnection) {
         switch Self.roleForNextConnection(
             hasVideo: videoConnection != nil,
-            hasAudio: audioConnection != nil,
-            hasPendingAudioProbe: pendingAudioConnection != nil,
             hasControl: controlConnection != nil
         ) {
         case .video:
             Logger.log("ScrcpyVideoStream assigned video connection")
             videoConnection = connection
             readMore(on: connection, handler: { [weak self] data in self?.feedVideo(data) })
-        case .probeAudioOrControl:
-            probeAudioOrControl(connection)
         case .control:
-            promotePendingAudioIfNeeded()
             Logger.log("ScrcpyVideoStream assigned control connection")
             controlConnection = connection
             onControl?(connection)
-        case .audio:
-            Logger.log("ScrcpyVideoStream assigned late audio connection")
-            audioConnection = connection
-            readMore(on: connection, handler: { [weak self] data in self?.feedAudio(data) })
         case .reject:
             connection.cancel()
         }
@@ -167,111 +132,13 @@ final class ScrcpyVideoStream {
 
     static func roleForNextConnection(
         hasVideo: Bool,
-        hasAudio: Bool,
-        hasPendingAudioProbe: Bool,
         hasControl: Bool
     ) -> ConnectionRole {
         guard hasVideo else { return .video }
-        if !hasAudio, !hasControl, !hasPendingAudioProbe {
-            return .probeAudioOrControl
-        }
         if !hasControl {
             return .control
         }
-        if !hasAudio, !hasPendingAudioProbe {
-            return .audio
-        }
         return .reject
-    }
-
-    private func probeAudioOrControl(_ connection: NWConnection) {
-        Logger.log("ScrcpyVideoStream probing second connection for audio")
-        pendingAudioConnection = connection
-
-        let timeout = DispatchWorkItem { [weak self, weak connection] in
-            guard let self, let connection, self.pendingAudioConnection === connection else { return }
-            Logger.log("ScrcpyVideoStream second connection had no audio header; using it for control")
-            self.pendingAudioConnection = nil
-            self.controlConnection = connection
-            self.onControl?(connection)
-        }
-        pendingAudioProbe = timeout
-        queue.asyncAfter(deadline: .now() + 0.25, execute: timeout)
-
-        connection.receive(minimumIncompleteLength: 4, maximumLength: 4) { [weak self, weak connection] data, _, isComplete, error in
-            guard let self, let connection, self.pendingAudioConnection === connection else { return }
-            if let error {
-                self.onError?(error)
-                return
-            }
-            guard let data, data.count == 4 else {
-                if isComplete {
-                    self.pendingAudioProbe?.cancel()
-                    self.pendingAudioProbe = nil
-                    self.pendingAudioConnection = nil
-                }
-                return
-            }
-
-            self.pendingAudioProbe?.cancel()
-            self.pendingAudioProbe = nil
-            self.pendingAudioConnection = nil
-            self.audioConnection = connection
-            Logger.log("ScrcpyVideoStream assigned audio connection")
-            self.feedAudio(data)
-            self.readMore(on: connection, handler: { [weak self] data in self?.feedAudio(data) })
-        }
-    }
-
-    private func promotePendingAudioIfNeeded() {
-        guard let pendingAudioConnection else { return }
-        pendingAudioProbe?.cancel()
-        pendingAudioProbe = nil
-        self.pendingAudioConnection = nil
-        audioConnection = pendingAudioConnection
-        Logger.log("ScrcpyVideoStream assigned pending connection as audio")
-        readMore(on: pendingAudioConnection, handler: { [weak self] data in self?.feedAudio(data) })
-    }
-
-    private func feedAudio(_ chunk: Data) {
-        audioBuffer.append(chunk)
-        parseAvailableAudio()
-    }
-
-    private func parseAvailableAudio() {
-        if !audioMetaParsed {
-            guard audioBuffer.count >= 4 else { return }
-            audioCodecID = readUInt32BE(in: audioBuffer, at: 0)
-            audioBuffer.removeFirst(4)
-            audioMetaParsed = true
-            Logger.log("ScrcpyVideoStream audio codec=\(String(format: "0x%08x", audioCodecID))")
-        }
-
-        while true {
-            guard audioBuffer.count >= 12 else { return }
-            let ptsFlags = readUInt64BE(in: audioBuffer, at: 0)
-            let size = Int(readUInt32BE(in: audioBuffer, at: 8))
-            guard size > 0 else {
-                onError?(NSError(domain: "ScrcpyVideoStream", code: -2,
-                                 userInfo: [NSLocalizedDescriptionKey: "invalid audio packet length 0"]))
-                audioBuffer.removeAll()
-                return
-            }
-            guard audioBuffer.count >= 12 + size else { return }
-
-            let isConfig = (ptsFlags & (UInt64(1) << 62)) != 0
-            let pts = isConfig ? nil : (ptsFlags & ((UInt64(1) << 61) - 1))
-            let payloadStart = audioBuffer.index(audioBuffer.startIndex, offsetBy: 12)
-            let payloadEnd = audioBuffer.index(payloadStart, offsetBy: size)
-            let payload = audioBuffer[payloadStart..<payloadEnd]
-            audioBuffer.removeFirst(12 + size)
-            onAudioPacket?(AudioPacket(
-                pts: pts,
-                isConfig: isConfig,
-                codecID: audioCodecID,
-                payload: Data(payload)
-            ))
-        }
     }
 
     private func readMore(on connection: NWConnection, handler: @escaping (Data) -> Void) {

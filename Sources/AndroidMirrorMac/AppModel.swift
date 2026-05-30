@@ -5,7 +5,6 @@ import Foundation
 @MainActor
 final class AppModel: ObservableObject {
     @Published var selectedDevice: MirrorDevice = .demo
-    @Published var diagnostics: [DiagnosticLine] = []
     @Published var isScanning = false
     @Published var isMirroring = false
     @Published var isRecording = false
@@ -125,7 +124,6 @@ final class AppModel: ObservableObject {
                         }.value
                         if Self.adbConnectSucceeded(connectOutput) {
                             self.autoConnectAttempted = true
-                            self.append("adb connect: \(Self.oneLine(connectOutput))")
                             self.select(record: record)
                             self.touchPairedPhone(
                                 id: record.id,
@@ -168,7 +166,6 @@ final class AppModel: ObservableObject {
         let address = phone.address
         let serviceID = phone.id
         let label = displayName(for: phone)
-        append("Connecting to \(label) at \(address)...")
 
         let adb = self.adb
         Task { [weak self] in
@@ -176,7 +173,6 @@ final class AppModel: ObservableObject {
             let output = await Task.detached { adb.run(["connect", address]) }.value
 
             guard let self else { return }
-            self.append("adb connect: \(Self.oneLine(output))")
             let lower = output.lowercased()
             let ok = lower.contains("connected") || lower.contains("already")
             if ok {
@@ -185,7 +181,6 @@ final class AppModel: ObservableObject {
                 self.stopQRCodePairingSession()
                 self.startMirroring()
             } else {
-                self.append("Could not reach \(address). Re-pair from the Wireless debugging screen.")
             }
         }
     }
@@ -203,7 +198,6 @@ final class AppModel: ObservableObject {
 
     func scanADBDevices() {
         isScanning = true
-        append("Scanning adb devices...")
         let adb = self.adb
         Task { [weak self] in
             let output = await Task.detached { adb.run(["devices", "-l"]) }.value
@@ -238,11 +232,7 @@ final class AppModel: ObservableObject {
 
                 self.lastUSBHandoffSerial = usbDevice.serial
                 self.isPairing = true
-                self.append("USB phone authorized. Looking for Wireless debugging over Wi-Fi...")
-                await self.prepareWirelessMirror(
-                    from: usbDevice,
-                    allowLegacyTCPIPFallback: false
-                )
+                await self.prepareWirelessMirror(from: usbDevice)
             }
         }
     }
@@ -303,13 +293,11 @@ final class AppModel: ObservableObject {
 
                 self.isQRCodePairingWaiting = false
                 self.isPairing = true
-                self.append("QR code scanned. Pairing with wireless debugging...")
 
                 let pairOutput = await Task.detached {
                     adb.run(["pair", pairingPhone.address, session.password])
                 }.value
                 guard !Task.isCancelled else { return }
-                self.append("adb pair: \(Self.oneLine(pairOutput))")
 
                 guard Self.adbPairSucceeded(pairOutput) else {
                     self.resetQRCodePairingAfterFailure(
@@ -335,7 +323,6 @@ final class AppModel: ObservableObject {
                     adb.run(["connect", connectablePhone.address])
                 }.value
                 guard !Task.isCancelled else { return }
-                self.append("adb connect: \(Self.oneLine(connectOutput))")
 
                 guard Self.adbConnectSucceeded(connectOutput) else {
                     self.resetQRCodePairingAfterFailure(
@@ -355,7 +342,6 @@ final class AppModel: ObservableObject {
         isQRCodePairingWaiting = false
         qrPairingTask = nil
         qrPairingSession = .random()
-        append(message)
         startQRCodePairingWatcher()
     }
 
@@ -380,83 +366,16 @@ final class AppModel: ObservableObject {
             states: [.mirroringReady, .companionConnected],
             adbSerial: phone.address
         )
-        append("QR pairing complete. Starting wireless mirror.")
         startMirroring()
     }
 
-    func autoPairWirelessly() {
-        guard !isMirroring else { return }
-        append("Preparing wireless mirror...")
-        isPairing = true
-
-        let adb = self.adb
-        Task { [weak self] in
-            let devicesOutput = await Task.detached { adb.run(["devices", "-l"]) }.value
-            let lines = devicesOutput.split(whereSeparator: \.isNewline).map(String.init)
-            let hasUnauthorizedUSB = lines.contains { $0.contains("unauthorized") && $0.contains("usb:") }
-            let usbDevice = Self.authorizedADBDevices(in: devicesOutput).first(where: \.isUSB)
-
-            guard let self else { return }
-
-            if hasUnauthorizedUSB {
-                self.isPairing = false
-                self.append("Phone is connected by cable, but Android has not authorized this Mac yet. Unlock the phone, accept the USB debugging prompt, then try the wireless handoff again.")
-                return
-            }
-
-            if let usbDevice {
-                await self.prepareWirelessMirror(
-                    from: usbDevice,
-                    allowLegacyTCPIPFallback: true
-                )
-                return
-            }
-
-            for record in Self.wirelessRecordsByMostRecent(self.pairedPhones) {
-                let connectOutput = await Task.detached { adb.run(["connect", record.lastAddress]) }.value
-                self.append("adb connect \(record.lastAddress): \(Self.oneLine(connectOutput))")
-                if Self.adbConnectSucceeded(connectOutput) {
-                    self.isPairing = false
-                    self.select(record: record)
-                    self.touchPairedPhone(
-                        id: record.id,
-                        displayName: record.displayName,
-                        address: record.lastAddress
-                    )
-                    self.startMirroring()
-                    return
-                }
-            }
-
-            let target = await Task.detached { adb.firstMDNSTarget(type: "_adb-tls-connect._tcp") }.value
-
-            guard let target else {
-                self.isPairing = false
-                self.append("No cable, saved Wi-Fi route, or wireless adb service found. Plug in once, accept the Android USB debugging prompt, then try again.")
-                return
-            }
-
-            let connectOutput = await Task.detached { adb.run(["connect", target]) }.value
-
-            self.isPairing = false
-            self.append("adb connect: \(Self.oneLine(connectOutput))")
-            guard Self.adbConnectSucceeded(connectOutput) else { return }
-            self.selectedDevice.adbSerial = target
-            self.startMirroring()
-        }
-    }
-
-    private func prepareWirelessMirror(
-        from usbDevice: AuthorizedADBDevice,
-        allowLegacyTCPIPFallback: Bool
-    ) async {
+    private func prepareWirelessMirror(from usbDevice: AuthorizedADBDevice) async {
         select(device: usbDevice)
         touchPairedPhone(
             id: usbDevice.serial,
             displayName: usbDevice.model,
             address: usbDevice.serial
         )
-        append("USB phone authorized. Checking \(usbDevice.model)'s wireless debugging endpoint...")
 
         let adb = self.adb
         let routeOutput = await Task.detached {
@@ -474,11 +393,9 @@ final class AppModel: ObservableObject {
             tlsPortOutput: tlsPortOutput,
             tcpPortOutput: tcpPortOutput
         ) {
-            append("Wireless debugging endpoint found over USB at \(tlsAddress).")
             let connectOutput = await Task.detached {
                 adb.run(["connect", tlsAddress])
             }.value
-            append("adb connect: \(Self.oneLine(connectOutput))")
 
             if Self.adbConnectSucceeded(connectOutput) {
                 isPairing = false
@@ -490,7 +407,6 @@ final class AppModel: ObservableObject {
                 return
             }
 
-            append("Wireless debugging endpoint did not accept this Mac. If this is the first time, use Wi-Fi and scan a pairing QR code.")
         }
 
         let discoveredWirelessPhones = await Task.detached {
@@ -500,11 +416,9 @@ final class AppModel: ObservableObject {
             routeOutput,
             phones: discoveredWirelessPhones
         ) {
-            append("Wireless adb service found at \(wirelessPhone.address).")
             let connectOutput = await Task.detached {
                 adb.run(["connect", wirelessPhone.address])
             }.value
-            append("adb connect: \(Self.oneLine(connectOutput))")
 
             if Self.adbConnectSucceeded(connectOutput) {
                 isPairing = false
@@ -516,59 +430,9 @@ final class AppModel: ObservableObject {
                 return
             }
 
-            append("Wireless service did not connect.")
         }
-
-        guard allowLegacyTCPIPFallback else {
-            isPairing = false
-            append("USB is ready, but no paired Wireless debugging endpoint was available. Use Wi-Fi and scan a pairing QR code, or press Wi-Fi to force the USB cable handoff.")
-            return
-        }
-
-        append("Trying USB cable handoff on port 5555...")
-        let usbWiFiAddress = Self.wifiIPAddress(in: routeOutput).map { "\($0):5555" }
-
-        let tcpipOutput = await Task.detached {
-            adb.run(["-s", usbDevice.serial, "tcpip", "5555"])
-        }.value
-        append("adb tcpip: \(Self.oneLine(tcpipOutput))")
-
-        guard Self.adbTCPIPSucceeded(tcpipOutput) else {
-            isPairing = false
-            append("Could not switch to Wi-Fi. Starting USB mirror instead.")
-            startMirroring()
-            return
-        }
-
-        let wirelessPhone = await Self.waitForConnectableWirelessPhone(
-            adb: adb,
-            preferredAddress: usbWiFiAddress
-        )
-
-        guard let wirelessPhone else {
-            isPairing = false
-            append("Wi-Fi adb did not appear. Starting USB mirror instead.")
-            startMirroring()
-            return
-        }
-
-        let connectOutput = await Task.detached {
-            adb.run(["connect", wirelessPhone.address])
-        }.value
-        append("adb connect: \(Self.oneLine(connectOutput))")
 
         isPairing = false
-        guard Self.adbConnectSucceeded(connectOutput) else {
-            append("Could not connect over Wi-Fi. Starting USB mirror instead.")
-            startMirroring()
-            return
-        }
-
-        finishWirelessHandoff(
-            usbDevice: usbDevice,
-            wirelessID: wirelessPhone.id,
-            address: wirelessPhone.address
-        )
     }
 
     private func finishWirelessHandoff(
@@ -583,13 +447,11 @@ final class AppModel: ObservableObject {
         )
         selectedDevice.adbSerial = address
         selectedDevice.network = "Wireless debugging"
-        append("Wireless mirror ready. You can unplug the cable.")
         startMirroring()
     }
 
     func connectViaUSB() {
         guard !isMirroring else { return }
-        append("Preparing USB mirror...")
         isPairing = true
 
         let adb = self.adb
@@ -605,12 +467,10 @@ final class AppModel: ObservableObject {
             self.isPairing = false
 
             if hasUnauthorizedUSB {
-                self.append("Phone is connected by cable, but Android has not authorized this Mac yet. Unlock the phone, accept the USB debugging prompt, then try again.")
                 return
             }
 
             guard let usbDevice else {
-                self.append("No authorized USB phone found. Plug in with a cable, accept the Android USB debugging prompt, then try again.")
                 return
             }
 
@@ -619,85 +479,6 @@ final class AppModel: ObservableObject {
                 id: usbDevice.serial,
                 displayName: usbDevice.model,
                 address: usbDevice.serial
-            )
-            self.append("USB mirror ready for \(usbDevice.model).")
-            self.startMirroring()
-        }
-    }
-
-    func connectWirelessly(host: String, port: String, pairingPort: String, pairingCode: String) {
-        guard !isMirroring else { return }
-        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedPort = port.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedPairingPort = pairingPort.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedPairingCode = pairingCode.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !trimmedHost.isEmpty else {
-            append("Enter the phone IP address from Android Wireless debugging.")
-            return
-        }
-        guard let portNumber = Int(trimmedPort), (1...65_535).contains(portNumber) else {
-            append("Enter a valid wireless debugging port.")
-            return
-        }
-        if !trimmedPairingPort.isEmpty || !trimmedPairingCode.isEmpty {
-            guard let pairPortNumber = Int(trimmedPairingPort), (1...65_535).contains(pairPortNumber) else {
-                append("Enter a valid pairing port, or leave pairing fields blank.")
-                return
-            }
-            guard !trimmedPairingCode.isEmpty else {
-                append("Enter the wireless pairing code shown on Android.")
-                return
-            }
-        }
-
-        let address = "\(trimmedHost):\(portNumber)"
-        append("Connecting to wireless adb at \(address)...")
-        isPairing = true
-
-        let adb = self.adb
-        Task { [weak self] in
-            await adb.restartServer()
-            if let pairPortNumber = Int(trimmedPairingPort), !trimmedPairingCode.isEmpty {
-                let pairAddress = "\(trimmedHost):\(pairPortNumber)"
-                let pairOutput = await Task.detached {
-                    adb.run(["pair", pairAddress, trimmedPairingCode])
-                }.value
-                guard let self else { return }
-                self.append("adb pair: \(Self.oneLine(pairOutput))")
-                guard Self.adbPairSucceeded(pairOutput) else {
-                    self.isPairing = false
-                    self.append("Could not pair with \(pairAddress). Check the pairing code and pairing port.")
-                    return
-                }
-            }
-
-            let output = await Task.detached { adb.run(["connect", address]) }.value
-
-            guard let self else { return }
-            self.isPairing = false
-            self.append("adb connect: \(Self.oneLine(output))")
-
-            guard Self.adbConnectSucceeded(output) else {
-                self.append("Could not connect to \(address). Check the IP, port, and Wireless debugging screen.")
-                return
-            }
-
-            self.touchPairedPhone(
-                id: address,
-                displayName: "Android device",
-                address: address
-            )
-            self.selectedDevice = MirrorDevice(
-                id: address,
-                name: "Android device",
-                model: "Android",
-                battery: self.selectedDevice.battery,
-                isCharging: self.selectedDevice.isCharging,
-                network: "Wireless debugging",
-                lastSeen: .now,
-                states: [.mirroringReady, .companionConnected],
-                adbSerial: address
             )
             self.startMirroring()
         }
@@ -715,12 +496,10 @@ final class AppModel: ObservableObject {
     private func applyADBOutput(_ output: String) {
         guard let first = Self.authorizedADBDevices(in: output).first else {
             selectedDevice.states = [.wirelessDebuggingRequired, .usbAuthorizationRequired, .companionConnected]
-            append("No authorized adb device found. Connect USB, authorize debugging on Android, or use wireless debugging.")
             return
         }
 
         select(device: first)
-        append("Authorized adb device found: \(first.model) (\(first.serial)).")
     }
 
     private func select(device: AuthorizedADBDevice) {
@@ -803,22 +582,8 @@ final class AppModel: ObservableObject {
         output.lowercased().contains("successfully paired")
     }
 
-    nonisolated static func adbTCPIPSucceeded(_ output: String) -> Bool {
-        output.lowercased().contains("restarting in tcp mode port:")
-    }
-
-    nonisolated static func mostRecentWirelessRecord(in records: [PairedPhoneRecord]) -> PairedPhoneRecord? {
-        wirelessRecordsByMostRecent(records).first
-    }
-
     nonisolated static func recordsByMostRecent(_ records: [PairedPhoneRecord]) -> [PairedPhoneRecord] {
         records.sorted { $0.lastConnected > $1.lastConnected }
-    }
-
-    nonisolated static func wirelessRecordsByMostRecent(_ records: [PairedPhoneRecord]) -> [PairedPhoneRecord] {
-        records
-            .filter(isWirelessRecord)
-            .sorted { $0.lastConnected > $1.lastConnected }
     }
 
     nonisolated static func isWirelessRecord(_ record: PairedPhoneRecord) -> Bool {
@@ -964,8 +729,6 @@ final class AppModel: ObservableObject {
             startWirelessMirroring(savedTarget: serial)
             return
         }
-        append(serial == nil ? "Starting native mirror..."
-                              : "Starting native mirror for \(serial!)...")
         launchNativeMirror(serial: serial)
     }
 
@@ -977,7 +740,6 @@ final class AppModel: ObservableObject {
         let adb = self.adb
 
         isPairing = true
-        append("Checking wireless route for \(savedTarget)...")
 
         Task { [weak self] in
             var target: String?
@@ -987,8 +749,6 @@ final class AppModel: ObservableObject {
                     adb.run(["connect", savedTarget])
                 }.value
 
-                guard let self else { return }
-                self.append("adb connect: \(Self.oneLine(connectOutput))")
                 if Self.adbConnectSucceeded(connectOutput) {
                     target = savedTarget
                 }
@@ -1010,11 +770,9 @@ final class AppModel: ObservableObject {
                     : nil)
 
                 if let refreshedPhone {
-                    self.append("Wireless route changed. Trying \(refreshedPhone.address)...")
                     let connectOutput = await Task.detached {
                         adb.run(["connect", refreshedPhone.address])
                     }.value
-                    self.append("adb connect: \(Self.oneLine(connectOutput))")
                     if Self.adbConnectSucceeded(connectOutput) {
                         target = refreshedPhone.address
                         self.touchPairedPhone(
@@ -1028,7 +786,6 @@ final class AppModel: ObservableObject {
 
             self.isPairing = false
             guard let target else {
-                self.append("Could not connect over Wi-Fi. Open Android Wireless debugging and pair or refresh the route.")
                 return
             }
             self.selectedDevice.adbSerial = target
@@ -1045,7 +802,6 @@ final class AppModel: ObservableObject {
             isRecording = false
             stopScreenRecordingCleanup()
         }
-        append("Requested mirror stop.")
     }
 
     private func launchNativeMirror(serial: String?) {
@@ -1060,7 +816,6 @@ final class AppModel: ObservableObject {
                 self.isRecording = false
                 self.stopScreenRecordingCleanup()
             }
-            self.append("Mirror session ended.")
         }
 
         do {
@@ -1069,7 +824,6 @@ final class AppModel: ObservableObject {
             selectedDevice.states = [.mirroringReady, .companionConnected]
             try session.start()
             hideConnectionWindowForNativeMirror()
-            append("Native mirror launched.")
         } catch {
             session.onSessionEnded = nil
             session.stop()
@@ -1077,7 +831,6 @@ final class AppModel: ObservableObject {
                 mirrorSession = nil
             }
             isMirroring = false
-            append("Could not launch native mirror: \(error.localizedDescription)")
         }
     }
 
@@ -1113,14 +866,12 @@ final class AppModel: ObservableObject {
         if selectedDevice.id == id {
             selectedDevice = .demo
         }
-        append("Forgot paired device.")
     }
 
     func forgetAllPairedPhones() {
         pairedPhones = []
         store.clearAll()
         selectedDevice = .demo
-        append("Forgot all paired devices. Reconnect from scratch to mirror again.")
     }
 
     // MARK: - Android input
@@ -1141,8 +892,7 @@ final class AppModel: ObservableObject {
     func takeScreenshot() {
         let serial = selectedDevice.adbSerial
         presentCaptureCue(.screenshot)
-        append("Saving screenshot to Downloads/Android Mirroring...")
-        Task { [weak self] in
+        Task {
             let result = await Task.detached { () -> Result<URL, ScreenshotError> in
                 guard let adbPath = Tooling.toolPath(named: "adb") else {
                     return .failure(.adbMissing)
@@ -1163,7 +913,7 @@ final class AppModel: ObservableObject {
                     }
                     let directory = try Self.mediaOutputDirectory()
                     let url = directory.appendingPathComponent(Self.mediaFilename(
-                        prefix: "Android Mirroring Screenshot",
+                        kind: "Screenshot",
                         extension: "png"
                     ))
                     try data.write(to: url)
@@ -1173,16 +923,15 @@ final class AppModel: ObservableObject {
                 }
             }.value
 
-            guard let self else { return }
             switch result {
             case .success(let url):
-                self.append("Saved screenshot: \(url.lastPathComponent)")
+                Logger.log("Saved screenshot: \(url.path)")
             case .failure(.adbMissing):
-                self.append("adb is missing.")
+                Logger.log("Screenshot failed: adb is missing")
             case .failure(.emptyOutput):
-                self.append("Screenshot was empty. Is the phone authorized?")
+                Logger.log("Screenshot failed: empty screencap output")
             case .failure(.runtime(let message)):
-                self.append("Screenshot failed: \(message)")
+                Logger.log("Screenshot failed: \(message)")
             }
         }
     }
@@ -1214,7 +963,6 @@ final class AppModel: ObservableObject {
 
             guard let self else { return }
             if alreadyRunning {
-                self.append("Android screen recording is already active. Click again to stop and save it.")
                 self.startScreenRecordingMonitor()
                 return
             }
@@ -1228,12 +976,10 @@ final class AppModel: ObservableObject {
 
             guard output.lowercased().contains("started") else {
                 self.isRecording = false
-                self.append("Could not start Android screen recording.")
                 return
             }
 
             self.isRecording = true
-            self.append("Started Android screen recording.")
             self.startScreenRecordingMonitor()
         }
     }
@@ -1241,7 +987,6 @@ final class AppModel: ObservableObject {
     private func stopScreenRecordingCleanup() {
         screenRecordingMonitorTask?.cancel()
         screenRecordingMonitorTask = nil
-        append("Stopping Android screen recording...")
         let adb = self.adb
         let serial = selectedDevice.adbSerial
         Task { [weak self] in
@@ -1254,9 +999,9 @@ final class AppModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             let result = await Task.detached { () -> Result<URL, RecordingError> in
                 do {
-                    let directory = try Self.mediaOutputDirectory()
+                    let directory = try Self.recordingOutputDirectory()
                     let url = directory.appendingPathComponent(Self.mediaFilename(
-                        prefix: "Android Mirroring Screen Recording",
+                        kind: "Screen-Recording",
                         extension: "mp4"
                     ))
                     let output = adb.run(Self.adbDeviceArguments(serial: serial) + [
@@ -1278,12 +1023,12 @@ final class AppModel: ObservableObject {
 
             switch result {
             case .success(let url):
+                Logger.log("Saved screen recording: \(url.path)")
                 self?.presentCaptureCue(.recordingStopped)
-                self?.append("Saved screen recording: \(url.lastPathComponent)")
             case .failure(.pullFailed(let message)):
-                self?.append("Screen recording save failed: \(message)")
+                Logger.log("Screen recording pull failed: \(message)")
             case .failure(.runtime(let message)):
-                self?.append("Screen recording save failed: \(message)")
+                Logger.log("Screen recording save failed: \(message)")
             }
         }
     }
@@ -1303,7 +1048,6 @@ final class AppModel: ObservableObject {
                 if self.isRecording && !running {
                     self.isRecording = false
                     self.screenRecordingMonitorTask = nil
-                    self.append("Android screen recording ended. Saving the recording...")
                     self.stopScreenRecordingCleanup()
                     return
                 }
@@ -1337,19 +1081,18 @@ final class AppModel: ObservableObject {
         return url
     }
 
-    nonisolated private static func mediaFilename(prefix: String, extension fileExtension: String) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        return "\(prefix) \(formatter.string(from: Date())).\(fileExtension)"
+    nonisolated private static func recordingOutputDirectory() throws -> URL {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Desktop", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
     }
 
-    // MARK: - Diagnostics
-
-    private func append(_ message: String) {
-        Logger.log("Diagnostic: \(message)")
-        diagnostics.insert(DiagnosticLine(date: .now, message: message), at: 0)
-        diagnostics = Array(diagnostics.prefix(8))
+    nonisolated private static func mediaFilename(kind: String, extension fileExtension: String) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return "Android-Mirroring-\(kind)_\(formatter.string(from: Date())).\(fileExtension)"
     }
 
     nonisolated static func oneLine(_ text: String) -> String {

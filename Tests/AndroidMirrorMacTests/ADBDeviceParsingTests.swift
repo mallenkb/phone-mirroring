@@ -63,40 +63,6 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertFalse(AppModel.adbConnectSucceeded("failed to connect to '192.168.68.57:5555': No route to host"))
     }
 
-    func testADBTCPIPResultParsing() {
-        XCTAssertTrue(AppModel.adbTCPIPSucceeded("restarting in TCP mode port: 5555"))
-        XCTAssertTrue(AppModel.adbTCPIPSucceeded("restarting in TCP mode port: 42111"))
-        XCTAssertFalse(AppModel.adbTCPIPSucceeded("error: no devices/emulators found"))
-    }
-
-    func testMostRecentWirelessRecordPrefersLastConnectedPhone() {
-        let older = PairedPhoneRecord(
-            id: "old-phone",
-            displayName: "Old Pixel",
-            lastAddress: "192.168.1.22:5555",
-            firstPaired: Date(timeIntervalSince1970: 100),
-            lastConnected: Date(timeIntervalSince1970: 200)
-        )
-        let newerUSBOnly = PairedPhoneRecord(
-            id: "usb-phone",
-            displayName: "USB Pixel",
-            lastAddress: "R5CT123ABC",
-            firstPaired: Date(timeIntervalSince1970: 300),
-            lastConnected: Date(timeIntervalSince1970: 900)
-        )
-        let newerWireless = PairedPhoneRecord(
-            id: "new-phone",
-            displayName: "New Pixel",
-            lastAddress: "192.168.1.44:5555",
-            firstPaired: Date(timeIntervalSince1970: 400),
-            lastConnected: Date(timeIntervalSince1970: 800)
-        )
-
-        let selected = AppModel.mostRecentWirelessRecord(in: [older, newerUSBOnly, newerWireless])
-
-        XCTAssertEqual(selected?.id, "new-phone")
-    }
-
     func testRecordsByMostRecentIncludesUSBAndWireless() {
         let olderWireless = PairedPhoneRecord(
             id: "wifi-phone",

@@ -25,10 +25,6 @@ struct ADBController {
         Self.parseMDNSServices(run(["mdns", "services"]))
     }
 
-    func firstMDNSTarget(type: String) -> String? {
-        Self.firstMDNSTarget(type: type, in: run(["mdns", "services"]))
-    }
-
     func connectableMDNSTargets() -> [DiscoveredPhone] {
         mdnsServices().filter { $0.kind == .connectable }
     }
@@ -77,15 +73,5 @@ struct ADBController {
             }
         }
         return byID.values.sorted(by: { $0.id < $1.id })
-    }
-
-    static func firstMDNSTarget(type: String, in output: String) -> String? {
-        output
-            .split(whereSeparator: \.isNewline)
-            .map(String.init)
-            .first { $0.contains(type) }?
-            .split(whereSeparator: \.isWhitespace)
-            .last
-            .map(String.init)
     }
 }
