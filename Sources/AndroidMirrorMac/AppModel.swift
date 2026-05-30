@@ -983,11 +983,28 @@ final class AppModel: ObservableObject {
 
     private func presentCaptureCue(_ kind: CaptureCueKind) {
         captureCue = CaptureCue(kind: kind)
-        if NSSound(named: NSSound.Name("Grab"))?.play() == true {
-            return
+        playCaptureSound(for: kind)
+    }
+
+    /// Plays a distinct cue per capture action. Each kind lists candidate
+    /// system sound names in priority order; the first that loads is played.
+    /// (The classic "Grab" shutter sound was removed in modern macOS — it no
+    /// longer loads — so screenshots fall back to a crisp shutter-like tone,
+    /// and recording start/stop get their own sounds instead of sharing one.)
+    private func playCaptureSound(for kind: CaptureCueKind) {
+        let candidates: [String]
+        switch kind {
+        case .screenshot:
+            candidates = ["Grab", "Tink", "Pop"]          // camera-shutter feel
+        case .recordingStarted:
+            candidates = ["Bottle", "Pop", "Hero"]         // "begin" cue
+        case .recordingStopped:
+            candidates = ["Glass", "Submarine", "Tink"]    // "saved/done" cue
         }
-        if NSSound(named: NSSound.Name("Pop"))?.play() == true {
-            return
+        for name in candidates {
+            if NSSound(named: NSSound.Name(name))?.play() == true {
+                return
+            }
         }
         NSSound.beep()
     }
