@@ -206,7 +206,7 @@ final class MirrorSession {
         controlChannel = channel
     }
 
-    private static func androidKey(for event: NSEvent) -> ScrcpyControlChannel.AndroidKey? {
+    static func androidKey(for event: NSEvent) -> ScrcpyControlChannel.AndroidKey? {
         // macOS virtual key codes (kVK_*). Only a minimal mapping for now.
         switch event.keyCode {
         case 0x35: return .back     // Escape
@@ -214,6 +214,9 @@ final class MirrorSession {
         case 0x24, 0x4C: return .enter
         case 0x33: return .delete
         case 0x75: return .forwardDelete
+        case 0x6F: return .volumeUp      // F12 / volume up
+        case 0x67: return .volumeDown    // F11 / volume down
+        case 0x6D: return .volumeMute    // F10 / mute
         case 0x7E: return .dpadUp
         case 0x7D: return .dpadDown
         case 0x7B: return .dpadLeft

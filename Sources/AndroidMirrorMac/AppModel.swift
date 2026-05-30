@@ -9,6 +9,7 @@ final class AppModel: ObservableObject {
     @Published var isMirroring = false
     @Published var isRecording = false
     @Published var isPairing = false
+    @Published private(set) var isSelectedDeviceOnline = false
     @Published var captureCue: CaptureCue?
     /// Stream the phone's audio to the Mac. Off by default: it requires Android
     /// playback capture, which some device servers (e.g. Samsung One UI) abort
@@ -33,6 +34,7 @@ final class AppModel: ObservableObject {
     private weak var connectionWindow: NSWindow?
     private var mirrorSession: MirrorSession?
     private var autoConnectAttempted = false
+    private var devicePresenceTask: Task<Void, Never>?
     private var usbHandoffTask: Task<Void, Never>?
     private var lastUSBHandoffSerial: String?
     private var qrPairingTask: Task<Void, Never>?
@@ -88,11 +90,13 @@ final class AppModel: ObservableObject {
         discovery.start { [weak self] phones in
             self?.discoveredPhones = phones
         }
+        startDevicePresenceWatcher()
         startUSBHandoffWatcher()
         attemptAutoReconnect()
     }
 
     deinit {
+        devicePresenceTask?.cancel()
         usbHandoffTask?.cancel()
         qrPairingTask?.cancel()
         screenRecordingMonitorTask?.cancel()
@@ -255,6 +259,19 @@ final class AppModel: ObservableObject {
                 self.lastUSBHandoffSerial = usbDevice.serial
                 self.isPairing = true
                 await self.prepareWirelessMirror(from: usbDevice)
+            }
+        }
+    }
+
+    private func startDevicePresenceWatcher() {
+        guard devicePresenceTask == nil else { return }
+        let adb = self.adb
+        devicePresenceTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let output = await Task.detached { adb.run(["devices", "-l"]) }.value
+                guard let self else { return }
+                self.applyDevicePresence(output)
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
             }
         }
     }
@@ -518,6 +535,7 @@ final class AppModel: ObservableObject {
     private func applyADBOutput(_ output: String) {
         guard let first = Self.authorizedADBDevices(in: output).first else {
             selectedDevice.states = [.wirelessDebuggingRequired, .usbAuthorizationRequired, .companionConnected]
+            isSelectedDeviceOnline = false
             return
         }
 
@@ -525,6 +543,7 @@ final class AppModel: ObservableObject {
     }
 
     private func select(device: AuthorizedADBDevice) {
+        isSelectedDeviceOnline = true
         selectedDevice = MirrorDevice(
             id: device.serial,
             name: device.model,
@@ -539,6 +558,7 @@ final class AppModel: ObservableObject {
     }
 
     private func select(record: PairedPhoneRecord) {
+        isSelectedDeviceOnline = false
         selectedDevice = MirrorDevice(
             id: record.id,
             name: record.displayName,
@@ -546,10 +566,33 @@ final class AppModel: ObservableObject {
             battery: selectedDevice.battery,
             isCharging: selectedDevice.isCharging,
             network: Self.isWirelessRecord(record) ? "Wireless debugging" : "USB debugging",
-            lastSeen: .now,
-            states: [.mirroringReady, .companionConnected],
+            lastSeen: record.lastConnected,
+            states: [.wirelessDebuggingRequired, .companionConnected],
             adbSerial: record.lastAddress
         )
+    }
+
+    private func applyDevicePresence(_ output: String) {
+        let devices = Self.authorizedADBDevices(in: output)
+        guard let serial = selectedDevice.adbSerial else {
+            isSelectedDeviceOnline = false
+            return
+        }
+
+        guard let liveDevice = devices.first(where: { $0.serial == serial }) else {
+            isSelectedDeviceOnline = false
+            if selectedDevice.states.contains(.mirroringReady) {
+                selectedDevice.states = [.wirelessDebuggingRequired, .companionConnected]
+            }
+            return
+        }
+
+        isSelectedDeviceOnline = true
+        selectedDevice.lastSeen = .now
+        selectedDevice.name = liveDevice.model
+        selectedDevice.model = liveDevice.product
+        selectedDevice.network = liveDevice.isUSB ? "USB debugging" : "Wireless debugging"
+        selectedDevice.states = [.mirroringReady, .companionConnected]
     }
 
     nonisolated static func authorizedADBDevices(in output: String) -> [AuthorizedADBDevice] {

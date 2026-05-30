@@ -157,12 +157,16 @@ final class ScrcpyServerHost {
 
         if options.audio {
             // Raw PCM (48 kHz / stereo / s16le) so the Mac can play it without
-            // decoding. `output` = Android playback capture (Android 11+).
-            // If the device can't capture, the server sends codec-id 0 on the
-            // audio socket and keeps streaming video — handled client-side.
+            // decoding. Use `playback` (MediaProjection/AudioPolicy) rather than
+            // `output` (REMOTE_SUBMIX direct capture): on Samsung One UI
+            // `output` aborts the server natively (which also wedges video),
+            // whereas `playback` fails GRACEFULLY — it throws, the server sends
+            // codec-id 0 on the audio socket and keeps streaming video (handled
+            // client-side). On devices that support it, `playback` captures the
+            // audio output normally.
             args += [
                 "audio_codec=raw",
-                "audio_source=output"
+                "audio_source=playback"
             ]
         }
 

@@ -38,7 +38,9 @@ final class ScrcpyServerHostTests: XCTestCase {
 
         XCTAssertTrue(arguments.contains("audio=true"))
         XCTAssertTrue(arguments.contains("audio_codec=raw"))
-        XCTAssertTrue(arguments.contains("audio_source=output"))
+        // `playback` fails gracefully where `output` aborts the server.
+        XCTAssertTrue(arguments.contains("audio_source=playback"))
+        XCTAssertFalse(arguments.contains("audio_source=output"))
     }
 
     func testServerArgumentsNeverPassStayAwake() {

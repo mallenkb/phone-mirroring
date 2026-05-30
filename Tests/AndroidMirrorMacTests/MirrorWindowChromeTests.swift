@@ -20,6 +20,50 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertEqual(Array(message), [1, 0, 0, 0, 2, 72, 105])
     }
 
+    @MainActor
+    func testFunctionVolumeKeysMapToAndroidVolumeControls() throws {
+        let mute = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: 0x6D
+        ))
+        let down = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: 0x67
+        ))
+        let up = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: 0x6F
+        ))
+
+        XCTAssertEqual(MirrorSession.androidKey(for: mute), .volumeMute)
+        XCTAssertEqual(MirrorSession.androidKey(for: down), .volumeDown)
+        XCTAssertEqual(MirrorSession.androidKey(for: up), .volumeUp)
+    }
+
     func testMirrorRenderViewFitsPortraitStreamInsideWideBounds() {
         let rect = MirrorRenderView.fittedVideoRect(
             for: CGSize(width: 1080, height: 2400),

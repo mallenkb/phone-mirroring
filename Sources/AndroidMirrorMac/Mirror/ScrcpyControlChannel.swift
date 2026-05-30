@@ -24,6 +24,9 @@ final class ScrcpyControlChannel {
         case tab = 61
         case enter = 66
         case delete = 67
+        case volumeUp = 24
+        case volumeDown = 25
+        case volumeMute = 164
         case dpadUp = 19
         case dpadDown = 20
         case dpadLeft = 21

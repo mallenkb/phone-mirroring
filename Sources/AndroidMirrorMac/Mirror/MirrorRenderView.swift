@@ -25,6 +25,8 @@ final class MirrorRenderView: NSView {
     private var aspect: CGSize = .zero
     private var trackingArea: NSTrackingArea?
     private var hasRenderedFirstFrame = false
+    private var firstFrameReadyToDisplay = false
+    private var loadingStartedAt = Date()
     var cornerRadius: CGFloat = 0 {
         didSet { applyCornerMask() }
     }
@@ -122,13 +124,29 @@ final class MirrorRenderView: NSView {
     }
 
     private func setupLoadingView() {
+        loadingStartedAt = Date()
         loadingView.frame = bounds
         loadingView.autoresizingMask = [.width, .height]
         loadingView.alphaValue = 1
+        loadingView.startProgress(duration: 3)
         addSubview(loadingView)
     }
 
     private func hideLoadingViewIfNeeded() {
+        guard !hasRenderedFirstFrame, !firstFrameReadyToDisplay else { return }
+        firstFrameReadyToDisplay = true
+        let elapsed = Date().timeIntervalSince(loadingStartedAt)
+        let remaining = max(0, 3 - elapsed)
+        if remaining > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + remaining) { [weak self] in
+                self?.finishHidingLoadingView()
+            }
+            return
+        }
+        finishHidingLoadingView()
+    }
+
+    private func finishHidingLoadingView() {
         guard !hasRenderedFirstFrame else { return }
         hasRenderedFirstFrame = true
         NSAnimationContext.runAnimationGroup { context in
@@ -220,7 +238,7 @@ final class MirrorRenderView: NSView {
 private final class MirrorLoadingView: NSView {
     private let gradientLayer = CAGradientLayer()
     private let contentStack = NSStackView()
-    private let statusLabel = NSTextField(labelWithString: "Connecting")
+    private let statusLabel = LoadingProgressTextView(text: "Connecting")
     private let deviceLabel = NSTextField(labelWithString: "")
 
     var deviceName: String = "" {
@@ -243,6 +261,11 @@ private final class MirrorLoadingView: NSView {
         CATransaction.setDisableActions(true)
         gradientLayer.frame = bounds
         CATransaction.commit()
+        statusLabel.layoutSubtreeIfNeeded()
+    }
+
+    func startProgress(duration: TimeInterval) {
+        statusLabel.startProgress(duration: duration)
     }
 
     private func setupView() {
@@ -259,9 +282,8 @@ private final class MirrorLoadingView: NSView {
         gradientLayer.endPoint = CGPoint(x: 0.96, y: 0)
         layer?.addSublayer(gradientLayer)
 
-        statusLabel.font = .systemFont(ofSize: 19, weight: .semibold)
-        statusLabel.textColor = NSColor.white.withAlphaComponent(0.70)
-        statusLabel.alignment = .center
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.heightAnchor.constraint(equalToConstant: 24).isActive = true
 
         deviceLabel.font = .systemFont(ofSize: 42, weight: .heavy)
         deviceLabel.textColor = NSColor.white.withAlphaComponent(0.92)
@@ -284,5 +306,104 @@ private final class MirrorLoadingView: NSView {
             contentStack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 24),
             contentStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -24)
         ])
+    }
+}
+
+private final class LoadingProgressTextView: NSView {
+    private let baseLabel: NSTextField
+    private let fillLabel: NSTextField
+    private let fillContainer = NSView()
+    private var fillWidthConstraint: NSLayoutConstraint?
+    private var progressTimer: Timer?
+    private var progress: CGFloat = 0 {
+        didSet { updateProgress() }
+    }
+
+    init(text: String) {
+        baseLabel = NSTextField(labelWithString: text)
+        fillLabel = NSTextField(labelWithString: text)
+        super.init(frame: .zero)
+        setupView()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override var intrinsicContentSize: NSSize {
+        let labelSize = baseLabel.intrinsicContentSize
+        return NSSize(width: labelSize.width, height: max(24, labelSize.height))
+    }
+
+    override func layout() {
+        super.layout()
+        updateProgress()
+    }
+
+    func startProgress(duration: TimeInterval) {
+        progressTimer?.invalidate()
+        progress = 0
+        let startedAt = Date()
+        let timer = Timer(timeInterval: 1 / 60, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            let elapsed = Date().timeIntervalSince(startedAt)
+            self.progress = min(1, max(0, elapsed / duration))
+            if self.progress >= 1 {
+                timer.invalidate()
+                self.progressTimer = nil
+            }
+        }
+        progressTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func setupView() {
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+
+        [baseLabel, fillLabel].forEach { label in
+            label.font = .systemFont(ofSize: 19, weight: .semibold)
+            label.alignment = .center
+            label.lineBreakMode = .byClipping
+            label.maximumNumberOfLines = 1
+            label.translatesAutoresizingMaskIntoConstraints = false
+        }
+        baseLabel.textColor = NSColor.white.withAlphaComponent(0.34)
+        fillLabel.textColor = NSColor.white.withAlphaComponent(0.86)
+
+        fillContainer.translatesAutoresizingMaskIntoConstraints = false
+        fillContainer.wantsLayer = true
+        fillContainer.layer?.masksToBounds = true
+
+        addSubview(baseLabel)
+        addSubview(fillContainer)
+        fillContainer.addSubview(fillLabel)
+
+        fillWidthConstraint = fillContainer.widthAnchor.constraint(equalToConstant: 0)
+        fillWidthConstraint?.isActive = true
+
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalTo: baseLabel.widthAnchor),
+            heightAnchor.constraint(equalTo: baseLabel.heightAnchor),
+
+            baseLabel.leadingAnchor.constraint(equalTo: leadingAnchor),
+            baseLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
+            baseLabel.topAnchor.constraint(equalTo: topAnchor),
+            baseLabel.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            fillContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
+            fillContainer.topAnchor.constraint(equalTo: topAnchor),
+            fillContainer.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            fillLabel.leadingAnchor.constraint(equalTo: fillContainer.leadingAnchor),
+            fillLabel.topAnchor.constraint(equalTo: fillContainer.topAnchor),
+            fillLabel.bottomAnchor.constraint(equalTo: fillContainer.bottomAnchor),
+            fillLabel.widthAnchor.constraint(equalTo: baseLabel.widthAnchor)
+        ])
+    }
+
+    private func updateProgress() {
+        fillWidthConstraint?.constant = bounds.width * progress
     }
 }
