@@ -11,13 +11,6 @@ final class AppModel: ObservableObject {
     @Published var isPairing = false
     @Published private(set) var isSelectedDeviceOnline = false
     @Published var captureCue: CaptureCue?
-    /// Stream the phone's audio to the Mac. Off by default: it requires Android
-    /// playback capture, which some device servers (e.g. Samsung One UI) abort
-    /// on — and that abort also destabilizes the video stream. Opt-in via the
-    /// menu; persisted across launches.
-    @Published var mirrorPhoneAudio: Bool = UserDefaults.standard.bool(forKey: "AndroidMirror.MirrorPhoneAudio") {
-        didSet { UserDefaults.standard.set(mirrorPhoneAudio, forKey: "AndroidMirror.MirrorPhoneAudio") }
-    }
     static let onboardingWindowSize = NSSize(width: 500, height: 900)
     static let minimumConnectionWindowSize = NSSize(width: 384, height: 688)
     static let defaultConnectionWindowSize = NSSize(width: 650, height: 1170)
@@ -42,15 +35,10 @@ final class AppModel: ObservableObject {
     /// Holds the currently-playing capture cue sound so it isn't deallocated
     /// mid-playback.
     private var retainedCaptureSound: NSSound?
-    // Crash-loop breaker + audio fallback for flaky device-side servers.
+    // Crash-loop breaker for flaky device-side servers.
     private var lastMirrorStartAt: Date?
     private var consecutiveQuickMirrorFailures = 0
     private var autoMirrorBackoffUntil: Date?
-    /// Set once a device-side server crashes on the audio socket. Kept for the
-    /// rest of the run (wireless serials change between reconnects, so a
-    /// per-serial set misses) so we don't re-attempt audio and re-flash. A
-    /// manual Start clears it to re-test audio.
-    private var audioCaptureUnsupported = false
     /// True while a mirror session has ended but we're about to retry/reconnect
     /// (e.g. audio→video fallback, or within the backoff window). Keeps the app
     /// from terminating in the windowless gap between sessions.
@@ -791,16 +779,15 @@ final class AppModel: ObservableObject {
     // MARK: - Mirroring lifecycle
 
     /// - Parameter manual: `true` for a deliberate user action, which clears
-    ///   any crash-loop backoff and re-enables audio. Auto-reconnect callers
-    ///   leave it `false` so a crashing server isn't relaunched in a tight loop.
+    ///   any crash-loop backoff. Auto-reconnect callers leave it `false` so a
+    ///   crashing server isn't relaunched in a tight loop.
     func startMirroring(manual: Bool = false) {
         guard !isMirroring else { return }
 
         if manual {
-            // A deliberate retry clears backoff and re-tests audio support.
+            // A deliberate retry clears backoff.
             consecutiveQuickMirrorFailures = 0
             autoMirrorBackoffUntil = nil
-            audioCaptureUnsupported = false
         } else if let until = autoMirrorBackoffUntil, Date() < until {
             return
         }
@@ -879,9 +866,7 @@ final class AppModel: ObservableObject {
         mirrorSession?.stop()
         mirrorSession = nil
         isMirroring = false
-        // A deliberate stop clears the crash-loop breaker. (Learned audio
-        // support is kept so auto-reconnect doesn't re-flash on a device that
-        // can't capture audio; a manual Start re-tests it.)
+        // A deliberate stop clears the crash-loop breaker.
         consecutiveQuickMirrorFailures = 0
         autoMirrorBackoffUntil = nil
         isAwaitingReconnect = false
@@ -891,30 +876,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Toggle phone-audio passthrough. Applied immediately by restarting a live
-    /// session (audio is negotiated at session start).
-    func setMirrorPhoneAudio(_ enabled: Bool) {
-        guard enabled != mirrorPhoneAudio else { return }
-        mirrorPhoneAudio = enabled
-        guard isMirroring else { return }
-
-        // Closing the mirror window during an intentional audio renegotiation
-        // can leave the app briefly windowless. Keep termination suppressed
-        // until the replacement session has opened its new mirror window.
-        isAwaitingReconnect = true
-        mirrorSession?.onSessionEnded = nil
-        mirrorSession?.stop()
-        mirrorSession = nil
-        isMirroring = false
-        if isRecording {
-            isRecording = false
-            stopScreenRecordingCleanup()
-        }
-        startMirroring(manual: true)
-    }
-
     private func launchNativeMirror(serial: String?) {
-        let session = MirrorSession(model: self, serial: serial, audioEnabled: mirrorPhoneAudio && !audioCaptureUnsupported)
+        let session = MirrorSession(model: self, serial: serial)
         session.onSessionEnded = { [weak self, weak session] in
             guard let self else { return }
             if self.mirrorSession === session {
@@ -925,7 +888,7 @@ final class AppModel: ObservableObject {
                 self.isRecording = false
                 self.stopScreenRecordingCleanup()
             }
-            self.noteMirrorSessionEnded(audioWasEnabled: session?.audioEnabled ?? false)
+            self.noteMirrorSessionEnded()
         }
 
         do {
@@ -947,28 +910,14 @@ final class AppModel: ObservableObject {
     }
 
     /// Called when a native mirror session ends. Distinguishes a stable session
-    /// (resets all breakers) from a "quick" failure. On a quick failure with
-    /// audio on, we retry once with audio off (some device servers can't
-    /// capture audio cleanly); otherwise we arm a growing reconnect backoff.
-    private func noteMirrorSessionEnded(audioWasEnabled: Bool) {
+    /// (resets all breakers) from a "quick" failure. Repeated quick failures
+    /// arm a growing reconnect backoff.
+    private func noteMirrorSessionEnded() {
         let lived = lastMirrorStartAt.map { Date().timeIntervalSince($0) } ?? .greatestFiniteMagnitude
         guard lived < Self.quickMirrorFailureThreshold else {
-            // Stable session — reset the reconnect backoff. (Keep learned audio
-            // support; a stable video-only session doesn't mean audio works.)
+            // Stable session — reset the reconnect backoff.
             consecutiveQuickMirrorFailures = 0
             autoMirrorBackoffUntil = nil
-            return
-        }
-
-        // A quick failure while audio was on usually means the device server
-        // can't capture audio — remember that and retry once, video only.
-        if audioWasEnabled, !audioCaptureUnsupported {
-            audioCaptureUnsupported = true
-            isAwaitingReconnect = true
-            Logger.log("Mirror exited quickly with audio on — this device can't capture audio; retrying video only.")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-                self?.startMirroring()
-            }
             return
         }
 

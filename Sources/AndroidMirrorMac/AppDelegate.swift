@@ -100,14 +100,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 keyEquivalent: ""
             )
         )
-        editMenu.addItem(.separator())
-        editMenu.addItem(
-            NSMenuItem(
-                title: "Enable Audio on Mac",
-                action: #selector(toggleMirrorAudio(_:)),
-                keyEquivalent: ""
-            )
-        )
         editItem.submenu = editMenu
 
         let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
@@ -279,14 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.toggleScreenRecording()
     }
 
-    @objc private func toggleMirrorAudio(_ sender: Any?) {
-        model.setMirrorPhoneAudio(!model.mirrorPhoneAudio)
-    }
-
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(toggleMirrorAudio(_:)) {
-            menuItem.state = model.mirrorPhoneAudio ? .on : .off
-        }
         if menuItem.action == #selector(phoneVolumeUp(_:))
             || menuItem.action == #selector(phoneVolumeDown(_:))
             || menuItem.action == #selector(phoneVolumeMute(_:)) {

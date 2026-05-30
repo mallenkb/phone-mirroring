@@ -31,15 +31,12 @@ final class MirrorSession {
 
     private weak var model: AppModel?
     private let serial: String?
-    /// Whether this session asked the device to also stream its audio.
-    let audioEnabled: Bool
     private let scid: UInt32
     private let localPort: UInt16
 
     private var serverHost: ScrcpyServerHost?
     private var stream: ScrcpyVideoStream?
     private var decoder = H264VideoToolboxDecoder()
-    private let audioPlayer = ScrcpyAudioPlayer()
     private(set) var controlChannel: ScrcpyControlChannel?
     private var clipboardBridge: ClipboardBridge?
     private var windowController: MirrorContentWindowController?
@@ -49,10 +46,9 @@ final class MirrorSession {
 
     var onSessionEnded: (() -> Void)?
 
-    init(model: AppModel, serial: String?, audioEnabled: Bool = true) {
+    init(model: AppModel, serial: String?) {
         self.model = model
         self.serial = serial
-        self.audioEnabled = audioEnabled
         self.scid = UInt32.random(in: 1...UInt32(Int32.max))
         self.localPort = Self.allocatePort()
     }
@@ -60,11 +56,11 @@ final class MirrorSession {
     func start() throws {
         guard windowController == nil else { throw SessionError.alreadyRunning }
 
-        let stream = ScrcpyVideoStream(port: localPort, expectsAudio: audioEnabled)
+        let stream = ScrcpyVideoStream(port: localPort, expectsAudio: false)
         let host = ScrcpyServerHost(options: ScrcpyServerHost.Options(
             scid: scid,
             localPort: localPort,
-            audio: audioEnabled,
+            audio: false,
             serial: serial
         ))
 
@@ -73,9 +69,6 @@ final class MirrorSession {
         }
         stream.onPacket = { [weak self] packet in
             self?.decoder.feed(packet)
-        }
-        stream.onAudioPacket = { [weak self] pcm in
-            self?.audioPlayer.enqueue(pcm)
         }
         stream.onResize = { [weak self] width, height in
             Task { @MainActor in self?.handleResize(width: width, height: height) }
@@ -122,7 +115,6 @@ final class MirrorSession {
         clipboardBridge = nil
         controlChannel?.close()
         controlChannel = nil
-        audioPlayer.stop()
         stream?.stop()
         stream = nil
         serverHost?.stop()

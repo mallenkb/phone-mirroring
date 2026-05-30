@@ -29,25 +29,24 @@ final class ScrcpyServerHostTests: XCTestCase {
         XCTAssertFalse(arguments.contains("audio_source=output"))
     }
 
-    func testAudioEnabledAddsRawPlaybackCaptureArgs() {
+    func testServerArgumentsIgnoreAudioRequestsBecauseMacAudioFeatureIsRemoved() {
         let arguments = ScrcpyServerHost.serverArguments(for: .init(
             scid: 0x1234ABCD,
             localPort: 37283,
             audio: true
         ))
 
-        XCTAssertTrue(arguments.contains("audio=true"))
-        XCTAssertTrue(arguments.contains("audio_codec=raw"))
-        // `playback` fails gracefully where `output` aborts the server.
-        XCTAssertTrue(arguments.contains("audio_source=playback"))
+        XCTAssertTrue(arguments.contains("audio=false"))
+        XCTAssertFalse(arguments.contains("audio=true"))
+        XCTAssertFalse(arguments.contains("audio_codec=raw"))
+        XCTAssertFalse(arguments.contains("audio_source=playback"))
         XCTAssertFalse(arguments.contains("audio_source=output"))
     }
 
     func testServerArgumentsNeverPassStayAwake() {
         // stay_awake=true aborts the server natively on Samsung One UI.
-        let withAudio = ScrcpyServerHost.serverArguments(for: .init(scid: 1, localPort: 1, audio: true))
-        let withoutAudio = ScrcpyServerHost.serverArguments(for: .init(scid: 1, localPort: 1))
-        XCTAssertFalse(withAudio.contains("stay_awake=true"))
-        XCTAssertFalse(withoutAudio.contains("stay_awake=true"))
+        let arguments = ScrcpyServerHost.serverArguments(for: .init(scid: 1, localPort: 1))
+
+        XCTAssertFalse(arguments.contains("stay_awake=true"))
     }
 }

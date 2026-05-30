@@ -129,7 +129,7 @@ final class ScrcpyServerHost {
 
     static func serverArguments(for options: Options) -> [String] {
         let scidHex = String(format: "%08x", options.scid)
-        var args = [
+        let args = [
             "shell",
             "CLASSPATH=\(Self.devicePath)",
             "app_process",
@@ -138,7 +138,7 @@ final class ScrcpyServerHost {
             Self.serverVersion,
             "scid=\(scidHex)",
             "log_level=info",
-            "audio=\(options.audio ? "true" : "false")",
+            "audio=false",
             "video=true",
             "control=true",
             "tunnel_forward=false",
@@ -154,21 +154,6 @@ final class ScrcpyServerHost {
             "power_on=true",
             "cleanup=true"
         ]
-
-        if options.audio {
-            // Raw PCM (48 kHz / stereo / s16le) so the Mac can play it without
-            // decoding. Use `playback` (MediaProjection/AudioPolicy) rather than
-            // `output` (REMOTE_SUBMIX direct capture): on Samsung One UI
-            // `output` aborts the server natively (which also wedges video),
-            // whereas `playback` fails GRACEFULLY — it throws, the server sends
-            // codec-id 0 on the audio socket and keeps streaming video (handled
-            // client-side). On devices that support it, `playback` captures the
-            // audio output normally.
-            args += [
-                "audio_codec=raw",
-                "audio_source=playback"
-            ]
-        }
 
         return args
     }
