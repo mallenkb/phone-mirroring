@@ -989,12 +989,13 @@ final class AppModel: ObservableObject {
         playCaptureSound(for: kind)
     }
 
-    /// Plays a distinct cue per capture action. Screenshots use the real macOS
-    /// shutter sound; recording start/stop use the system screen-capture cue.
-    /// These ship inside CoreAudio.component (not in `NSSound(named:)`'s search
-    /// path), so we load them by file path, then fall back to named system
-    /// sounds, then a beep. `retainedCaptureSound` keeps the player alive until
-    /// playback finishes (a local NSSound would be deallocated immediately).
+    /// Plays a distinct cue per capture action: the real macOS shutter for
+    /// screenshots, and the dedicated screen-recording start/stop chimes for
+    /// recording (distinct ascending "begin" and descending "end" tones). These
+    /// ship inside CoreAudio.component (not in `NSSound(named:)`'s search path),
+    /// so we load them by file path, then fall back to named system sounds, then
+    /// a beep. `retainedCaptureSound` keeps the player alive until playback
+    /// finishes (a local NSSound would be deallocated immediately).
     private func playCaptureSound(for kind: CaptureCueKind) {
         let fileCandidates: [String]
         let namedFallbacks: [String]
@@ -1003,10 +1004,10 @@ final class AppModel: ObservableObject {
             fileCandidates = ["Grab.aif", "Shutter.aif"]   // real screenshot shutter
             namedFallbacks = ["Tink", "Pop"]
         case .recordingStarted:
-            fileCandidates = ["Screen Capture.aif"]         // "begin" cue
+            fileCandidates = ["begin_record.caf"]           // recording-start chime
             namedFallbacks = ["Bottle", "Pop"]
         case .recordingStopped:
-            fileCandidates = ["Screen Capture.aif"]         // "saved/done" cue
+            fileCandidates = ["end_record.caf"]             // recording-stop chime
             namedFallbacks = ["Glass", "Submarine"]
         }
 

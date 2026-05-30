@@ -2,9 +2,11 @@ import Foundation
 import Network
 import AppKit
 
-/// Writer for scrcpy's control protocol. We only implement the message
-/// types the mirror UI needs: touch, scroll, key, and the BACK_OR_SCREEN_ON
-/// shortcut. All wire encoding is big-endian.
+/// Reader/writer for scrcpy's control protocol. We implement the message types
+/// the mirror UI needs: touch, scroll, key, BACK_OR_SCREEN_ON, and SET_CLIPBOARD
+/// (host → device). The control socket is bidirectional, so we also read the
+/// server's *device* messages — currently just clipboard sync (device → host).
+/// All wire encoding is big-endian.
 final class ScrcpyControlChannel {
     enum MessageType: UInt8 {
         case injectKeycode = 0
@@ -12,7 +14,27 @@ final class ScrcpyControlChannel {
         case injectTouch = 2
         case injectScroll = 3
         case backOrScreenOn = 4
+        case getClipboard = 8
+        case setClipboard = 9
     }
+
+    /// Messages the device pushes back over the control socket.
+    enum DeviceMessage: Equatable {
+        case clipboard(String)
+        case ackClipboard(UInt64)
+        /// UHID output — unused here, but consumed to stay framed.
+        case uhidOutput
+    }
+
+    enum DeviceMessageType: UInt8 {
+        case clipboard = 0
+        case ackClipboard = 1
+        case uhidOutput = 2
+    }
+
+    /// scrcpy caps clipboard payloads at 256 KiB (minus framing). We use this
+    /// both to truncate outgoing text and to reject a desynced inbound length.
+    static let maxClipboardBytes = (1 << 18) - 14
 
     enum KeyAction: UInt8 { case down = 0, up = 1 }
     enum TouchAction: UInt8 { case down = 0, up = 1, move = 2 }
@@ -44,10 +66,16 @@ final class ScrcpyControlChannel {
     private var deviceHeight: UInt16 = 0
     private var lastButtons: UInt32 = 0
     private var pointerDown = false
+    /// Accumulates inbound device-message bytes; only touched on `queue`.
+    private var rxBuffer = Data()
+
+    /// Invoked (on an internal queue) when the device clipboard changes.
+    var onDeviceClipboard: ((String) -> Void)?
 
     init(connection: NWConnection) {
         self.connection = connection
         connection.start(queue: queue)
+        receiveLoop()
     }
 
     func close() {
@@ -123,6 +151,52 @@ final class ScrcpyControlChannel {
         write(message)
     }
 
+    /// Sets the device clipboard (host → device). With `paste: true` the server
+    /// also injects a PASTE key into the focused field. `sequence` of 0 means
+    /// no acknowledgement is requested (scrcpy's `SEQUENCE_INVALID`).
+    func sendSetClipboard(_ text: String, paste: Bool = false, sequence: UInt64 = 0) {
+        let message = Self.setClipboardMessage(text: text, paste: paste, sequence: sequence)
+        guard !message.isEmpty else { return }
+        write(message)
+    }
+
+    // MARK: - Inbound device messages
+
+    private func receiveLoop() {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            if let data, !data.isEmpty {
+                self.rxBuffer.append(data)
+                self.drainDeviceMessages()
+            }
+            if let error {
+                Logger.log("ScrcpyControlChannel receive error: \(error)")
+                return
+            }
+            if isComplete { return }
+            self.receiveLoop()
+        }
+    }
+
+    /// Pulls every complete device message out of `rxBuffer`. Runs on `queue`.
+    private func drainDeviceMessages() {
+        while true {
+            switch Self.parseDeviceMessage(rxBuffer) {
+            case .incomplete:
+                return
+            case .reset:
+                Logger.log("ScrcpyControlChannel: desynced device stream; dropping buffer")
+                rxBuffer.removeAll()
+                return
+            case let .message(message, consumed):
+                rxBuffer.removeFirst(consumed)
+                if case let .clipboard(text) = message {
+                    onDeviceClipboard?(text)
+                }
+            }
+        }
+    }
+
     // MARK: - Encoding
 
     static func textMessage(for text: String) -> Data {
@@ -134,6 +208,72 @@ final class ScrcpyControlChannel {
         Self.appendUInt32BE(&buf, UInt32(payload.count))
         buf.append(payload)
         return buf
+    }
+
+    /// Encodes a SET_CLIPBOARD control message:
+    ///   [ type ][ sequence u64 ][ paste flag u8 ][ length u32 ][ utf8 text ]
+    static func setClipboardMessage(text: String, paste: Bool, sequence: UInt64) -> Data {
+        let payload = Self.utf8Truncated(text, maxBytes: maxClipboardBytes)
+        guard !payload.isEmpty else { return Data() }
+
+        var buf = Data(capacity: 14 + payload.count)
+        buf.append(MessageType.setClipboard.rawValue)
+        Self.appendUInt64BE(&buf, sequence)
+        buf.append(paste ? 1 : 0)
+        Self.appendUInt32BE(&buf, UInt32(payload.count))
+        buf.append(payload)
+        return buf
+    }
+
+    /// Result of attempting to parse one device message from the front of a
+    /// buffer. `consumed` is the byte count the message occupied.
+    enum ParseResult: Equatable {
+        case message(DeviceMessage, consumed: Int)
+        /// Not enough bytes buffered yet for a complete message.
+        case incomplete
+        /// Unknown type or an implausible length — the stream is desynced and
+        /// the caller should drop its buffer.
+        case reset
+    }
+
+    /// Parses a single device message from the front of `buffer` without
+    /// mutating it. Pure, so it can be unit-tested directly.
+    static func parseDeviceMessage(_ buffer: Data) -> ParseResult {
+        guard let typeByte = buffer.first else { return .incomplete }
+        guard let type = DeviceMessageType(rawValue: typeByte) else { return .reset }
+
+        switch type {
+        case .clipboard:
+            guard buffer.count >= 5 else { return .incomplete }
+            let length = Int(readUInt32BE(in: buffer, at: 1))
+            guard length <= maxClipboardBytes else { return .reset }
+            guard buffer.count >= 5 + length else { return .incomplete }
+            let start = buffer.index(buffer.startIndex, offsetBy: 5)
+            let end = buffer.index(start, offsetBy: length)
+            let text = String(decoding: buffer[start..<end], as: UTF8.self)
+            return .message(.clipboard(text), consumed: 5 + length)
+        case .ackClipboard:
+            guard buffer.count >= 9 else { return .incomplete }
+            return .message(.ackClipboard(readUInt64BE(in: buffer, at: 1)), consumed: 9)
+        case .uhidOutput:
+            guard buffer.count >= 5 else { return .incomplete }
+            let length = Int(readUInt16BE(in: buffer, at: 3))
+            guard buffer.count >= 5 + length else { return .incomplete }
+            return .message(.uhidOutput, consumed: 5 + length)
+        }
+    }
+
+    /// Returns `text` as UTF-8, truncated to at most `maxBytes` on a code-point
+    /// boundary so a multi-byte character is never split.
+    static func utf8Truncated(_ text: String, maxBytes: Int) -> Data {
+        let data = Data(text.utf8)
+        guard data.count > maxBytes else { return data }
+        var end = maxBytes
+        // Back up off any UTF-8 continuation bytes (0b10xxxxxx).
+        while end > 0, (data[data.index(data.startIndex, offsetBy: end)] & 0xC0) == 0x80 {
+            end -= 1
+        }
+        return data.prefix(end)
     }
 
     private func sendKeycode(action: KeyAction, keycode: Int32, metastate: UInt32) {
@@ -189,5 +329,23 @@ final class ScrcpyControlChannel {
         for i in stride(from: 56, through: 0, by: -8) {
             data.append(UInt8((value >> i) & 0xff))
         }
+    }
+
+    private static func readUInt16BE(in data: Data, at offset: Int) -> UInt16 {
+        let start = data.index(data.startIndex, offsetBy: offset)
+        return data[start..<data.index(start, offsetBy: 2)]
+            .reduce(0) { ($0 << 8) | UInt16($1) }
+    }
+
+    private static func readUInt32BE(in data: Data, at offset: Int) -> UInt32 {
+        let start = data.index(data.startIndex, offsetBy: offset)
+        return data[start..<data.index(start, offsetBy: 4)]
+            .reduce(0) { ($0 << 8) | UInt32($1) }
+    }
+
+    private static func readUInt64BE(in data: Data, at offset: Int) -> UInt64 {
+        let start = data.index(data.startIndex, offsetBy: offset)
+        return data[start..<data.index(start, offsetBy: 8)]
+            .reduce(0) { ($0 << 8) | UInt64($1) }
     }
 }

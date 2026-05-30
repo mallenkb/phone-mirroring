@@ -41,6 +41,7 @@ final class MirrorSession {
     private var decoder = H264VideoToolboxDecoder()
     private let audioPlayer = ScrcpyAudioPlayer()
     private(set) var controlChannel: ScrcpyControlChannel?
+    private var clipboardBridge: ClipboardBridge?
     private var windowController: MirrorContentWindowController?
     private var streamWidth: UInt32 = 0
     private var streamHeight: UInt32 = 0
@@ -117,6 +118,8 @@ final class MirrorSession {
     func stop() {
         guard !isStopping else { return }
         isStopping = true
+        clipboardBridge?.stop()
+        clipboardBridge = nil
         controlChannel?.close()
         controlChannel = nil
         audioPlayer.stop()
