@@ -999,7 +999,7 @@ final class AppModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             let result = await Task.detached { () -> Result<URL, RecordingError> in
                 do {
-                    let directory = try Self.recordingOutputDirectory()
+                    let directory = try Self.mediaOutputDirectory()
                     let url = directory.appendingPathComponent(Self.mediaFilename(
                         kind: "Screen-Recording",
                         extension: "mp4"
@@ -1074,14 +1074,6 @@ final class AppModel: ObservableObject {
     }
 
     nonisolated private static func mediaOutputDirectory() throws -> URL {
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Downloads", isDirectory: true)
-            .appendingPathComponent("Android Mirroring", isDirectory: true)
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
-    }
-
-    nonisolated private static func recordingOutputDirectory() throws -> URL {
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Desktop", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
