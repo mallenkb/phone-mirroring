@@ -39,6 +39,9 @@ final class AppModel: ObservableObject {
     private var lastUSBHandoffSerial: String?
     private var qrPairingTask: Task<Void, Never>?
     private var screenRecordingMonitorTask: Task<Void, Never>?
+    /// Holds the currently-playing capture cue sound so it isn't deallocated
+    /// mid-playback.
+    private var retainedCaptureSound: NSSound?
     // Crash-loop breaker + audio fallback for flaky device-side servers.
     private var lastMirrorStartAt: Date?
     private var consecutiveQuickMirrorFailures = 0
@@ -986,28 +989,45 @@ final class AppModel: ObservableObject {
         playCaptureSound(for: kind)
     }
 
-    /// Plays a distinct cue per capture action. Each kind lists candidate
-    /// system sound names in priority order; the first that loads is played.
-    /// (The classic "Grab" shutter sound was removed in modern macOS — it no
-    /// longer loads — so screenshots fall back to a crisp shutter-like tone,
-    /// and recording start/stop get their own sounds instead of sharing one.)
+    /// Plays a distinct cue per capture action. Screenshots use the real macOS
+    /// shutter sound; recording start/stop use the system screen-capture cue.
+    /// These ship inside CoreAudio.component (not in `NSSound(named:)`'s search
+    /// path), so we load them by file path, then fall back to named system
+    /// sounds, then a beep. `retainedCaptureSound` keeps the player alive until
+    /// playback finishes (a local NSSound would be deallocated immediately).
     private func playCaptureSound(for kind: CaptureCueKind) {
-        let candidates: [String]
+        let fileCandidates: [String]
+        let namedFallbacks: [String]
         switch kind {
         case .screenshot:
-            candidates = ["Grab", "Tink", "Pop"]          // camera-shutter feel
+            fileCandidates = ["Grab.aif", "Shutter.aif"]   // real screenshot shutter
+            namedFallbacks = ["Tink", "Pop"]
         case .recordingStarted:
-            candidates = ["Bottle", "Pop", "Hero"]         // "begin" cue
+            fileCandidates = ["Screen Capture.aif"]         // "begin" cue
+            namedFallbacks = ["Bottle", "Pop"]
         case .recordingStopped:
-            candidates = ["Glass", "Submarine", "Tink"]    // "saved/done" cue
+            fileCandidates = ["Screen Capture.aif"]         // "saved/done" cue
+            namedFallbacks = ["Glass", "Submarine"]
         }
-        for name in candidates {
-            if NSSound(named: NSSound.Name(name))?.play() == true {
+
+        for file in fileCandidates {
+            let path = Self.systemSoundsDirectory + file
+            if let sound = NSSound(contentsOfFile: path, byReference: true), sound.play() {
+                retainedCaptureSound = sound
+                return
+            }
+        }
+        for name in namedFallbacks {
+            if let sound = NSSound(named: NSSound.Name(name)), sound.play() {
+                retainedCaptureSound = sound
                 return
             }
         }
         NSSound.beep()
     }
+
+    private static let systemSoundsDirectory =
+        "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/"
 
     // MARK: - Resize
 
