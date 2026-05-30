@@ -22,6 +22,7 @@ import Network
 final class ScrcpyVideoStream {
     enum ConnectionRole: Equatable {
         case video
+        case audio
         case control
         case reject
     }
@@ -44,27 +45,38 @@ final class ScrcpyVideoStream {
     typealias PacketHandler = (VideoPacket) -> Void
     typealias ResizeHandler = (UInt32, UInt32) -> Void
     typealias ControlHandler = (NWConnection) -> Void
+    typealias AudioHandler = (Data) -> Void
     typealias ErrorHandler = (Error) -> Void
 
+    /// scrcpy `AudioCodec.RAW` id ("\0raw"); 0 means the device disabled audio.
+    static let rawAudioCodecID: UInt32 = 0x0072_6177
+
     private let port: UInt16
+    private let expectsAudio: Bool
     private var listener: NWListener?
     private var videoConnection: NWConnection?
+    private var audioConnection: NWConnection?
     private var controlConnection: NWConnection?
     private var streamMetaParsed = false
     private var initialHeaderSent = false
     private var pendingDeviceName = ""
     private var pendingCodecID: UInt32 = 0
     private var videoBuffer = Data()
+    private var audioBuffer = Data()
+    private var audioMetaParsed = false
+    private var audioDisabled = false
     private let queue = DispatchQueue(label: "scrcpy.video.stream", qos: .userInteractive)
 
     var onHeader: HeaderHandler?
     var onPacket: PacketHandler?
     var onResize: ResizeHandler?
     var onControl: ControlHandler?
+    var onAudioPacket: AudioHandler?
     var onError: ErrorHandler?
 
-    init(port: UInt16) {
+    init(port: UInt16, expectsAudio: Bool = false) {
         self.port = port
+        self.expectsAudio = expectsAudio
     }
 
     func start() throws {
@@ -91,6 +103,8 @@ final class ScrcpyVideoStream {
         listener = nil
         videoConnection?.cancel()
         videoConnection = nil
+        audioConnection?.cancel()
+        audioConnection = nil
         controlConnection?.cancel()
         controlConnection = nil
     }
@@ -115,12 +129,18 @@ final class ScrcpyVideoStream {
     private func assignAndReceive(_ connection: NWConnection) {
         switch Self.roleForNextConnection(
             hasVideo: videoConnection != nil,
-            hasControl: controlConnection != nil
+            hasAudio: audioConnection != nil,
+            hasControl: controlConnection != nil,
+            expectsAudio: expectsAudio
         ) {
         case .video:
             Logger.log("ScrcpyVideoStream assigned video connection")
             videoConnection = connection
             readMore(on: connection, handler: { [weak self] data in self?.feedVideo(data) })
+        case .audio:
+            Logger.log("ScrcpyVideoStream assigned audio connection")
+            audioConnection = connection
+            readMore(on: connection, handler: { [weak self] data in self?.feedAudio(data) })
         case .control:
             Logger.log("ScrcpyVideoStream assigned control connection")
             controlConnection = connection
@@ -130,11 +150,20 @@ final class ScrcpyVideoStream {
         }
     }
 
+    /// The scrcpy server dials sockets in a fixed order: video, then audio
+    /// (only when audio is enabled), then control. When audio is enabled the
+    /// server always opens the audio socket — even if capture fails it sends a
+    /// disable code on it — so assignment by arrival order is deterministic.
     static func roleForNextConnection(
         hasVideo: Bool,
-        hasControl: Bool
+        hasAudio: Bool,
+        hasControl: Bool,
+        expectsAudio: Bool
     ) -> ConnectionRole {
         guard hasVideo else { return .video }
+        if expectsAudio, !hasAudio {
+            return .audio
+        }
         if !hasControl {
             return .control
         }
@@ -215,6 +244,62 @@ final class ScrcpyVideoStream {
             let packet = VideoPacket(pts: pts, isConfig: isConfig, isKeyFrame: isKey, payload: Data(payload))
             videoBuffer.removeFirst(12 + size)
             onPacket?(packet)
+        }
+    }
+
+    private func feedAudio(_ chunk: Data) {
+        guard !audioDisabled else { return }
+        audioBuffer.append(chunk)
+        parseAvailableAudio()
+    }
+
+    private func parseAvailableAudio() {
+        // First 4 bytes: codec id. 0 = device couldn't capture (continue video
+        // only); 1 = fatal config error; otherwise the real codec id.
+        if !audioMetaParsed {
+            guard audioBuffer.count >= 4 else { return }
+            let codecID = readUInt32BE(in: audioBuffer, at: 0)
+            audioBuffer.removeFirst(4)
+            audioMetaParsed = true
+            switch codecID {
+            case 0:
+                Logger.log("ScrcpyVideoStream: device disabled audio; continuing video only")
+                audioDisabled = true
+                audioBuffer.removeAll()
+                return
+            case 1:
+                Logger.log("ScrcpyVideoStream: audio configuration error reported by device")
+                audioDisabled = true
+                audioBuffer.removeAll()
+                return
+            case Self.rawAudioCodecID:
+                Logger.log("ScrcpyVideoStream: audio codec=raw")
+            default:
+                Logger.log("ScrcpyVideoStream: unsupported audio codec=\(String(format: "0x%08x", codecID)); ignoring audio")
+                audioDisabled = true
+                audioBuffer.removeAll()
+                return
+            }
+        }
+
+        // Frame-meta packets: [8 bytes pts/flags][4 bytes size][payload].
+        while true {
+            guard audioBuffer.count >= 12 else { return }
+            let ptsFlags = readUInt64BE(in: audioBuffer, at: 0)
+            let size = Int(readUInt32BE(in: audioBuffer, at: 8))
+            guard size > 0 else {
+                audioBuffer.removeFirst(12)
+                continue
+            }
+            guard audioBuffer.count >= 12 + size else { return }
+            let isConfig = (ptsFlags & (UInt64(1) << 62)) != 0
+            let start = audioBuffer.index(audioBuffer.startIndex, offsetBy: 12)
+            let payload = audioBuffer[start..<audioBuffer.index(start, offsetBy: size)]
+            audioBuffer.removeFirst(12 + size)
+            // Raw PCM has no config packets, but guard anyway.
+            if !isConfig {
+                onAudioPacket?(Data(payload))
+            }
         }
     }
 

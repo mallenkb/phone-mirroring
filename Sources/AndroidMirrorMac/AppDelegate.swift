@@ -208,7 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func toggleMirroring(_ sender: Any?) {
-        model.isMirroring ? model.stopMirroring() : model.startMirroring()
+        model.isMirroring ? model.stopMirroring() : model.startMirroring(manual: true)
     }
 
     @objc private func goHome(_ sender: Any?) {
