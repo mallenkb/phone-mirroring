@@ -166,8 +166,19 @@ final class MirrorSession {
 
     func forwardKeyEvent(_ event: NSEvent) {
         guard let controlChannel else { return }
+
+        // ⌘V: push the current Mac clipboard and ask the phone to paste it into
+        // the focused field. Handled before key mapping so it can't be typed.
+        if event.type == .keyDown,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "v" {
+            clipboardBridge?.pasteToDevice()
+            return
+        }
+
         if let mapped = Self.androidKey(for: event) {
-            controlChannel.sendKeyEvent(mapped, action: event.type == .keyDown ? .down : .up)
+            guard let action = Self.androidKeyAction(for: event) else { return }
+            controlChannel.sendKeyEvent(mapped, action: action)
             return
         }
 
@@ -206,10 +217,26 @@ final class MirrorSession {
         if streamWidth > 0, streamHeight > 0 {
             channel.updateDeviceSize(width: streamWidth, height: streamHeight)
         }
+        channel.onDeviceClipboard = { [weak self] text in
+            Task { @MainActor in self?.clipboardBridge?.deviceClipboardChanged(text) }
+        }
         controlChannel = channel
+
+        let bridge = ClipboardBridge(channel: channel)
+        bridge.start()
+        clipboardBridge = bridge
     }
 
     static func androidKey(for event: NSEvent) -> ScrcpyControlChannel.AndroidKey? {
+        if event.type == .systemDefined, event.subtype.rawValue == 8 {
+            switch (event.data1 >> 16) & 0xFFFF {
+            case 0: return .volumeUp
+            case 1: return .volumeDown
+            case 7: return .volumeMute
+            default: return nil
+            }
+        }
+
         // macOS virtual key codes (kVK_*). Only a minimal mapping for now.
         switch event.keyCode {
         case 0x35: return .back     // Escape
@@ -225,6 +252,22 @@ final class MirrorSession {
         case 0x7B: return .dpadLeft
         case 0x7C: return .dpadRight
         case 0x53: return .home     // Keypad 1 — placeholder; user-configurable later
+        default: return nil
+        }
+    }
+
+    static func androidKeyAction(for event: NSEvent) -> ScrcpyControlChannel.KeyAction? {
+        if event.type == .systemDefined, event.subtype.rawValue == 8 {
+            switch (event.data1 >> 8) & 0xFF {
+            case 0xA: return .down
+            case 0xB: return .up
+            default: return nil
+            }
+        }
+
+        switch event.type {
+        case .keyDown: return .down
+        case .keyUp: return .up
         default: return nil
         }
     }

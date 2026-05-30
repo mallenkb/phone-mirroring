@@ -897,7 +897,19 @@ final class AppModel: ObservableObject {
         guard enabled != mirrorPhoneAudio else { return }
         mirrorPhoneAudio = enabled
         guard isMirroring else { return }
-        stopMirroring()
+
+        // Closing the mirror window during an intentional audio renegotiation
+        // can leave the app briefly windowless. Keep termination suppressed
+        // until the replacement session has opened its new mirror window.
+        isAwaitingReconnect = true
+        mirrorSession?.onSessionEnded = nil
+        mirrorSession?.stop()
+        mirrorSession = nil
+        isMirroring = false
+        if isRecording {
+            isRecording = false
+            stopScreenRecordingCleanup()
+        }
         startMirroring(manual: true)
     }
 
@@ -1034,6 +1046,12 @@ final class AppModel: ObservableObject {
 
     func resizeMirror(scale: CGFloat) {
         mirrorSession?.scaleWindow(by: scale)
+    }
+
+    func forwardKeyEventToMirrorSession(_ event: NSEvent) -> Bool {
+        guard mirrorSession != nil, MirrorSession.androidKey(for: event) != nil else { return false }
+        mirrorSession?.forwardKeyEvent(event)
+        return true
     }
 
     func centerMirrorWindow() {

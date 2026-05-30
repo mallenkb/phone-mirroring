@@ -100,6 +100,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 keyEquivalent: ""
             )
         )
+        editMenu.addItem(.separator())
+        editMenu.addItem(
+            NSMenuItem(
+                title: "Enable Audio on Mac",
+                action: #selector(toggleMirrorAudio(_:)),
+                keyEquivalent: ""
+            )
+        )
         editItem.submenu = editMenu
 
         let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
@@ -148,12 +156,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 keyEquivalent: "R"
             )
         )
-        let audioItem = NSMenuItem(
-            title: "Mirror Phone Audio",
-            action: #selector(toggleMirrorAudio(_:)),
-            keyEquivalent: ""
-        )
-        viewMenu.addItem(audioItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(
             NSMenuItem(
@@ -182,7 +184,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func installKeyboardScaling() {
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .systemDefined]) { [weak self] event in
+            if event.type == .systemDefined, self?.model.forwardKeyEventToMirrorSession(event) == true {
+                return nil
+            }
+
             guard event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command),
                   let key = event.charactersIgnoringModifiers else {
                 return event

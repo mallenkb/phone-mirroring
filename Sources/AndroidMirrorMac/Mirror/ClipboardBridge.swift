@@ -50,6 +50,16 @@ final class ClipboardBridge {
         pollTask = nil
     }
 
+    /// ⌘V in the mirror window: push the current Mac clipboard and ask the
+    /// device to paste it into the focused field. Records the text so the poller
+    /// does not redundantly resend it.
+    func pasteToDevice() {
+        guard let text = pasteboard.string(forType: .string), !text.isEmpty else { return }
+        lastText = text
+        lastChangeCount = pasteboard.changeCount
+        channel?.sendSetClipboard(text, paste: true)
+    }
+
     /// Phone → Mac. Called (hopped to the main actor) by the control channel.
     func deviceClipboardChanged(_ text: String) {
         guard !text.isEmpty, text != lastText else { return }
