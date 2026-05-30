@@ -42,7 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        !model.isMirroring
+        // Stay alive while mirroring or while a retry/reconnect is pending, so
+        // the windowless gap between sessions doesn't quit the app mid-recovery.
+        !model.isMirroring && !model.isAwaitingReconnect
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -120,6 +122,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 keyEquivalent: "R"
             )
         )
+        let audioItem = NSMenuItem(
+            title: "Mirror Phone Audio",
+            action: #selector(toggleMirrorAudio(_:)),
+            keyEquivalent: ""
+        )
+        viewMenu.addItem(audioItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(
             NSMenuItem(
@@ -225,6 +233,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleScreenRecording(_ sender: Any?) {
         model.toggleScreenRecording()
+    }
+
+    @objc private func toggleMirrorAudio(_ sender: Any?) {
+        model.setMirrorPhoneAudio(!model.mirrorPhoneAudio)
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleMirrorAudio(_:)) {
+            menuItem.state = model.mirrorPhoneAudio ? .on : .off
+        }
+        return true
     }
 
     @objc private func zoomIn(_ sender: Any?) {

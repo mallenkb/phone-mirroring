@@ -21,7 +21,7 @@ final class H264VideoToolboxDecoder {
     private var pendingConfigNALUnits: [Data] = []
     private var presentationTimeScale: CMTimeScale = 1_000_000
     private var loggedPacketCount = 0
-    private var loggedSampleCount = 0
+    private var totalSampleCount = 0
 
     var onSample: SampleHandler?
 
@@ -84,9 +84,11 @@ final class H264VideoToolboxDecoder {
                                              format: formatDescription) else {
             return
         }
-        if loggedSampleCount < 3 {
-            loggedSampleCount += 1
-            Logger.log("H264 sample created size=\(packet.payload.count) key=\(packet.isKeyFrame)")
+        totalSampleCount += 1
+        // First few frames for startup visibility, then a periodic heartbeat so
+        // we can confirm the stream is still flowing without spamming the log.
+        if totalSampleCount <= 3 || totalSampleCount % 120 == 0 {
+            Logger.log("H264 sample created #\(totalSampleCount) size=\(packet.payload.count) key=\(packet.isKeyFrame)")
         }
         onSample?(sample)
     }
