@@ -39,6 +39,13 @@ enum Tooling {
     /// Path to the `scrcpy-server` dex/jar shipped in the app bundle. The
     /// in-process renderer pushes this to the phone via `adb push`.
     static func scrcpyServerPath() -> String? {
+        if let bundledResourcePath = Bundle.main.resourceURL?
+            .appendingPathComponent("scrcpy-server")
+            .path(percentEncoded: false),
+           FileManager.default.fileExists(atPath: bundledResourcePath) {
+            return bundledResourcePath
+        }
+
         let bundledMacOSPath = Bundle.main.bundleURL
             .appendingPathComponent("Contents/MacOS/scrcpy-server")
             .path(percentEncoded: false)

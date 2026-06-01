@@ -12,6 +12,10 @@ Native SwiftUI macOS prototype for a local-first Android mirroring client.
 - Privacy-mode test macOS notification
 - Readable diagnostics panel
 
+## Third-party notices
+
+This project includes and/or interoperates with `scrcpy` from Genymobile. Scrcpy is licensed under the Apache License 2.0. See `THIRD_PARTY_NOTICES.md` and `LICENSES/scrcpy-APACHE-2.0.txt`.
+
 ## Run
 
 ```sh

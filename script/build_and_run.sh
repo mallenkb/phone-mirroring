@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="AndroidMirrorMac"
+APP_NAME="Android Mirroring"
 PRODUCT_NAME="AndroidMirrorMac"
 BUNDLE_ID="com.mallenkb.AndroidMirrorMac"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
-EXECUTABLE_PATH="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+EXECUTABLE_PATH="$APP_BUNDLE/Contents/MacOS/$PRODUCT_NAME"
+RESOURCES_DIR="$APP_BUNDLE/Contents/Resources"
+BIN_DIR="$RESOURCES_DIR/bin"
 SCRCPY_SERVER="$ROOT_DIR/scrcpy-source/build-mac/server/scrcpy-server"
 RESOURCE_SCRCPY_SERVER="$ROOT_DIR/Sources/AndroidMirrorMac/Resources/scrcpy-server"
+APP_ICON="$ROOT_DIR/Sources/AndroidMirrorMac/Resources/AppIcon.icns"
+APP_ASSETS="$ROOT_DIR/Sources/AndroidMirrorMac/Resources/Assets.car"
 
 VERIFY=false
 LOGS=false
@@ -22,7 +26,7 @@ for arg in "$@"; do
   esac
 done
 
-old_pids="$(pgrep -x "$APP_NAME" 2>/dev/null || true)"
+old_pids="$(pgrep -x "$PRODUCT_NAME" 2>/dev/null || true)"
 if [[ -n "$old_pids" ]]; then
   for pid in $old_pids; do
     pkill -TERM -P "$pid" 2>/dev/null || true
@@ -39,21 +43,31 @@ cd "$ROOT_DIR"
 swift build --product "$PRODUCT_NAME"
 
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_BUNDLE/Contents/MacOS"
+mkdir -p "$APP_BUNDLE/Contents/MacOS" "$RESOURCES_DIR" "$BIN_DIR"
 cp ".build/debug/$PRODUCT_NAME" "$EXECUTABLE_PATH"
 chmod +x "$EXECUTABLE_PATH"
 
+if [[ -f "$APP_ICON" ]]; then
+  cp "$APP_ICON" "$RESOURCES_DIR/AppIcon.icns"
+else
+  echo "warning: AppIcon.icns was not found; the app bundle will use the default icon" >&2
+fi
+
+if [[ -f "$APP_ASSETS" ]]; then
+  cp "$APP_ASSETS" "$RESOURCES_DIR/Assets.car"
+fi
+
 if [[ -f "$SCRCPY_SERVER" ]]; then
-  cp "$SCRCPY_SERVER" "$APP_BUNDLE/Contents/MacOS/scrcpy-server"
+  cp "$SCRCPY_SERVER" "$RESOURCES_DIR/scrcpy-server"
 elif [[ -f "$RESOURCE_SCRCPY_SERVER" ]]; then
-  cp "$RESOURCE_SCRCPY_SERVER" "$APP_BUNDLE/Contents/MacOS/scrcpy-server"
+  cp "$RESOURCE_SCRCPY_SERVER" "$RESOURCES_DIR/scrcpy-server"
 else
   echo "warning: scrcpy-server was not found; mirroring will fail until it is bundled" >&2
 fi
 
 if command -v adb >/dev/null 2>&1; then
-  cp "$(command -v adb)" "$APP_BUNDLE/Contents/MacOS/adb"
-  chmod +x "$APP_BUNDLE/Contents/MacOS/adb"
+  cp "$(command -v adb)" "$BIN_DIR/adb"
+  chmod +x "$BIN_DIR/adb"
 else
   echo "warning: adb was not found; device discovery will require adb in the app bundle" >&2
 fi
@@ -66,9 +80,15 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleExecutable</key>
+  <string>$PRODUCT_NAME</string>
+  <key>CFBundleDisplayName</key>
   <string>$APP_NAME</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundleIconName</key>
+  <string>AppIcon</string>
   <key>CFBundleName</key>
   <string>$APP_NAME</string>
   <key>CFBundlePackageType</key>
@@ -81,24 +101,33 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+sign_if_macho() {
+  local path="$1"
+  if [[ -f "$path" ]] && file "$path" | grep -q "Mach-O"; then
+    codesign --force --sign - "$path"
+  fi
+}
+
 if command -v codesign >/dev/null 2>&1; then
-  codesign --force --sign - "$APP_BUNDLE/Contents/MacOS/adb" 2>/dev/null || true
-  codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null || true
+  sign_if_macho "$EXECUTABLE_PATH"
+  sign_if_macho "$BIN_DIR/adb"
+  codesign --force --deep --options runtime --sign - "$APP_BUNDLE"
+  codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 fi
 
 /usr/bin/open -n "$APP_BUNDLE"
 
 if "$VERIFY"; then
   for _ in {1..20}; do
-    if pgrep -x "$APP_NAME" >/dev/null; then
+    if pgrep -x "$PRODUCT_NAME" >/dev/null; then
       echo "$APP_NAME is running."
       break
     fi
     sleep 0.25
   done
-  pgrep -x "$APP_NAME" >/dev/null
+  pgrep -x "$PRODUCT_NAME" >/dev/null
 fi
 
 if "$LOGS"; then
-  /usr/bin/log stream --info --predicate "process == '$APP_NAME'"
+  /usr/bin/log stream --info --predicate "process == '$PRODUCT_NAME'"
 fi

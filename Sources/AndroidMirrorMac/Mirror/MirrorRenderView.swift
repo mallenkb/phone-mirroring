@@ -184,9 +184,11 @@ final class MirrorRenderView: NSView {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) {
-            // ⌘V pastes the Mac clipboard into the phone; let every other
+            // ⌘V pastes the Mac clipboard into the phone; editing shortcuts
+            // map to Android Ctrl equivalents; let every other
             // command shortcut (⌘Q, app menu, etc.) bubble up untouched.
-            if flags == .command, event.charactersIgnoringModifiers?.lowercased() == "v" {
+            if flags == .command,
+               ["a", "v", "x"].contains(event.charactersIgnoringModifiers?.lowercased()) {
                 onKeyEvent?(event)
                 return true
             }

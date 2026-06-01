@@ -43,6 +43,8 @@ final class ScrcpyControlChannel {
     enum AndroidKey: Int32 {
         case home = 3
         case back = 4
+        case a = 29
+        case x = 52
         case tab = 61
         case enter = 66
         case delete = 67
@@ -59,6 +61,7 @@ final class ScrcpyControlChannel {
     static let pointerIDMouse: UInt64 = 0xFFFF_FFFF_FFFF_FFFF
     static let buttonPrimary: UInt32 = 1
     static let buttonSecondary: UInt32 = 2
+    static let metaCtrlOn: UInt32 = 0x0000_1000
 
     private let connection: NWConnection
     private let queue = DispatchQueue(label: "scrcpy.control", qos: .userInteractive)
@@ -131,10 +134,10 @@ final class ScrcpyControlChannel {
         write(buf)
     }
 
-    func sendKeyEvent(_ key: AndroidKey, action: KeyAction = .down) {
-        sendKeycode(action: action, keycode: key.rawValue, metastate: 0)
+    func sendKeyEvent(_ key: AndroidKey, action: KeyAction = .down, metastate: UInt32 = 0) {
+        sendKeycode(action: action, keycode: key.rawValue, metastate: metastate)
         if action == .down {
-            sendKeycode(action: .up, keycode: key.rawValue, metastate: 0)
+            sendKeycode(action: .up, keycode: key.rawValue, metastate: metastate)
         }
     }
 
@@ -225,6 +228,16 @@ final class ScrcpyControlChannel {
         return buf
     }
 
+    static func keycodeMessage(action: KeyAction, key: AndroidKey, metastate: UInt32 = 0) -> Data {
+        var buf = Data(capacity: 14)
+        buf.append(MessageType.injectKeycode.rawValue)
+        buf.append(action.rawValue)
+        Self.appendUInt32BE(&buf, UInt32(bitPattern: key.rawValue))
+        Self.appendUInt32BE(&buf, 1) // repeat
+        Self.appendUInt32BE(&buf, metastate)
+        return buf
+    }
+
     /// Result of attempting to parse one device message from the front of a
     /// buffer. `consumed` is the byte count the message occupied.
     enum ParseResult: Equatable {
@@ -277,13 +290,8 @@ final class ScrcpyControlChannel {
     }
 
     private func sendKeycode(action: KeyAction, keycode: Int32, metastate: UInt32) {
-        var buf = Data(capacity: 14)
-        buf.append(MessageType.injectKeycode.rawValue)
-        buf.append(action.rawValue)
-        Self.appendUInt32BE(&buf, UInt32(bitPattern: keycode))
-        Self.appendUInt32BE(&buf, 1) // repeat
-        Self.appendUInt32BE(&buf, metastate)
-        write(buf)
+        guard let key = AndroidKey(rawValue: keycode) else { return }
+        write(Self.keycodeMessage(action: action, key: key, metastate: metastate))
     }
 
     private func send(touchAction: TouchAction, x: Int32, y: Int32, pressure: Float,

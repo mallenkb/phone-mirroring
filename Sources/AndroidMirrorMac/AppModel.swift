@@ -249,7 +249,7 @@ final class AppModel: ObservableObject {
 
                 self.lastUSBHandoffSerial = usbDevice.serial
                 self.isPairing = true
-                await self.prepareWirelessMirror(from: usbDevice)
+                _ = await self.prepareWirelessMirror(from: usbDevice)
             }
         }
     }
@@ -399,7 +399,8 @@ final class AppModel: ObservableObject {
         startMirroring()
     }
 
-    private func prepareWirelessMirror(from usbDevice: AuthorizedADBDevice) async {
+    @discardableResult
+    private func prepareWirelessMirror(from usbDevice: AuthorizedADBDevice) async -> Bool {
         select(device: usbDevice)
         touchPairedPhone(
             id: usbDevice.serial,
@@ -434,7 +435,7 @@ final class AppModel: ObservableObject {
                     wirelessID: tlsAddress,
                     address: tlsAddress
                 )
-                return
+                return true
             }
 
         }
@@ -457,12 +458,36 @@ final class AppModel: ObservableObject {
                     wirelessID: wirelessPhone.id,
                     address: wirelessPhone.address
                 )
-                return
+                return true
             }
 
         }
 
+        if let legacyAddress = Self.legacyTCPIPDebuggingAddress(routeOutput: routeOutput) {
+            let tcpipOutput = await Task.detached {
+                adb.run(["-s", usbDevice.serial, "tcpip", "\(Self.legacyADBWirelessPort)"])
+            }.value
+
+            if Self.adbTCPIPSucceeded(tcpipOutput) {
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                let connectOutput = await Task.detached {
+                    adb.run(["connect", legacyAddress])
+                }.value
+
+                if Self.adbConnectSucceeded(connectOutput) {
+                    isPairing = false
+                    finishWirelessHandoff(
+                        usbDevice: usbDevice,
+                        wirelessID: legacyAddress,
+                        address: legacyAddress
+                    )
+                    return true
+                }
+            }
+        }
+
         isPairing = false
+        return false
     }
 
     private func finishWirelessHandoff(
@@ -476,7 +501,7 @@ final class AppModel: ObservableObject {
             address: address
         )
         selectedDevice.adbSerial = address
-        selectedDevice.network = "Wireless debugging"
+        selectedDevice.network = "Wi-Fi debugging"
         startMirroring()
     }
 
@@ -494,16 +519,20 @@ final class AppModel: ObservableObject {
                 .contains { $0.contains("unauthorized") && $0.contains("usb:") }
 
             guard let self else { return }
-            self.isPairing = false
-
             if hasUnauthorizedUSB {
+                self.isPairing = false
                 return
             }
 
             guard let usbDevice else {
+                self.isPairing = false
                 return
             }
 
+            let startedWirelessMirror = await self.prepareWirelessMirror(from: usbDevice)
+            guard !startedWirelessMirror else { return }
+
+            self.isPairing = false
             self.select(device: usbDevice)
             self.touchPairedPhone(
                 id: usbDevice.serial,
@@ -690,12 +719,24 @@ final class AppModel: ObservableObject {
         return "\(wifiIP):\(port)"
     }
 
+    nonisolated static let legacyADBWirelessPort = 5555
+
+    nonisolated static func legacyTCPIPDebuggingAddress(routeOutput: String) -> String? {
+        wifiIPAddress(in: routeOutput).map { "\($0):\(legacyADBWirelessPort)" }
+    }
+
     private nonisolated static func validPort(in output: String) -> Int? {
         let trimmedPort = output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let port = Int(trimmedPort), (1...65_535).contains(port) else {
             return nil
         }
         return port
+    }
+
+    nonisolated static func adbTCPIPSucceeded(_ output: String) -> Bool {
+        let lowercased = output.lowercased()
+        return lowercased.contains("restarting in tcp mode port")
+            || lowercased.contains("already in tcp mode")
     }
 
     nonisolated static func wirelessPhoneMatchingUSBRoute(
@@ -998,7 +1039,11 @@ final class AppModel: ObservableObject {
     }
 
     func forwardKeyEventToMirrorSession(_ event: NSEvent) -> Bool {
-        guard mirrorSession != nil, MirrorSession.androidKey(for: event) != nil else { return false }
+        guard mirrorSession != nil,
+              MirrorSession.androidKey(for: event) != nil
+                || MirrorSession.androidCommandShortcutKey(for: event) != nil else {
+            return false
+        }
         mirrorSession?.forwardKeyEvent(event)
         return true
     }

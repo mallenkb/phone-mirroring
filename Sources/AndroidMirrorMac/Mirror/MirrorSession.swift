@@ -168,6 +168,11 @@ final class MirrorSession {
             return
         }
 
+        if let shortcutKey = Self.androidCommandShortcutKey(for: event) {
+            controlChannel.sendKeyEvent(shortcutKey, metastate: ScrcpyControlChannel.metaCtrlOn)
+            return
+        }
+
         if let mapped = Self.androidKey(for: event) {
             guard let action = Self.androidKeyAction(for: event) else { return }
             controlChannel.sendKeyEvent(mapped, action: action)
@@ -246,6 +251,24 @@ final class MirrorSession {
         case 0x53: return .home     // Keypad 1 — placeholder; user-configurable later
         default: return nil
         }
+    }
+
+    static func androidCommandShortcutKey(for event: NSEvent) -> ScrcpyControlChannel.AndroidKey? {
+        guard event.type == .keyDown,
+              event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+              let key = event.charactersIgnoringModifiers?.lowercased() else {
+            return nil
+        }
+
+        switch key {
+        case "a": return .a
+        case "x": return .x
+        default: return nil
+        }
+    }
+
+    static func isSelectAllShortcut(_ event: NSEvent) -> Bool {
+        androidCommandShortcutKey(for: event) == .a
     }
 
     static func androidKeyAction(for event: NSEvent) -> ScrcpyControlChannel.KeyAction? {

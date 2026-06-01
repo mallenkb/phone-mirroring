@@ -177,7 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func installKeyboardScaling() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .systemDefined]) { [weak self] event in
-            if event.type == .systemDefined, self?.model.forwardKeyEventToMirrorSession(event) == true {
+            if self?.model.forwardKeyEventToMirrorSession(event) == true {
                 return nil
             }
 

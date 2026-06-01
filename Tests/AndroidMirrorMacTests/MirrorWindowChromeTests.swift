@@ -20,6 +20,26 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertEqual(Array(message), [1, 0, 0, 0, 2, 72, 105])
     }
 
+    func testScrcpyKeycodeMessageEncodesControlAForSelectAll() {
+        let message = ScrcpyControlChannel.keycodeMessage(
+            action: .down,
+            key: .a,
+            metastate: ScrcpyControlChannel.metaCtrlOn
+        )
+
+        XCTAssertEqual(Array(message), [0, 0, 0, 0, 0, 29, 0, 0, 0, 1, 0, 0, 16, 0])
+    }
+
+    func testScrcpyKeycodeMessageEncodesControlXForCut() {
+        let message = ScrcpyControlChannel.keycodeMessage(
+            action: .down,
+            key: .x,
+            metastate: ScrcpyControlChannel.metaCtrlOn
+        )
+
+        XCTAssertEqual(Array(message), [0, 0, 0, 0, 0, 52, 0, 0, 0, 1, 0, 0, 16, 0])
+    }
+
     @MainActor
     func testFunctionVolumeKeysMapToAndroidVolumeControls() throws {
         let mute = try XCTUnwrap(NSEvent.keyEvent(
@@ -146,6 +166,74 @@ final class MirrorWindowChromeTests: XCTestCase {
 
         XCTAssertFalse(renderView.performKeyEquivalent(with: commandQ))
         XCTAssertEqual(forwardedEvents, 0)
+    }
+
+    @MainActor
+    func testMirrorRenderViewForwardsCommandASelectAllToPhone() throws {
+        let renderView = MirrorRenderView()
+        var forwardedEvents = 0
+        renderView.onKeyEvent = { _ in forwardedEvents += 1 }
+
+        let commandA = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .command,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "a",
+            charactersIgnoringModifiers: "a",
+            isARepeat: false,
+            keyCode: 0
+        ))
+
+        XCTAssertTrue(renderView.performKeyEquivalent(with: commandA))
+        XCTAssertEqual(forwardedEvents, 1)
+        XCTAssertTrue(MirrorSession.isSelectAllShortcut(commandA))
+        XCTAssertEqual(MirrorSession.androidCommandShortcutKey(for: commandA), .a)
+    }
+
+    @MainActor
+    func testMirrorRenderViewForwardsCommandXCutToPhone() throws {
+        let renderView = MirrorRenderView()
+        var forwardedEvents = 0
+        renderView.onKeyEvent = { _ in forwardedEvents += 1 }
+
+        let commandX = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .command,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "x",
+            charactersIgnoringModifiers: "x",
+            isARepeat: false,
+            keyCode: 7
+        ))
+
+        XCTAssertTrue(renderView.performKeyEquivalent(with: commandX))
+        XCTAssertEqual(forwardedEvents, 1)
+        XCTAssertEqual(MirrorSession.androidCommandShortcutKey(for: commandX), .x)
+    }
+
+    @MainActor
+    func testMirrorSessionDoesNotTreatControlAAsSelectAllShortcut() throws {
+        let controlA = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .control,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "\u{1}",
+            charactersIgnoringModifiers: "a",
+            isARepeat: false,
+            keyCode: 0
+        ))
+
+        XCTAssertFalse(MirrorSession.isSelectAllShortcut(controlA))
+        XCTAssertNil(MirrorSession.androidCommandShortcutKey(for: controlA))
     }
 
     func testMirrorRenderVideoLayerStaysCenteredInBounds() {
