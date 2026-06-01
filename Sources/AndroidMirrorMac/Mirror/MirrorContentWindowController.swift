@@ -1046,7 +1046,7 @@ private final class MirrorContentWindow: NSWindow {
 /// Borderless child window that hosts the floating toolbar above the mirror.
 /// It never becomes key so clicking its buttons doesn't steal focus from the
 /// mirror, and it carries its own drop shadow as a detached bar.
-private final class MirrorToolbarWindow: NSWindow {
+final class MirrorToolbarWindow: NSWindow {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 }
@@ -1365,6 +1365,13 @@ final class MirrorChromeBar: NSView {
     func setControlsVisible(_ visible: Bool) {
         trafficLights.isHidden = !visible
         titleLabel.isHidden = !visible
+        backBtn.isHidden = !visible
+        recordingBtn.isHidden = !visible
+        screenshotBtn.isHidden = !visible
+        homeBtn.isHidden = !visible
+    }
+
+    func setTrailingActionsVisible(_ visible: Bool) {
         backBtn.isHidden = !visible
         recordingBtn.isHidden = !visible
         screenshotBtn.isHidden = !visible

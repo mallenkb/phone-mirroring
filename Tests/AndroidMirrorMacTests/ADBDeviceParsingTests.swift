@@ -86,6 +86,66 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertTrue(AppModel.isWirelessRecord(olderWireless))
     }
 
+    func testRememberedAuthorizedDeviceMatchesSerialOrAddress() {
+        let record = PairedPhoneRecord(
+            id: "R5CT123ABC",
+            displayName: "Pixel",
+            lastAddress: "R5CT123ABC",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let device = AuthorizedADBDevice(
+            serial: "R5CT123ABC",
+            product: "raven",
+            model: "Pixel",
+            isUSB: true
+        )
+
+        XCTAssertEqual(
+            AppModel.rememberedAuthorizedDevice(for: record, in: [device]),
+            device
+        )
+    }
+
+    func testRememberedAuthorizedDeviceFallsBackToSpecificModelName() {
+        let record = PairedPhoneRecord(
+            id: "adb-old-session",
+            displayName: "SM S906B",
+            lastAddress: "192.168.68.51:33883",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let device = AuthorizedADBDevice(
+            serial: "192.168.68.57:39757",
+            product: "g0s",
+            model: "SM S906B",
+            isUSB: false
+        )
+
+        XCTAssertEqual(
+            AppModel.rememberedAuthorizedDevice(for: record, in: [device]),
+            device
+        )
+    }
+
+    func testRememberedAuthorizedDeviceDoesNotMatchGenericAndroidDeviceName() {
+        let record = PairedPhoneRecord(
+            id: "adb-old-session",
+            displayName: "Android device",
+            lastAddress: "192.168.68.51:33883",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let device = AuthorizedADBDevice(
+            serial: "192.168.68.57:39757",
+            product: "g0s",
+            model: "Android device",
+            isUSB: false
+        )
+
+        XCTAssertNil(AppModel.rememberedAuthorizedDevice(for: record, in: [device]))
+    }
+
     func testRememberedConnectablePhonePrefersStoredServiceID() {
         let record = PairedPhoneRecord(
             id: "adb-samsung",
@@ -244,6 +304,215 @@ final class ADBDeviceParsingTests: XCTestCase {
             ),
             "192.168.1.44:5555"
         )
+    }
+
+    func testLegacyTCPIPDebuggingAddressUsesUSBWiFiIPAndDefaultPort() {
+        let routeOutput = "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+
+        XCTAssertEqual(
+            AppModel.legacyTCPIPDebuggingAddress(routeOutput: routeOutput),
+            "192.168.1.44:5555"
+        )
+    }
+
+    func testLegacyTCPIPDebuggingAddressRequiresWiFiRoute() {
+        let routeOutput = "10.0.2.0/24 dev rmnet_data0 proto kernel scope link src 10.0.2.15"
+
+        XCTAssertNil(AppModel.legacyTCPIPDebuggingAddress(routeOutput: routeOutput))
+    }
+
+    func testADBTCPIPResultParsing() {
+        XCTAssertTrue(AppModel.adbTCPIPSucceeded("restarting in TCP mode port: 5555"))
+        XCTAssertTrue(AppModel.adbTCPIPSucceeded("already in TCP mode"))
+        XCTAssertFalse(AppModel.adbTCPIPSucceeded("error: device unauthorized"))
+    }
+
+    func testWaitForADBConnectRetriesUntilADBAcceptsWirelessTarget() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AndroidMirrorMacTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            unsetenv("ANDROID_MIRROR_ADB_PATH")
+            unsetenv("ADB_FAKE_LOG")
+            unsetenv("ADB_FAKE_COUNT")
+        }
+
+        let fakeADB = directory.appendingPathComponent("adb")
+        let log = directory.appendingPathComponent("adb.log")
+        let count = directory.appendingPathComponent("adb.count")
+        let script = """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          current=$(cat "$ADB_FAKE_COUNT" 2>/dev/null || echo 0)
+          current=$((current + 1))
+          echo "$current" > "$ADB_FAKE_COUNT"
+          if [ "$current" -lt 3 ]; then
+            echo "failed to connect to '$2': Connection refused"
+          else
+            echo "connected to $2"
+          fi
+          exit 0
+        fi
+        exit 0
+        """
+        try script.write(to: fakeADB, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fakeADB.path
+        )
+        setenv("ANDROID_MIRROR_ADB_PATH", fakeADB.path, 1)
+        setenv("ADB_FAKE_LOG", log.path, 1)
+        setenv("ADB_FAKE_COUNT", count.path, 1)
+
+        let connected = await AppModel.waitForADBConnect(
+            adb: ADBController(),
+            address: "192.168.68.57:5555",
+            attempts: 4,
+            delayNanoseconds: 1
+        )
+
+        XCTAssertTrue(connected)
+        let calls = try String(contentsOf: log, encoding: .utf8)
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+        XCTAssertEqual(calls, [
+            "connect 192.168.68.57:5555",
+            "connect 192.168.68.57:5555",
+            "connect 192.168.68.57:5555"
+        ])
+    }
+
+    func testWaitForADBWirelessTargetReadyWaitsForShellCommand() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AndroidMirrorMacTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            unsetenv("ANDROID_MIRROR_ADB_PATH")
+            unsetenv("ADB_FAKE_LOG")
+            unsetenv("ADB_FAKE_SHELL_COUNT")
+        }
+
+        let fakeADB = directory.appendingPathComponent("adb")
+        let log = directory.appendingPathComponent("adb.log")
+        let shellCount = directory.appendingPathComponent("adb-shell.count")
+        let script = """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          echo "connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          current=$(cat "$ADB_FAKE_SHELL_COUNT" 2>/dev/null || echo 0)
+          current=$((current + 1))
+          echo "$current" > "$ADB_FAKE_SHELL_COUNT"
+          if [ "$current" -lt 3 ]; then
+            echo "error: protocol fault (couldn't read status): Undefined error: 0"
+          else
+            echo "wifi-adb-ok"
+          fi
+          exit 0
+        fi
+        exit 0
+        """
+        try script.write(to: fakeADB, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fakeADB.path
+        )
+        setenv("ANDROID_MIRROR_ADB_PATH", fakeADB.path, 1)
+        setenv("ADB_FAKE_LOG", log.path, 1)
+        setenv("ADB_FAKE_SHELL_COUNT", shellCount.path, 1)
+
+        let ready = await AppModel.waitForADBWirelessTargetReady(
+            adb: ADBController(),
+            address: "192.168.68.57:5555",
+            attempts: 4,
+            delayNanoseconds: 1
+        )
+
+        XCTAssertTrue(ready)
+        let calls = try String(contentsOf: log, encoding: .utf8)
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+        XCTAssertEqual(calls, [
+            "connect 192.168.68.57:5555",
+            "-s 192.168.68.57:5555 shell echo wifi-adb-ok",
+            "connect 192.168.68.57:5555",
+            "-s 192.168.68.57:5555 shell echo wifi-adb-ok",
+            "connect 192.168.68.57:5555",
+            "-s 192.168.68.57:5555 shell echo wifi-adb-ok"
+        ])
+    }
+
+    func testWaitForADBWirelessTargetReadyPrimesRouteBeforeEachConnectAttempt() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AndroidMirrorMacTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            unsetenv("ANDROID_MIRROR_ADB_PATH")
+            unsetenv("ADB_FAKE_LOG")
+            unsetenv("ADB_FAKE_COUNT")
+        }
+
+        let fakeADB = directory.appendingPathComponent("adb")
+        let log = directory.appendingPathComponent("adb.log")
+        let count = directory.appendingPathComponent("adb.count")
+        let script = """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          current=$(cat "$ADB_FAKE_COUNT" 2>/dev/null || echo 0)
+          current=$((current + 1))
+          echo "$current" > "$ADB_FAKE_COUNT"
+          if [ "$current" -lt 3 ]; then
+            echo "failed to connect to '$2': No route to host"
+          else
+            echo "connected to $2"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        exit 0
+        """
+        try script.write(to: fakeADB, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fakeADB.path
+        )
+        setenv("ANDROID_MIRROR_ADB_PATH", fakeADB.path, 1)
+        setenv("ADB_FAKE_LOG", log.path, 1)
+        setenv("ADB_FAKE_COUNT", count.path, 1)
+
+        var primeCount = 0
+        let ready = await AppModel.waitForADBWirelessTargetReady(
+            adb: ADBController(),
+            address: "192.168.68.57:5555",
+            attempts: 4,
+            delayNanoseconds: 1,
+            primeRoute: {
+                primeCount += 1
+            }
+        )
+
+        XCTAssertTrue(ready)
+        XCTAssertEqual(primeCount, 3)
+        let calls = try String(contentsOf: log, encoding: .utf8)
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+        XCTAssertEqual(calls, [
+            "connect 192.168.68.57:5555",
+            "connect 192.168.68.57:5555",
+            "connect 192.168.68.57:5555",
+            "-s 192.168.68.57:5555 shell echo wifi-adb-ok"
+        ])
     }
 
     func testUSBHandoffCandidateReturnsNewAuthorizedUSBDevice() {

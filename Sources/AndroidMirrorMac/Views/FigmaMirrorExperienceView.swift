@@ -6,36 +6,29 @@ import SwiftUI
 /// size and scales it to fit the host window.
 struct FigmaMirrorExperienceView: View {
     @EnvironmentObject private var model: AppModel
-    private let phoneAspect: CGFloat = 894 / 1948
-    private let referenceHeight: CGFloat = 884
+    private let phoneAspect: CGFloat = MirrorContentWindowController.defaultMirrorAspect
+    private var referenceHeight: CGFloat { AppModel.onboardingWindowSize.height }
     private var referenceWidth: CGFloat { referenceHeight * phoneAspect }
     private var isConnecting: Bool {
-        model.isPairing || model.isScanning || model.isMirroring
+        model.isPairing || model.isScanning || model.isMirroring || model.isRecoveringConnection
     }
     private let heroIconSize: CGFloat = 36
     private let columnWidth: CGFloat = 330
-    private let ctaHeight: CGFloat = 42
     private let accent = Color(red: 0.22, green: 0.78, blue: 0.55)
+    private let qrRefreshTimer = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        GeometryReader { proxy in
-            let surfaceInset: CGFloat = 0
-            let availableWidth = max(0, proxy.size.width - surfaceInset * 2)
-            let availableHeight = max(0, proxy.size.height - surfaceInset * 2)
-            let scale = max(0.1, min(availableWidth / referenceWidth, availableHeight / referenceHeight))
-
-            ZStack {
-                Color.clear
-
-                designSurface
-                    .frame(width: referenceWidth, height: referenceHeight)
-                    .scaleEffect(scale)
-            }
-            .frame(width: proxy.size.width, height: proxy.size.height)
-            .clipped()
-        }
+        designSurface
+            .frame(width: referenceWidth, height: referenceHeight)
+            .fixedSize()
         .onAppear {
-            model.ensureQRCodePairingSession()
+            if !model.isRecoveringConnection {
+                model.ensureQRCodePairingSession()
+            }
+        }
+        .onReceive(qrRefreshTimer) { _ in
+            guard !isConnecting else { return }
+            model.restartQRCodePairingSession()
         }
         .onDisappear {
             model.stopQRCodePairingSession()
@@ -48,7 +41,52 @@ struct FigmaMirrorExperienceView: View {
         }
     }
 
+    @ViewBuilder
     private var connectionContent: some View {
+        if model.isRecoveringConnection {
+            reconnectingContent
+        } else {
+            onboardingContent
+        }
+    }
+
+    private var reconnectingContent: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 190)
+
+            VStack(spacing: 22) {
+                ProgressView()
+                    .controlSize(.regular)
+                    .tint(accent)
+
+                VStack(spacing: 10) {
+                    Text("Looking for your phone")
+                        .font(.system(size: 21, weight: .bold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+
+                    Text("Checking Wi-Fi and USB routes. If the phone is still reachable, mirroring will resume automatically.")
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.78))
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(width: columnWidth)
+                }
+            }
+            .frame(maxWidth: columnWidth)
+
+            Spacer(minLength: 52)
+
+            devicePill
+
+            Spacer(minLength: 110)
+        }
+        .padding(.horizontal, 36)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    private var onboardingContent: some View {
         VStack(spacing: 0) {
             Spacer(minLength: 130)
 
@@ -73,10 +111,7 @@ struct FigmaMirrorExperienceView: View {
             qrPairingPanel
                 .padding(.top, 26)
 
-            ctaRow
-                .padding(.top, 16)
-
-            Spacer(minLength: 24)
+            Spacer(minLength: 40)
 
             devicePill
 
@@ -111,27 +146,6 @@ struct FigmaMirrorExperienceView: View {
         }
         .buttonStyle(.plain)
         .disabled(isConnecting)
-    }
-
-    private var ctaRow: some View {
-        Button(action: model.restartQRCodePairingSession) {
-            Text("New QR Code")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.92))
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, minHeight: ctaHeight)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(Color.white.opacity(0.13))
-                )
-                .overlay(
-                    Capsule(style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.20), lineWidth: 1)
-                )
-        }
-        .buttonStyle(.plain)
-        .disabled(isConnecting)
-        .frame(maxWidth: columnWidth)
     }
 
     private var devicePill: some View {
@@ -235,29 +249,25 @@ struct FigmaMirrorExperienceView: View {
 
 struct FigmaPhoneFrame<Content: View>: View {
     @ViewBuilder var content: Content
+    private let cornerRadius = MirrorContentWindowController.cornerRadius
 
     var body: some View {
         ZStack {
-            let frameShape = RoundedRectangle(cornerRadius: 40, style: .continuous)
-
-            frameShape
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.0, green: 0.48, blue: 0.43),
-                            Color(red: 0.0, green: 0.22, blue: 0.19)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .overlay(
-                    frameShape
-                        .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+            LinearGradient(
+                colors: [
+                    Color(red: 0.0, green: 0.48, blue: 0.43),
+                    Color(red: 0.0, green: 0.22, blue: 0.19)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius - 0.5, style: .continuous)
+                    .inset(by: 0.5)
+                    .stroke(Color.white.opacity(0.14), lineWidth: 1)
                 )
 
             content
         }
-        .clipShape(RoundedRectangle(cornerRadius: 40, style: .continuous))
     }
 }

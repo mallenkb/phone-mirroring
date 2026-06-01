@@ -3,6 +3,14 @@ import Foundation
 /// Discovery + execution of bundled or Homebrew CLI tools (adb, scrcpy).
 enum Tooling {
     static func toolPath(named name: String) -> String? {
+        if name == "adb",
+           let rawOverridePath = getenv("ANDROID_MIRROR_ADB_PATH") {
+            let overridePath = String(cString: rawOverridePath)
+            if FileManager.default.isExecutableFile(atPath: overridePath) {
+                return overridePath
+            }
+        }
+
         let candidates = [
             Bundle.main.resourceURL?.appendingPathComponent("bin/\(name)").path(percentEncoded: false),
             Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/\(name)").path(percentEncoded: false),

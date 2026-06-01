@@ -43,6 +43,7 @@ final class MirrorSession {
     private var streamWidth: UInt32 = 0
     private var streamHeight: UInt32 = 0
     private var isStopping = false
+    private var didStop = false
 
     var onSessionEnded: (() -> Void)?
 
@@ -109,20 +110,30 @@ final class MirrorSession {
     }
 
     func stop() {
-        guard !isStopping else { return }
+        guard !isStopping, !didStop else { return }
         isStopping = true
+        didStop = true
+
+        let serverHost = serverHost
+        let sessionEnded = onSessionEnded
+        self.serverHost = nil
+        onSessionEnded = nil
+
         clipboardBridge?.stop()
         clipboardBridge = nil
         controlChannel?.close()
         controlChannel = nil
         stream?.stop()
         stream = nil
-        serverHost?.stop()
-        serverHost = nil
         windowController?.close()
         windowController = nil
-        onSessionEnded?()
-        isStopping = false
+        sessionEnded?()
+
+        if let serverHost {
+            DispatchQueue.global(qos: .utility).async {
+                serverHost.stop()
+            }
+        }
     }
 
     // MARK: - Forwarding API (called from chrome / render view)

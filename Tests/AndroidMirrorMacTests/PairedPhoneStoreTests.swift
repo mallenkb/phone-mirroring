@@ -26,6 +26,90 @@ final class PairedPhoneStoreTests: XCTestCase {
         XCTAssertEqual(updated[0].lastConnected, later)
     }
 
+    func testTouchUpdatesExistingSpecificDeviceNameWhenPortChanges() {
+        let initial = store.touch(
+            [],
+            id: "adb-old-session",
+            displayName: "SM S906B",
+            address: "192.168.68.51:33883",
+            now: referenceDate
+        )
+        let later = referenceDate.addingTimeInterval(3600)
+
+        let updated = store.touch(
+            initial,
+            id: "adb-new-session",
+            displayName: "SM S906B",
+            address: "192.168.68.57:39757",
+            now: later
+        )
+
+        XCTAssertEqual(updated.count, 1)
+        XCTAssertEqual(updated[0].id, "adb-new-session")
+        XCTAssertEqual(updated[0].displayName, "SM S906B")
+        XCTAssertEqual(updated[0].lastAddress, "192.168.68.57:39757")
+        XCTAssertEqual(updated[0].firstPaired, referenceDate)
+        XCTAssertEqual(updated[0].lastConnected, later)
+    }
+
+    func testTouchRefreshesLatestGenericAndroidDeviceName() {
+        let initial = store.touch(
+            [],
+            id: "adb-first",
+            displayName: "Android device",
+            address: "192.168.68.51:33883",
+            now: referenceDate
+        )
+
+        let updated = store.touch(
+            initial,
+            id: "adb-second",
+            displayName: "Android device",
+            address: "192.168.68.57:39757",
+            now: referenceDate.addingTimeInterval(3600)
+        )
+
+        XCTAssertEqual(updated.count, 1)
+        XCTAssertEqual(updated[0].id, "adb-second")
+        XCTAssertEqual(updated[0].displayName, "Android device")
+        XCTAssertEqual(updated[0].lastAddress, "192.168.68.57:39757")
+        XCTAssertEqual(updated[0].firstPaired, referenceDate)
+        XCTAssertEqual(updated[0].lastConnected, referenceDate.addingTimeInterval(3600))
+    }
+
+    func testTouchCollapsesAllMatchingSpecificDeviceRecords() {
+        let older = PairedPhoneRecord(
+            id: "adb-old-session",
+            displayName: "SM S906B",
+            lastAddress: "192.168.68.51:33883",
+            firstPaired: referenceDate,
+            lastConnected: referenceDate
+        )
+        let newer = PairedPhoneRecord(
+            id: "adb-new-session",
+            displayName: "SM S906B",
+            lastAddress: "RFCT10ZLTAJ",
+            firstPaired: referenceDate.addingTimeInterval(60),
+            lastConnected: referenceDate.addingTimeInterval(120)
+        )
+        let latest = referenceDate.addingTimeInterval(3600)
+
+        let updated = store.touch(
+            [older, newer],
+            id: "192.168.68.53:5555",
+            displayName: "SM S906B",
+            address: "192.168.68.53:5555",
+            now: latest
+        )
+
+        XCTAssertEqual(updated.count, 1)
+        XCTAssertEqual(updated[0].id, "192.168.68.53:5555")
+        XCTAssertEqual(updated[0].displayName, "SM S906B")
+        XCTAssertEqual(updated[0].lastAddress, "192.168.68.53:5555")
+        XCTAssertEqual(updated[0].firstPaired, referenceDate)
+        XCTAssertEqual(updated[0].lastConnected, latest)
+    }
+
     func testRoundTripCoding() throws {
         let record = PairedPhoneRecord(
             id: "phone-1",
@@ -72,6 +156,41 @@ final class PairedPhoneStoreTests: XCTestCase {
             PairedPhoneStore(primaryDefaults: primaryDefaults, suiteNames: []).load(),
             [record]
         )
+    }
+
+    func testLoadDeduplicatesSpecificDeviceNameAndKeepsLatestPort() {
+        let primarySuite = "AndroidMirrorMacTests.primary.\(UUID().uuidString)"
+        defer {
+            UserDefaults.standard.removePersistentDomain(forName: primarySuite)
+        }
+        guard let primaryDefaults = UserDefaults(suiteName: primarySuite) else {
+            return XCTFail("Expected test UserDefaults suite to be available")
+        }
+
+        let older = PairedPhoneRecord(
+            id: "adb-old-session",
+            displayName: "SM S906B",
+            lastAddress: "192.168.68.51:33883",
+            firstPaired: referenceDate,
+            lastConnected: referenceDate
+        )
+        let newer = PairedPhoneRecord(
+            id: "adb-new-session",
+            displayName: "SM S906B",
+            lastAddress: "192.168.68.57:39757",
+            firstPaired: referenceDate.addingTimeInterval(60),
+            lastConnected: referenceDate.addingTimeInterval(3600)
+        )
+        PairedPhoneStore(primaryDefaults: primaryDefaults, suiteNames: [])
+            .save([older, newer])
+
+        let loaded = PairedPhoneStore(primaryDefaults: primaryDefaults, suiteNames: []).load()
+
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded[0].id, "adb-new-session")
+        XCTAssertEqual(loaded[0].lastAddress, "192.168.68.57:39757")
+        XCTAssertEqual(loaded[0].firstPaired, referenceDate)
+        XCTAssertEqual(loaded[0].lastConnected, referenceDate.addingTimeInterval(3600))
     }
 
     func testSaveWritesRecordToCompatibilitySuite() {

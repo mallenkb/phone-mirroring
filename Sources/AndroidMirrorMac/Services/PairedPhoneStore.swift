@@ -33,6 +33,8 @@ struct PairedPhoneStore {
             }
         }
 
+        storedRecords = deduplicated(storedRecords)
+
         if !storedRecords.isEmpty {
             save(storedRecords)
         }
@@ -74,20 +76,108 @@ struct PairedPhoneStore {
         address: String,
         now: Date = .now
     ) -> [PairedPhoneRecord] {
-        var updated = records
-        if let idx = updated.firstIndex(where: { $0.id == id }) {
-            updated[idx].displayName = displayName
-            updated[idx].lastAddress = address
-            updated[idx].lastConnected = now
-        } else {
-            updated.append(.init(
+        let matchingIndexes = matchingRecordIndexes(
+            in: records,
+            id: id,
+            displayName: displayName,
+            address: address
+        )
+
+        guard !matchingIndexes.isEmpty else {
+            return records + [.init(
                 id: id,
                 displayName: displayName,
                 lastAddress: address,
                 firstPaired: now,
                 lastConnected: now
-            ))
+            )]
         }
-        return updated
+
+        let firstPaired = matchingIndexes
+            .map { records[$0].firstPaired }
+            .min() ?? now
+        let refreshed = PairedPhoneRecord(
+            id: id,
+            displayName: displayName,
+            lastAddress: address,
+            firstPaired: firstPaired,
+            lastConnected: now
+        )
+
+        return records.enumerated().compactMap { index, record in
+            guard matchingIndexes.contains(index) else { return record }
+            guard index == matchingIndexes[0] else { return nil }
+            return refreshed
+        }
+    }
+
+    private func deduplicated(_ records: [PairedPhoneRecord]) -> [PairedPhoneRecord] {
+        records.reduce(into: []) { result, record in
+            if let idx = matchingRecordIndex(
+                in: result,
+                id: record.id,
+                displayName: record.displayName,
+                address: record.lastAddress
+            ) {
+                result[idx] = merged(result[idx], with: record)
+            } else {
+                result.append(record)
+            }
+        }
+    }
+
+    private func merged(_ existing: PairedPhoneRecord, with incoming: PairedPhoneRecord) -> PairedPhoneRecord {
+        let latest = existing.lastConnected >= incoming.lastConnected ? existing : incoming
+        return PairedPhoneRecord(
+            id: latest.id,
+            displayName: latest.displayName,
+            lastAddress: latest.lastAddress,
+            firstPaired: min(existing.firstPaired, incoming.firstPaired),
+            lastConnected: max(existing.lastConnected, incoming.lastConnected)
+        )
+    }
+
+    private func matchingRecordIndex(
+        in records: [PairedPhoneRecord],
+        id: String,
+        displayName: String,
+        address: String
+    ) -> Int? {
+        matchingRecordIndexes(in: records, id: id, displayName: displayName, address: address).first
+    }
+
+    private func matchingRecordIndexes(
+        in records: [PairedPhoneRecord],
+        id: String,
+        displayName: String,
+        address: String
+    ) -> [Int] {
+        let exactMatches = records.indices.filter { index in
+            let record = records[index]
+            return record.id == id
+                || record.lastAddress == address
+                || (
+                    Self.isSpecificDeviceName(displayName)
+                    && record.displayName.localizedCaseInsensitiveCompare(displayName) == .orderedSame
+                )
+        }
+        if !exactMatches.isEmpty {
+            return exactMatches
+        }
+
+        guard !Self.isSpecificDeviceName(displayName) else { return [] }
+        let genericMatches = records.indices.filter { index in
+            !Self.isSpecificDeviceName(records[index].displayName)
+        }
+        guard let latestGenericIndex = genericMatches.max(by: {
+            records[$0].lastConnected < records[$1].lastConnected
+        }) else { return [] }
+        return [latestGenericIndex]
+    }
+
+    private static func isSpecificDeviceName(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return trimmed.localizedCaseInsensitiveCompare("Android device") != .orderedSame
     }
 }

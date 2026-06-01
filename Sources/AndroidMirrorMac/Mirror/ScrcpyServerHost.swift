@@ -11,7 +11,7 @@ import Foundation
 ///
 /// `ScrcpyServerHost` knows nothing about parsing the stream — that's done
 /// downstream by `ScrcpyVideoStream` and `ScrcpyControlChannel`.
-final class ScrcpyServerHost {
+final class ScrcpyServerHost: @unchecked Sendable {
     enum HostError: Error, CustomStringConvertible {
         case missingServerArtifact
         case missingAdb

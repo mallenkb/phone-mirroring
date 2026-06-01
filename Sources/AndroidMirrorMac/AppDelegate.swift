@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.isMovableByWindowBackground = true
         window.backgroundColor = .clear
         window.contentView = hostingView
+        configureOnboardingMask(for: hostingView)
         window.minSize = AppModel.onboardingWindowSize
         window.contentMinSize = AppModel.onboardingWindowSize
         window.maxSize = AppModel.onboardingWindowSize
@@ -41,10 +42,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    private func configureOnboardingMask(for view: NSView) {
+        view.wantsLayer = true
+        view.layer?.cornerRadius = MirrorContentWindowController.cornerRadius
+        view.layer?.masksToBounds = true
+        view.layer?.setValue("continuous", forKey: "cornerCurve")
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        // Stay alive while mirroring or while a retry/reconnect is pending, so
-        // the windowless gap between sessions doesn't quit the app mid-recovery.
-        !model.isMirroring && !model.isAwaitingReconnect
+        false
     }
 
     func applicationWillTerminate(_ notification: Notification) {
