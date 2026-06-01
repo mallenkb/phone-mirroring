@@ -26,7 +26,15 @@ for arg in "$@"; do
   esac
 done
 
-old_pids="$(pgrep -x "$PRODUCT_NAME" 2>/dev/null || true)"
+collect_app_pids() {
+  {
+    pgrep -x "$PRODUCT_NAME" 2>/dev/null || true
+    pgrep -f "$APP_BUNDLE/Contents/MacOS/$PRODUCT_NAME" 2>/dev/null || true
+    pgrep -f "$ROOT_DIR/.build/.*/$PRODUCT_NAME" 2>/dev/null || true
+  } | sort -u
+}
+
+old_pids="$(collect_app_pids)"
 if [[ -n "$old_pids" ]]; then
   for pid in $old_pids; do
     pkill -TERM -P "$pid" 2>/dev/null || true

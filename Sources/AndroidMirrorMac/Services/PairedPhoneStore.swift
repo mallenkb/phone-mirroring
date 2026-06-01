@@ -76,17 +76,18 @@ struct PairedPhoneStore {
         address: String,
         now: Date = .now
     ) -> [PairedPhoneRecord] {
+        let sanitizedDisplayName = Self.sanitizedDisplayName(displayName)
         let matchingIndexes = matchingRecordIndexes(
             in: records,
             id: id,
-            displayName: displayName,
+            displayName: sanitizedDisplayName,
             address: address
         )
 
         guard !matchingIndexes.isEmpty else {
             return records + [.init(
                 id: id,
-                displayName: displayName,
+                displayName: sanitizedDisplayName,
                 lastAddress: address,
                 firstPaired: now,
                 lastConnected: now
@@ -98,7 +99,7 @@ struct PairedPhoneStore {
             .min() ?? now
         let refreshed = PairedPhoneRecord(
             id: id,
-            displayName: displayName,
+            displayName: sanitizedDisplayName,
             lastAddress: address,
             firstPaired: firstPaired,
             lastConnected: now
@@ -128,9 +129,13 @@ struct PairedPhoneStore {
 
     private func merged(_ existing: PairedPhoneRecord, with incoming: PairedPhoneRecord) -> PairedPhoneRecord {
         let latest = existing.lastConnected >= incoming.lastConnected ? existing : incoming
+        let specificName = [incoming.displayName, existing.displayName]
+            .map(Self.sanitizedDisplayName)
+            .first(where: Self.isSpecificDeviceName)
+        let displayName = specificName ?? Self.sanitizedDisplayName(latest.displayName)
         return PairedPhoneRecord(
             id: latest.id,
-            displayName: latest.displayName,
+            displayName: displayName,
             lastAddress: latest.lastAddress,
             firstPaired: min(existing.firstPaired, incoming.firstPaired),
             lastConnected: max(existing.lastConnected, incoming.lastConnected)
@@ -152,13 +157,15 @@ struct PairedPhoneStore {
         displayName: String,
         address: String
     ) -> [Int] {
+        let addressHost = Self.host(in: address)
         let exactMatches = records.indices.filter { index in
             let record = records[index]
             return record.id == id
                 || record.lastAddress == address
+                || (addressHost != nil && Self.host(in: record.lastAddress) == addressHost)
                 || (
                     Self.isSpecificDeviceName(displayName)
-                    && record.displayName.localizedCaseInsensitiveCompare(displayName) == .orderedSame
+                    && Self.normalizedDeviceName(record.displayName) == Self.normalizedDeviceName(displayName)
                 )
         }
         if !exactMatches.isEmpty {
@@ -176,8 +183,43 @@ struct PairedPhoneStore {
     }
 
     private static func isSpecificDeviceName(_ name: String) -> Bool {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = sanitizedDisplayName(name)
         guard !trimmed.isEmpty else { return false }
-        return trimmed.localizedCaseInsensitiveCompare("Android device") != .orderedSame
+        return !genericDisplayNames.contains(normalizedDeviceName(trimmed))
+    }
+
+    private static let genericDisplayNames: Set<String> = [
+        "android device",
+        "authorized device",
+        "device",
+        "unknown device",
+        "unknown"
+    ]
+
+    private static func sanitizedDisplayName(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Android device" }
+        return trimmed
+    }
+
+    private static func normalizedDeviceName(_ name: String) -> String {
+        sanitizedDisplayName(name)
+            .replacingOccurrences(of: "_", with: " ")
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .lowercased()
+    }
+
+    private static func host(in address: String) -> String? {
+        if address.hasPrefix("["),
+           let endIndex = address.firstIndex(of: "]") {
+            let hostStart = address.index(after: address.startIndex)
+            return String(address[hostStart..<endIndex])
+        }
+
+        guard let separator = address.lastIndex(of: ":") else {
+            return nil
+        }
+        return String(address[..<separator])
     }
 }

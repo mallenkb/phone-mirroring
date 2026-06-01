@@ -110,6 +110,32 @@ final class PairedPhoneStoreTests: XCTestCase {
         XCTAssertEqual(updated[0].lastConnected, latest)
     }
 
+    func testTouchReplacesGenericRecordForSameHostWithSpecificNameAndNewPort() {
+        let generic = PairedPhoneRecord(
+            id: "adb-generic",
+            displayName: "Authorized Device",
+            lastAddress: "192.168.68.54:34921",
+            firstPaired: referenceDate,
+            lastConnected: referenceDate
+        )
+        let later = referenceDate.addingTimeInterval(3600)
+
+        let updated = store.touch(
+            [generic],
+            id: "adb-specific",
+            displayName: "SM S906B",
+            address: "192.168.68.54:46313",
+            now: later
+        )
+
+        XCTAssertEqual(updated.count, 1)
+        XCTAssertEqual(updated[0].id, "adb-specific")
+        XCTAssertEqual(updated[0].displayName, "SM S906B")
+        XCTAssertEqual(updated[0].lastAddress, "192.168.68.54:46313")
+        XCTAssertEqual(updated[0].firstPaired, referenceDate)
+        XCTAssertEqual(updated[0].lastConnected, later)
+    }
+
     func testRoundTripCoding() throws {
         let record = PairedPhoneRecord(
             id: "phone-1",
@@ -189,6 +215,42 @@ final class PairedPhoneStoreTests: XCTestCase {
         XCTAssertEqual(loaded.count, 1)
         XCTAssertEqual(loaded[0].id, "adb-new-session")
         XCTAssertEqual(loaded[0].lastAddress, "192.168.68.57:39757")
+        XCTAssertEqual(loaded[0].firstPaired, referenceDate)
+        XCTAssertEqual(loaded[0].lastConnected, referenceDate.addingTimeInterval(3600))
+    }
+
+    func testLoadCollapsesGenericAndSpecificRecordsForSameHost() {
+        let primarySuite = "AndroidMirrorMacTests.primary.\(UUID().uuidString)"
+        defer {
+            UserDefaults.standard.removePersistentDomain(forName: primarySuite)
+        }
+        guard let primaryDefaults = UserDefaults(suiteName: primarySuite) else {
+            return XCTFail("Expected test UserDefaults suite to be available")
+        }
+
+        let generic = PairedPhoneRecord(
+            id: "adb-generic",
+            displayName: "Android device",
+            lastAddress: "192.168.68.54:34921",
+            firstPaired: referenceDate,
+            lastConnected: referenceDate
+        )
+        let specific = PairedPhoneRecord(
+            id: "adb-specific",
+            displayName: "SM S906B",
+            lastAddress: "192.168.68.54:46313",
+            firstPaired: referenceDate.addingTimeInterval(60),
+            lastConnected: referenceDate.addingTimeInterval(3600)
+        )
+        PairedPhoneStore(primaryDefaults: primaryDefaults, suiteNames: [])
+            .save([generic, specific])
+
+        let loaded = PairedPhoneStore(primaryDefaults: primaryDefaults, suiteNames: []).load()
+
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded[0].id, "adb-specific")
+        XCTAssertEqual(loaded[0].displayName, "SM S906B")
+        XCTAssertEqual(loaded[0].lastAddress, "192.168.68.54:46313")
         XCTAssertEqual(loaded[0].firstPaired, referenceDate)
         XCTAssertEqual(loaded[0].lastConnected, referenceDate.addingTimeInterval(3600))
     }

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Discovery + execution of bundled or Homebrew CLI tools (adb, scrcpy).
 enum Tooling {
@@ -108,6 +109,10 @@ enum Tooling {
                 Thread.sleep(forTimeInterval: 0.1)
                 if process.isRunning {
                     process.interrupt()
+                }
+                Thread.sleep(forTimeInterval: 0.1)
+                if process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
                 }
                 return "\(name) timed out after \(Int(timeout))s: \(arguments.joined(separator: " "))"
             }

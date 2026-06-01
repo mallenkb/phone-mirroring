@@ -16,4 +16,8 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         XCTAssertEqual(AppModel.mirrorBackoffInterval(forFailureCount: 4), 30)
         XCTAssertEqual(AppModel.mirrorBackoffInterval(forFailureCount: 50), 30)
     }
+
+    func testDisconnectRecoveryReturnsToOnboardingPromptly() {
+        XCTAssertEqual(AppModel.disconnectRecoveryGracePeriod, 5)
+    }
 }

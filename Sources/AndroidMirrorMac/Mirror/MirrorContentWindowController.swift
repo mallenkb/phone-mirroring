@@ -45,6 +45,33 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     static let chromeHideAnimationDuration: TimeInterval = 0.16
     static let renderCornerRadius: CGFloat = cornerRadius
 
+    static func mirrorCornerRadius(
+        forWindowHeight windowHeight: CGFloat,
+        minHeight: CGFloat,
+        maxHeight: CGFloat
+    ) -> CGFloat {
+        let heightRange = max(1, maxHeight - minHeight)
+        let cornerScale = windowHeight <= minHeight + 1
+            ? 0
+            : min(1, max(0, (windowHeight - minHeight) / heightRange))
+        return minimumMirrorCornerRadius
+            + (maximumMirrorCornerRadius - minimumMirrorCornerRadius) * cornerScale
+    }
+
+    static func onboardingCornerRadius(visibleFrame: NSRect = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 390, height: 850)) -> CGFloat {
+        let limits = sizeLimits(
+            visibleFrame: visibleFrame,
+            aspect: defaultMirrorAspect,
+            chromeHeight: verticalShellInset,
+            horizontalChromeWidth: horizontalShellInset
+        )
+        return mirrorCornerRadius(
+            forWindowHeight: AppModel.onboardingWindowSize.height,
+            minHeight: limits.min.height,
+            maxHeight: limits.max.height
+        )
+    }
+
     /// The detached toolbar floats in its own window above the phone.
     static let toolbarBarHeight: CGFloat = 30
     /// Vertical gap between the top of the mirror window and the floating bar.
@@ -72,13 +99,15 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private var isInFullscreen = false
     private var normalWindowFrameBeforeFullscreen: NSRect?
     private var mirrorAspect: CGFloat? = defaultMirrorAspect
+    private let launchFrame: NSRect?
     private var recordingStateCancellable: AnyCancellable?
     private var captureCueCancellable: AnyCancellable?
     private var activeCaptureCueView: MirrorCaptureCueView?
 
-    init(model: AppModel, session: MirrorSession) {
+    init(model: AppModel, session: MirrorSession, launchFrame: NSRect? = nil) {
         self.model = model
         self.session = session
+        self.launchFrame = launchFrame
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 390, height: 850)
         let initialSize = Self.initialWrappedShellSize(
             for: Self.defaultMirrorSize,
@@ -221,9 +250,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
     func show() {
         guard let window else { return }
-        let visible = Self.targetVisibleFrame(for: window)
-        let frame = Self.centeredFrame(size: window.frame.size, in: visible)
-        Logger.log("MirrorContentWindow show visible=\(visible) frame=\(frame)")
+        let frame = launchFrame ?? Self.centeredFrame(
+            size: window.frame.size,
+            in: Self.targetVisibleFrame(for: window)
+        )
+        Logger.log("MirrorContentWindow show frame=\(frame)")
         window.setFrame(frame, display: true, animate: false)
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(renderView)
@@ -240,6 +271,12 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             return
         }
         applyWindowSizeLimits(to: window, aspect: aspect)
+
+        if launchFrame != nil {
+            window.contentAspectRatio = window.frame.size
+            applyScaledRenderInsets()
+            return
+        }
 
         let visible = Self.targetVisibleFrame(for: window)
         let outerSize = Self.initialWrappedShellSize(
@@ -400,12 +437,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         guard let window, !isInFullscreen else { return }
         applyScaledChromeHeight()
         let inset = scaledScreenInset(for: window)
-        let heightRange = max(1, window.maxSize.height - window.minSize.height)
-        let cornerScale = window.frame.height <= window.minSize.height + 1
-            ? 0
-            : min(1, max(0, (window.frame.height - window.minSize.height) / heightRange))
-        let mirrorRadius = Self.minimumMirrorCornerRadius
-            + (Self.maximumMirrorCornerRadius - Self.minimumMirrorCornerRadius) * cornerScale
+        let mirrorRadius = Self.mirrorCornerRadius(
+            forWindowHeight: window.frame.height,
+            minHeight: window.minSize.height,
+            maxHeight: window.maxSize.height
+        )
         let shellRadius = mirrorRadius
         renderLeadingConstraint?.constant = inset
         renderTrailingConstraint?.constant = -inset

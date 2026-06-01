@@ -31,6 +31,7 @@ final class MirrorSession {
 
     private weak var model: AppModel?
     private let serial: String?
+    private let launchFrame: NSRect?
     private let scid: UInt32
     private let localPort: UInt16
 
@@ -45,11 +46,12 @@ final class MirrorSession {
     private var isStopping = false
     private var didStop = false
 
-    var onSessionEnded: (() -> Void)?
+    var onSessionEnded: ((NSRect?) -> Void)?
 
-    init(model: AppModel, serial: String?) {
+    init(model: AppModel, serial: String?, launchFrame: NSRect? = nil) {
         self.model = model
         self.serial = serial
+        self.launchFrame = launchFrame
         self.scid = UInt32.random(in: 1...UInt32(Int32.max))
         self.localPort = Self.allocatePort()
     }
@@ -104,7 +106,7 @@ final class MirrorSession {
         }
 
         guard let model else { return }
-        let controller = MirrorContentWindowController(model: model, session: self)
+        let controller = MirrorContentWindowController(model: model, session: self, launchFrame: launchFrame)
         controller.show()
         windowController = controller
     }
@@ -116,6 +118,7 @@ final class MirrorSession {
 
         let serverHost = serverHost
         let sessionEnded = onSessionEnded
+        let finalWindowFrame = windowController?.window?.frame
         self.serverHost = nil
         onSessionEnded = nil
 
@@ -127,7 +130,7 @@ final class MirrorSession {
         stream = nil
         windowController?.close()
         windowController = nil
-        sessionEnded?()
+        sessionEnded?(finalWindowFrame)
 
         if let serverHost {
             DispatchQueue.global(qos: .utility).async {

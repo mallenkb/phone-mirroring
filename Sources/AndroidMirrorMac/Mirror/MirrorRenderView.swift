@@ -1,6 +1,30 @@
 import AppKit
 import AVFoundation
 import CoreMedia
+import SwiftUI
+
+struct MirrorLoadingSurface: NSViewRepresentable {
+    var statusText: String = "Connecting"
+    var deviceName: String
+    var cornerRadius: CGFloat
+    var repeatsProgress: Bool = false
+
+    func makeNSView(context: Context) -> MirrorLoadingView {
+        let view = MirrorLoadingView()
+        view.statusText = statusText
+        view.deviceName = deviceName
+        view.cornerRadius = cornerRadius
+        view.startProgress(duration: 3, repeats: repeatsProgress)
+        return view
+    }
+
+    func updateNSView(_ nsView: MirrorLoadingView, context: Context) {
+        nsView.statusText = statusText
+        nsView.deviceName = deviceName
+        nsView.cornerRadius = cornerRadius
+        nsView.repeatsProgress = repeatsProgress
+    }
+}
 
 /// An NSView whose backing layer is an `AVSampleBufferDisplayLayer`. The
 /// MirrorSession enqueues each decoded `CMSampleBuffer` and the view paints
@@ -243,9 +267,19 @@ final class MirrorRenderView: NSView {
     }
 }
 
-private final class MirrorLoadingView: NSView {
+final class MirrorLoadingView: NSView {
     private let gradientLayer = CAGradientLayer()
     private let progressText = LoadingProgressTextView(deviceName: "Android Device")
+
+    var cornerRadius: CGFloat = 0 {
+        didSet { applyCornerMask() }
+    }
+
+    var statusText: String = "Connecting" {
+        didSet { progressText.statusText = statusText }
+    }
+
+    var repeatsProgress = false
 
     var deviceName: String = "" {
         didSet {
@@ -268,16 +302,18 @@ private final class MirrorLoadingView: NSView {
         gradientLayer.frame = bounds
         CATransaction.commit()
         progressText.layoutSubtreeIfNeeded()
+        applyCornerMask()
     }
 
-    func startProgress(duration: TimeInterval) {
-        progressText.startProgress(duration: duration)
+    func startProgress(duration: TimeInterval, repeats: Bool = false) {
+        repeatsProgress = repeats
+        progressText.startProgress(duration: duration, repeats: repeats)
     }
 
     private func setupView() {
         wantsLayer = true
         layer = CALayer()
-        layer?.masksToBounds = true
+        applyCornerMask()
         gradientLayer.colors = [
             NSColor(calibratedRed: 0.0, green: 0.48, blue: 0.43, alpha: 1).cgColor,
             NSColor(calibratedRed: 0.0, green: 0.35, blue: 0.31, alpha: 1).cgColor,
@@ -297,6 +333,12 @@ private final class MirrorLoadingView: NSView {
             progressText.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 24),
             progressText.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -24)
         ])
+    }
+
+    private func applyCornerMask() {
+        layer?.cornerRadius = cornerRadius
+        layer?.masksToBounds = cornerRadius > 0
+        layer?.setValue("continuous", forKey: "cornerCurve")
     }
 }
 
@@ -324,6 +366,16 @@ private final class LoadingProgressTextView: NSView {
         }
     }
 
+    var statusText: String {
+        get { baseStatusLabel.stringValue }
+        set {
+            baseStatusLabel.stringValue = newValue
+            fillStatusLabel.stringValue = newValue
+            invalidateIntrinsicContentSize()
+            needsLayout = true
+        }
+    }
+
     init(deviceName: String) {
         baseDeviceLabel = NSTextField(labelWithString: deviceName)
         fillDeviceLabel = NSTextField(labelWithString: deviceName)
@@ -342,7 +394,7 @@ private final class LoadingProgressTextView: NSView {
         updateProgress()
     }
 
-    func startProgress(duration: TimeInterval) {
+    func startProgress(duration: TimeInterval, repeats: Bool = false) {
         progressTimer?.invalidate()
         progress = 0
         let startedAt = Date()
@@ -352,8 +404,12 @@ private final class LoadingProgressTextView: NSView {
                 return
             }
             let elapsed = Date().timeIntervalSince(startedAt)
-            self.progress = min(1, max(0, elapsed / duration))
-            if self.progress >= 1 {
+            if repeats {
+                self.progress = max(0, min(1, elapsed.truncatingRemainder(dividingBy: duration) / duration))
+            } else {
+                self.progress = min(1, max(0, elapsed / duration))
+            }
+            if !repeats, self.progress >= 1 {
                 timer.invalidate()
                 self.progressTimer = nil
             }

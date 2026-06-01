@@ -63,6 +63,27 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertFalse(AppModel.adbConnectSucceeded("failed to connect to '192.168.68.57:5555': No route to host"))
     }
 
+    func testADBNotificationParsingExtractsPackageTitleAndBody() {
+        let output = """
+          NotificationRecord(0xabc: pkg=com.google.android.gm user=UserHandle{0} id=42 tag=null)
+            key=0|com.google.android.gm|42|null|10012
+            extras={
+              android.title=String (Inbox update)
+              android.text=String (New message from Sam)
+            }
+          NotificationRecord(0xdef: pkg=com.android.systemui user=UserHandle{0} id=9 tag=null)
+            key=0|com.android.systemui|9|null|1000
+            extras={
+              android.title=String (System UI)
+              android.text=String (Ignored)
+            }
+        """
+
+        let summaries = AppModel.parsedADBNotificationSummariesForTesting(output)
+
+        XCTAssertEqual(summaries, ["Gm|Inbox update|New message from Sam"])
+    }
+
     func testRecordsByMostRecentIncludesUSBAndWireless() {
         let olderWireless = PairedPhoneRecord(
             id: "wifi-phone",

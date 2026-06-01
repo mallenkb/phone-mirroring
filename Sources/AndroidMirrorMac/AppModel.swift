@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import Foundation
 import Darwin
+import UserNotifications
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -12,6 +13,15 @@ final class AppModel: ObservableObject {
     @Published var isPairing = false
     @Published private(set) var isRecoveringConnection = false
     @Published private(set) var isSelectedDeviceOnline = false
+    @Published var experimentalADBNotificationsEnabled = false {
+        didSet {
+            UserDefaults.standard.set(
+                experimentalADBNotificationsEnabled,
+                forKey: Self.experimentalADBNotificationsDefaultsKey
+            )
+            configureADBNotificationPolling()
+        }
+    }
     @Published var captureCue: CaptureCue?
     static let minimumConnectionWindowSize = NSSize(width: 384, height: 688)
     static let defaultConnectionWindowSize = NSSize(width: 650, height: 1170)
@@ -40,6 +50,8 @@ final class AppModel: ObservableObject {
     private var qrPairingTask: Task<Void, Never>?
     private var disconnectRecoveryTask: Task<Void, Never>?
     private var screenRecordingMonitorTask: Task<Void, Never>?
+    private var adbNotificationPollingTask: Task<Void, Never>?
+    private var lastPostedADBNotificationIDs: Set<String> = []
     /// Holds the currently-playing capture cue sound so it isn't deallocated
     /// mid-playback.
     private var retainedCaptureSound: NSSound?
@@ -53,6 +65,8 @@ final class AppModel: ObservableObject {
     private(set) var isAwaitingReconnect = false
     /// A session that dies sooner than this counts as a "quick" failure.
     static let quickMirrorFailureThreshold: TimeInterval = 12
+    nonisolated static let disconnectRecoveryGracePeriod: TimeInterval = 5
+    private static let experimentalADBNotificationsDefaultsKey = "ExperimentalADBNotificationsEnabled"
 
     enum CaptureCueKind: Equatable {
         case screenshot
@@ -82,6 +96,9 @@ final class AppModel: ObservableObject {
     }
 
     init() {
+        experimentalADBNotificationsEnabled = UserDefaults.standard.bool(
+            forKey: Self.experimentalADBNotificationsDefaultsKey
+        )
         pairedPhones = store.load()
         if let mostRecentRecord = Self.recordsByMostRecent(pairedPhones).first {
             select(record: mostRecentRecord)
@@ -93,6 +110,7 @@ final class AppModel: ObservableObject {
         }
         startDevicePresenceWatcher()
         startUSBHandoffWatcher()
+        configureADBNotificationPolling()
         attemptAutoReconnect()
     }
 
@@ -102,6 +120,7 @@ final class AppModel: ObservableObject {
         qrPairingTask?.cancel()
         disconnectRecoveryTask?.cancel()
         screenRecordingMonitorTask?.cancel()
+        adbNotificationPollingTask?.cancel()
     }
 
     // MARK: - Window registration
@@ -186,8 +205,10 @@ final class AppModel: ObservableObject {
             let lower = output.lowercased()
             let ok = lower.contains("connected") || lower.contains("already")
             if ok {
-                self.touchPairedPhone(id: serviceID, displayName: label, address: address)
+                let deviceName = await Self.connectedDeviceName(adb: adb, serial: address, fallback: label)
+                self.touchPairedPhone(id: serviceID, displayName: deviceName, address: address)
                 self.selectedDevice.adbSerial = address
+                self.selectedDevice.name = deviceName
                 self.stopQRCodePairingSession()
                 self.startMirroring()
             } else {
@@ -213,7 +234,7 @@ final class AppModel: ObservableObject {
         select(device: device)
         touchPairedPhone(
             id: device.serial,
-            displayName: device.model,
+            displayName: selectedDisplayName(for: device.model),
             address: device.serial
         )
         stopQRCodePairingSession()
@@ -269,12 +290,18 @@ final class AppModel: ObservableObject {
                   Self.adbConnectSucceeded(connectOutput)
             else { return }
 
+            let deviceName = await Self.connectedDeviceName(
+                adb: adb,
+                serial: wirelessRecord.lastAddress,
+                fallback: wirelessRecord.displayName
+            )
             self.select(record: wirelessRecord)
             self.touchPairedPhone(
                 id: wirelessRecord.id,
-                displayName: wirelessRecord.displayName,
+                displayName: deviceName,
                 address: wirelessRecord.lastAddress
             )
+            self.selectedDevice.name = deviceName
             self.stopQRCodePairingSession()
             self.startMirroring()
         }
@@ -285,8 +312,13 @@ final class AppModel: ObservableObject {
         store.save(pairedPhones)
     }
 
+    private func selectedDisplayName(for fallback: String) -> String {
+        Self.specificDeviceName(fallback) ?? Self.specificDeviceName(selectedDevice.name) ?? fallback
+    }
+
     private func displayName(for phone: DiscoveredPhone) -> String {
-        pairedPhones.first(where: { $0.id == phone.id })?.displayName ?? "Android device"
+        pairedPhones.first(where: { $0.id == phone.id })
+            .flatMap { Self.specificDeviceName($0.displayName) } ?? "Android device"
     }
 
     // MARK: - Scan / pair flows
@@ -443,7 +475,12 @@ final class AppModel: ObservableObject {
                     return
                 }
 
-                self.finishQRCodePairing(with: connectablePhone)
+                let deviceName = await Self.connectedDeviceName(
+                    adb: adb,
+                    serial: connectablePhone.address,
+                    fallback: "Android device"
+                )
+                self.finishQRCodePairing(with: connectablePhone, displayName: deviceName)
                 return
             }
         }
@@ -457,19 +494,19 @@ final class AppModel: ObservableObject {
         startQRCodePairingWatcher()
     }
 
-    private func finishQRCodePairing(with phone: DiscoveredPhone) {
+    private func finishQRCodePairing(with phone: DiscoveredPhone, displayName: String) {
         isPairing = false
         isQRCodePairingWaiting = false
         qrPairingTask = nil
         qrPairingSession = nil
         touchPairedPhone(
             id: phone.id,
-            displayName: "Android device",
+            displayName: displayName,
             address: phone.address
         )
         selectedDevice = MirrorDevice(
             id: phone.id,
-            name: "Android device",
+            name: displayName,
             model: "Android",
             battery: selectedDevice.battery,
             isCharging: selectedDevice.isCharging,
@@ -506,16 +543,29 @@ final class AppModel: ObservableObject {
             tlsPortOutput: tlsPortOutput,
             tcpPortOutput: tcpPortOutput
         ) {
-            let connectOutput = await Task.detached {
-                adb.run(["connect", tlsAddress])
-            }.value
-
-            if Self.adbConnectSucceeded(connectOutput) {
+            if await Self.waitForADBWirelessTargetReady(
+                adb: adb,
+                address: tlsAddress,
+                attempts: 8,
+                primeRoute: {
+                    await Self.primeADBWirelessRoute(
+                        adb: adb,
+                        usbSerial: usbDevice.serial,
+                        wirelessAddress: tlsAddress
+                    )
+                }
+            ) {
                 isPairing = false
+                let deviceName = await Self.connectedDeviceName(
+                    adb: adb,
+                    serial: tlsAddress,
+                    fallback: usbDevice.model
+                )
                 finishWirelessHandoff(
                     usbDevice: usbDevice,
                     wirelessID: tlsAddress,
-                    address: tlsAddress
+                    address: tlsAddress,
+                    displayName: deviceName
                 )
                 return true
             }
@@ -529,16 +579,29 @@ final class AppModel: ObservableObject {
             routeOutput,
             phones: discoveredWirelessPhones
         ) {
-            let connectOutput = await Task.detached {
-                adb.run(["connect", wirelessPhone.address])
-            }.value
-
-            if Self.adbConnectSucceeded(connectOutput) {
+            if await Self.waitForADBWirelessTargetReady(
+                adb: adb,
+                address: wirelessPhone.address,
+                attempts: 8,
+                primeRoute: {
+                    await Self.primeADBWirelessRoute(
+                        adb: adb,
+                        usbSerial: usbDevice.serial,
+                        wirelessAddress: wirelessPhone.address
+                    )
+                }
+            ) {
                 isPairing = false
+                let deviceName = await Self.connectedDeviceName(
+                    adb: adb,
+                    serial: wirelessPhone.address,
+                    fallback: usbDevice.model
+                )
                 finishWirelessHandoff(
                     usbDevice: usbDevice,
                     wirelessID: wirelessPhone.id,
-                    address: wirelessPhone.address
+                    address: wirelessPhone.address,
+                    displayName: deviceName
                 )
                 return true
             }
@@ -546,6 +609,11 @@ final class AppModel: ObservableObject {
         }
 
         if let legacyAddress = Self.legacyTCPIPDebuggingAddress(routeOutput: routeOutput) {
+            await Self.primeADBWirelessRoute(
+                adb: adb,
+                usbSerial: usbDevice.serial,
+                wirelessAddress: legacyAddress
+            )
             let tcpipOutput = await Task.detached {
                 adb.run(["-s", usbDevice.serial, "tcpip", "\(Self.legacyADBWirelessPort)"])
             }.value
@@ -564,10 +632,16 @@ final class AppModel: ObservableObject {
                     }
                 ) {
                     isPairing = false
+                    let deviceName = await Self.connectedDeviceName(
+                        adb: adb,
+                        serial: legacyAddress,
+                        fallback: usbDevice.model
+                    )
                     finishWirelessHandoff(
                         usbDevice: usbDevice,
                         wirelessID: legacyAddress,
-                        address: legacyAddress
+                        address: legacyAddress,
+                        displayName: deviceName
                     )
                     return true
                 }
@@ -581,14 +655,16 @@ final class AppModel: ObservableObject {
     private func finishWirelessHandoff(
         usbDevice: AuthorizedADBDevice,
         wirelessID: String,
-        address: String
+        address: String,
+        displayName: String
     ) {
         touchPairedPhone(
             id: wirelessID,
-            displayName: usbDevice.model,
+            displayName: displayName,
             address: address
         )
         selectedDevice.adbSerial = address
+        selectedDevice.name = displayName
         selectedDevice.network = "Wi-Fi debugging"
         stopQRCodePairingSession()
         startMirroring()
@@ -732,7 +808,7 @@ final class AppModel: ObservableObject {
                 }
                 let product = value(after: "product:", in: line) ?? "Android"
                 let model = value(after: "model:", in: line)?
-                    .replacingOccurrences(of: "_", with: " ") ?? "Authorized Device"
+                    .replacingOccurrences(of: "_", with: " ") ?? "Android device"
                 return AuthorizedADBDevice(
                     serial: serial,
                     product: product,
@@ -1051,13 +1127,39 @@ final class AppModel: ObservableObject {
         return tail.split(separator: " ").first.map(String.init)
     }
 
+    nonisolated static func specificDeviceName(_ name: String) -> String? {
+        let normalized = name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "_", with: " ")
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        guard !normalized.isEmpty else { return nil }
+        let genericNames = ["android device", "authorized device", "device", "unknown device", "unknown"]
+        return genericNames.contains(normalized.lowercased()) ? nil : normalized
+    }
+
+    nonisolated static func connectedDeviceName(
+        adb: ADBController,
+        serial: String,
+        fallback: String
+    ) async -> String {
+        let output = await Task.detached {
+            adb.run(["devices", "-l"])
+        }.value
+        if let device = authorizedADBDevices(in: output).first(where: { $0.serial == serial }),
+           let name = specificDeviceName(device.model) {
+            return name
+        }
+        return specificDeviceName(fallback) ?? "Android device"
+    }
+
     // MARK: - Mirroring lifecycle
 
     /// - Parameter manual: `true` for a deliberate user action, which clears
     ///   any crash-loop backoff. Auto-reconnect callers leave it `false` so a
     ///   crashing server isn't relaunched in a tight loop.
     func startMirroring(manual: Bool = false) {
-        guard !isMirroring else { return }
+        guard !isMirroring, !isPairing else { return }
 
         if manual {
             // A deliberate retry clears backoff.
@@ -1120,11 +1222,17 @@ final class AppModel: ObservableObject {
                     }.value
                     if Self.adbConnectSucceeded(connectOutput) {
                         target = refreshedPhone.address
+                        let deviceName = await Self.connectedDeviceName(
+                            adb: adb,
+                            serial: refreshedPhone.address,
+                            fallback: record?.displayName ?? selectedName
+                        )
                         self.touchPairedPhone(
                             id: refreshedPhone.id,
-                            displayName: record?.displayName ?? selectedName,
+                            displayName: deviceName,
                             address: refreshedPhone.address
                         )
+                        self.selectedDevice.name = deviceName
                     }
                 }
             }
@@ -1156,8 +1264,9 @@ final class AppModel: ObservableObject {
 
     private func launchNativeMirror(serial: String?) {
         Logger.log("Launching native mirror serial=\(serial ?? "default")")
-        let session = MirrorSession(model: self, serial: serial)
-        session.onSessionEnded = { [weak self, weak session] in
+        let launchFrame = connectionWindow?.frame
+        let session = MirrorSession(model: self, serial: serial, launchFrame: launchFrame)
+        session.onSessionEnded = { [weak self, weak session] finalMirrorFrame in
             guard let self else { return }
             if self.mirrorSession === session {
                 self.mirrorSession = nil
@@ -1168,6 +1277,9 @@ final class AppModel: ObservableObject {
                 self.stopScreenRecordingCleanup()
             }
             self.noteMirrorSessionEnded()
+            if let finalMirrorFrame {
+                self.connectionWindow?.setFrame(finalMirrorFrame, display: false)
+            }
             self.showConnectionWindow(startsQRCodePairing: false)
             self.startDisconnectRecoveryFallback()
         }
@@ -1197,7 +1309,15 @@ final class AppModel: ObservableObject {
         stopQRCodePairingSession()
         disconnectRecoveryTask?.cancel()
         disconnectRecoveryTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            let deadline = Date().addingTimeInterval(Self.disconnectRecoveryGracePeriod)
+            while !Task.isCancelled, Date() < deadline {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self, !self.isMirroring else { return }
+                if self.isSelectedDeviceOnline {
+                    self.startMirroring()
+                    return
+                }
+            }
             guard !Task.isCancelled, let self, !self.isMirroring else { return }
             self.isRecoveringConnection = false
             self.isAwaitingReconnect = false
@@ -1250,7 +1370,6 @@ final class AppModel: ObservableObject {
 
     private func showConnectionWindow(startsQRCodePairing: Bool = true) {
         guard let connectionWindow, !isMirroring else { return }
-        connectionWindow.center()
         connectionWindow.makeKeyAndOrderFront(nil)
         if startsQRCodePairing {
             ensureQRCodePairingSession()
@@ -1324,6 +1443,13 @@ final class AppModel: ObservableObject {
         mirrorSession?.centerWindow()
     }
 
+    func connect(record: PairedPhoneRecord) {
+        guard !isMirroring, !isPairing else { return }
+        select(record: record)
+        stopQRCodePairingSession()
+        startMirroring(manual: true)
+    }
+
     func forgetPairedPhone(id: PairedPhoneRecord.ID) {
         pairedPhones = store.removing(id, from: pairedPhones)
         store.save(pairedPhones)
@@ -1336,6 +1462,113 @@ final class AppModel: ObservableObject {
         pairedPhones = []
         store.clearAll()
         selectedDevice = .demo
+    }
+
+    // MARK: - Experimental ADB notifications
+
+    private func configureADBNotificationPolling() {
+        adbNotificationPollingTask?.cancel()
+        adbNotificationPollingTask = nil
+
+        guard experimentalADBNotificationsEnabled else { return }
+        Logger.log("ADB notifications enabled; starting polling")
+
+        adbNotificationPollingTask = Task { [weak self] in
+            guard let self else { return }
+            await self.requestMacNotificationAuthorization()
+
+            while !Task.isCancelled {
+                await self.pollADBNotificationsOnce()
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+            }
+        }
+    }
+
+    private func requestMacNotificationAuthorization() async {
+        do {
+            _ = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+        } catch {
+            Logger.log("Mac notification authorization failed: \(error)")
+        }
+    }
+
+    private func pollADBNotificationsOnce() async {
+        let adb = self.adb
+        let selectedSerial = selectedDevice.adbSerial
+        let devicesOutput = await Task.detached {
+            adb.run(["devices", "-l"], timeout: 4)
+        }.value
+        let devices = Self.authorizedADBDevices(in: devicesOutput)
+        if devices.isEmpty {
+            Logger.log("ADB notifications found no authorized devices output=\(Self.oneLine(devicesOutput))")
+        }
+        let serial = Self.notificationPollingSerial(selectedSerial: selectedSerial, devices: devices)
+        let output = await Task.detached {
+            adb.run(
+                Self.adbDeviceArguments(serial: serial) + ["shell", "dumpsys", "notification", "--noredact"],
+                timeout: 20
+            )
+        }.value
+        let notifications = Self.parseActiveADBNotifications(output)
+        if notifications.isEmpty {
+            Logger.log("ADB notifications raw output=\(Self.oneLine(String(output.prefix(500))))")
+        }
+        Logger.log(
+            "ADB notifications poll serial=\(serial ?? "default") parsed=\(notifications.count) baseline=\(lastPostedADBNotificationIDs.count)"
+        )
+        await postNewADBNotifications(notifications)
+    }
+
+    private static func notificationPollingSerial(
+        selectedSerial: String?,
+        devices: [AuthorizedADBDevice]
+    ) -> String? {
+        if let selectedSerial,
+           devices.contains(where: { $0.serial == selectedSerial }) {
+            return selectedSerial
+        }
+        return devices.first?.serial
+    }
+
+    private func postNewADBNotifications(_ notifications: [ADBNotification]) async {
+        guard experimentalADBNotificationsEnabled else { return }
+
+        if lastPostedADBNotificationIDs.isEmpty {
+            lastPostedADBNotificationIDs = Set(notifications.map(\.id))
+            return
+        }
+
+        let currentIDs = Set(notifications.map(\.id))
+        let newNotifications = notifications.filter { !lastPostedADBNotificationIDs.contains($0.id) }
+        lastPostedADBNotificationIDs = currentIDs
+        Logger.log("ADB notifications new=\(newNotifications.count) current=\(currentIDs.count)")
+
+        for notification in newNotifications.prefix(5) {
+            Logger.log(
+                "Posting Android notification title=\(notification.title) app=\(notification.appName) body=\(notification.body)"
+            )
+            let content = UNMutableNotificationContent()
+            content.title = notification.title
+            content.subtitle = notification.appName
+            content.body = notification.body
+            content.sound = .default
+            content.userInfo = [
+                "source": "adb",
+                "package": notification.packageName
+            ]
+
+            let request = UNNotificationRequest(
+                identifier: "adb-\(notification.id)",
+                content: content,
+                trigger: nil
+            )
+
+            do {
+                try await UNUserNotificationCenter.current().add(request)
+            } catch {
+                Logger.log("Posting Android notification failed: \(error)")
+            }
+        }
     }
 
     // MARK: - Android input
@@ -1549,6 +1782,120 @@ final class AppModel: ObservableObject {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         return "Android-Mirroring-\(kind)_\(formatter.string(from: Date())).\(fileExtension)"
+    }
+
+    nonisolated private struct ADBNotification: Hashable {
+        let id: String
+        let packageName: String
+        let appName: String
+        let title: String
+        let body: String
+    }
+
+    nonisolated private static func parseActiveADBNotifications(_ output: String) -> [ADBNotification] {
+        adbNotificationRecords(in: output)
+            .compactMap(parseADBNotificationRecord)
+            .filter { !$0.title.isEmpty || !$0.body.isEmpty }
+    }
+
+    nonisolated private static func adbNotificationRecords(in output: String) -> [String] {
+        let marker = "NotificationRecord"
+        var records: [String] = []
+        var current: [String] = []
+
+        for line in output.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix(marker) {
+                if !current.isEmpty {
+                    records.append(current.joined(separator: "\n"))
+                }
+                current = [line]
+            } else if !current.isEmpty {
+                current.append(line)
+            }
+        }
+
+        if !current.isEmpty {
+            records.append(current.joined(separator: "\n"))
+        }
+
+        return records
+    }
+
+    nonisolated static func parsedADBNotificationSummariesForTesting(_ output: String) -> [String] {
+        parseActiveADBNotifications(output).map { "\($0.appName)|\($0.title)|\($0.body)" }
+    }
+
+    nonisolated private static func parseADBNotificationRecord(_ record: String) -> ADBNotification? {
+        let packageName = firstMatch(in: record, pattern: #"pkg=([^\s\}]+)"#)
+            ?? firstMatch(in: record, pattern: #"StatusBarNotification\(pkg=([^\s]+)"#)
+            ?? ""
+        guard !packageName.isEmpty,
+              !packageName.hasPrefix("android"),
+              !packageName.hasPrefix("com.android.systemui")
+        else { return nil }
+
+        let key = firstMatch(in: record, pattern: #"key=([^\s]+)"#)
+            ?? firstMatch(in: record, pattern: #"Key: ([^\s]+)"#)
+            ?? "\(packageName)-\(record.hashValue)"
+        let title = sanitizedADBNotificationText(
+            firstMatch(in: record, pattern: #"android\.title=String \((.*?)\)"#)
+                ?? firstMatch(in: record, pattern: #"android\.title=(.*?)(?:\n|$)"#)
+                ?? firstMatch(in: record, pattern: #"contentTitle=(.*?)(?:\n|$)"#)
+                ?? firstMatch(in: record, pattern: #"tickerText=(.*?)(?:\n|$)"#)
+                ?? displayName(forPackageName: packageName)
+        )
+        let body = sanitizedADBNotificationText(
+            firstMatch(in: record, pattern: #"android\.text=String \((.*?)\)"#)
+                ?? firstMatch(in: record, pattern: #"android\.bigText=String \((.*?)\)"#)
+                ?? firstMatch(in: record, pattern: #"android\.text=(.*?)(?:\n|$)"#)
+                ?? firstMatch(in: record, pattern: #"contentText=(.*?)(?:\n|$)"#)
+                ?? ""
+        )
+
+        return ADBNotification(
+            id: stableNotificationID(key),
+            packageName: packageName,
+            appName: displayName(forPackageName: packageName),
+            title: title,
+            body: body
+        )
+    }
+
+    nonisolated private static func firstMatch(in text: String, pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
+              let match = regex.firstMatch(
+                in: text,
+                range: NSRange(text.startIndex..<text.endIndex, in: text)
+              ),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: text)
+        else { return nil }
+        return String(text[range])
+    }
+
+    nonisolated private static func sanitizedADBNotificationText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: CharacterSet(charactersIn: " \"'()[]{}").union(.whitespacesAndNewlines))
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+    }
+
+    nonisolated private static func displayName(forPackageName packageName: String) -> String {
+        let lastComponent = packageName.split(separator: ".").last.map(String.init) ?? packageName
+        return lastComponent
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .capitalized
+    }
+
+    nonisolated private static func stableNotificationID(_ key: String) -> String {
+        let hash = key.unicodeScalars.reduce(into: UInt64(14_695_981_039_346_656_037)) { hash, scalar in
+            hash ^= UInt64(scalar.value)
+            hash &*= 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
     }
 
     nonisolated static func oneLine(_ text: String) -> String {

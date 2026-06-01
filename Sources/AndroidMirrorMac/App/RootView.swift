@@ -49,17 +49,17 @@ struct WindowRegistrationView: NSViewRepresentable {
         window.contentMinSize = AppModel.onboardingWindowSize
         window.maxSize = AppModel.onboardingWindowSize
         window.contentMaxSize = AppModel.onboardingWindowSize
-        configureOnboardingMask(for: window.contentView)
+        Self.applyPhoneWindowMask(to: window)
         coordinator.installOrUpdate(parent: window, model: model)
         coordinator.setMirroring(model.isMirroring)
     }
 
-    private func configureOnboardingMask(for view: NSView?) {
-        guard let view else { return }
-        view.wantsLayer = true
-        view.layer?.cornerRadius = MirrorContentWindowController.cornerRadius
-        view.layer?.masksToBounds = true
-        view.layer?.setValue("continuous", forKey: "cornerCurve")
+    static func applyPhoneWindowMask(to window: NSWindow) {
+        let radius = MirrorContentWindowController.onboardingCornerRadius()
+        window.contentView?.wantsLayer = true
+        window.contentView?.layer?.cornerRadius = radius
+        window.contentView?.layer?.masksToBounds = true
+        window.contentView?.layer?.setValue("continuous", forKey: "cornerCurve")
     }
 
     @MainActor

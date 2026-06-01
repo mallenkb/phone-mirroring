@@ -3,9 +3,16 @@ import Foundation
 /// Thin wrapper around the `adb` CLI. All methods are blocking — call them
 /// from a detached Task and route results back via @MainActor.
 struct ADBController {
+    private static let connectLock = NSLock()
+
     @discardableResult
     func run(_ arguments: [String], timeout: TimeInterval? = nil) -> String {
-        Tooling.run("adb", arguments: arguments, timeout: timeout)
+        if arguments.first == "connect" {
+            Self.connectLock.lock()
+            defer { Self.connectLock.unlock() }
+            return Tooling.run("adb", arguments: arguments, timeout: timeout)
+        }
+        return Tooling.run("adb", arguments: arguments, timeout: timeout)
     }
 
     @discardableResult

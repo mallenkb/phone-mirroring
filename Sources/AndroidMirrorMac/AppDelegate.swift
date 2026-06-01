@@ -1,14 +1,17 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var window: NSWindow?
     private var settingsWindow: NSWindow?
     private let model = AppModel()
     private var keyMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UNUserNotificationCenter.current().delegate = self
+
         let rootView = RootView()
             .environmentObject(model)
         let hostingView = NSHostingView(rootView: rootView)
@@ -27,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.isMovableByWindowBackground = true
         window.backgroundColor = .clear
         window.contentView = hostingView
-        configureOnboardingMask(for: hostingView)
+        WindowRegistrationView.applyPhoneWindowMask(to: window)
         window.minSize = AppModel.onboardingWindowSize
         window.contentMinSize = AppModel.onboardingWindowSize
         window.maxSize = AppModel.onboardingWindowSize
@@ -42,15 +45,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func configureOnboardingMask(for view: NSView) {
-        view.wantsLayer = true
-        view.layer?.cornerRadius = MirrorContentWindowController.cornerRadius
-        view.layer?.masksToBounds = true
-        view.layer?.setValue("continuous", forKey: "cornerCurve")
-    }
-
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner, .sound, .list]
     }
 
     func applicationWillTerminate(_ notification: Notification) {
