@@ -3,8 +3,8 @@ import Foundation
 /// UserDefaults-backed persistence for paired phones. Equivalent to the
 /// per-device record Bluetooth keeps between sessions.
 struct PairedPhoneStore {
-    private static let defaultsKey = "AndroidMirror.PairedPhones.v1"
-    private static let compatibilitySuites = [
+    static let defaultsKey = "AndroidMirror.PairedPhones.v1"
+    static let compatibilitySuites = [
         "com.mallenkb.AndroidMirrorMac",
         "com.mallenkb.AndroidMirrorScrcpy",
         "local.androidmirrormac",

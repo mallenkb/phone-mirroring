@@ -6,7 +6,8 @@ import SwiftUI
 /// size and scales it to fit the host window.
 struct FigmaMirrorExperienceView: View {
     @EnvironmentObject private var model: AppModel
-    @AppStorage("hasSeenConnectionOnboarding") private var hasSeenConnectionOnboarding = false
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("hasSeenFirstTimeUserOnboarding") private var hasSeenFirstTimeUserOnboarding = false
     private let phoneAspect: CGFloat = MirrorContentWindowController.defaultMirrorAspect
     private let edgeBleed: CGFloat = 2
     private var referenceHeight: CGFloat { AppModel.onboardingWindowSize.height }
@@ -27,7 +28,10 @@ struct FigmaMirrorExperienceView: View {
         model.isRecoveringConnection
     }
     private var shouldShowFirstRunOnboarding: Bool {
-        !hasSeenConnectionOnboarding && model.pairedPhones.isEmpty
+        !hasSeenFirstTimeUserOnboarding && model.pairedPhones.isEmpty
+    }
+    private var isEffectiveDarkMode: Bool {
+        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
 
     var body: some View {
@@ -55,7 +59,7 @@ struct FigmaMirrorExperienceView: View {
             guard !shouldShowFirstRunOnboarding, !isConnecting else { return }
             model.restartQRCodePairingSession()
         }
-        .onChange(of: hasSeenConnectionOnboarding) { hasSeen in
+        .onChange(of: hasSeenFirstTimeUserOnboarding) { hasSeen in
             if hasSeen, !shouldShowMirrorLoading, !shouldShowFirstRunOnboarding {
                 model.ensureQRCodePairingSession()
             } else {
@@ -91,51 +95,56 @@ struct FigmaMirrorExperienceView: View {
 
     private var firstRunOnboardingContent: some View {
         GeometryReader { proxy in
-            let contentWidth = min(proxy.size.width - 72, maxColumnWidth)
-            let heightScale = min(1, max(0.76, proxy.size.height / 815))
+            let contentWidth = min(proxy.size.width - 52, maxColumnWidth)
+            let layoutScale = min(1, max(0.52, min(proxy.size.height / 815, proxy.size.width / 390)))
+            let visualHeight = 176 * layoutScale
 
             VStack(spacing: 0) {
                 onboardingVisual(width: contentWidth)
-                    .padding(.top, 44 * heightScale)
+                    .frame(height: visualHeight)
+                    .padding(.top, 34 * layoutScale)
 
-                VStack(spacing: 10) {
+                VStack(spacing: 8 * layoutScale) {
                     Text("Mirror your Android on this Mac")
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundStyle(.primary)
+                        .font(.system(size: 24 * layoutScale, weight: .bold))
+                        .foregroundStyle(firstRunPrimaryText)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
 
                     Text("Pair once over Wi-Fi when your Android and Mac are nearby, or plug in with USB when you want a cable.")
-                        .font(.system(size: 14, weight: .regular))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 14 * layoutScale, weight: .regular))
+                        .foregroundStyle(firstRunSecondaryText)
                         .lineSpacing(2)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(width: contentWidth)
                 }
-                .padding(.top, 26 * heightScale)
+                .padding(.top, 22 * layoutScale)
 
-                VStack(alignment: .leading, spacing: 18 * heightScale) {
+                VStack(alignment: .leading, spacing: 18 * layoutScale) {
                     setupGuideRow(
                         iconName: "wifi",
                         title: "Pair once over Wi-Fi",
-                        detail: "Keep your Android and Mac on the same network."
+                        detail: "Keep your Android and Mac on the same network.",
+                        scale: layoutScale
                     )
 
                     setupGuideRow(
                         iconName: "cable.connector",
                         title: "Turn on USB debugging",
-                        detail: "Open Developer options, enable USB debugging, then approve this Mac."
+                        detail: "Open Developer options, enable USB debugging, then approve this Mac.",
+                        scale: layoutScale
                     )
 
                     setupGuideRow(
                         iconName: "qrcode.viewfinder",
                         title: "Enable Wireless debugging",
-                        detail: "Tap Pair device with QR code, scan here, and Reflect can reconnect."
+                        detail: "Tap Pair device with QR code, scan here, and Reflect can reconnect.",
+                        scale: layoutScale
                     )
                 }
                 .frame(width: contentWidth, alignment: .leading)
-                .padding(.top, 28 * heightScale)
+                .padding(.top, 26 * layoutScale)
 
                 Spacer(minLength: 16)
 
@@ -143,62 +152,76 @@ struct FigmaMirrorExperienceView: View {
                     Spacer()
 
                     Button("Set Up Later") {
-                        hasSeenConnectionOnboarding = true
+                        hasSeenFirstTimeUserOnboarding = true
                     }
                     .buttonStyle(OnboardingSecondaryButtonStyle())
 
                     Button("Continue") {
-                        hasSeenConnectionOnboarding = true
+                        hasSeenFirstTimeUserOnboarding = true
                     }
                     .buttonStyle(OnboardingPrimaryButtonStyle())
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 14)
             }
-            .background(Color(nsColor: .windowBackgroundColor))
+            .background(firstRunBackground)
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
     }
 
-    private func onboardingVisual(width: CGFloat) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(Color.primary.opacity(0.035))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-                )
-
-            HStack(alignment: .center, spacing: 34) {
-                MacBookGlyph(accent: accent)
-                    .frame(width: 170, height: 86)
-
-                SignalPathGlyph(accent: accent)
-                    .frame(width: 108, height: 48)
-
-                PhoneGlyph()
-                    .frame(width: 58, height: 92)
-            }
-            .padding(.horizontal, 28)
-        }
-        .frame(width: min(width, 420), height: 176)
+    private var firstRunBackground: some View {
+        LinearGradient(
+            colors: firstRunBackgroundColors,
+            startPoint: .top,
+            endPoint: .bottom
+        )
     }
 
-    private func setupGuideRow(iconName: String, title: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: 16) {
-            Image(systemName: iconName)
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(accent)
-                .frame(width: 22, height: 22)
+    private var firstRunBackgroundColors: [Color] {
+        if isEffectiveDarkMode {
+            return [
+                Color(red: 0.105, green: 0.108, blue: 0.103),
+                Color(red: 0.075, green: 0.082, blue: 0.078)
+            ]
+        }
+        return [
+            Color(red: 0.965, green: 0.958, blue: 0.936),
+            Color(red: 0.925, green: 0.94, blue: 0.918)
+        ]
+    }
 
-            VStack(alignment: .leading, spacing: 3) {
+    private var firstRunPrimaryText: Color {
+        isEffectiveDarkMode
+            ? Color(red: 0.92, green: 0.93, blue: 0.91)
+            : Color(red: 0.13, green: 0.14, blue: 0.13)
+    }
+
+    private var firstRunSecondaryText: Color {
+        isEffectiveDarkMode
+            ? Color(red: 0.68, green: 0.7, blue: 0.67)
+            : Color(red: 0.38, green: 0.4, blue: 0.38)
+    }
+
+    private func onboardingVisual(width: CGFloat) -> some View {
+        MirroringLoopVisual(accent: accent)
+            .frame(width: min(width, 420))
+    }
+
+    private func setupGuideRow(iconName: String, title: String, detail: String, scale: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: 16 * scale) {
+            Image(systemName: iconName)
+                .font(.system(size: 15 * scale, weight: .bold))
+                .foregroundStyle(accent)
+                .frame(width: 22 * scale, height: 22 * scale)
+
+            VStack(alignment: .leading, spacing: 3 * scale) {
                 Text(title)
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.primary)
+                    .font(.system(size: 14 * scale, weight: .bold))
+                    .foregroundStyle(firstRunPrimaryText)
 
                 Text(detail)
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 13 * scale, weight: .regular))
+                    .foregroundStyle(firstRunSecondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -426,19 +449,203 @@ private struct FirstRunPhoneFrame<Content: View>: View {
     private var frameShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
+    private var isEffectiveDarkMode: Bool {
+        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
 
     var body: some View {
         ZStack {
-            Color(nsColor: .windowBackgroundColor)
+            if isEffectiveDarkMode {
+                Color(red: 0.105, green: 0.108, blue: 0.103)
+            } else {
+                Color(red: 0.965, green: 0.958, blue: 0.936)
+            }
 
             content
         }
         .overlay(
             frameShape
                 .inset(by: 0.5)
-                .stroke(Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.1), lineWidth: 1)
+                .stroke(isEffectiveDarkMode ? Color.white.opacity(0.1) : Color.black.opacity(0.08), lineWidth: 1)
         )
         .clipShape(frameShape)
+    }
+}
+
+private struct MirroringLoopVisual: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let accent: Color
+    private let cycle: Double = 12.0
+    private let baseAspect: CGFloat = 1600.0 / 898.0
+    private let screenAspect: CGFloat = 600.0 / 1338.0
+    private let startLeft: CGFloat = 0.00812
+    private let startTop: CGFloat = 0.19376
+    private let startW: CGFloat = 0.17625
+    private let endLeft: CGFloat = 0.46812
+    private let endTop: CGFloat = 0.18486
+    private let endW: CGFloat = 0.14125
+    private let flyingScreenScale: CGFloat = 1.0
+    private var isEffectiveDarkMode: Bool {
+        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            let phase = loopPhase(at: timeline.date)
+            let cast = castState(for: phase)
+
+            GeometryReader { proxy in
+                let stageW = min(proxy.size.width, proxy.size.height * baseAspect)
+                let stageH = stageW / baseAspect
+                let sW = stageW * startW
+                let sH = sW / screenAspect
+                let sX = stageW * startLeft
+                let sY = stageH * startTop
+
+                ZStack(alignment: .topLeading) {
+                    ResourceImage(name: "base_scene", extension: "png")
+                        .frame(width: stageW, height: stageH)
+                        .brightness(isEffectiveDarkMode ? -0.2 : -0.04)
+                        .contrast(isEffectiveDarkMode ? 1.08 : 1.04)
+                        .saturation(isEffectiveDarkMode ? 0.82 : 0.96)
+
+                    ResourceImage(name: "phone_screen", extension: "png")
+                        .frame(width: sW * flyingScreenScale, height: sH * flyingScreenScale)
+                        .scaleEffect(cast.scale, anchor: .topLeading)
+                        .offset(x: sX + cast.offsetX * stageW, y: sY + cast.offsetY * stageH)
+                        .shadow(
+                            color: Color(red: 30 / 255, green: 40 / 255, blue: 25 / 255).opacity(0.16),
+                            radius: 12,
+                            x: 0,
+                            y: 12
+                        )
+                        .opacity(cast.opacity)
+                }
+                .frame(width: stageW, height: stageH)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .accessibilityLabel("Animation showing the phone screen moving to the Mac for mirroring")
+    }
+
+    private func loopPhase(at date: Date) -> Double {
+        date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: cycle) / cycle
+    }
+
+    private func castState(for phase: Double) -> CastState {
+        let scale = endW / (startW * flyingScreenScale)
+        let dx = endLeft - startLeft
+        let dy = endTop - startTop
+        let lift: CGFloat = 0.08
+        let preHold = 0.5 / cycle
+        let flight = 2.2 / cycle
+        let holdLap = 3.5 / cycle
+        let fadeOut = 0.8 / cycle
+        let snap = 0.1 / cycle
+        let fadeIn = 0.8 / cycle
+        let holdStart = preHold + flight
+        let fadeStart = holdStart + holdLap
+        let snapStart = fadeStart + fadeOut
+        let fadeInStart = snapStart + snap
+
+        switch phase {
+        case ..<preHold:
+            return CastState()
+        case ..<holdStart:
+            let t = CGFloat((phase - preHold) / flight)
+            let eased = smootherStep(t)
+            let arc = sin(.pi * eased) * lift
+            return CastState(
+                offsetX: dx * eased,
+                offsetY: dy * eased - arc,
+                scale: 1 + (scale - 1) * eased,
+                opacity: 1
+            )
+        case ..<fadeStart:
+            return CastState(offsetX: dx, offsetY: dy, scale: scale, opacity: 1)
+        case ..<snapStart:
+            let t = (phase - fadeStart) / fadeOut
+            return CastState(offsetX: dx, offsetY: dy, scale: scale, opacity: 1 - t)
+        case ..<fadeInStart:
+            return CastState(opacity: 0)
+        case ..<(fadeInStart + fadeIn):
+            let t = (phase - fadeInStart) / fadeIn
+            return CastState(opacity: Double(cubicEaseInOut(CGFloat(t))))
+        default:
+            return CastState()
+        }
+    }
+
+    private func sineEaseInOut(_ value: CGFloat) -> CGFloat {
+        -(cos(.pi * value) - 1) / 2
+    }
+
+    private func cubicEaseInOut(_ value: CGFloat) -> CGFloat {
+        let t = min(max(value, 0), 1)
+        return t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2
+    }
+
+    /// Perlin smootherstep: 6t^5 - 15t^4 + 10t^3. Zero first *and* second
+    /// derivative at both ends, so the phone glides continuously from start to
+    /// finish with no perceptible acceleration "snap" at either end.
+    private func smootherStep(_ value: CGFloat) -> CGFloat {
+        let t = min(max(value, 0), 1)
+        return t * t * t * (t * (t * 6 - 15) + 10)
+    }
+}
+
+private struct CastState {
+    var offsetX: CGFloat = 0
+    var offsetY: CGFloat = 0
+    var scale: CGFloat = 1
+    var opacity: Double = 1
+}
+
+private struct ResourceImage: View {
+    let name: String
+    let `extension`: String
+
+    var body: some View {
+        if let url = Bundle.module.url(forResource: name, withExtension: `extension`),
+           let image = NSImage(contentsOf: url) {
+            Image(nsImage: image)
+                .resizable()
+        } else {
+            Color.clear
+        }
+    }
+}
+
+private struct FlyingMirrorTile: View {
+    let accent: Color
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [
+                        accent.opacity(0.95),
+                        Color(red: 0.05, green: 0.3, blue: 0.24)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .overlay(alignment: .topLeading) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Capsule(style: .continuous)
+                        .fill(.white.opacity(0.72))
+                        .frame(width: 30, height: 4)
+                    Capsule(style: .continuous)
+                        .fill(.white.opacity(0.34))
+                        .frame(width: 44, height: 4)
+                }
+                .padding(8)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(.white.opacity(0.38), lineWidth: 1)
+            )
     }
 }
 

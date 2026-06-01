@@ -36,11 +36,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     static let screenBottomInset: CGFloat = 0
     static let defaultMirrorSize = NSSize(width: 1080, height: 2340)
     static let defaultMirrorAspect: CGFloat = 1080.0 / 2340.0
-    static let initialMirrorScale: CGFloat = 0.70
+    static let initialMirrorScale: CGFloat = 1.0
     static let minimumMirrorCornerRadius: CGFloat = 24
     static let maximumMirrorCornerRadius: CGFloat = 38
     static let minimumScreenHeightRatio: CGFloat = 0.45
-    static let maximumScreenHeightRatio: CGFloat = 0.98
+    static let maximumScreenHeightRatio: CGFloat = 0.90
     static let chromeHideDelay: TimeInterval = 0.030
     static let chromeHideAnimationDuration: TimeInterval = 0.16
     static let renderCornerRadius: CGFloat = cornerRadius
@@ -63,7 +63,8 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             visibleFrame: visibleFrame,
             aspect: defaultMirrorAspect,
             chromeHeight: verticalShellInset,
-            horizontalChromeWidth: horizontalShellInset
+            horizontalChromeWidth: horizontalShellInset,
+            maximumHeightBasis: resolutionHeight(for: NSScreen.main, fallbackVisibleFrame: visibleFrame)
         )
         return mirrorCornerRadius(
             forWindowHeight: AppModel.onboardingWindowSize.height,
@@ -109,7 +110,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         self.session = session
         self.launchFrame = launchFrame
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 390, height: 850)
-        let initialSize = Self.initialWrappedShellSize(
+        let initialSize = Self.defaultWrappedShellSize(
             for: Self.defaultMirrorSize,
             visibleFrame: visible
         )
@@ -182,7 +183,8 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     static func initialWrappedShellSize(
         for streamSize: NSSize,
         visibleFrame: NSRect,
-        screenMargin: CGFloat = 24
+        screenMargin: CGFloat = 24,
+        maximumHeightBasis: CGFloat? = nil
     ) -> NSSize {
         let fullSize = wrappedShellSize(
             for: streamSize,
@@ -191,7 +193,8 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         )
         let maxScreenWidth = max(1, fullSize.width - horizontalShellInset)
         let maxScreenHeight = max(1, fullSize.height - verticalShellInset)
-        let targetShellHeight = min(AppModel.defaultConnectionWindowSize.height, fullSize.height)
+        let heightBasis = max(1, maximumHeightBasis ?? visibleFrame.height)
+        let targetShellHeight = min(heightBasis * maximumScreenHeightRatio, fullSize.height)
         let targetScreenHeight = max(1, targetShellHeight - verticalShellInset)
         let streamAspect = streamSize.width / max(streamSize.height, 1)
         let targetScreenWidth = min(maxScreenWidth, targetScreenHeight * streamAspect) * initialMirrorScale
@@ -199,6 +202,30 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         return NSSize(
             width: targetScreenWidth + horizontalShellInset,
             height: screenHeight + verticalShellInset
+        )
+    }
+
+    static func defaultWrappedShellSize(
+        for streamSize: NSSize,
+        visibleFrame: NSRect,
+        screenMargin: CGFloat = 24
+    ) -> NSSize {
+        guard streamSize.width > 0, streamSize.height > 0 else {
+            return NSSize(width: horizontalShellInset, height: verticalShellInset)
+        }
+
+        let resolutionHeight = Self.resolutionHeight(for: NSScreen.main, fallbackVisibleFrame: visibleFrame)
+        let targetScreenHeight = max(1, resolutionHeight * 0.5)
+        let maxScreenWidth = max(1, visibleFrame.width - screenMargin - horizontalShellInset)
+        let maxScreenHeight = max(1, visibleFrame.height - screenMargin - verticalShellInset)
+        let streamAspect = streamSize.width / max(streamSize.height, 1)
+        let screenHeight = min(targetScreenHeight, maxScreenHeight)
+        let screenWidth = min(maxScreenWidth, screenHeight * streamAspect)
+        let fittedScreenHeight = min(maxScreenHeight, screenWidth / max(streamAspect, 0.001))
+
+        return NSSize(
+            width: screenWidth + horizontalShellInset,
+            height: fittedScreenHeight + verticalShellInset
         )
     }
 
@@ -233,7 +260,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         )
     }
 
-    private static func targetVisibleFrame(for window: NSWindow?) -> NSRect {
+    private static func targetVisibleFrame(for window: NSWindow?, preferWindowScreen: Bool = false) -> NSRect {
+        if preferWindowScreen, let visibleFrame = window?.screen?.visibleFrame {
+            return visibleFrame
+        }
+
         let mouse = NSEvent.mouseLocation
         if let mouseScreen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) {
             return mouseScreen.visibleFrame
@@ -244,6 +275,19 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         return NSScreen.main?.visibleFrame
             ?? window?.screen?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 390, height: 850)
+    }
+
+    static func resolutionHeight(for screen: NSScreen?, fallbackVisibleFrame: NSRect) -> CGFloat {
+        guard
+            let screen,
+            let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+        else {
+            return max(1, fallbackVisibleFrame.height)
+        }
+
+        let displayID = CGDirectDisplayID(screenNumber.uint32Value)
+        let pixelHeight = CGDisplayPixelsHigh(displayID)
+        return pixelHeight > 0 ? CGFloat(pixelHeight) : max(1, fallbackVisibleFrame.height)
     }
 
     // MARK: - Public
@@ -278,10 +322,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             return
         }
 
-        let visible = Self.targetVisibleFrame(for: window)
+        let visible = Self.targetVisibleFrame(for: window, preferWindowScreen: true)
         let outerSize = Self.initialWrappedShellSize(
             for: NSSize(width: CGFloat(width), height: CGFloat(height)),
-            visibleFrame: visible
+            visibleFrame: visible,
+            maximumHeightBasis: Self.resolutionHeight(for: window.screen, fallbackVisibleFrame: visible)
         )
         window.contentAspectRatio = outerSize
         let newFrame = Self.centeredFrame(forContentSize: outerSize, in: visible, window: window)
@@ -299,7 +344,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             visibleFrame: window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame,
             aspect: aspect,
             chromeHeight: Self.verticalShellInset,
-            horizontalChromeWidth: Self.horizontalShellInset
+            horizontalChromeWidth: Self.horizontalShellInset,
+            maximumHeightBasis: Self.resolutionHeight(
+                for: window.screen,
+                fallbackVisibleFrame: window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame
+            )
         )
         let targetFrame = Self.scaledFrame(
             from: window.frame,
@@ -391,7 +440,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         window.acceptsMouseMovedEvents = true
         let defaultShellSize = Self.initialWrappedShellSize(
             for: Self.defaultMirrorSize,
-            visibleFrame: window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame
+            visibleFrame: window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame,
+            maximumHeightBasis: Self.resolutionHeight(
+                for: window.screen ?? NSScreen.main,
+                fallbackVisibleFrame: window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame
+            )
         )
         window.contentAspectRatio = defaultShellSize
         applyWindowSizeLimits(to: window, aspect: Self.defaultMirrorAspect)
@@ -409,7 +462,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             visibleFrame: window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame,
             aspect: aspect,
             chromeHeight: Self.verticalShellInset,
-            horizontalChromeWidth: Self.horizontalShellInset
+            horizontalChromeWidth: Self.horizontalShellInset,
+            maximumHeightBasis: Self.resolutionHeight(
+                for: window.screen,
+                fallbackVisibleFrame: window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame
+            )
         )
         window.minSize = limits.min
         window.maxSize = limits.max
@@ -420,7 +477,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             visibleFrame: window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame,
             aspect: mirrorAspect ?? Self.defaultMirrorAspect,
             chromeHeight: Self.verticalShellInset,
-            horizontalChromeWidth: Self.horizontalShellInset
+            horizontalChromeWidth: Self.horizontalShellInset,
+            maximumHeightBasis: Self.resolutionHeight(
+                for: window.screen,
+                fallbackVisibleFrame: window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame
+            )
         )
         let scale = min(1, max(0, window.frame.height / max(1, limits.max.height)))
         return max(Self.minimumScreenSideInset, Self.screenSideInset * scale)
@@ -480,10 +541,12 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         visibleFrame: NSRect,
         aspect: CGFloat,
         chromeHeight: CGFloat,
-        horizontalChromeWidth: CGFloat = 0
+        horizontalChromeWidth: CGFloat = 0,
+        maximumHeightBasis: CGFloat? = nil
     ) -> (min: NSSize, max: NSSize) {
         let visibleHeight = max(1, visibleFrame.height)
-        let maxHeight = min(AppModel.defaultConnectionWindowSize.height, visibleHeight * maximumScreenHeightRatio)
+        let heightBasis = max(1, maximumHeightBasis ?? visibleHeight)
+        let maxHeight = heightBasis * maximumScreenHeightRatio
         let minHeight = min(maxHeight, max(AppModel.minimumConnectionWindowSize.height, visibleHeight * minimumScreenHeightRatio))
         let maxChromeHeight = chromeHeight > 0 ? chromeHeight * maximumChromeScale : 0
         let minContentHeight = max(1, minHeight - chromeHeight)

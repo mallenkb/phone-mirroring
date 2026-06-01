@@ -181,6 +181,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         )
         viewItem.submenu = viewMenu
 
+        let helpItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
+        mainMenu.addItem(helpItem)
+        let helpMenu = NSMenu(title: "Help")
+        helpMenu.addItem(
+            NSMenuItem(
+                title: "Restart Onboarding",
+                action: #selector(restartFirstTimeOnboarding(_:)),
+                keyEquivalent: ""
+            )
+        )
+        helpItem.submenu = helpMenu
+
         NSApp.mainMenu = mainMenu
     }
 
@@ -247,6 +259,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow = window
     }
+
+    @objc private func restartFirstTimeOnboarding(_ sender: Any?) {
+        let alert = NSAlert()
+        alert.messageText = "Restart onboarding?"
+        alert.informativeText = "This clears saved onboarding and paired-phone records, then relaunches the app into onboarding."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Restart Onboarding")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        model.resetFirstTimeUserOnboardingState()
+        relaunchApp()
+    }
+
+    private func relaunchApp() {
+        let bundleURL = Bundle.main.bundleURL
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration) { _, _ in
+            NSApp.terminate(nil)
+        }
+    }
+
 
     @objc private func toggleMirroring(_ sender: Any?) {
         model.isMirroring ? model.stopMirroring() : model.startMirroring(manual: true)

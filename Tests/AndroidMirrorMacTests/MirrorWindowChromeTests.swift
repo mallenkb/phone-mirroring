@@ -372,22 +372,35 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testBlankNativeMirrorStartsThirtyPercentSmallerThanDefaultLaunchSize() throws {
+    func testBlankNativeMirrorStartsAtMaximumScreenHeightPercentage() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
         let window = try XCTUnwrap(controller.window)
         let visibleFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 390, height: 850)
+        let maximumHeightBasis = MirrorContentWindowController.resolutionHeight(
+            for: NSScreen.main,
+            fallbackVisibleFrame: visibleFrame
+        )
         let fullDefaultSize = MirrorContentWindowController.wrappedShellSize(
             for: MirrorContentWindowController.defaultMirrorSize,
-            visibleFrame: visibleFrame
+            visibleFrame: NSRect(
+                x: visibleFrame.minX,
+                y: visibleFrame.minY,
+                width: visibleFrame.width,
+                height: maximumHeightBasis
+            )
         )
         let initialSize = MirrorContentWindowController.initialWrappedShellSize(
             for: MirrorContentWindowController.defaultMirrorSize,
-            visibleFrame: visibleFrame
+            visibleFrame: visibleFrame,
+            maximumHeightBasis: maximumHeightBasis
         )
         let topChromeInset = MirrorContentWindowController.visibleChromeRenderTopInset
-        let targetHeight = min(AppModel.defaultConnectionWindowSize.height, fullDefaultSize.height)
+        let targetHeight = min(
+            maximumHeightBasis * MirrorContentWindowController.maximumScreenHeightRatio,
+            fullDefaultSize.height
+        )
         let targetScreenHeight = targetHeight - topChromeInset
 
         XCTAssertEqual(window.frame.width, initialSize.width, accuracy: 1)
@@ -406,7 +419,7 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testNativeMirrorStreamStartsThirtyPercentSmallerThanDefaultLaunchSize() throws {
+    func testNativeMirrorStreamStartsAtMaximumScreenHeightPercentage() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
@@ -424,7 +437,10 @@ final class MirrorWindowChromeTests: XCTestCase {
             visibleFrame: visibleFrame
         )
         let topChromeInset = MirrorContentWindowController.visibleChromeRenderTopInset
-        let targetHeight = min(AppModel.defaultConnectionWindowSize.height, fullStreamSize.height)
+        let targetHeight = min(
+            visibleFrame.height * MirrorContentWindowController.maximumScreenHeightRatio,
+            fullStreamSize.height
+        )
         let targetScreenHeight = targetHeight - topChromeInset
 
         XCTAssertGreaterThanOrEqual(window.frame.width, initialStreamSize.width)
@@ -488,7 +504,7 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testNativeMirrorWindowHonorsMinimumSizeAndHardCapsAtScreenHeight() {
+    func testNativeMirrorWindowHonorsMinimumSizeAndCapsAtScreenHeightPercentage() {
         let limits = MirrorContentWindowController.sizeLimits(
             visibleFrame: NSRect(x: 0, y: 0, width: 1440, height: 1000),
             aspect: 1080.0 / 2340.0,
@@ -496,13 +512,13 @@ final class MirrorWindowChromeTests: XCTestCase {
         )
 
         XCTAssertEqual(limits.min.height, AppModel.minimumConnectionWindowSize.height, accuracy: 0.001)
-        XCTAssertEqual(limits.max.height, 980, accuracy: 0.001)
+        XCTAssertEqual(limits.max.height, 900, accuracy: 0.001)
         XCTAssertEqual(
             limits.min.width,
             AppModel.minimumConnectionWindowSize.height * (1080.0 / 2340.0),
             accuracy: 0.001
         )
-        XCTAssertEqual(limits.max.width, 980 * (1080.0 / 2340.0), accuracy: 0.001)
+        XCTAssertEqual(limits.max.width, 900 * (1080.0 / 2340.0), accuracy: 0.001)
     }
 
     @MainActor
@@ -516,7 +532,7 @@ final class MirrorWindowChromeTests: XCTestCase {
 
         XCTAssertEqual(
             limits.max.width,
-            (980 - MirrorContentWindowController.maximumChromeHeight) * aspect,
+            (900 - MirrorContentWindowController.maximumChromeHeight) * aspect,
             accuracy: 0.001
         )
     }

@@ -24,11 +24,11 @@ final class AppModel: ObservableObject {
     }
     @Published var captureCue: CaptureCue?
     static let minimumConnectionWindowSize = NSSize(width: 384, height: 688)
-    static let defaultConnectionWindowSize = NSSize(width: 650, height: 1170)
     static var onboardingWindowSize: NSSize {
-        MirrorContentWindowController.initialWrappedShellSize(
+        let visibleFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 390, height: 850)
+        return MirrorContentWindowController.defaultWrappedShellSize(
             for: MirrorContentWindowController.defaultMirrorSize,
-            visibleFrame: NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 390, height: 850)
+            visibleFrame: visibleFrame
         )
     }
 
@@ -128,6 +128,18 @@ final class AppModel: ObservableObject {
     func registerConnectionWindow(_ window: NSWindow?) {
         guard let window else { return }
         connectionWindow = window
+    }
+
+    func resetFirstTimeUserOnboardingState() {
+        UserDefaults.standard.set(false, forKey: "hasSeenFirstTimeUserOnboarding")
+        UserDefaults.standard.removeObject(forKey: PairedPhoneStore.defaultsKey)
+        for suiteName in PairedPhoneStore.compatibilitySuites {
+            UserDefaults(suiteName: suiteName)?.set(false, forKey: "hasSeenFirstTimeUserOnboarding")
+            UserDefaults(suiteName: suiteName)?.removeObject(forKey: PairedPhoneStore.defaultsKey)
+        }
+        pairedPhones = []
+        selectedDevice = .demo
+        stopQRCodePairingSession()
     }
 
     // MARK: - Discovery → auto-reconnect
