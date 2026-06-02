@@ -10,13 +10,21 @@ struct FigmaMirrorExperienceView: View {
     @AppStorage("hasSeenFirstTimeUserOnboarding") private var hasSeenFirstTimeUserOnboarding = false
     private let phoneAspect: CGFloat = MirrorContentWindowController.defaultMirrorAspect
     private let edgeBleed: CGFloat = 2
-    private var referenceHeight: CGFloat { AppModel.onboardingWindowSize.height }
-    private var referenceWidth: CGFloat { referenceHeight * phoneAspect }
+    private var referenceHeight: CGFloat {
+        shouldShowFirstRunOnboarding
+            ? AppModel.connectionWindowSize.height
+            : AppModel.onboardingWindowSize.height
+    }
+    private var referenceWidth: CGFloat {
+        shouldShowFirstRunOnboarding
+            ? AppModel.connectionWindowSize.width
+            : referenceHeight * phoneAspect
+    }
     private var isConnecting: Bool {
         model.isPairing || model.isScanning || model.isMirroring || shouldShowMirrorLoading
     }
     private let heroIconSize: CGFloat = 36
-    private let maxColumnWidth: CGFloat = 560
+    private let maxColumnWidth: CGFloat = 620
     private let qrCodeSize: CGFloat = 188
     private let qrPanelSize: CGFloat = 212
     private let accent = Color(red: 0.22, green: 0.78, blue: 0.55)
@@ -74,7 +82,7 @@ struct FigmaMirrorExperienceView: View {
     @ViewBuilder
     private var designSurface: some View {
         if shouldShowFirstRunOnboarding {
-            FirstRunPhoneFrame {
+            FirstRunWindowSurface {
                 firstRunOnboardingContent
             }
         } else {
@@ -95,8 +103,8 @@ struct FigmaMirrorExperienceView: View {
 
     private var firstRunOnboardingContent: some View {
         GeometryReader { proxy in
-            let contentWidth = min(proxy.size.width - 52, maxColumnWidth)
-            let layoutScale = min(1, max(0.52, min(proxy.size.height / 815, proxy.size.width / 390)))
+            let contentWidth = min(proxy.size.width - 96, maxColumnWidth)
+            let layoutScale = min(1, max(0.72, min(proxy.size.height / 640, proxy.size.width / 760)))
             let visualHeight = 176 * layoutScale
 
             VStack(spacing: 0) {
@@ -111,7 +119,7 @@ struct FigmaMirrorExperienceView: View {
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    Text("Pair once over Wi-Fi when your Android and Mac are nearby, or plug in with USB when you want a cable.")
+                    Text("Connect with USB or scan a QR code to pair wirelessly.")
                         .font(.system(size: 14 * layoutScale, weight: .regular))
                         .foregroundStyle(firstRunSecondaryText)
                         .lineSpacing(2)
@@ -123,23 +131,23 @@ struct FigmaMirrorExperienceView: View {
 
                 VStack(alignment: .leading, spacing: 18 * layoutScale) {
                     setupGuideRow(
-                        iconName: "wifi",
-                        title: "Pair once over Wi-Fi",
-                        detail: "Keep your Android and Mac on the same network.",
-                        scale: layoutScale
-                    )
-
-                    setupGuideRow(
                         iconName: "cable.connector",
-                        title: "Turn on USB debugging",
-                        detail: "Open Developer options, enable USB debugging, then approve this Mac.",
+                        title: "USB",
+                        detail: "Plug in your phone and allow USB debugging.",
                         scale: layoutScale
                     )
 
                     setupGuideRow(
                         iconName: "qrcode.viewfinder",
-                        title: "Enable Wireless debugging",
-                        detail: "Tap Pair device with QR code, scan here, and Reflect can reconnect.",
+                        title: "Wireless",
+                        detail: "Scan a QR code from your phone's Wireless debugging settings.",
+                        scale: layoutScale
+                    )
+
+                    setupGuideRow(
+                        iconName: "wifi",
+                        title: "Keep devices nearby",
+                        detail: "For wireless pairing, keep your phone and Mac on the same Wi-Fi network.",
                         scale: layoutScale
                     )
                 }
@@ -244,13 +252,13 @@ struct FigmaMirrorExperienceView: View {
             let qrCodeSize = min(self.qrCodeSize * heightScale, qrPanelSize - 24)
 
             VStack(spacing: 0) {
-                headerGroup(width: contentWidth)
+                headerGroup(width: contentWidth, scale: heightScale)
 
-                usbConnectionAction(width: contentWidth)
+                usbConnectionAction(width: contentWidth, scale: heightScale)
                     .padding(.top, 34 * heightScale)
 
                 Text("or")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: max(12, 13 * heightScale), weight: .semibold))
                     .foregroundStyle(.white.opacity(0.66))
                     .padding(.vertical, 16 * heightScale)
 
@@ -259,7 +267,8 @@ struct FigmaMirrorExperienceView: View {
                     title: "Scan QR code",
                     detail: "Enable Wireless debugging, tap Pair with QR code, then scan.",
                     iconColor: .white,
-                    width: contentWidth
+                    width: contentWidth,
+                    scale: heightScale
                 )
 
                 qrPairingPanel(panelSize: qrPanelSize, codeSize: qrCodeSize)
@@ -276,14 +285,14 @@ struct FigmaMirrorExperienceView: View {
         }
     }
 
-    private func headerGroup(width: CGFloat) -> some View {
-        VStack(spacing: 18) {
+    private func headerGroup(width: CGFloat, scale: CGFloat) -> some View {
+        VStack(spacing: 18 * scale) {
             Image(systemName: "iphone.gen3.radiowaves.left.and.right")
-                .font(.system(size: heroIconSize, weight: .medium))
+                .font(.system(size: heroIconSize * scale, weight: .medium))
                 .foregroundStyle(accent)
 
             Text("Connect your Android phone")
-                .font(.system(size: 21, weight: .bold))
+                .font(.system(size: max(17, 20 * scale), weight: .bold))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -291,14 +300,15 @@ struct FigmaMirrorExperienceView: View {
         }
     }
 
-    private func usbConnectionAction(width: CGFloat) -> some View {
+    private func usbConnectionAction(width: CGFloat, scale: CGFloat) -> some View {
         Button(action: model.connectViaUSB) {
             connectionInstruction(
                 iconName: "cable.connector.horizontal",
                 title: "Connect via USB",
                 detail: "Turn on Developer options, enable USB debugging, then connect by cable.",
                 iconColor: .white,
-                width: width
+                width: width,
+                scale: scale
             )
         }
         .buttonStyle(.plain)
@@ -314,21 +324,25 @@ struct FigmaMirrorExperienceView: View {
         let statusColor = online ? accent : Color.white.opacity(0.48)
         let statusText = online ? "Device" : "Offline"
 
-        return HStack(spacing: 10) {
+        return HStack(spacing: 8) {
             Circle()
                 .fill(statusColor.opacity(0.9))
-                .frame(width: 8, height: 8)
+                .frame(width: 7, height: 7)
 
             Text(statusText)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
+                .fixedSize(horizontal: true, vertical: false)
 
             Text(model.selectedDevice.name)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .layoutPriority(1)
         }
         .foregroundStyle(statusColor.opacity(0.85))
-        .padding(.horizontal, 18)
-        .frame(height: 34)
+        .padding(.horizontal, 14)
+        .fixedSize(horizontal: true, vertical: false)
+        .frame(height: 30)
         .background(
             Capsule(style: .continuous)
                 .fill(Color.black.opacity(0.12))
@@ -340,26 +354,27 @@ struct FigmaMirrorExperienceView: View {
         title: String,
         detail: String,
         iconColor: Color,
-        width: CGFloat
+        width: CGFloat,
+        scale: CGFloat
     ) -> some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 10) {
+        VStack(spacing: 8 * scale) {
+            HStack(spacing: 10 * scale) {
                 Image(systemName: iconName)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: max(14, 16 * scale), weight: .semibold))
                     .foregroundStyle(iconColor)
-                    .frame(width: 24, alignment: .center)
+                    .frame(width: 24 * scale, alignment: .center)
 
                 Text(title)
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.system(size: max(16, 18 * scale), weight: .bold))
                     .foregroundStyle(.white)
             }
             .frame(maxWidth: .infinity, alignment: .center)
 
             Text(detail)
-                .font(.system(size: 14, weight: .regular))
+                .font(.system(size: max(12, 14 * scale), weight: .regular))
                 .foregroundStyle(.white.opacity(0.78))
                 .multilineTextAlignment(.center)
-                .lineSpacing(2)
+                .lineSpacing(2 * scale)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(width: width)
         }
@@ -440,12 +455,10 @@ struct FigmaPhoneFrame<Content: View>: View {
     }
 }
 
-private struct FirstRunPhoneFrame<Content: View>: View {
+private struct FirstRunWindowSurface<Content: View>: View {
     @Environment(\.colorScheme) private var colorScheme
     @ViewBuilder var content: Content
-    private var cornerRadius: CGFloat {
-        MirrorContentWindowController.onboardingCornerRadius()
-    }
+    private let cornerRadius: CGFloat = 0
     private var frameShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
@@ -463,12 +476,6 @@ private struct FirstRunPhoneFrame<Content: View>: View {
 
             content
         }
-        .overlay(
-            frameShape
-                .inset(by: 0.5)
-                .stroke(isEffectiveDarkMode ? Color.white.opacity(0.1) : Color.black.opacity(0.08), lineWidth: 1)
-        )
-        .clipShape(frameShape)
     }
 }
 

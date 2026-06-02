@@ -15,26 +15,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let rootView = RootView()
             .environmentObject(model)
         let hostingView = NSHostingView(rootView: rootView)
+        let shouldShowFirstRunIntro = !UserDefaults.standard.bool(forKey: "hasSeenFirstTimeUserOnboarding")
+            && model.pairedPhones.isEmpty
+        let initialWindowSize = shouldShowFirstRunIntro
+            ? AppModel.connectionWindowSize
+            : AppModel.onboardingWindowSize
+        let styleMask: NSWindow.StyleMask = shouldShowFirstRunIntro
+            ? [.titled, .closable, .miniaturizable]
+            : [.borderless]
         let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: AppModel.onboardingWindowSize),
-            styleMask: [.borderless],
+            contentRect: NSRect(origin: .zero, size: initialWindowSize),
+            styleMask: styleMask,
             backing: .buffered,
             defer: false
         )
         window.title = "Android Mirroring"
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
-        window.isOpaque = false
-        window.hasShadow = false
-        window.isMovableByWindowBackground = true
-        window.backgroundColor = .clear
+        window.isOpaque = shouldShowFirstRunIntro
+        window.hasShadow = shouldShowFirstRunIntro
+        window.isMovableByWindowBackground = !shouldShowFirstRunIntro
+        window.backgroundColor = shouldShowFirstRunIntro ? .windowBackgroundColor : .clear
         window.contentView = hostingView
-        WindowRegistrationView.applyPhoneWindowMask(to: window)
-        window.minSize = AppModel.onboardingWindowSize
-        window.contentMinSize = AppModel.onboardingWindowSize
-        window.maxSize = AppModel.onboardingWindowSize
-        window.contentMaxSize = AppModel.onboardingWindowSize
+        if shouldShowFirstRunIntro {
+            WindowRegistrationView.applyDefaultWindowMask(to: window)
+        } else {
+            WindowRegistrationView.applyPhoneWindowMask(to: window)
+        }
+        window.minSize = initialWindowSize
+        window.contentMinSize = initialWindowSize
+        window.maxSize = initialWindowSize
+        window.contentMaxSize = initialWindowSize
         window.center()
         window.makeKeyAndOrderFront(nil)
         model.registerConnectionWindow(window)

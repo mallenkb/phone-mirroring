@@ -3,11 +3,16 @@ import AppKit
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
+    @AppStorage("hasSeenFirstTimeUserOnboarding") private var hasSeenFirstTimeUserOnboarding = false
+
+    private var usesDefaultWindow: Bool {
+        !hasSeenFirstTimeUserOnboarding && model.pairedPhones.isEmpty
+    }
 
     var body: some View {
         FigmaMirrorExperienceView()
             .environmentObject(model)
-            .background(WindowRegistrationView(model: model))
+            .background(WindowRegistrationView(model: model, usesDefaultWindow: usesDefaultWindow))
     }
 }
 
@@ -15,6 +20,7 @@ struct RootView: View {
 /// session ends.
 struct WindowRegistrationView: NSViewRepresentable {
     @ObservedObject var model: AppModel
+    let usesDefaultWindow: Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -41,17 +47,58 @@ struct WindowRegistrationView: NSViewRepresentable {
     private func configure(window: NSWindow?, coordinator: Coordinator) {
         guard let window else { return }
         model.registerConnectionWindow(window)
+        if usesDefaultWindow {
+            configureDefaultWindow(window, coordinator: coordinator)
+        } else {
+            configurePhoneWindow(window, coordinator: coordinator)
+        }
+    }
+
+    private func configureDefaultWindow(_ window: NSWindow, coordinator: Coordinator) {
+        window.styleMask.insert(.titled)
+        window.styleMask.insert(.closable)
+        window.styleMask.insert(.miniaturizable)
+        window.styleMask.remove(.resizable)
+        window.titleVisibility = .visible
+        window.titlebarAppearsTransparent = false
+        window.isOpaque = true
+        window.hasShadow = true
+        window.isMovableByWindowBackground = false
+        window.backgroundColor = .windowBackgroundColor
+        applySize(AppModel.connectionWindowSize, to: window)
+        Self.applyDefaultWindowMask(to: window)
+        coordinator.uninstall()
+    }
+
+    private func configurePhoneWindow(_ window: NSWindow, coordinator: Coordinator) {
         window.styleMask.remove(.titled)
         window.styleMask.remove(.resizable)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.minSize = AppModel.onboardingWindowSize
-        window.contentMinSize = AppModel.onboardingWindowSize
-        window.maxSize = AppModel.onboardingWindowSize
-        window.contentMaxSize = AppModel.onboardingWindowSize
+        window.isOpaque = false
+        window.hasShadow = false
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = .clear
+        applySize(AppModel.onboardingWindowSize, to: window)
         Self.applyPhoneWindowMask(to: window)
         coordinator.installOrUpdate(parent: window, model: model)
         coordinator.setMirroring(model.isMirroring)
+    }
+
+    private func applySize(_ size: NSSize, to window: NSWindow) {
+        if window.contentView?.frame.size != size {
+            window.setContentSize(size)
+        }
+        window.minSize = size
+        window.contentMinSize = size
+        window.maxSize = size
+        window.contentMaxSize = size
+    }
+
+    static func applyDefaultWindowMask(to window: NSWindow) {
+        window.contentView?.wantsLayer = true
+        window.contentView?.layer?.cornerRadius = 0
+        window.contentView?.layer?.masksToBounds = false
     }
 
     static func applyPhoneWindowMask(to window: NSWindow) {

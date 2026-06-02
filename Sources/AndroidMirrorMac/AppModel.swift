@@ -24,6 +24,7 @@ final class AppModel: ObservableObject {
     }
     @Published var captureCue: CaptureCue?
     static let minimumConnectionWindowSize = NSSize(width: 384, height: 688)
+    static let connectionWindowSize = NSSize(width: 760, height: 640)
     static var onboardingWindowSize: NSSize {
         let visibleFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 390, height: 850)
         return MirrorContentWindowController.defaultWrappedShellSize(
