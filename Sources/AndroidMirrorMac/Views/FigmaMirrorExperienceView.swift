@@ -273,9 +273,10 @@ struct FigmaMirrorExperienceView: View {
 
                 qrPairingPanel(panelSize: qrPanelSize, codeSize: qrCodeSize)
                     .padding(.top, 22 * heightScale)
+                    .frame(width: contentWidth, alignment: .center)
 
                 if shouldShowDevicePill {
-                    devicePill
+                    devicePill(width: contentWidth)
                         .padding(.top, 34 * heightScale)
                 }
             }
@@ -319,7 +320,7 @@ struct FigmaMirrorExperienceView: View {
         model.isSelectedDeviceOnline || !model.pairedPhones.isEmpty
     }
 
-    private var devicePill: some View {
+    private func devicePill(width: CGFloat) -> some View {
         let online = model.isSelectedDeviceOnline
         let statusColor = online ? accent : Color.white.opacity(0.48)
         let statusText = online ? "Device" : "Offline"
@@ -347,6 +348,7 @@ struct FigmaMirrorExperienceView: View {
             Capsule(style: .continuous)
                 .fill(Color.black.opacity(0.12))
         )
+        .frame(width: width, alignment: .center)
     }
 
     private func connectionInstruction(
