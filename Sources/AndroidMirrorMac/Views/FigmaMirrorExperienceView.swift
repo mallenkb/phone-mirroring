@@ -6,20 +6,10 @@ import SwiftUI
 /// size and scales it to fit the host window.
 struct FigmaMirrorExperienceView: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.colorScheme) private var colorScheme
-    @AppStorage("hasSeenFirstTimeUserOnboarding") private var hasSeenFirstTimeUserOnboarding = false
     private let phoneAspect: CGFloat = MirrorContentWindowController.defaultMirrorAspect
     private let edgeBleed: CGFloat = 2
-    private var referenceHeight: CGFloat {
-        shouldShowFirstRunOnboarding
-            ? AppModel.connectionWindowSize.height
-            : AppModel.onboardingWindowSize.height
-    }
-    private var referenceWidth: CGFloat {
-        shouldShowFirstRunOnboarding
-            ? AppModel.connectionWindowSize.width
-            : referenceHeight * phoneAspect
-    }
+    private var referenceHeight: CGFloat { AppModel.onboardingWindowSize.height }
+    private var referenceWidth: CGFloat { referenceHeight * phoneAspect }
     private var isConnecting: Bool {
         model.isPairing || model.isScanning || model.isMirroring || shouldShowMirrorLoading
     }
@@ -35,12 +25,6 @@ struct FigmaMirrorExperienceView: View {
     private var shouldShowMirrorLoading: Bool {
         model.isRecoveringConnection
     }
-    private var shouldShowFirstRunOnboarding: Bool {
-        !hasSeenFirstTimeUserOnboarding && model.pairedPhones.isEmpty
-    }
-    private var isEffectiveDarkMode: Bool {
-        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-    }
 
     var body: some View {
         ZStack {
@@ -55,24 +39,15 @@ struct FigmaMirrorExperienceView: View {
             .frame(width: referenceWidth, height: referenceHeight)
             .fixedSize()
         .onAppear {
-            if shouldShowFirstRunOnboarding {
-                model.stopQRCodePairingSession()
-            } else if shouldShowMirrorLoading {
+            if shouldShowMirrorLoading {
                 model.stopQRCodePairingSession()
             } else {
                 model.ensureQRCodePairingSession()
             }
         }
         .onReceive(qrRefreshTimer) { _ in
-            guard !shouldShowFirstRunOnboarding, !isConnecting else { return }
+            guard !isConnecting else { return }
             model.restartQRCodePairingSession()
-        }
-        .onChange(of: hasSeenFirstTimeUserOnboarding) { hasSeen in
-            if hasSeen, !shouldShowMirrorLoading, !shouldShowFirstRunOnboarding {
-                model.ensureQRCodePairingSession()
-            } else {
-                model.stopQRCodePairingSession()
-            }
         }
         .onDisappear {
             model.stopQRCodePairingSession()
@@ -81,14 +56,8 @@ struct FigmaMirrorExperienceView: View {
 
     @ViewBuilder
     private var designSurface: some View {
-        if shouldShowFirstRunOnboarding {
-            FirstRunWindowSurface {
-                firstRunOnboardingContent
-            }
-        } else {
-            FigmaPhoneFrame {
-                connectionContent
-            }
+        FigmaPhoneFrame {
+            connectionContent
         }
     }
 
@@ -98,164 +67,6 @@ struct FigmaMirrorExperienceView: View {
             reconnectingContent
         } else {
             onboardingContent
-        }
-    }
-
-    private var firstRunOnboardingContent: some View {
-        GeometryReader { proxy in
-            let contentWidth = min(proxy.size.width - 96, maxColumnWidth)
-            let layoutScale = min(1, max(0.72, min(proxy.size.height / 640, proxy.size.width / 760)))
-            let visualHeight = 176 * layoutScale
-
-            VStack(spacing: 0) {
-                Spacer(minLength: 28 * layoutScale)
-
-                onboardingVisual(width: contentWidth)
-                    .frame(height: visualHeight)
-
-                VStack(spacing: 8 * layoutScale) {
-                    Text("Mirror your Android on this Mac")
-                        .font(.system(size: 24 * layoutScale, weight: .bold))
-                        .foregroundStyle(firstRunPrimaryText)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Text("Connect with USB or scan a QR code to pair wirelessly.")
-                        .font(.system(size: 14 * layoutScale, weight: .regular))
-                        .foregroundStyle(firstRunSecondaryText)
-                        .lineSpacing(2)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(width: contentWidth)
-                }
-                .padding(.top, 22 * layoutScale)
-
-                VStack(alignment: .leading, spacing: 16 * layoutScale) {
-                    setupGuideRow(
-                        iconName: "cable.connector",
-                        title: "USB",
-                        detail: "Plug in your phone and allow USB debugging.",
-                        scale: layoutScale
-                    )
-
-                    Divider()
-                        .overlay(firstRunCardStroke)
-
-                    setupGuideRow(
-                        iconName: "qrcode.viewfinder",
-                        title: "Wireless",
-                        detail: "Scan a QR code from your phone's Wireless debugging settings.",
-                        scale: layoutScale
-                    )
-
-                    Divider()
-                        .overlay(firstRunCardStroke)
-
-                    setupGuideRow(
-                        iconName: "wifi",
-                        title: "Keep devices nearby",
-                        detail: "For wireless pairing, keep your phone and Mac on the same Wi-Fi network.",
-                        scale: layoutScale
-                    )
-                }
-                .padding(.horizontal, 18 * layoutScale)
-                .padding(.vertical, 16 * layoutScale)
-                .frame(width: contentWidth, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 16 * layoutScale, style: .continuous)
-                        .fill(firstRunCardFill)
-                )
-                .padding(.top, 24 * layoutScale)
-
-                HStack(spacing: 12) {
-                    Button("Set Up Later") {
-                        hasSeenFirstTimeUserOnboarding = true
-                    }
-                    .buttonStyle(OnboardingSecondaryButtonStyle())
-
-                    Button("Continue") {
-                        hasSeenFirstTimeUserOnboarding = true
-                    }
-                    .buttonStyle(OnboardingPrimaryButtonStyle())
-                }
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.horizontal, 20)
-                .padding(.top, 28 * layoutScale)
-
-                Spacer(minLength: 28 * layoutScale)
-            }
-            .background(firstRunBackground)
-            .frame(width: proxy.size.width, height: proxy.size.height)
-        }
-    }
-
-    private var firstRunBackground: some View {
-        LinearGradient(
-            colors: firstRunBackgroundColors,
-            startPoint: .top,
-            endPoint: .bottom
-        )
-    }
-
-    private var firstRunBackgroundColors: [Color] {
-        if isEffectiveDarkMode {
-            return [
-                Color(red: 0.105, green: 0.108, blue: 0.103),
-                Color(red: 0.075, green: 0.082, blue: 0.078)
-            ]
-        }
-        return [
-            Color(red: 0.965, green: 0.958, blue: 0.936),
-            Color(red: 0.925, green: 0.94, blue: 0.918)
-        ]
-    }
-
-    private var firstRunPrimaryText: Color {
-        isEffectiveDarkMode
-            ? Color(red: 0.92, green: 0.93, blue: 0.91)
-            : Color(red: 0.13, green: 0.14, blue: 0.13)
-    }
-
-    private var firstRunSecondaryText: Color {
-        isEffectiveDarkMode
-            ? Color(red: 0.68, green: 0.7, blue: 0.67)
-            : Color(red: 0.38, green: 0.4, blue: 0.38)
-    }
-
-    private func onboardingVisual(width: CGFloat) -> some View {
-        MirroringLoopVisual(accent: accent)
-            .frame(width: min(width, 420))
-    }
-
-    private var firstRunCardFill: Color {
-        isEffectiveDarkMode
-            ? Color.white.opacity(0.045)
-            : Color.white.opacity(0.55)
-    }
-
-    private var firstRunCardStroke: Color {
-        isEffectiveDarkMode
-            ? Color.white.opacity(0.08)
-            : Color.black.opacity(0.06)
-    }
-
-    private func setupGuideRow(iconName: String, title: String, detail: String, scale: CGFloat) -> some View {
-        HStack(alignment: .top, spacing: 14 * scale) {
-            OnboardingRowBadge(systemName: iconName, tint: accent, size: 34 * scale)
-
-            VStack(alignment: .leading, spacing: 3 * scale) {
-                Text(title)
-                    .font(.system(size: 14 * scale, weight: .bold))
-                    .foregroundStyle(firstRunPrimaryText)
-
-                Text(detail)
-                    .font(.system(size: 13 * scale, weight: .regular))
-                    .foregroundStyle(firstRunSecondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.top, 2 * scale)
-
-            Spacer(minLength: 0)
         }
     }
 
@@ -510,27 +321,150 @@ struct FigmaPhoneFrame<Content: View>: View {
     }
 }
 
-private struct FirstRunWindowSurface<Content: View>: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @ViewBuilder var content: Content
-    private let cornerRadius: CGFloat = 0
-    private var frameShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-    }
+/// Standalone first-run onboarding, hosted in its own content-sized window that
+/// is completely separate from the connection/mirror window — so its sizing and
+/// chrome can never affect the mirror frame. The view sizes to its own content
+/// (fixed width, intrinsic height, real bottom padding) so the host window can
+/// wrap it. It dismisses itself via `onDismiss` when the user proceeds or as
+/// soon as a live device (USB or wireless) appears.
+struct FirstRunOnboardingView: View {
+    @EnvironmentObject private var model: AppModel
+    @AppStorage("hasSeenFirstTimeUserOnboarding") private var hasSeen = false
+    let onDismiss: () -> Void
+
+    private let accent = onboardingTeal
+    private let contentWidth: CGFloat = 540
+
     private var isEffectiveDarkMode: Bool {
         NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
 
     var body: some View {
-        ZStack {
-            if isEffectiveDarkMode {
-                Color(red: 0.105, green: 0.108, blue: 0.103)
-            } else {
-                Color(red: 0.965, green: 0.958, blue: 0.936)
-            }
+        VStack(spacing: 0) {
+            MirroringLoopVisual(accent: accent)
+                .frame(width: 380, height: 176)
 
-            content
+            VStack(spacing: 8) {
+                Text("Mirror your Android on this Mac")
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundStyle(primaryText)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("Connect with USB or scan a QR code to pair wirelessly.")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundStyle(secondaryText)
+                    .lineSpacing(2)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(width: contentWidth)
+            .padding(.top, 18)
+
+            VStack(spacing: 14) {
+                setupRow(
+                    icon: "cable.connector",
+                    title: "USB",
+                    detail: "Plug in your phone and allow USB debugging."
+                )
+
+                Divider().overlay(cardStroke)
+
+                setupRow(
+                    icon: "qrcode.viewfinder",
+                    title: "Wireless",
+                    detail: "Scan a QR code from your phone's Wireless debugging settings."
+                )
+
+                Divider().overlay(cardStroke)
+
+                setupRow(
+                    icon: "wifi",
+                    title: "Keep devices nearby",
+                    detail: "For wireless pairing, keep your phone and Mac on the same Wi-Fi network."
+                )
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 16)
+            .frame(width: contentWidth)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous).fill(cardFill)
+            )
+            .padding(.top, 24)
+
+            HStack(spacing: 12) {
+                Button("Set Up Later") { hasSeen = true }
+                    .buttonStyle(OnboardingSecondaryButtonStyle())
+
+                Button("Continue") { hasSeen = true }
+                    .buttonStyle(OnboardingPrimaryButtonStyle())
+            }
+            .padding(.top, 30)
         }
+        .padding(.horizontal, 40)
+        .padding(.top, 30)
+        .padding(.bottom, 34)
+        .frame(width: contentWidth + 80)
+        .background(background)
+        .onAppear {
+            if hasSeen || model.isSelectedDeviceOnline { onDismiss() }
+        }
+        .onChange(of: hasSeen) { seen in
+            if seen { onDismiss() }
+        }
+        .onChange(of: model.isSelectedDeviceOnline) { online in
+            if online { onDismiss() }
+        }
+    }
+
+    private func setupRow(icon: String, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            OnboardingRowBadge(systemName: icon, tint: accent, size: 34)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(primaryText)
+
+                Text(detail)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 2)
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var background: some View {
+        LinearGradient(colors: backgroundColors, startPoint: .top, endPoint: .bottom)
+    }
+
+    private var backgroundColors: [Color] {
+        isEffectiveDarkMode
+            ? [Color(red: 0.105, green: 0.108, blue: 0.103), Color(red: 0.075, green: 0.082, blue: 0.078)]
+            : [Color(red: 0.965, green: 0.958, blue: 0.936), Color(red: 0.925, green: 0.94, blue: 0.918)]
+    }
+
+    private var primaryText: Color {
+        isEffectiveDarkMode
+            ? Color(red: 0.92, green: 0.93, blue: 0.91)
+            : Color(red: 0.13, green: 0.14, blue: 0.13)
+    }
+
+    private var secondaryText: Color {
+        isEffectiveDarkMode
+            ? Color(red: 0.68, green: 0.7, blue: 0.67)
+            : Color(red: 0.38, green: 0.4, blue: 0.38)
+    }
+
+    private var cardFill: Color {
+        isEffectiveDarkMode ? Color.white.opacity(0.045) : Color.white.opacity(0.55)
+    }
+
+    private var cardStroke: Color {
+        isEffectiveDarkMode ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
     }
 }
 
@@ -954,22 +888,19 @@ private struct OnboardingSecondaryButtonStyle: ButtonStyle {
 
 #if DEBUG
 @MainActor
-private func onboardingPreview(
-    hasSeenFirstRunOnboarding: Bool,
-    pairedPhones: [PairedPhoneRecord] = []
-) -> some View {
-    UserDefaults.standard.set(hasSeenFirstRunOnboarding, forKey: "hasSeenFirstTimeUserOnboarding")
-    let model = AppModel(startBackgroundServices: false, pairedPhones: pairedPhones)
-
+private func connectionPreview() -> some View {
+    UserDefaults.standard.set(true, forKey: "hasSeenFirstTimeUserOnboarding")
+    let model = AppModel(startBackgroundServices: false)
     return FigmaMirrorExperienceView()
         .environmentObject(model)
 }
 
 #Preview("First-run onboarding") {
-    onboardingPreview(hasSeenFirstRunOnboarding: false)
+    FirstRunOnboardingView(onDismiss: {})
+        .environmentObject(AppModel(startBackgroundServices: false))
 }
 
 #Preview("QR pairing onboarding") {
-    onboardingPreview(hasSeenFirstRunOnboarding: true)
+    connectionPreview()
 }
 #endif

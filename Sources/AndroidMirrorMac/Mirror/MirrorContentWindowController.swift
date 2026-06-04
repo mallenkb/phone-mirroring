@@ -110,9 +110,10 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         self.session = session
         self.launchFrame = launchFrame
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 390, height: 850)
-        let initialSize = Self.defaultWrappedShellSize(
+        let initialSize = Self.initialWrappedShellSize(
             for: Self.defaultMirrorSize,
-            visibleFrame: visible
+            visibleFrame: visible,
+            maximumHeightBasis: Self.resolutionHeight(for: NSScreen.main, fallbackVisibleFrame: visible)
         )
         let frame = NSRect(
             x: 0,
@@ -294,10 +295,18 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
     func show() {
         guard let window else { return }
-        let frame = launchFrame ?? Self.centeredFrame(
-            size: window.frame.size,
-            in: Self.targetVisibleFrame(for: window)
-        )
+        let frame: NSRect
+        if let launchFrame {
+            frame = launchFrame
+        } else {
+            let visible = Self.targetVisibleFrame(for: window)
+            let size = Self.initialWrappedShellSize(
+                for: Self.defaultMirrorSize,
+                visibleFrame: visible,
+                maximumHeightBasis: Self.resolutionHeight(for: window.screen, fallbackVisibleFrame: visible)
+            )
+            frame = Self.centeredFrame(size: size, in: visible)
+        }
         Logger.log("MirrorContentWindow show frame=\(frame)")
         window.setFrame(frame, display: true, animate: false)
         window.makeKeyAndOrderFront(nil)

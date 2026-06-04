@@ -5,6 +5,7 @@ import UserNotifications
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var window: NSWindow?
+    private var firstRunWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private let model = AppModel()
     private var keyMonitor: Any?
@@ -17,38 +18,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let hostingView = NSHostingView(rootView: rootView)
         let shouldShowFirstRunIntro = !UserDefaults.standard.bool(forKey: "hasSeenFirstTimeUserOnboarding")
             && model.pairedPhones.isEmpty
-        let initialWindowSize = shouldShowFirstRunIntro
-            ? AppModel.connectionWindowSize
-            : AppModel.onboardingWindowSize
-        let styleMask: NSWindow.StyleMask = shouldShowFirstRunIntro
-            ? [.titled, .closable, .miniaturizable]
-            : [.borderless]
+        let initialWindowSize = AppModel.onboardingWindowSize
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: initialWindowSize),
-            styleMask: styleMask,
+            styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
         window.title = "Android Mirroring"
         window.isReleasedWhenClosed = false
-        window.isOpaque = shouldShowFirstRunIntro
-        window.hasShadow = shouldShowFirstRunIntro
-        window.isMovableByWindowBackground = !shouldShowFirstRunIntro
-        window.backgroundColor = shouldShowFirstRunIntro ? .windowBackgroundColor : .clear
+        window.isOpaque = false
+        window.hasShadow = false
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = .clear
         window.contentView = hostingView
-        if shouldShowFirstRunIntro {
-            WindowRegistrationView.applyDefaultWindowMask(to: window)
-        } else {
-            WindowRegistrationView.applyPhoneWindowMask(to: window)
-        }
+        WindowRegistrationView.applyPhoneWindowMask(to: window)
         window.minSize = initialWindowSize
         window.contentMinSize = initialWindowSize
         window.maxSize = initialWindowSize
         window.contentMaxSize = initialWindowSize
         window.center()
-        window.makeKeyAndOrderFront(nil)
         model.registerConnectionWindow(window)
         self.window = window
+
+        if shouldShowFirstRunIntro {
+            showFirstRunWindow()
+            window.orderOut(nil)
+        } else {
+            window.makeKeyAndOrderFront(nil)
+        }
 
         installMainMenu()
         installKeyboardScaling()
@@ -241,6 +239,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 return event
             }
         }
+    }
+
+    private func showFirstRunWindow() {
+        if let firstRunWindow {
+            firstRunWindow.center()
+            firstRunWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let rootView = FirstRunOnboardingView { [weak self] in
+            self?.firstRunWindow?.orderOut(nil)
+            self?.firstRunWindow = nil
+            self?.window?.center()
+            self?.window?.makeKeyAndOrderFront(nil)
+            self?.model.ensureQRCodePairingSession()
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        .environmentObject(model)
+        let hostingView = NSHostingView(rootView: rootView)
+        hostingView.frame = NSRect(origin: .zero, size: hostingView.fittingSize)
+
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: hostingView.fittingSize),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Android Mirroring"
+        window.isReleasedWhenClosed = false
+        window.isOpaque = true
+        window.hasShadow = true
+        window.isMovableByWindowBackground = false
+        window.backgroundColor = .windowBackgroundColor
+        window.contentView = hostingView
+        WindowRegistrationView.applyDefaultWindowMask(to: window)
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        firstRunWindow = window
     }
 
     @objc private func scanForAndroidDevices(_ sender: Any?) {

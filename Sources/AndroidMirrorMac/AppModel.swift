@@ -1401,8 +1401,7 @@ final class AppModel: ObservableObject {
 
     private func launchNativeMirror(serial: String?) {
         Logger.log("Launching native mirror serial=\(serial ?? "default")")
-        let launchFrame = connectionWindow?.frame
-        let session = MirrorSession(model: self, serial: serial, launchFrame: launchFrame)
+        let session = MirrorSession(model: self, serial: serial)
         session.onSessionEnded = { [weak self, weak session] finalMirrorFrame in
             guard let self else { return }
             if self.mirrorSession === session {
