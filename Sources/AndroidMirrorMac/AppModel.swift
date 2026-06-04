@@ -507,12 +507,32 @@ final class AppModel: ObservableObject {
                     return
                 }
 
+                // Hand the Wireless-debugging session off to a plain `tcpip
+                // 5555` listener so future reconnects work on the same Wi-Fi
+                // without turning the Wireless-debugging toggle back on. Falls
+                // back to the TLS target if the phone won't switch to tcpip.
+                let connectedPhone: DiscoveredPhone
+                if let legacyAddress = await Self.promoteToLegacyTCPIP(
+                    adb: adb,
+                    sourceSerial: connectablePhone.address
+                ) {
+                    connectedPhone = DiscoveredPhone(
+                        id: connectablePhone.id,
+                        address: legacyAddress,
+                        kind: .connectable,
+                        lastSeen: .now
+                    )
+                } else {
+                    connectedPhone = connectablePhone
+                }
+                guard !Task.isCancelled else { return }
+
                 let deviceName = await Self.connectedDeviceName(
                     adb: adb,
-                    serial: connectablePhone.address,
+                    serial: connectedPhone.address,
                     fallback: "Android device"
                 )
-                self.finishQRCodePairing(with: connectablePhone, displayName: deviceName)
+                self.finishQRCodePairing(with: connectedPhone, displayName: deviceName)
                 return
             }
         }
