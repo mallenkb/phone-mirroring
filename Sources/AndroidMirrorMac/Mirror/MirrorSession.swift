@@ -68,22 +68,41 @@ final class MirrorSession {
         ))
 
         stream.onHeader = { [weak self] header in
-            Task { @MainActor in self?.handleHeader(header) }
+            Task { @MainActor in
+                guard let self, !self.didStop, !self.isStopping else { return }
+                self.handleHeader(header)
+            }
         }
         stream.onPacket = { [weak self] packet in
             self?.decoder.feed(packet)
         }
         stream.onResize = { [weak self] width, height in
-            Task { @MainActor in self?.handleResize(width: width, height: height) }
+            Task { @MainActor in
+                guard let self, !self.didStop, !self.isStopping else { return }
+                self.handleResize(width: width, height: height)
+            }
         }
         stream.onControl = { [weak self] connection in
-            Task { @MainActor in self?.attachControl(connection: connection) }
+            Task { @MainActor in
+                guard let self, !self.didStop, !self.isStopping else {
+                    connection.cancel()
+                    return
+                }
+                self.attachControl(connection: connection)
+            }
         }
-        stream.onError = { error in
+        stream.onError = { [weak self] error in
             Logger.log("MirrorSession stream error: \(error)")
+            Task { @MainActor in
+                guard let self, !self.didStop, !self.isStopping else { return }
+                self.stop()
+            }
         }
         decoder.onSample = { [weak self] sample in
-            Task { @MainActor in self?.windowController?.renderView.enqueue(sample) }
+            Task { @MainActor in
+                guard let self, !self.didStop, !self.isStopping else { return }
+                self.windowController?.renderView.enqueue(sample)
+            }
         }
 
         do {
@@ -99,9 +118,11 @@ final class MirrorSession {
             self.serverHost = host
         } catch let error as ScrcpyServerHost.HostError {
             stream.stop()
+            host.stop()
             throw SessionError.start(error.description)
         } catch {
             stream.stop()
+            host.stop()
             throw SessionError.start(error.localizedDescription)
         }
 
@@ -207,6 +228,11 @@ final class MirrorSession {
     // MARK: - Stream lifecycle
 
     private func handleHeader(_ header: ScrcpyVideoStream.StreamHeader) {
+        guard Self.isValidStreamSize(width: header.width, height: header.height) else {
+            Logger.log("MirrorSession rejected invalid header size: \(header.width)x\(header.height)")
+            stop()
+            return
+        }
         streamWidth = header.width
         streamHeight = header.height
         Logger.log("MirrorSession header: device=\(header.deviceName) codec=\(String(format: "0x%08x", header.codecID)) size=\(header.width)x\(header.height)")
@@ -216,6 +242,11 @@ final class MirrorSession {
     }
 
     private func handleResize(width: UInt32, height: UInt32) {
+        guard Self.isValidStreamSize(width: width, height: height) else {
+            Logger.log("MirrorSession rejected invalid resize: \(width)x\(height)")
+            stop()
+            return
+        }
         streamWidth = width
         streamHeight = height
         Logger.log("MirrorSession resize: \(width)x\(height)")
@@ -224,7 +255,11 @@ final class MirrorSession {
     }
 
     private func attachControl(connection: NWConnection) {
-        let channel = ScrcpyControlChannel(connection: connection)
+        guard !didStop, !isStopping else {
+            connection.cancel()
+            return
+        }
+        let channel = ScrcpyControlChannel(connection: connection, startConnection: false)
         if streamWidth > 0, streamHeight > 0 {
             channel.updateDeviceSize(width: streamWidth, height: streamHeight)
         }
@@ -236,6 +271,14 @@ final class MirrorSession {
         let bridge = ClipboardBridge(channel: channel)
         bridge.start()
         clipboardBridge = bridge
+    }
+
+    private static func isValidStreamSize(width: UInt32, height: UInt32) -> Bool {
+        width > 0
+            && height > 0
+            && width <= ScrcpyVideoStream.maxStreamDimension
+            && height <= ScrcpyVideoStream.maxStreamDimension
+            && UInt64(width) * UInt64(height) <= ScrcpyVideoStream.maxStreamPixels
     }
 
     static func androidKey(for event: NSEvent) -> ScrcpyControlChannel.AndroidKey? {

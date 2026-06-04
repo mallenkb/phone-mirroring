@@ -59,6 +59,8 @@ final class AppModel: ObservableObject {
     private var usbHandoffTask: Task<Void, Never>?
     private var lastUSBHandoffSerial: String?
     private var qrPairingTask: Task<Void, Never>?
+    private var usbConnectTask: Task<Void, Never>?
+    private var wirelessStartTask: Task<Void, Never>?
     private var disconnectRecoveryTask: Task<Void, Never>?
     private var screenRecordingMonitorTask: Task<Void, Never>?
     private var adbNotificationPollingTask: Task<Void, Never>?
@@ -70,6 +72,7 @@ final class AppModel: ObservableObject {
     private var lastMirrorStartAt: Date?
     private var consecutiveQuickMirrorFailures = 0
     private var autoMirrorBackoffUntil: Date?
+    private var mirrorStartGeneration = 0
     /// True while a mirror session has ended but we're about to retry/reconnect
     /// (e.g. audio→video fallback, or within the backoff window). Keeps the app
     /// from terminating in the windowless gap between sessions.
@@ -78,6 +81,10 @@ final class AppModel: ObservableObject {
     static let quickMirrorFailureThreshold: TimeInterval = 12
     nonisolated static let disconnectRecoveryGracePeriod: TimeInterval = 5
     private static let experimentalADBNotificationsDefaultsKey = "ExperimentalADBNotificationsEnabled"
+
+    var hasActiveMirrorSession: Bool {
+        mirrorSession != nil
+    }
 
     enum CaptureCueKind: Equatable {
         case screenshot
@@ -135,6 +142,8 @@ final class AppModel: ObservableObject {
         devicePresenceTask?.cancel()
         usbHandoffTask?.cancel()
         qrPairingTask?.cancel()
+        usbConnectTask?.cancel()
+        wirelessStartTask?.cancel()
         disconnectRecoveryTask?.cancel()
         screenRecordingMonitorTask?.cancel()
         adbNotificationPollingTask?.cancel()
@@ -389,9 +398,9 @@ final class AppModel: ObservableObject {
                     continue
                 }
 
-                self.lastUSBHandoffSerial = usbDevice.serial
                 self.isPairing = true
-                _ = await self.prepareWirelessMirror(from: usbDevice)
+                let started = await self.prepareWirelessMirror(from: usbDevice)
+                self.lastUSBHandoffSerial = started ? usbDevice.serial : nil
             }
         }
     }
@@ -731,11 +740,14 @@ final class AppModel: ObservableObject {
 
     func connectViaUSB() {
         guard !isMirroring else { return }
+        usbConnectTask?.cancel()
+        let generation = mirrorStartGeneration
         isPairing = true
 
         let adb = self.adb
-        Task { [weak self] in
+        usbConnectTask = Task { [weak self] in
             let output = await Task.detached { adb.run(["devices", "-l"]) }.value
+            guard !Task.isCancelled else { return }
             let usbDevice = Self.authorizedADBDevices(in: output).first(where: \.isUSB)
             let hasUnauthorizedUSB = output
                 .split(whereSeparator: \.isNewline)
@@ -743,17 +755,22 @@ final class AppModel: ObservableObject {
                 .contains { $0.contains("unauthorized") && $0.contains("usb:") }
 
             guard let self else { return }
+            guard self.mirrorStartGeneration == generation else { return }
             if hasUnauthorizedUSB {
                 self.isPairing = false
+                self.usbConnectTask = nil
                 return
             }
 
             guard let usbDevice else {
                 self.isPairing = false
+                self.usbConnectTask = nil
                 return
             }
 
             let startedWirelessMirror = await self.prepareWirelessMirror(from: usbDevice)
+            guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
+            self.usbConnectTask = nil
             guard !startedWirelessMirror else { return }
 
             self.showWirelessHandoffRequired(for: usbDevice)
@@ -1292,6 +1309,7 @@ final class AppModel: ObservableObject {
             // A deliberate retry clears backoff.
             consecutiveQuickMirrorFailures = 0
             autoMirrorBackoffUntil = nil
+            isAwaitingReconnect = false
         } else if let until = autoMirrorBackoffUntil, Date() < until {
             return
         }
@@ -1308,14 +1326,16 @@ final class AppModel: ObservableObject {
 
     private func startWirelessMirroring(savedTarget: String) {
         guard !isPairing else { return }
+        wirelessStartTask?.cancel()
 
         let selectedID = selectedDevice.id
         let selectedName = selectedDevice.name
         let adb = self.adb
+        let generation = mirrorStartGeneration
 
         isPairing = true
 
-        Task { [weak self] in
+        wirelessStartTask = Task { [weak self] in
             var target: String?
             var refreshedSavedTarget: String?
 
@@ -1330,12 +1350,15 @@ final class AppModel: ObservableObject {
                     }
                 }
             }
+            guard !Task.isCancelled else { return }
 
             guard let self else { return }
+            guard self.mirrorStartGeneration == generation else { return }
             if target == nil {
                 let livePhones = await Task.detached {
                     adb.connectableMDNSTargets()
                 }.value
+                guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
                 let phones = livePhones + self.discoveredPhones
                 let record = Self.recordsByMostRecent(self.pairedPhones).first { record in
                     record.id == selectedID || record.lastAddress == savedTarget
@@ -1357,6 +1380,7 @@ final class AppModel: ObservableObject {
                             serial: refreshedPhone.address,
                             fallback: record?.displayName ?? selectedName
                         )
+                        guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
                         self.touchPairedPhone(
                             id: refreshedPhone.id,
                             displayName: deviceName,
@@ -1368,6 +1392,7 @@ final class AppModel: ObservableObject {
             }
 
             self.isPairing = false
+            self.wirelessStartTask = nil
             guard let target else {
                 return
             }
@@ -1384,6 +1409,11 @@ final class AppModel: ObservableObject {
     }
 
     func stopMirroring() {
+        mirrorStartGeneration += 1
+        usbConnectTask?.cancel()
+        usbConnectTask = nil
+        wirelessStartTask?.cancel()
+        wirelessStartTask = nil
         mirrorSession?.onSessionEnded = nil
         mirrorSession?.stop()
         mirrorSession = nil
@@ -1450,6 +1480,11 @@ final class AppModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard let self, !self.isMirroring else { return }
                 if self.isSelectedDeviceOnline {
+                    if let until = self.autoMirrorBackoffUntil, Date() < until {
+                        let delay = max(0, until.timeIntervalSinceNow)
+                        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                        guard !Task.isCancelled, !self.isMirroring else { return }
+                    }
                     self.startMirroring()
                     return
                 }
@@ -1465,6 +1500,7 @@ final class AppModel: ObservableObject {
         disconnectRecoveryTask?.cancel()
         disconnectRecoveryTask = nil
         isRecoveringConnection = false
+        isAwaitingReconnect = false
     }
 
     /// Called when a native mirror session ends. Distinguishes a stable session
@@ -1605,6 +1641,7 @@ final class AppModel: ObservableObject {
     private func configureADBNotificationPolling() {
         adbNotificationPollingTask?.cancel()
         adbNotificationPollingTask = nil
+        lastPostedADBNotificationIDs = []
 
         guard experimentalADBNotificationsEnabled else { return }
         Logger.log("ADB notifications enabled; starting polling")
@@ -1639,6 +1676,7 @@ final class AppModel: ObservableObject {
             Logger.log("ADB notifications found no authorized devices output=\(Self.oneLine(devicesOutput))")
         }
         let serial = Self.notificationPollingSerial(selectedSerial: selectedSerial, devices: devices)
+        guard selectedDevice.adbSerial == selectedSerial else { return }
         let output = await Task.detached {
             adb.run(
                 Self.adbDeviceArguments(serial: serial) + ["shell", "dumpsys", "notification", "--noredact"],
@@ -1646,13 +1684,14 @@ final class AppModel: ObservableObject {
             )
         }.value
         let notifications = Self.parseActiveADBNotifications(output)
+        guard selectedDevice.adbSerial == selectedSerial else { return }
         if notifications.isEmpty {
             Logger.log("ADB notifications raw output=\(Self.oneLine(String(output.prefix(500))))")
         }
         Logger.log(
             "ADB notifications poll serial=\(serial ?? "default") parsed=\(notifications.count) baseline=\(lastPostedADBNotificationIDs.count)"
         )
-        await postNewADBNotifications(notifications)
+        await postNewADBNotifications(notifications, serial: serial)
     }
 
     private static func notificationPollingSerial(
@@ -1666,8 +1705,9 @@ final class AppModel: ObservableObject {
         return devices.first?.serial
     }
 
-    private func postNewADBNotifications(_ notifications: [ADBNotification]) async {
+    private func postNewADBNotifications(_ notifications: [ADBNotification], serial: String?) async {
         guard experimentalADBNotificationsEnabled else { return }
+        guard selectedDevice.adbSerial == serial || selectedDevice.adbSerial == nil && serial == nil else { return }
 
         if lastPostedADBNotificationIDs.isEmpty {
             lastPostedADBNotificationIDs = Set(notifications.map(\.id))

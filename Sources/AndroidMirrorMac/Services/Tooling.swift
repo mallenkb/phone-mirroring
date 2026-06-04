@@ -4,13 +4,19 @@ import Darwin
 /// Discovery + execution of bundled or Homebrew CLI tools (adb, scrcpy).
 enum Tooling {
     static func toolPath(named name: String) -> String? {
+#if DEBUG
         if name == "adb",
            let rawOverridePath = getenv("ANDROID_MIRROR_ADB_PATH") {
             let overridePath = String(cString: rawOverridePath)
-            if FileManager.default.isExecutableFile(atPath: overridePath) {
-                return overridePath
+            let url = URL(fileURLWithPath: overridePath).standardizedFileURL
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+               !isDirectory.boolValue,
+               FileManager.default.isExecutableFile(atPath: url.path) {
+                return url.path
             }
         }
+#endif
 
         let candidates = [
             Bundle.main.resourceURL?.appendingPathComponent("bin/\(name)").path(percentEncoded: false),
@@ -66,6 +72,7 @@ enum Tooling {
            FileManager.default.fileExists(atPath: url.path) {
             return url.path
         }
+#if DEBUG
         // Fallback for `swift run` and unit tests — walk up to the repo root.
         var url = Bundle.main.bundleURL
         for _ in 0..<8 {
@@ -82,6 +89,7 @@ enum Tooling {
             url = url.deletingLastPathComponent()
             if url.path == "/" { break }
         }
+#endif
         return nil
     }
 

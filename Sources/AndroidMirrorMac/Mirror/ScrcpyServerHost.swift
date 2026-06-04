@@ -42,6 +42,8 @@ final class ScrcpyServerHost: @unchecked Sendable {
     /// scrcpy server protocol version. Must match the bundled jar.
     static let serverVersion = "4.0"
     static let devicePath = "/data/local/tmp/scrcpy-server.jar"
+    private static let maxCapturedOutputCharacters = 64 * 1024
+    private static let maxLoggedChunkCharacters = 4 * 1024
 
     private let options: Options
     private var process: Process?
@@ -105,14 +107,14 @@ final class ScrcpyServerHost: @unchecked Sendable {
         stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
-            self?.stdoutBuffer += line
-            Logger.log("[scrcpy-server stdout] \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
+            self?.appendOutput(line, to: \.stdoutBuffer)
+            Logger.log("[scrcpy-server stdout] \(Self.truncatedLogChunk(line))")
         }
         stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
-            self?.stderrBuffer += line
-            Logger.log("[scrcpy-server stderr] \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
+            self?.appendOutput(line, to: \.stderrBuffer)
+            Logger.log("[scrcpy-server stderr] \(Self.truncatedLogChunk(line))")
         }
 
         process.terminationHandler = { [weak self] proc in
@@ -185,5 +187,18 @@ final class ScrcpyServerHost: @unchecked Sendable {
         if output.localizedCaseInsensitiveContains("error") {
             Logger.log("adb wake failed: \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
         }
+    }
+
+    private func appendOutput(_ output: String, to keyPath: ReferenceWritableKeyPath<ScrcpyServerHost, String>) {
+        self[keyPath: keyPath] += output
+        if self[keyPath: keyPath].count > Self.maxCapturedOutputCharacters {
+            self[keyPath: keyPath] = String(self[keyPath: keyPath].suffix(Self.maxCapturedOutputCharacters))
+        }
+    }
+
+    private static func truncatedLogChunk(_ output: String) -> String {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > maxLoggedChunkCharacters else { return trimmed }
+        return "\(trimmed.prefix(maxLoggedChunkCharacters))... [truncated]"
     }
 }

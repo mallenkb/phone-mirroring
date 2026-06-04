@@ -362,12 +362,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(phoneVolumeUp(_:))
-            || menuItem.action == #selector(phoneVolumeDown(_:))
-            || menuItem.action == #selector(phoneVolumeMute(_:)) {
+        switch menuItem.action {
+        case #selector(phoneVolumeUp(_:))?,
+             #selector(phoneVolumeDown(_:))?,
+             #selector(phoneVolumeMute(_:))?:
             return model.selectedDevice.adbSerial != nil
+        case #selector(toggleMirroring(_:))?:
+            menuItem.title = model.isMirroring ? "Stop Mirroring" : "Start Mirroring"
+            return !model.isPairing && !model.isRecoveringConnection && model.selectedDevice.adbSerial != nil
+        case #selector(goHome(_:))?,
+             #selector(goBack(_:))?,
+             #selector(takeScreenshot(_:))?,
+             #selector(toggleScreenRecording(_:))?,
+             #selector(zoomIn(_:))?,
+             #selector(zoomOut(_:))?,
+             #selector(centerMirror(_:))?:
+            return model.hasActiveMirrorSession
+        default:
+            return true
         }
-        return true
     }
 
     @objc private func zoomIn(_ sender: Any?) {

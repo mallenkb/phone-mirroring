@@ -75,9 +75,11 @@ final class ScrcpyControlChannel {
     /// Invoked (on an internal queue) when the device clipboard changes.
     var onDeviceClipboard: ((String) -> Void)?
 
-    init(connection: NWConnection) {
+    init(connection: NWConnection, startConnection: Bool = true) {
         self.connection = connection
-        connection.start(queue: queue)
+        if startConnection {
+            connection.start(queue: queue)
+        }
         receiveLoop()
     }
 
@@ -263,7 +265,9 @@ final class ScrcpyControlChannel {
             guard buffer.count >= 5 + length else { return .incomplete }
             let start = buffer.index(buffer.startIndex, offsetBy: 5)
             let end = buffer.index(start, offsetBy: length)
-            let text = String(decoding: buffer[start..<end], as: UTF8.self)
+            guard let text = String(data: buffer[start..<end], encoding: .utf8) else {
+                return .reset
+            }
             return .message(.clipboard(text), consumed: 5 + length)
         case .ackClipboard:
             guard buffer.count >= 9 else { return .incomplete }
