@@ -96,14 +96,20 @@ final class AppModel: ObservableObject {
         }
     }
 
-    init() {
+    init(
+        startBackgroundServices: Bool = true,
+        pairedPhones previewPairedPhones: [PairedPhoneRecord]? = nil
+    ) {
         experimentalADBNotificationsEnabled = UserDefaults.standard.bool(
             forKey: Self.experimentalADBNotificationsDefaultsKey
         )
-        pairedPhones = store.load()
+        pairedPhones = previewPairedPhones ?? store.load()
         if let mostRecentRecord = Self.recordsByMostRecent(pairedPhones).first {
             select(record: mostRecentRecord)
         }
+
+        guard startBackgroundServices else { return }
+
         discovery.start { [weak self] phones in
             guard let self else { return }
             self.discoveredPhones = phones

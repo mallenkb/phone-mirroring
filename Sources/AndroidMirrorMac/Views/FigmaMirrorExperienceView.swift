@@ -246,21 +246,31 @@ struct FigmaMirrorExperienceView: View {
 
     private var onboardingContent: some View {
         GeometryReader { proxy in
-            let heightScale = min(1, max(0.72, proxy.size.height / 815))
-            let contentWidth = min(proxy.size.width - 72, maxColumnWidth)
-            let qrPanelSize = min(self.qrPanelSize * heightScale, contentWidth * 0.62)
-            let qrCodeSize = min(self.qrCodeSize * heightScale, qrPanelSize - 24)
+            // A single continuous scale derived from the available space (which
+            // tracks the host display's resolution, since the onboarding window
+            // is sized from it). Every font and metric multiplies by this, so
+            // text shrinks smoothly on lower-resolution displays and only
+            // reaches its full design size at high resolution. No hard floors
+            // on individual fonts — that's what previously kept them oversized.
+            let scale = min(1, max(0.5, min(proxy.size.height / 815, proxy.size.width / 390)))
+            let usesCompactLayout = proxy.size.height <= 760 || proxy.size.width <= 360
+            let availableWidth = proxy.size.width - (usesCompactLayout ? 44 : 72)
+            let contentWidth = min(availableWidth, maxColumnWidth)
+            let qrPanelSize = min(self.qrPanelSize * scale, contentWidth * (usesCompactLayout ? 0.56 : 0.62))
+            // Keep the white border around the QR a constant fraction of the
+            // panel so it doesn't look like oversized padding when scaled down.
+            let qrCodeSize = qrPanelSize * 0.88
 
             VStack(spacing: 0) {
-                headerGroup(width: contentWidth, scale: heightScale)
+                headerGroup(width: contentWidth, scale: scale)
 
-                usbConnectionAction(width: contentWidth, scale: heightScale)
-                    .padding(.top, 34 * heightScale)
+                usbConnectionAction(width: contentWidth, scale: scale, usesCompactTitleLayout: usesCompactLayout)
+                    .padding(.top, (usesCompactLayout ? 24 : 34) * scale)
 
                 Text("or")
-                    .font(.system(size: max(12, 13 * heightScale), weight: .semibold))
+                    .font(.system(size: 13 * scale, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.66))
-                    .padding(.vertical, 16 * heightScale)
+                    .padding(.vertical, (usesCompactLayout ? 11 : 16) * scale)
 
                 connectionInstruction(
                     iconName: "qrcode.viewfinder",
@@ -268,32 +278,33 @@ struct FigmaMirrorExperienceView: View {
                     detail: "Enable Wireless debugging, tap Pair with QR code, then scan.",
                     iconColor: .white,
                     width: contentWidth,
-                    scale: heightScale
+                    scale: scale,
+                    usesCompactTitleLayout: usesCompactLayout
                 )
 
                 qrPairingPanel(panelSize: qrPanelSize, codeSize: qrCodeSize)
-                    .padding(.top, 22 * heightScale)
+                    .padding(.top, (usesCompactLayout ? 15 : 22) * scale)
                     .frame(width: contentWidth, alignment: .center)
 
                 if shouldShowDevicePill {
-                    devicePill(width: contentWidth)
-                        .padding(.top, 34 * heightScale)
+                    devicePill(width: contentWidth, scale: scale)
+                        .padding(.top, (usesCompactLayout ? 20 : 34) * scale)
                 }
             }
-            .padding(.horizontal, 36)
+            .padding(.horizontal, usesCompactLayout ? 22 : 36)
             .frame(width: contentWidth, alignment: .center)
             .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
         }
     }
 
     private func headerGroup(width: CGFloat, scale: CGFloat) -> some View {
-        VStack(spacing: 18 * scale) {
-            Image(systemName: "iphone.gen3.radiowaves.left.and.right")
-                .font(.system(size: heroIconSize * scale, weight: .medium))
-                .foregroundStyle(accent)
+            VStack(spacing: 14 * scale) {
+                Image(systemName: "iphone.gen3.radiowaves.left.and.right")
+                    .font(.system(size: heroIconSize * scale, weight: .medium))
+                    .foregroundStyle(accent)
 
             Text("Connect your Android phone")
-                .font(.system(size: max(17, 20 * scale), weight: .bold))
+                .font(.system(size: 20 * scale, weight: .bold))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -301,7 +312,7 @@ struct FigmaMirrorExperienceView: View {
         }
     }
 
-    private func usbConnectionAction(width: CGFloat, scale: CGFloat) -> some View {
+    private func usbConnectionAction(width: CGFloat, scale: CGFloat, usesCompactTitleLayout: Bool) -> some View {
         Button(action: model.connectViaUSB) {
             connectionInstruction(
                 iconName: "cable.connector.horizontal",
@@ -309,7 +320,8 @@ struct FigmaMirrorExperienceView: View {
                 detail: "Turn on Developer options, enable USB debugging, then connect by cable.",
                 iconColor: .white,
                 width: width,
-                scale: scale
+                scale: scale,
+                usesCompactTitleLayout: usesCompactTitleLayout
             )
         }
         .buttonStyle(.plain)
@@ -320,35 +332,35 @@ struct FigmaMirrorExperienceView: View {
         model.isSelectedDeviceOnline || !model.pairedPhones.isEmpty
     }
 
-    private func devicePill(width: CGFloat) -> some View {
+    private func devicePill(width: CGFloat, scale: CGFloat) -> some View {
         let online = model.isSelectedDeviceOnline
         let statusColor = online ? accent : Color.white.opacity(0.48)
         let statusText = online ? "Device" : "Offline"
+        let fontSize = 12 * scale
 
-        return HStack(spacing: 8) {
+        return HStack(spacing: 8 * scale) {
             Circle()
                 .fill(statusColor.opacity(0.9))
-                .frame(width: 7, height: 7)
+                .frame(width: 7 * scale, height: 7 * scale)
 
             Text(statusText)
-                .font(.system(size: 12, weight: .semibold))
-                .fixedSize(horizontal: true, vertical: false)
+                .font(.system(size: fontSize, weight: .semibold))
+                .fixedSize()
 
             Text(model.selectedDevice.name)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: fontSize, weight: .semibold))
                 .lineLimit(1)
-                .minimumScaleFactor(0.72)
+                .fixedSize()
                 .layoutPriority(1)
         }
         .foregroundStyle(statusColor.opacity(0.85))
-        .padding(.horizontal, 14)
-        .fixedSize(horizontal: true, vertical: false)
-        .frame(height: 30)
+        .padding(.horizontal, 14 * scale)
+        .frame(height: 30 * scale)
         .background(
             Capsule(style: .continuous)
                 .fill(Color.black.opacity(0.12))
         )
-        .frame(width: width, alignment: .center)
+        .frame(maxWidth: width, alignment: .center)
     }
 
     private func connectionInstruction(
@@ -357,23 +369,23 @@ struct FigmaMirrorExperienceView: View {
         detail: String,
         iconColor: Color,
         width: CGFloat,
-        scale: CGFloat
+        scale: CGFloat,
+        usesCompactTitleLayout: Bool = false
     ) -> some View {
-        VStack(spacing: 8 * scale) {
-            HStack(spacing: 10 * scale) {
+        VStack(spacing: 6 * scale) {
+            HStack(alignment: .firstTextBaseline, spacing: usesCompactTitleLayout ? 5 : 8 * scale) {
                 Image(systemName: iconName)
-                    .font(.system(size: max(14, 16 * scale), weight: .semibold))
+                    .font(.system(size: 16 * scale, weight: .semibold))
                     .foregroundStyle(iconColor)
-                    .frame(width: 24 * scale, alignment: .center)
+                    .frame(width: usesCompactTitleLayout ? 12 : 20 * scale, alignment: .center)
 
-                Text(title)
-                    .font(.system(size: max(16, 18 * scale), weight: .bold))
-                    .foregroundStyle(.white)
+                instructionTitle(title, scale: scale)
+                    .layoutPriority(1)
             }
-            .frame(maxWidth: .infinity, alignment: .center)
+            .frame(width: width, alignment: .center)
 
             Text(detail)
-                .font(.system(size: max(12, 14 * scale), weight: .regular))
+                .font(.system(size: 14 * scale, weight: .regular))
                 .foregroundStyle(.white.opacity(0.78))
                 .multilineTextAlignment(.center)
                 .lineSpacing(2 * scale)
@@ -381,6 +393,16 @@ struct FigmaMirrorExperienceView: View {
                 .frame(width: width)
         }
         .frame(width: width)
+    }
+
+    private func instructionTitle(_ title: String, scale: CGFloat) -> some View {
+        Text(title)
+            .font(.system(size: 18 * scale, weight: .bold))
+            .foregroundStyle(.white)
+            .multilineTextAlignment(.center)
+            .lineLimit(2)
+            .minimumScaleFactor(0.7)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func qrPairingPanel(panelSize: CGFloat, codeSize: CGFloat) -> some View {
@@ -784,3 +806,25 @@ private struct OnboardingSecondaryButtonStyle: ButtonStyle {
             )
     }
 }
+
+#if DEBUG
+@MainActor
+private func onboardingPreview(
+    hasSeenFirstRunOnboarding: Bool,
+    pairedPhones: [PairedPhoneRecord] = []
+) -> some View {
+    UserDefaults.standard.set(hasSeenFirstRunOnboarding, forKey: "hasSeenFirstTimeUserOnboarding")
+    let model = AppModel(startBackgroundServices: false, pairedPhones: pairedPhones)
+
+    return FigmaMirrorExperienceView()
+        .environmentObject(model)
+}
+
+#Preview("First-run onboarding") {
+    onboardingPreview(hasSeenFirstRunOnboarding: false)
+}
+
+#Preview("QR pairing onboarding") {
+    onboardingPreview(hasSeenFirstRunOnboarding: true)
+}
+#endif
