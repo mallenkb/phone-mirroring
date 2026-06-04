@@ -25,9 +25,9 @@ struct FigmaMirrorExperienceView: View {
     }
     private let heroIconSize: CGFloat = 36
     private let maxColumnWidth: CGFloat = 620
-    private let qrCodeSize: CGFloat = 188
-    private let qrPanelSize: CGFloat = 212
-    private let accent = Color(red: 0.22, green: 0.78, blue: 0.55)
+    private let qrCodeSize: CGFloat = 216
+    private let qrPanelSize: CGFloat = 244
+    private let accent = onboardingTeal
     private let qrRefreshTimer = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
     private var frameCornerRadius: CGFloat {
         MirrorContentWindowController.onboardingCornerRadius()
@@ -108,9 +108,10 @@ struct FigmaMirrorExperienceView: View {
             let visualHeight = 176 * layoutScale
 
             VStack(spacing: 0) {
+                Spacer(minLength: 28 * layoutScale)
+
                 onboardingVisual(width: contentWidth)
                     .frame(height: visualHeight)
-                    .padding(.top, 34 * layoutScale)
 
                 VStack(spacing: 8 * layoutScale) {
                     Text("Mirror your Android on this Mac")
@@ -129,13 +130,16 @@ struct FigmaMirrorExperienceView: View {
                 }
                 .padding(.top, 22 * layoutScale)
 
-                VStack(alignment: .leading, spacing: 18 * layoutScale) {
+                VStack(alignment: .leading, spacing: 16 * layoutScale) {
                     setupGuideRow(
                         iconName: "cable.connector",
                         title: "USB",
                         detail: "Plug in your phone and allow USB debugging.",
                         scale: layoutScale
                     )
+
+                    Divider()
+                        .overlay(firstRunCardStroke)
 
                     setupGuideRow(
                         iconName: "qrcode.viewfinder",
@@ -144,6 +148,9 @@ struct FigmaMirrorExperienceView: View {
                         scale: layoutScale
                     )
 
+                    Divider()
+                        .overlay(firstRunCardStroke)
+
                     setupGuideRow(
                         iconName: "wifi",
                         title: "Keep devices nearby",
@@ -151,14 +158,16 @@ struct FigmaMirrorExperienceView: View {
                         scale: layoutScale
                     )
                 }
+                .padding(.horizontal, 18 * layoutScale)
+                .padding(.vertical, 16 * layoutScale)
                 .frame(width: contentWidth, alignment: .leading)
-                .padding(.top, 26 * layoutScale)
-
-                Spacer(minLength: 16)
+                .background(
+                    RoundedRectangle(cornerRadius: 16 * layoutScale, style: .continuous)
+                        .fill(firstRunCardFill)
+                )
+                .padding(.top, 24 * layoutScale)
 
                 HStack(spacing: 12) {
-                    Spacer()
-
                     Button("Set Up Later") {
                         hasSeenFirstTimeUserOnboarding = true
                     }
@@ -169,8 +178,11 @@ struct FigmaMirrorExperienceView: View {
                     }
                     .buttonStyle(OnboardingPrimaryButtonStyle())
                 }
+                .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.horizontal, 20)
-                .padding(.vertical, 14)
+                .padding(.top, 28 * layoutScale)
+
+                Spacer(minLength: 28 * layoutScale)
             }
             .background(firstRunBackground)
             .frame(width: proxy.size.width, height: proxy.size.height)
@@ -215,12 +227,21 @@ struct FigmaMirrorExperienceView: View {
             .frame(width: min(width, 420))
     }
 
+    private var firstRunCardFill: Color {
+        isEffectiveDarkMode
+            ? Color.white.opacity(0.045)
+            : Color.white.opacity(0.55)
+    }
+
+    private var firstRunCardStroke: Color {
+        isEffectiveDarkMode
+            ? Color.white.opacity(0.08)
+            : Color.black.opacity(0.06)
+    }
+
     private func setupGuideRow(iconName: String, title: String, detail: String, scale: CGFloat) -> some View {
-        HStack(alignment: .top, spacing: 16 * scale) {
-            Image(systemName: iconName)
-                .font(.system(size: 15 * scale, weight: .bold))
-                .foregroundStyle(accent)
-                .frame(width: 22 * scale, height: 22 * scale)
+        HStack(alignment: .top, spacing: 14 * scale) {
+            OnboardingRowBadge(systemName: iconName, tint: accent, size: 34 * scale)
 
             VStack(alignment: .leading, spacing: 3 * scale) {
                 Text(title)
@@ -232,6 +253,9 @@ struct FigmaMirrorExperienceView: View {
                     .foregroundStyle(firstRunSecondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .padding(.top, 2 * scale)
+
+            Spacer(minLength: 0)
         }
     }
 
@@ -256,7 +280,7 @@ struct FigmaMirrorExperienceView: View {
             let usesCompactLayout = proxy.size.height <= 760 || proxy.size.width <= 360
             let availableWidth = proxy.size.width - (usesCompactLayout ? 44 : 72)
             let contentWidth = min(availableWidth, maxColumnWidth)
-            let qrPanelSize = min(self.qrPanelSize * scale, contentWidth * (usesCompactLayout ? 0.56 : 0.62))
+            let qrPanelSize = min(self.qrPanelSize * scale, contentWidth * (usesCompactLayout ? 0.64 : 0.72))
             // Keep the white border around the QR a constant fraction of the
             // panel so it doesn't look like oversized padding when scaled down.
             let qrCodeSize = qrPanelSize * 0.88
@@ -264,13 +288,19 @@ struct FigmaMirrorExperienceView: View {
             VStack(spacing: 0) {
                 headerGroup(width: contentWidth, scale: scale)
 
-                usbConnectionAction(width: contentWidth, scale: scale, usesCompactTitleLayout: usesCompactLayout)
-                    .padding(.top, (usesCompactLayout ? 24 : 34) * scale)
+                USBConnectButton(
+                    accent: accent,
+                    scale: scale,
+                    disabled: isConnecting,
+                    action: model.connectViaUSB
+                )
+                .frame(width: contentWidth)
+                .padding(.top, (usesCompactLayout ? 28 : 40) * scale)
 
                 Text("or")
                     .font(.system(size: 13 * scale, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.66))
-                    .padding(.vertical, (usesCompactLayout ? 11 : 16) * scale)
+                    .foregroundStyle(.white.opacity(0.6))
+                    .padding(.vertical, (usesCompactLayout ? 18 : 26) * scale)
 
                 connectionInstruction(
                     iconName: "qrcode.viewfinder",
@@ -283,12 +313,12 @@ struct FigmaMirrorExperienceView: View {
                 )
 
                 qrPairingPanel(panelSize: qrPanelSize, codeSize: qrCodeSize)
-                    .padding(.top, (usesCompactLayout ? 15 : 22) * scale)
+                    .padding(.top, (usesCompactLayout ? 18 : 26) * scale)
                     .frame(width: contentWidth, alignment: .center)
 
                 if shouldShowDevicePill {
                     devicePill(width: contentWidth, scale: scale)
-                        .padding(.top, (usesCompactLayout ? 20 : 34) * scale)
+                        .padding(.top, (usesCompactLayout ? 22 : 32) * scale)
                 }
             }
             .padding(.horizontal, usesCompactLayout ? 22 : 36)
@@ -298,34 +328,27 @@ struct FigmaMirrorExperienceView: View {
     }
 
     private func headerGroup(width: CGFloat, scale: CGFloat) -> some View {
-            VStack(spacing: 14 * scale) {
-                Image(systemName: "iphone.gen3.radiowaves.left.and.right")
-                    .font(.system(size: heroIconSize * scale, weight: .medium))
-                    .foregroundStyle(accent)
+        VStack(spacing: 16 * scale) {
+            Image(systemName: "iphone.gen3.radiowaves.left.and.right")
+                .font(.system(size: heroIconSize * scale, weight: .medium))
+                .foregroundStyle(accent)
 
-            Text("Connect your Android phone")
-                .font(.system(size: 20 * scale, weight: .bold))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(width: width)
-        }
-    }
+            VStack(spacing: 5 * scale) {
+                Text("Connect your Android phone")
+                    .font(.system(size: 20 * scale, weight: .bold))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: width)
 
-    private func usbConnectionAction(width: CGFloat, scale: CGFloat, usesCompactTitleLayout: Bool) -> some View {
-        Button(action: model.connectViaUSB) {
-            connectionInstruction(
-                iconName: "cable.connector.horizontal",
-                title: "Connect via USB",
-                detail: "Turn on Developer options, enable USB debugging, then connect by cable.",
-                iconColor: .white,
-                width: width,
-                scale: scale,
-                usesCompactTitleLayout: usesCompactTitleLayout
-            )
+                Text("Mirror its screen right here on your Mac.")
+                    .font(.system(size: 13.5 * scale, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.66))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: width)
+            }
         }
-        .buttonStyle(.plain)
-        .disabled(isConnecting)
     }
 
     private var shouldShowDevicePill: Bool {
@@ -334,31 +357,34 @@ struct FigmaMirrorExperienceView: View {
 
     private func devicePill(width: CGFloat, scale: CGFloat) -> some View {
         let online = model.isSelectedDeviceOnline
-        let statusColor = online ? accent : Color.white.opacity(0.48)
-        let statusText = online ? "Device" : "Offline"
+        let dotColor = online ? accent : Color(red: 0.96, green: 0.78, blue: 0.42)
+        let statusText = online ? "Connected" : "Waiting"
         let fontSize = 12 * scale
 
         return HStack(spacing: 8 * scale) {
-            Circle()
-                .fill(statusColor.opacity(0.9))
-                .frame(width: 7 * scale, height: 7 * scale)
+            StatusDot(color: dotColor, diameter: 7 * scale, pulses: !online)
 
             Text(statusText)
                 .font(.system(size: fontSize, weight: .semibold))
+                .foregroundStyle(.white.opacity(online ? 0.92 : 0.82))
                 .fixedSize()
 
             Text(model.selectedDevice.name)
-                .font(.system(size: fontSize, weight: .semibold))
+                .font(.system(size: fontSize, weight: .medium))
+                .foregroundStyle(.white.opacity(0.62))
                 .lineLimit(1)
                 .fixedSize()
                 .layoutPriority(1)
         }
-        .foregroundStyle(statusColor.opacity(0.85))
         .padding(.horizontal, 14 * scale)
         .frame(height: 30 * scale)
         .background(
             Capsule(style: .continuous)
-                .fill(Color.black.opacity(0.12))
+                .fill(Color.white.opacity(0.08))
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                )
         )
         .frame(maxWidth: width, alignment: .center)
     }
@@ -407,8 +433,9 @@ struct FigmaMirrorExperienceView: View {
 
     private func qrPairingPanel(panelSize: CGFloat, codeSize: CGFloat) -> some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color.white)
+                .shadow(color: Color.black.opacity(0.22), radius: 14 * (panelSize / qrPanelSize), x: 0, y: 8)
 
             if let payload = model.qrPairingSession?.payload,
                let image = qrImage(from: payload, size: codeSize) {
@@ -423,6 +450,10 @@ struct FigmaMirrorExperienceView: View {
             }
         }
         .frame(width: panelSize, height: panelSize)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.55), lineWidth: 1)
+        )
     }
 
     private func qrImage(from payload: String, size: CGFloat) -> NSImage? {
@@ -774,16 +805,124 @@ private struct PhoneGlyph: View {
     }
 }
 
+/// Rounded tinted badge for list-row glyphs (first-run setup steps).
+private struct OnboardingRowBadge: View {
+    let systemName: String
+    let tint: Color
+    let size: CGFloat
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 0.32, style: .continuous)
+                .fill(tint.opacity(0.14))
+            Image(systemName: systemName)
+                .font(.system(size: size * 0.46, weight: .semibold))
+                .foregroundStyle(tint)
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+/// Full-width USB action with an obvious tappable surface and hover feedback.
+private struct USBConnectButton: View {
+    let accent: Color
+    let scale: CGFloat
+    let disabled: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    private var corner: CGFloat { 14 * scale }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 13 * scale) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10 * scale, style: .continuous)
+                        .fill(Color.white.opacity(0.12))
+                    Image(systemName: "cable.connector.horizontal")
+                        .font(.system(size: 16 * scale, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 38 * scale, height: 38 * scale)
+
+                VStack(alignment: .leading, spacing: 2 * scale) {
+                    Text("Connect via USB")
+                        .font(.system(size: 15.5 * scale, weight: .bold))
+                        .foregroundStyle(.white)
+                    Text("Enable USB debugging, then plug in your cable.")
+                        .font(.system(size: 12.5 * scale, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13 * scale, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            .padding(.horizontal, 15 * scale)
+            .padding(.vertical, 12 * scale)
+            .background(
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
+                    .fill(Color.white.opacity(hovering && !disabled ? 0.14 : 0.075))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
+                    .stroke(Color.white.opacity(hovering && !disabled ? 0.30 : 0.16), lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.55 : 1)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.15), value: hovering)
+    }
+}
+
+/// Status dot with an optional outward pulse to signal "actively waiting".
+private struct StatusDot: View {
+    let color: Color
+    let diameter: CGFloat
+    let pulses: Bool
+    @State private var animate = false
+
+    var body: some View {
+        ZStack {
+            if pulses {
+                Circle()
+                    .fill(color.opacity(0.35))
+                    .frame(width: diameter, height: diameter)
+                    .scaleEffect(animate ? 2.4 : 1)
+                    .opacity(animate ? 0 : 0.6)
+            }
+            Circle()
+                .fill(color)
+                .frame(width: diameter, height: diameter)
+        }
+        .frame(width: diameter, height: diameter)
+        .onAppear {
+            guard pulses else { return }
+            withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) {
+                animate = true
+            }
+        }
+    }
+}
+
+/// Brand teal shared by the onboarding accent icons and call-to-action buttons.
+private let onboardingTeal = Color(red: 0.0, green: 0.66, blue: 0.59)
+
 private struct OnboardingPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 13, weight: .semibold))
+            .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(.white)
-            .padding(.horizontal, 16)
-            .frame(height: 28)
+            .padding(.horizontal, 24)
+            .frame(height: 44)
             .background(
                 Capsule(style: .continuous)
-                    .fill(Color(red: 0.14, green: 0.78, blue: 0.25).opacity(configuration.isPressed ? 0.76 : 1))
+                    .fill(onboardingTeal.opacity(configuration.isPressed ? 0.78 : 1))
             )
     }
 }
@@ -791,17 +930,23 @@ private struct OnboardingPrimaryButtonStyle: ButtonStyle {
 private struct OnboardingSecondaryButtonStyle: ButtonStyle {
     @Environment(\.colorScheme) private var colorScheme
 
+    private var labelColor: Color {
+        colorScheme == .dark
+            ? Color(red: 0.24, green: 0.80, blue: 0.72)
+            : Color(red: 0.0, green: 0.52, blue: 0.47)
+    }
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(Color(red: 0.18, green: 0.92, blue: 0.36))
-            .padding(.horizontal, 14)
-            .frame(height: 28)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(labelColor)
+            .padding(.horizontal, 22)
+            .frame(height: 44)
             .background(
                 Capsule(style: .continuous)
                     .fill(
-                        Color(red: 0.12, green: 0.36, blue: 0.18)
-                            .opacity(configuration.isPressed ? 0.34 : colorScheme == .dark ? 0.24 : 0.12)
+                        onboardingTeal
+                            .opacity(configuration.isPressed ? 0.30 : colorScheme == .dark ? 0.18 : 0.12)
                     )
             )
     }

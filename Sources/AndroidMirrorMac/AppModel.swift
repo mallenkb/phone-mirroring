@@ -12,7 +12,17 @@ final class AppModel: ObservableObject {
     @Published var isRecording = false
     @Published var isPairing = false
     @Published private(set) var isRecoveringConnection = false
-    @Published private(set) var isSelectedDeviceOnline = false
+    @Published private(set) var isSelectedDeviceOnline = false {
+        didSet {
+            guard isSelectedDeviceOnline, !oldValue else { return }
+            // A live device (USB or wireless) just appeared. Permanently leave
+            // first-run onboarding so its fixed default-window sizing can never
+            // persist into the connected or mirroring state.
+            if !UserDefaults.standard.bool(forKey: "hasSeenFirstTimeUserOnboarding") {
+                UserDefaults.standard.set(true, forKey: "hasSeenFirstTimeUserOnboarding")
+            }
+        }
+    }
     @Published var experimentalADBNotificationsEnabled = false {
         didSet {
             UserDefaults.standard.set(
@@ -177,15 +187,16 @@ final class AppModel: ObservableObject {
 
                 for record in Self.recordsByMostRecent(self.pairedPhones) {
                     if Self.isWirelessRecord(record) {
-                        let connectOutput = await Task.detached {
-                            adb.run(["connect", record.lastAddress])
-                        }.value
-                        if Self.adbConnectSucceeded(connectOutput) {
+                        if let connectedAddress = await Self.connectToRememberedWireless(
+                            adb: adb,
+                            savedAddress: record.lastAddress
+                        ) {
                             self.select(record: record)
+                            self.selectedDevice.adbSerial = connectedAddress
                             self.touchPairedPhone(
                                 id: record.id,
                                 displayName: record.displayName,
-                                address: record.lastAddress
+                                address: connectedAddress
                             )
                             self.stopQRCodePairingSession()
                             self.startMirroring()
@@ -299,26 +310,28 @@ final class AppModel: ObservableObject {
         lastPresenceAutoConnectAttemptAt = Date()
         let adb = self.adb
         Task { [weak self] in
-            let connectOutput = await Task.detached {
-                adb.run(["connect", wirelessRecord.lastAddress])
-            }.value
+            let connectedAddress = await Self.connectToRememberedWireless(
+                adb: adb,
+                savedAddress: wirelessRecord.lastAddress
+            )
 
             guard let self,
                   !self.isMirroring,
                   !self.isPairing,
-                  Self.adbConnectSucceeded(connectOutput)
+                  let connectedAddress
             else { return }
 
             let deviceName = await Self.connectedDeviceName(
                 adb: adb,
-                serial: wirelessRecord.lastAddress,
+                serial: connectedAddress,
                 fallback: wirelessRecord.displayName
             )
             self.select(record: wirelessRecord)
+            self.selectedDevice.adbSerial = connectedAddress
             self.touchPairedPhone(
                 id: wirelessRecord.id,
                 displayName: deviceName,
-                address: wirelessRecord.lastAddress
+                address: connectedAddress
             )
             self.selectedDevice.name = deviceName
             self.stopQRCodePairingSession()
@@ -551,6 +564,53 @@ final class AppModel: ObservableObject {
             adb.run(["-s", usbDevice.serial, "shell", "ip", "route"])
         }.value
 
+        // Prefer the legacy `adb tcpip 5555` listener. It's the only wireless
+        // adb path that stays reachable without the phone's Wireless debugging
+        // toggle, so the address we remember keeps working on later "same
+        // Wi-Fi" reconnects (until the phone reboots, which drops tcpip mode).
+        if let legacyAddress = Self.legacyTCPIPDebuggingAddress(routeOutput: routeOutput) {
+            await Self.primeADBWirelessRoute(
+                adb: adb,
+                usbSerial: usbDevice.serial,
+                wirelessAddress: legacyAddress
+            )
+            let tcpipOutput = await Task.detached {
+                adb.run(["-s", usbDevice.serial, "tcpip", "\(Self.legacyADBWirelessPort)"])
+            }.value
+
+            if Self.adbTCPIPSucceeded(tcpipOutput) {
+                if await Self.waitForADBWirelessTargetReady(
+                    adb: adb,
+                    address: legacyAddress,
+                    attempts: 15,
+                    primeRoute: {
+                        await Self.primeADBWirelessRoute(
+                            adb: adb,
+                            usbSerial: usbDevice.serial,
+                            wirelessAddress: legacyAddress
+                        )
+                    }
+                ) {
+                    isPairing = false
+                    let deviceName = await Self.connectedDeviceName(
+                        adb: adb,
+                        serial: legacyAddress,
+                        fallback: usbDevice.model
+                    )
+                    finishWirelessHandoff(
+                        usbDevice: usbDevice,
+                        wirelessID: legacyAddress,
+                        address: legacyAddress,
+                        displayName: deviceName
+                    )
+                    return true
+                }
+            }
+        }
+
+        // Fallback for phones that block `adb tcpip` but already expose Android
+        // 11 Wireless debugging. Its random TLS port stops answering once the
+        // toggle is turned off, so we only reach for it if 5555 didn't take.
         let tlsPortOutput = await Task.detached {
             adb.run(["-s", usbDevice.serial, "shell", "getprop", "service.adb.tls.port"])
         }.value
@@ -625,46 +685,6 @@ final class AppModel: ObservableObject {
                 return true
             }
 
-        }
-
-        if let legacyAddress = Self.legacyTCPIPDebuggingAddress(routeOutput: routeOutput) {
-            await Self.primeADBWirelessRoute(
-                adb: adb,
-                usbSerial: usbDevice.serial,
-                wirelessAddress: legacyAddress
-            )
-            let tcpipOutput = await Task.detached {
-                adb.run(["-s", usbDevice.serial, "tcpip", "\(Self.legacyADBWirelessPort)"])
-            }.value
-
-            if Self.adbTCPIPSucceeded(tcpipOutput) {
-                if await Self.waitForADBWirelessTargetReady(
-                    adb: adb,
-                    address: legacyAddress,
-                    attempts: 15,
-                    primeRoute: {
-                        await Self.primeADBWirelessRoute(
-                            adb: adb,
-                            usbSerial: usbDevice.serial,
-                            wirelessAddress: legacyAddress
-                        )
-                    }
-                ) {
-                    isPairing = false
-                    let deviceName = await Self.connectedDeviceName(
-                        adb: adb,
-                        serial: legacyAddress,
-                        fallback: usbDevice.model
-                    )
-                    finishWirelessHandoff(
-                        usbDevice: usbDevice,
-                        wirelessID: legacyAddress,
-                        address: legacyAddress,
-                        displayName: deviceName
-                    )
-                    return true
-                }
-            }
         }
 
         isPairing = false
@@ -784,7 +804,10 @@ final class AppModel: ObservableObject {
     private func applyDevicePresence(_ output: String) {
         let devices = Self.authorizedADBDevices(in: output)
         guard let serial = selectedDevice.adbSerial else {
-            isSelectedDeviceOnline = false
+            // Nothing selected yet (e.g. fresh onboarding). Adopt the first live
+            // device so a working USB/wireless connection advances the UI out of
+            // first-run instead of leaving it pinned to the onboarding window.
+            applyADBOutput(output)
             return
         }
 
@@ -850,6 +873,71 @@ final class AppModel: ObservableObject {
     nonisolated static func adbConnectSucceeded(_ output: String) -> Bool {
         let lower = output.lowercased()
         return lower.contains("connected to ") || lower.contains("already connected to ")
+    }
+
+    /// Wireless addresses to try for a remembered phone, most-preferred first.
+    /// Always includes the stable legacy `:5555` port: an older record may have
+    /// saved a random Wireless-debugging TLS port that no longer answers once
+    /// the toggle is off, whereas a `tcpip` listener on 5555 survives without it.
+    nonisolated static func reconnectCandidateAddresses(for savedAddress: String) -> [String] {
+        var candidates = [savedAddress]
+        if let host = host(in: savedAddress) {
+            let legacy = "\(host):\(legacyADBWirelessPort)"
+            if !candidates.contains(legacy) {
+                candidates.append(legacy)
+            }
+        }
+        return candidates
+    }
+
+    /// Tries each candidate address for a remembered phone and returns the first
+    /// one adb accepts, or nil. Needs no phone interaction and no Wireless
+    /// debugging toggle — just reachability on the current network.
+    nonisolated static func connectToRememberedWireless(
+        adb: ADBController,
+        savedAddress: String
+    ) async -> String? {
+        for candidate in reconnectCandidateAddresses(for: savedAddress) {
+            let output = await Task.detached { adb.run(["connect", candidate]) }.value
+            if adbConnectSucceeded(output) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    /// Promotes an already-connected wireless adb device (e.g. one reached via
+    /// Android 11 Wireless debugging on a random TLS port) to a plain `tcpip
+    /// 5555` listener, so later reconnects work on the same Wi-Fi without the
+    /// Wireless-debugging toggle. `adb tcpip` works over any transport, so the
+    /// source can itself be a wireless address — no USB cable required. Returns
+    /// `host:5555` on success, or nil to keep using the original target.
+    nonisolated static func promoteToLegacyTCPIP(
+        adb: ADBController,
+        sourceSerial: String
+    ) async -> String? {
+        let routeOutput = await Task.detached {
+            adb.run(["-s", sourceSerial, "shell", "ip", "route"])
+        }.value
+        guard let legacyAddress = legacyTCPIPDebuggingAddress(routeOutput: routeOutput) else {
+            return nil
+        }
+        if legacyAddress == sourceSerial {
+            return legacyAddress
+        }
+
+        let tcpipOutput = await Task.detached {
+            adb.run(["-s", sourceSerial, "tcpip", "\(legacyADBWirelessPort)"])
+        }.value
+        guard adbTCPIPSucceeded(tcpipOutput) else { return nil }
+
+        // adbd restarts on 5555; the old transport drops, so retry connect.
+        let ready = await waitForADBWirelessTargetReady(
+            adb: adb,
+            address: legacyAddress,
+            attempts: 15
+        )
+        return ready ? legacyAddress : nil
     }
 
     nonisolated static func adbPairSucceeded(_ output: String) -> Bool {
@@ -1209,14 +1297,17 @@ final class AppModel: ObservableObject {
 
         Task { [weak self] in
             var target: String?
+            var refreshedSavedTarget: String?
 
             if savedTarget.contains(":") {
-                let connectOutput = await Task.detached {
-                    adb.run(["connect", savedTarget])
-                }.value
-
-                if Self.adbConnectSucceeded(connectOutput) {
-                    target = savedTarget
+                if let connectedAddress = await Self.connectToRememberedWireless(
+                    adb: adb,
+                    savedAddress: savedTarget
+                ) {
+                    target = connectedAddress
+                    if connectedAddress != savedTarget {
+                        refreshedSavedTarget = connectedAddress
+                    }
                 }
             }
 
@@ -1259,6 +1350,13 @@ final class AppModel: ObservableObject {
             self.isPairing = false
             guard let target else {
                 return
+            }
+            if let refreshedSavedTarget {
+                self.touchPairedPhone(
+                    id: selectedID,
+                    displayName: selectedName,
+                    address: refreshedSavedTarget
+                )
             }
             self.selectedDevice.adbSerial = target
             self.launchNativeMirror(serial: target)

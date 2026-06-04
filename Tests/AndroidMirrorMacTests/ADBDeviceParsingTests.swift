@@ -342,6 +342,20 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertNil(AppModel.legacyTCPIPDebuggingAddress(routeOutput: routeOutput))
     }
 
+    func testReconnectCandidatesAppendStableLegacyPort() {
+        XCTAssertEqual(
+            AppModel.reconnectCandidateAddresses(for: "192.168.1.44:42111"),
+            ["192.168.1.44:42111", "192.168.1.44:5555"]
+        )
+    }
+
+    func testReconnectCandidatesDoNotDuplicateLegacyPort() {
+        XCTAssertEqual(
+            AppModel.reconnectCandidateAddresses(for: "192.168.1.44:5555"),
+            ["192.168.1.44:5555"]
+        )
+    }
+
     func testADBTCPIPResultParsing() {
         XCTAssertTrue(AppModel.adbTCPIPSucceeded("restarting in TCP mode port: 5555"))
         XCTAssertTrue(AppModel.adbTCPIPSucceeded("already in TCP mode"))
