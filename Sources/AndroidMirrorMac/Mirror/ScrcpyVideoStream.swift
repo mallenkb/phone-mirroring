@@ -135,7 +135,7 @@ final class ScrcpyVideoStream {
             case .ready:
                 Logger.log("ScrcpyVideoStream connection ready")
             case .failed(let error), .waiting(let error):
-                self?.onError?(error)
+                self.onError?(error)
             case .cancelled:
                 break
             default:
@@ -354,7 +354,7 @@ final class ScrcpyVideoStream {
         return bytes.reduce(0) { ($0 << 8) | UInt64($1) }
     }
 
-    private static func isValidStreamSize(width: UInt32, height: UInt32) -> Bool {
+    static func isValidStreamSize(width: UInt32, height: UInt32) -> Bool {
         guard width > 0, height > 0,
               width <= maxStreamDimension,
               height <= maxStreamDimension else {

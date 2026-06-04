@@ -53,4 +53,17 @@ final class ScrcpyVideoStreamTests: XCTestCase {
         )
         XCTAssertEqual(role, .reject)
     }
+
+    func testPacketSizeCapsAreBounded() {
+        XCTAssertEqual(ScrcpyVideoStream.maxVideoPacketBytes, 32 * 1024 * 1024)
+        XCTAssertEqual(ScrcpyVideoStream.maxAudioPacketBytes, 4 * 1024 * 1024)
+    }
+
+    func testStreamSizeValidationRejectsZeroAndImplausibleDimensions() {
+        XCTAssertTrue(ScrcpyVideoStream.isValidStreamSize(width: 1080, height: 2340))
+        XCTAssertFalse(ScrcpyVideoStream.isValidStreamSize(width: 0, height: 2340))
+        XCTAssertFalse(ScrcpyVideoStream.isValidStreamSize(width: 1080, height: 0))
+        XCTAssertFalse(ScrcpyVideoStream.isValidStreamSize(width: 20_000, height: 1080))
+        XCTAssertFalse(ScrcpyVideoStream.isValidStreamSize(width: 16_384, height: 16_384))
+    }
 }

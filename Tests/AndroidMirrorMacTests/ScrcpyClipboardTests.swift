@@ -87,4 +87,12 @@ final class ScrcpyClipboardTests: XCTestCase {
         data.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF])
         XCTAssertEqual(ScrcpyControlChannel.parseDeviceMessage(data), .reset)
     }
+
+    func testParseRejectsInvalidUTF8ClipboardPayload() {
+        var data = Data([0])
+        data.append(contentsOf: [0, 0, 0, 2])
+        data.append(contentsOf: [0xC3, 0x28])
+
+        XCTAssertEqual(ScrcpyControlChannel.parseDeviceMessage(data), .reset)
+    }
 }
