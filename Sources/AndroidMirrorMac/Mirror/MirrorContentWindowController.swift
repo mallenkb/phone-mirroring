@@ -40,6 +40,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     static let minimumMirrorCornerRadius: CGFloat = 24
     static let maximumMirrorCornerRadius: CGFloat = 38
     static let minimumScreenHeightRatio: CGFloat = 0.45
+    static let initialScreenHeightRatio: CGFloat = 0.60
     static let maximumScreenHeightRatio: CGFloat = 0.90
     static let chromeHideDelay: TimeInterval = 0.030
     static let chromeHideAnimationDuration: TimeInterval = 0.16
@@ -110,9 +111,10 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         self.session = session
         self.launchFrame = launchFrame
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 390, height: 850)
-        let initialSize = Self.defaultWrappedShellSize(
+        let initialSize = Self.initialWrappedShellSize(
             for: Self.defaultMirrorSize,
-            visibleFrame: visible
+            visibleFrame: visible,
+            maximumHeightBasis: Self.resolutionHeight(for: NSScreen.main, fallbackVisibleFrame: visible)
         )
         let frame = NSRect(
             x: 0,
@@ -194,7 +196,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         let maxScreenWidth = max(1, fullSize.width - horizontalShellInset)
         let maxScreenHeight = max(1, fullSize.height - verticalShellInset)
         let heightBasis = max(1, maximumHeightBasis ?? visibleFrame.height)
-        let targetShellHeight = min(heightBasis * maximumScreenHeightRatio, fullSize.height)
+        let targetShellHeight = min(heightBasis * initialScreenHeightRatio, fullSize.height)
         let targetScreenHeight = max(1, targetShellHeight - verticalShellInset)
         let streamAspect = streamSize.width / max(streamSize.height, 1)
         let targetScreenWidth = min(maxScreenWidth, targetScreenHeight * streamAspect) * initialMirrorScale
@@ -215,7 +217,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         }
 
         let resolutionHeight = Self.resolutionHeight(for: NSScreen.main, fallbackVisibleFrame: visibleFrame)
-        let targetScreenHeight = max(1, resolutionHeight * 0.5)
+        let targetScreenHeight = max(1, resolutionHeight * initialScreenHeightRatio)
         let maxScreenWidth = max(1, visibleFrame.width - screenMargin - horizontalShellInset)
         let maxScreenHeight = max(1, visibleFrame.height - screenMargin - verticalShellInset)
         let streamAspect = streamSize.width / max(streamSize.height, 1)
@@ -294,10 +296,18 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
     func show() {
         guard let window else { return }
-        let frame = launchFrame ?? Self.centeredFrame(
-            size: window.frame.size,
-            in: Self.targetVisibleFrame(for: window)
-        )
+        let frame: NSRect
+        if let launchFrame {
+            frame = launchFrame
+        } else {
+            let visible = NSScreen.main?.visibleFrame ?? Self.targetVisibleFrame(for: window)
+            let size = Self.initialWrappedShellSize(
+                for: Self.defaultMirrorSize,
+                visibleFrame: visible,
+                maximumHeightBasis: Self.resolutionHeight(for: NSScreen.main, fallbackVisibleFrame: visible)
+            )
+            frame = Self.centeredFrame(size: size, in: visible)
+        }
         Logger.log("MirrorContentWindow show frame=\(frame)")
         window.setFrame(frame, display: true, animate: false)
         window.makeKeyAndOrderFront(nil)
@@ -581,7 +591,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         chromeBar.configure(
             deviceName: model.selectedDevice.name,
             onHome: { [weak self] in self?.model.sendAndroidKey("KEYCODE_HOME") },
-            onBack: { [weak self] in self?.model.sendAndroidKey("KEYCODE_BACK") },
+            onRecentApps: { [weak self] in self?.model.sendAndroidKey("KEYCODE_APP_SWITCH") },
             onScreenshot: { [weak self] in self?.model.takeScreenshot() },
             onRecordingToggle: { [weak self] in self?.model.toggleScreenRecording() }
         )
@@ -648,7 +658,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             self?.session?.forwardPointerEvent(event, in: self?.renderView ?? MirrorRenderView())
         }
         renderView.onKeyEvent = { [weak self] event in
+            guard self?.model.keyboardInputEnabled ?? true else { return }
             self?.session?.forwardKeyEvent(event)
+        }
+        renderView.onDropFiles = { [weak self] urls in
+            self?.model.handleDroppedFiles(urls)
         }
     }
 
@@ -1296,9 +1310,9 @@ final class MirrorChromeBar: NSView {
         resource: "chrome-home",
         accessibilityDescription: "Home"
     )
-    private let backBtn = MirrorChromeOutlineButton(
-        resource: "chrome-back",
-        accessibilityDescription: "Back"
+    private let recentAppsBtn = MirrorChromeOutlineButton(
+        symbol: "rectangle.stack",
+        accessibilityDescription: "Recent apps"
     )
     private let recordingBtn = MirrorChromeOutlineButton(
         resource: "chrome-record",
@@ -1323,7 +1337,7 @@ final class MirrorChromeBar: NSView {
     var chromeHeight: CGFloat = MirrorContentWindowController.chromeHeight {
         didSet {
             homeBtn.chromeScale = chromeScale
-            backBtn.chromeScale = chromeScale
+            recentAppsBtn.chromeScale = chromeScale
             recordingBtn.chromeScale = chromeScale
             screenshotBtn.chromeScale = chromeScale
         }
@@ -1337,7 +1351,7 @@ final class MirrorChromeBar: NSView {
     }
 
     override init(frame frameRect: NSRect) {
-        rightStack = NSStackView(views: [recordingBtn, screenshotBtn, homeBtn, backBtn])
+        rightStack = NSStackView(views: [recordingBtn, screenshotBtn, homeBtn, recentAppsBtn])
         super.init(frame: frameRect)
         setup()
     }
@@ -1348,7 +1362,7 @@ final class MirrorChromeBar: NSView {
     func configure(
         deviceName: String,
         onHome: @escaping () -> Void,
-        onBack: @escaping () -> Void,
+        onRecentApps: @escaping () -> Void,
         onScreenshot: @escaping () -> Void,
         onRecordingToggle: @escaping () -> Void
     ) {
@@ -1356,8 +1370,9 @@ final class MirrorChromeBar: NSView {
         homeBtn.toolTip = "Go to Android home"
         homeBtn.action = onHome
         homeBtn.minimumActionInterval = 0.35
-        backBtn.toolTip = "Android back"
-        backBtn.action = onBack
+        recentAppsBtn.toolTip = "Show Android recent apps"
+        recentAppsBtn.action = onRecentApps
+        recentAppsBtn.minimumActionInterval = 0.35
         screenshotBtn.toolTip = "Save screenshot to Downloads"
         screenshotBtn.action = onScreenshot
         recordingBtn.toolTip = "Start screen recording"
@@ -1464,14 +1479,14 @@ final class MirrorChromeBar: NSView {
     func setControlsVisible(_ visible: Bool) {
         trafficLights.isHidden = !visible
         titleLabel.isHidden = !visible
-        backBtn.isHidden = !visible
+        recentAppsBtn.isHidden = !visible
         recordingBtn.isHidden = !visible
         screenshotBtn.isHidden = !visible
         homeBtn.isHidden = !visible
     }
 
     func setTrailingActionsVisible(_ visible: Bool) {
-        backBtn.isHidden = !visible
+        recentAppsBtn.isHidden = !visible
         recordingBtn.isHidden = !visible
         screenshotBtn.isHidden = !visible
         homeBtn.isHidden = !visible

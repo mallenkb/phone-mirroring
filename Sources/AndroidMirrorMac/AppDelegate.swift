@@ -5,7 +5,9 @@ import UserNotifications
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var window: NSWindow?
+    private var firstRunWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var shortcutsWindow: NSWindow?
     private let model = AppModel()
     private var keyMonitor: Any?
 
@@ -17,38 +19,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let hostingView = NSHostingView(rootView: rootView)
         let shouldShowFirstRunIntro = !UserDefaults.standard.bool(forKey: "hasSeenFirstTimeUserOnboarding")
             && model.pairedPhones.isEmpty
-        let initialWindowSize = shouldShowFirstRunIntro
-            ? AppModel.connectionWindowSize
-            : AppModel.onboardingWindowSize
-        let styleMask: NSWindow.StyleMask = shouldShowFirstRunIntro
-            ? [.titled, .closable, .miniaturizable]
-            : [.borderless]
+        let initialWindowSize = AppModel.onboardingWindowSize
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: initialWindowSize),
-            styleMask: styleMask,
+            styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
         window.title = "Android Mirroring"
         window.isReleasedWhenClosed = false
-        window.isOpaque = shouldShowFirstRunIntro
-        window.hasShadow = shouldShowFirstRunIntro
-        window.isMovableByWindowBackground = !shouldShowFirstRunIntro
-        window.backgroundColor = shouldShowFirstRunIntro ? .windowBackgroundColor : .clear
+        window.isOpaque = false
+        window.hasShadow = false
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = .clear
         window.contentView = hostingView
-        if shouldShowFirstRunIntro {
-            WindowRegistrationView.applyDefaultWindowMask(to: window)
-        } else {
-            WindowRegistrationView.applyPhoneWindowMask(to: window)
-        }
+        WindowRegistrationView.applyPhoneWindowMask(to: window)
         window.minSize = initialWindowSize
         window.contentMinSize = initialWindowSize
         window.maxSize = initialWindowSize
         window.contentMaxSize = initialWindowSize
-        window.center()
-        window.makeKeyAndOrderFront(nil)
+        centerOnMainScreen(window)
         model.registerConnectionWindow(window)
         self.window = window
+
+        if shouldShowFirstRunIntro {
+            showFirstRunWindow()
+            window.orderOut(nil)
+        } else {
+            window.makeKeyAndOrderFront(nil)
+        }
 
         installMainMenu()
         installKeyboardScaling()
@@ -80,7 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let appMenu = NSMenu()
         appMenu.addItem(
             NSMenuItem(
-                title: "Settings...",
+                title: "Mirroring Settings...",
                 action: #selector(showSettings(_:)),
                 keyEquivalent: ","
             )
@@ -155,6 +154,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         )
         viewMenu.addItem(
             NSMenuItem(
+                title: "Recent Apps",
+                action: #selector(showRecentApps(_:)),
+                keyEquivalent: "]"
+            )
+        )
+        viewMenu.addItem(
+            NSMenuItem(
                 title: "Take Screenshot",
                 action: #selector(takeScreenshot(_:)),
                 keyEquivalent: "S"
@@ -170,14 +176,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         viewMenu.addItem(.separator())
         viewMenu.addItem(
             NSMenuItem(
-                title: "Zoom In",
+                title: "Increase Mirror Size by 10%",
                 action: #selector(zoomIn(_:)),
                 keyEquivalent: "+"
             )
         )
         viewMenu.addItem(
             NSMenuItem(
-                title: "Zoom Out",
+                title: "Decrease Mirror Size by 10%",
                 action: #selector(zoomOut(_:)),
                 keyEquivalent: "-"
             )
@@ -189,11 +195,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 keyEquivalent: "0"
             )
         )
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(
+            NSMenuItem(
+                title: "Show Last Capture in Finder",
+                action: #selector(revealLastCapture(_:)),
+                keyEquivalent: ""
+            )
+        )
         viewItem.submenu = viewMenu
 
         let helpItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
         mainMenu.addItem(helpItem)
         let helpMenu = NSMenu(title: "Help")
+        helpMenu.addItem(
+            NSMenuItem(
+                title: "Keyboard Shortcuts",
+                action: #selector(showKeyboardShortcuts(_:)),
+                keyEquivalent: "/"
+            )
+        )
+        helpMenu.addItem(
+            NSMenuItem(
+                title: "Open Log File",
+                action: #selector(openLogFile(_:)),
+                keyEquivalent: ""
+            )
+        )
+        helpMenu.addItem(.separator())
         helpMenu.addItem(
             NSMenuItem(
                 title: "Restart Onboarding",
@@ -243,6 +272,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
+    private func showFirstRunWindow() {
+        if let firstRunWindow {
+            centerOnMainScreen(firstRunWindow)
+            firstRunWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let rootView = FirstRunOnboardingView { [weak self] in
+            self?.firstRunWindow?.orderOut(nil)
+            self?.firstRunWindow = nil
+            if let window = self?.window {
+                self?.centerOnMainScreen(window)
+            }
+            self?.window?.makeKeyAndOrderFront(nil)
+            self?.model.ensureQRCodePairingSession()
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        .environmentObject(model)
+
+        // Host in a controller that reports the SwiftUI content's own size, so
+        // the window wraps the content exactly (with its built-in bottom
+        // padding) and never fixed-clips the buttons.
+        let hosting = NSHostingController(rootView: rootView)
+        hosting.sizingOptions = [.preferredContentSize]
+
+        let window = NSWindow(contentViewController: hosting)
+        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.title = "Android Mirroring"
+        window.isReleasedWhenClosed = false
+        window.isMovableByWindowBackground = false
+        centerOnMainScreen(window)
+        window.makeKeyAndOrderFront(nil)
+        firstRunWindow = window
+    }
+
+    private func centerOnMainScreen(_ window: NSWindow) {
+        let visible = NSScreen.main?.visibleFrame
+            ?? window.screen?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 390, height: 850)
+        window.setFrame(
+            MirrorContentWindowController.centeredFrame(size: window.frame.size, in: visible),
+            display: false,
+            animate: false
+        )
+    }
+
     @objc private func scanForAndroidDevices(_ sender: Any?) {
         model.scanADBDevices()
     }
@@ -261,13 +336,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             backing: .buffered,
             defer: false
         )
-        window.title = "Android Mirroring Settings"
+        window.title = "Mirroring Settings"
         window.contentView = hostingView
         window.isReleasedWhenClosed = false
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow = window
+    }
+
+    @objc private func revealLastCapture(_ sender: Any?) {
+        model.revealLastCapture()
+    }
+
+    @objc private func openLogFile(_ sender: Any?) {
+        model.revealLogFile()
+    }
+
+    @objc private func showKeyboardShortcuts(_ sender: Any?) {
+        if let shortcutsWindow {
+            shortcutsWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let hosting = NSHostingController(rootView: KeyboardShortcutsView())
+        hosting.sizingOptions = [.preferredContentSize]
+        let window = NSWindow(contentViewController: hosting)
+        window.styleMask = [.titled, .closable]
+        window.title = "Keyboard Shortcuts"
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        shortcutsWindow = window
     }
 
     @objc private func restartFirstTimeOnboarding(_ sender: Any?) {
@@ -305,6 +407,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         model.sendAndroidKey("KEYCODE_BACK")
     }
 
+    @objc private func showRecentApps(_ sender: Any?) {
+        model.sendAndroidKey("KEYCODE_APP_SWITCH")
+    }
+
     @objc private func phoneVolumeUp(_ sender: Any?) {
         model.sendAndroidKey("KEYCODE_VOLUME_UP")
     }
@@ -326,12 +432,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(phoneVolumeUp(_:))
-            || menuItem.action == #selector(phoneVolumeDown(_:))
-            || menuItem.action == #selector(phoneVolumeMute(_:)) {
+        switch menuItem.action {
+        case #selector(phoneVolumeUp(_:))?,
+             #selector(phoneVolumeDown(_:))?,
+             #selector(phoneVolumeMute(_:))?:
             return model.selectedDevice.adbSerial != nil
+        case #selector(toggleMirroring(_:))?:
+            menuItem.title = model.isMirroring ? "Stop Mirroring" : "Start Mirroring"
+            return !model.isPairing && !model.isRecoveringConnection && model.selectedDevice.adbSerial != nil
+        case #selector(goHome(_:))?,
+             #selector(goBack(_:))?,
+             #selector(showRecentApps(_:))?,
+             #selector(takeScreenshot(_:))?,
+             #selector(toggleScreenRecording(_:))?,
+             #selector(zoomIn(_:))?,
+             #selector(zoomOut(_:))?,
+             #selector(centerMirror(_:))?:
+            return model.hasActiveMirrorSession
+        case #selector(revealLastCapture(_:))?:
+            return model.lastCaptureURL != nil
+        default:
+            return true
         }
-        return true
     }
 
     @objc private func zoomIn(_ sender: Any?) {

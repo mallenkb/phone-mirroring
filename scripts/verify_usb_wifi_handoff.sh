@@ -13,6 +13,22 @@ fail() {
   exit 1
 }
 
+case "$PORT" in
+  ''|*[!0-9]*) fail "PORT must be numeric." ;;
+esac
+if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+  fail "PORT must be between 1 and 65535."
+fi
+
+command -v adb >/dev/null 2>&1 || fail "adb is required but was not found on PATH."
+
+cleanup() {
+  if [ -n "${usb_serial:-}" ]; then
+    adb -s "$usb_serial" usb >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
 diagnose_network_path() {
   log "Diagnostics:"
   log "  adb devices:"
@@ -24,7 +40,7 @@ diagnose_network_path() {
     log "  phone tcp adb port:"
     adb -s "$usb_serial" shell getprop service.adb.tcp.port 2>&1 | sed 's/^/    /' || true
     log "  phone port listeners:"
-    adb -s "$usb_serial" shell "ss -ltnp 2>/dev/null | grep ':$PORT' || netstat -an 2>/dev/null | grep ':$PORT' || true" 2>&1 | sed 's/^/    /' || true
+    adb -s "$usb_serial" shell "ss -ltnp 2>/dev/null | grep ':[0-9]*$PORT' || netstat -an 2>/dev/null | grep ':[0-9]*$PORT' || true" 2>&1 | sed 's/^/    /' || true
     if [ -n "${local_ip:-}" ]; then
       log "  phone-to-Mac ping:"
       adb -s "$usb_serial" shell ping -c 2 -W 1 "$local_ip" 2>&1 | sed 's/^/    /' || true
@@ -74,7 +90,11 @@ fi
 target="$wifi_ip:$PORT"
 log "Wi-Fi target: $target"
 
-local_ip="$(route -n get "$wifi_ip" 2>/dev/null | awk '/interface:/ { iface=$2 } END { if (iface != "") system("ipconfig getifaddr " iface) }')"
+route_iface="$(route -n get "$wifi_ip" 2>/dev/null | awk '/interface:/ { print $2; exit }')"
+case "$route_iface" in
+  ''|*[!A-Za-z0-9._-]*) local_ip="" ;;
+  *) local_ip="$(ipconfig getifaddr "$route_iface" 2>/dev/null || true)" ;;
+esac
 if [ -n "$local_ip" ]; then
   log "Priming phone-to-Mac route: phone ping $local_ip"
   adb -s "$usb_serial" shell ping -c 1 -W 1 "$local_ip" >/dev/null 2>&1 || true

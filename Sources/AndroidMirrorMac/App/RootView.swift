@@ -3,24 +3,19 @@ import AppKit
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
-    @AppStorage("hasSeenFirstTimeUserOnboarding") private var hasSeenFirstTimeUserOnboarding = false
-
-    private var usesDefaultWindow: Bool {
-        !hasSeenFirstTimeUserOnboarding && model.pairedPhones.isEmpty
-    }
 
     var body: some View {
         FigmaMirrorExperienceView()
             .environmentObject(model)
-            .background(WindowRegistrationView(model: model, usesDefaultWindow: usesDefaultWindow))
+            .background(WindowRegistrationView(model: model))
     }
 }
 
 /// Registers the host window with AppModel so it can be reopened when a mirror
-/// session ends.
+/// session ends. This window is always the phone/mirror window — the first-run
+/// onboarding lives in its own separate window and never touches this one.
 struct WindowRegistrationView: NSViewRepresentable {
     @ObservedObject var model: AppModel
-    let usesDefaultWindow: Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -47,27 +42,7 @@ struct WindowRegistrationView: NSViewRepresentable {
     private func configure(window: NSWindow?, coordinator: Coordinator) {
         guard let window else { return }
         model.registerConnectionWindow(window)
-        if usesDefaultWindow {
-            configureDefaultWindow(window, coordinator: coordinator)
-        } else {
-            configurePhoneWindow(window, coordinator: coordinator)
-        }
-    }
-
-    private func configureDefaultWindow(_ window: NSWindow, coordinator: Coordinator) {
-        window.styleMask.insert(.titled)
-        window.styleMask.insert(.closable)
-        window.styleMask.insert(.miniaturizable)
-        window.styleMask.remove(.resizable)
-        window.titleVisibility = .visible
-        window.titlebarAppearsTransparent = false
-        window.isOpaque = true
-        window.hasShadow = true
-        window.isMovableByWindowBackground = false
-        window.backgroundColor = .windowBackgroundColor
-        applySize(AppModel.connectionWindowSize, to: window)
-        Self.applyDefaultWindowMask(to: window)
-        coordinator.uninstall()
+        configurePhoneWindow(window, coordinator: coordinator)
     }
 
     private func configurePhoneWindow(_ window: NSWindow, coordinator: Coordinator) {
@@ -87,18 +62,19 @@ struct WindowRegistrationView: NSViewRepresentable {
 
     private func applySize(_ size: NSSize, to window: NSWindow) {
         if window.contentView?.frame.size != size {
-            window.setContentSize(size)
+            let visible = NSScreen.main?.visibleFrame
+                ?? window.screen?.visibleFrame
+                ?? NSRect(x: 0, y: 0, width: 390, height: 850)
+            window.setFrame(
+                MirrorContentWindowController.centeredFrame(size: size, in: visible),
+                display: false,
+                animate: false
+            )
         }
         window.minSize = size
         window.contentMinSize = size
         window.maxSize = size
         window.contentMaxSize = size
-    }
-
-    static func applyDefaultWindowMask(to window: NSWindow) {
-        window.contentView?.wantsLayer = true
-        window.contentView?.layer?.cornerRadius = 0
-        window.contentView?.layer?.masksToBounds = false
     }
 
     static func applyPhoneWindowMask(to window: NSWindow) {
@@ -170,7 +146,7 @@ struct WindowRegistrationView: NSViewRepresentable {
             chromeBar.configure(
                 deviceName: model.selectedDevice.name,
                 onHome: { model.sendAndroidKey("KEYCODE_HOME") },
-                onBack: { model.sendAndroidKey("KEYCODE_BACK") },
+                onRecentApps: { model.sendAndroidKey("KEYCODE_APP_SWITCH") },
                 onScreenshot: { model.takeScreenshot() },
                 onRecordingToggle: { model.toggleScreenRecording() }
             )

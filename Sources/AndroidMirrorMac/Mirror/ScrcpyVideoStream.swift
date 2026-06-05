@@ -48,8 +48,12 @@ final class ScrcpyVideoStream {
     typealias AudioHandler = (Data) -> Void
     typealias ErrorHandler = (Error) -> Void
 
-    /// scrcpy `AudioCodec.RAW` id ("\0raw"); 0 means the device disabled audio.
-    static let rawAudioCodecID: UInt32 = 0x0072_6177
+    /// scrcpy Opus audio codec id. 0 means the device disabled audio.
+    static let opusAudioCodecID: UInt32 = 0x6f70_7573
+    static let maxVideoPacketBytes = 32 * 1024 * 1024
+    static let maxAudioPacketBytes = 4 * 1024 * 1024
+    static let maxStreamDimension: UInt32 = 16_384
+    static let maxStreamPixels: UInt64 = 67_108_864
 
     private let port: UInt16
     private let expectsAudio: Bool
@@ -65,6 +69,7 @@ final class ScrcpyVideoStream {
     private var audioBuffer = Data()
     private var audioMetaParsed = false
     private var audioDisabled = false
+    private var isStopped = false
     private let queue = DispatchQueue(label: "scrcpy.video.stream", qos: .userInteractive)
 
     var onHeader: HeaderHandler?
@@ -80,6 +85,7 @@ final class ScrcpyVideoStream {
     }
 
     func start() throws {
+        isStopped = false
         let parameters = NWParameters.tcp
         parameters.acceptLocalOnly = true
         if let tcp = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
@@ -99,6 +105,15 @@ final class ScrcpyVideoStream {
     }
 
     func stop() {
+        isStopped = true
+        onHeader = nil
+        onPacket = nil
+        onResize = nil
+        onControl = nil
+        onAudioPacket = nil
+        onError = nil
+        videoBuffer.removeAll()
+        audioBuffer.removeAll()
         listener?.cancel()
         listener = nil
         videoConnection?.cancel()
@@ -110,12 +125,17 @@ final class ScrcpyVideoStream {
     }
 
     private func accept(connection: NWConnection) {
+        guard !isStopped else {
+            connection.cancel()
+            return
+        }
         connection.stateUpdateHandler = { [weak self] state in
+            guard let self, !self.isStopped else { return }
             switch state {
             case .ready:
                 Logger.log("ScrcpyVideoStream connection ready")
             case .failed(let error), .waiting(let error):
-                self?.onError?(error)
+                self.onError?(error)
             case .cancelled:
                 break
             default:
@@ -170,10 +190,15 @@ final class ScrcpyVideoStream {
         return .reject
     }
 
+    static func isSupportedAudioCodecID(_ codecID: UInt32) -> Bool {
+        codecID == opusAudioCodecID
+    }
+
     private func readMore(on connection: NWConnection, handler: @escaping (Data) -> Void) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
+            guard let self, !self.isStopped else { return }
             if let error {
-                self?.onError?(error)
+                self.onError?(error)
                 return
             }
             if let data, !data.isEmpty {
@@ -182,7 +207,7 @@ final class ScrcpyVideoStream {
             if isComplete {
                 return
             }
-            self?.readMore(on: connection, handler: handler)
+            self.readMore(on: connection, handler: handler)
         }
     }
 
@@ -209,6 +234,10 @@ final class ScrcpyVideoStream {
                 // Session/resize packet, header-only.
                 let width = readUInt32BE(at: 4)
                 let height = readUInt32BE(at: 8)
+                guard Self.isValidStreamSize(width: width, height: height) else {
+                    failStream("invalid stream size \(width)x\(height)")
+                    return
+                }
                 videoBuffer.removeFirst(12)
                 if initialHeaderSent {
                     onResize?(width, height)
@@ -227,9 +256,11 @@ final class ScrcpyVideoStream {
             let ptsFlags = readUInt64BE(at: 0)
             let size = Int(readUInt32BE(at: 8))
             guard size > 0 else {
-                onError?(NSError(domain: "ScrcpyVideoStream", code: -1,
-                                 userInfo: [NSLocalizedDescriptionKey: "invalid packet length 0"]))
-                videoBuffer.removeAll()
+                failStream("invalid video packet length 0")
+                return
+            }
+            guard size <= Self.maxVideoPacketBytes else {
+                failStream("video packet length \(size) exceeds \(Self.maxVideoPacketBytes)")
                 return
             }
             guard videoBuffer.count >= 12 + size else { return }
@@ -269,11 +300,10 @@ final class ScrcpyVideoStream {
                 return
             case 1:
                 Logger.log("ScrcpyVideoStream: audio configuration error reported by device")
-                audioDisabled = true
-                audioBuffer.removeAll()
+                failStream("audio configuration error reported by device")
                 return
-            case Self.rawAudioCodecID:
-                Logger.log("ScrcpyVideoStream: audio codec=raw")
+            case Self.opusAudioCodecID:
+                Logger.log("ScrcpyVideoStream: audio codec=opus")
             default:
                 Logger.log("ScrcpyVideoStream: unsupported audio codec=\(String(format: "0x%08x", codecID)); ignoring audio")
                 audioDisabled = true
@@ -290,6 +320,10 @@ final class ScrcpyVideoStream {
             guard size > 0 else {
                 audioBuffer.removeFirst(12)
                 continue
+            }
+            guard size <= Self.maxAudioPacketBytes else {
+                failStream("audio packet length \(size) exceeds \(Self.maxAudioPacketBytes)")
+                return
             }
             guard audioBuffer.count >= 12 + size else { return }
             let isConfig = (ptsFlags & (UInt64(1) << 62)) != 0
@@ -321,5 +355,30 @@ final class ScrcpyVideoStream {
         let start = data.index(data.startIndex, offsetBy: offset)
         let bytes = data[start..<data.index(start, offsetBy: 8)]
         return bytes.reduce(0) { ($0 << 8) | UInt64($1) }
+    }
+
+    static func isValidStreamSize(width: UInt32, height: UInt32) -> Bool {
+        guard width > 0, height > 0,
+              width <= maxStreamDimension,
+              height <= maxStreamDimension else {
+            return false
+        }
+        return UInt64(width) * UInt64(height) <= maxStreamPixels
+    }
+
+    private func failStream(_ message: String) {
+        videoBuffer.removeAll()
+        audioBuffer.removeAll()
+        isStopped = true
+        let error = NSError(
+            domain: "ScrcpyVideoStream",
+            code: -1,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
+        onError?(error)
+        videoConnection?.cancel()
+        audioConnection?.cancel()
+        controlConnection?.cancel()
+        listener?.cancel()
     }
 }

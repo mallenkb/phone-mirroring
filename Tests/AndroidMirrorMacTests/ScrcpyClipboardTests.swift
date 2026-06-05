@@ -25,6 +25,11 @@ final class ScrcpyClipboardTests: XCTestCase {
         XCTAssertTrue(ScrcpyControlChannel.setClipboardMessage(text: "", paste: false, sequence: 0).isEmpty)
     }
 
+    func testDisplayPowerOffMessageLayout() {
+        let data = ScrcpyControlChannel.displayPowerMessage(.off)
+        XCTAssertEqual([UInt8](data), [10, 0])
+    }
+
     func testUtf8TruncationKeepsCodePointsIntact() {
         // "é" is 2 UTF-8 bytes; truncating to 1 must drop the whole character.
         let truncated = ScrcpyControlChannel.utf8Truncated("é", maxBytes: 1)
@@ -85,6 +90,14 @@ final class ScrcpyClipboardTests: XCTestCase {
         var data = Data([0])
         // Length far beyond the 256 KiB cap → desync, request reset.
         data.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF])
+        XCTAssertEqual(ScrcpyControlChannel.parseDeviceMessage(data), .reset)
+    }
+
+    func testParseRejectsInvalidUTF8ClipboardPayload() {
+        var data = Data([0])
+        data.append(contentsOf: [0, 0, 0, 2])
+        data.append(contentsOf: [0xC3, 0x28])
+
         XCTAssertEqual(ScrcpyControlChannel.parseDeviceMessage(data), .reset)
     }
 }

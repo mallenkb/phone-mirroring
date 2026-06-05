@@ -2,72 +2,281 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
+    @State private var selectedTab: SettingsTab = .devices
+
+    private enum SettingsTab: String, CaseIterable, Identifiable {
+        case devices = "Devices"
+        case mirroring = "Mirroring"
+
+        var id: String { rawValue }
+    }
 
     private var records: [PairedPhoneRecord] {
         AppModel.recordsByMostRecent(model.pairedPhones)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            header
+        VStack(alignment: .leading, spacing: 18) {
+            tabPicker
 
-            if records.isEmpty {
-                emptyState
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(records) { record in
-                            let online = isOnline(record)
-                            let active = isActive(record)
-                            PairedPhoneRow(
-                                record: record,
-                                isOnline: online,
-                                isActive: active,
-                                onConnect: {
-                                    model.connect(record: record)
-                                },
-                                onDisconnect: {
-                                    model.stopMirroring()
-                                },
-                                onForget: {
-                                    model.forgetPairedPhone(id: record.id)
-                                }
-                            )
-                        }
-                    }
-                }
-                .frame(minHeight: 245)
+            ScrollView {
+                tabContent
+                    .padding(.bottom, 4)
             }
 
-            notificationForwarding
-
-            Divider()
-
-            HStack(alignment: .center, spacing: 16) {
-                Text("Clearing devices removes saved reconnect history. You will need to pair or connect again from scratch.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer()
-                Button("Clear All Devices", role: .destructive) {
-                    model.forgetAllPairedPhones()
-                }
-                .buttonStyle(DestructiveSettingsButtonStyle())
-                .disabled(records.isEmpty)
+            if selectedTab == .devices {
+                clearDevicesRow
             }
         }
         .padding(24)
-        .frame(width: 660, height: 560)
+        .frame(width: 660, height: 600)
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Settings")
-                .font(.system(size: 28, weight: .semibold))
-            Text("Manage Android devices remembered by Android Mirroring.")
-                .font(.body)
-                .foregroundStyle(.secondary)
+    private var tabPicker: some View {
+        Picker("Mirroring settings section", selection: $selectedTab) {
+            ForEach(SettingsTab.allCases) { tab in
+                Text(tab.rawValue).tag(tab)
+            }
         }
+        .pickerStyle(.segmented)
+        .controlSize(.large)
+        .labelsHidden()
+        .frame(width: 320, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch selectedTab {
+        case .devices:
+            devicesTab
+        case .mirroring:
+            mirroringTab
+        }
+    }
+
+    private var devicesTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if records.isEmpty {
+                emptyState
+            } else {
+                LazyVStack(spacing: 8) {
+                    ForEach(records) { record in
+                        PairedPhoneRow(
+                            record: record,
+                            isOnline: isOnline(record),
+                            isActive: isActive(record),
+                            onConnect: { model.connect(record: record) },
+                            onDisconnect: { model.stopMirroring() },
+                            onForget: { model.forgetPairedPhone(id: record.id) }
+                        )
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+    }
+
+    private var mirroringTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            mirrorQualitySection
+        }
+    }
+
+    private var clearDevicesRow: some View {
+        HStack(alignment: .center, spacing: 16) {
+            Text("Clearing devices removes saved reconnect history. You will need to pair or connect again from scratch.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button("Clear All Devices", role: .destructive) {
+                model.forgetAllPairedPhones()
+            }
+            .buttonStyle(DestructiveSettingsButtonStyle())
+            .disabled(records.isEmpty)
+        }
+    }
+
+    private var mirrorQualitySection: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            HStack(alignment: .top, spacing: 14) {
+                settingsLeadingIcon("slider.horizontal.3", isActive: true)
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Mirroring quality")
+                            .font(.system(size: 14, weight: .semibold))
+                        Text("Lower the resolution or bitrate for smoother mirroring on slow links. Active mirrors restart automatically to apply changes.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    HStack(alignment: .top, spacing: 16) {
+                        qualityPicker(
+                            "Resolution", suffix: "px",
+                            selection: $model.mirrorMaxSize,
+                            options: [1080, 1280, 1600, 1920, 2560]
+                        )
+                        qualityPicker(
+                            "Bitrate", suffix: "Mbps",
+                            selection: $model.mirrorBitRateMbps,
+                            options: [2, 4, 8, 16, 24]
+                        )
+                        qualityPicker(
+                            "Frame rate", suffix: "fps",
+                            selection: $model.mirrorMaxFps,
+                            options: [30, 60, 90, 120]
+                        )
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+
+            settingsToggleRow(
+                icon: "display",
+                isOn: $model.mirrorScreenOffAfterThirtySecondsEnabled,
+                title: "Turn phone screen off after 30 seconds",
+                subtitle: "Keeps mirroring active on this Mac while the phone’s physical display goes dark. Use ⌘L to do this manually.",
+                detail: nil
+            )
+
+            settingsToggleRow(
+                icon: "speaker.wave.2",
+                isOn: $model.mirrorAudioEnabled,
+                title: "Route phone audio to this Mac",
+                subtitle: model.mirrorAudioEnabled
+                    ? "On by default. Phone audio plays through this Mac while mirroring; changing this restarts the mirror."
+                    : "Audio forwarding is off. Phone audio stays on the phone; changing this restarts the mirror.",
+                detail: nil
+            )
+
+            settingsToggleRow(
+                icon: "doc.on.clipboard",
+                isOn: $model.clipboardSyncEnabled,
+                title: "Sync clipboard with phone",
+                subtitle: "Keeps Mac and Android clipboards in sync and enables paste-to-phone with ⌘V.",
+                detail: nil
+            )
+
+            settingsToggleRow(
+                icon: "keyboard",
+                isOn: $model.keyboardInputEnabled,
+                title: "Forward keyboard input",
+                subtitle: "Sends typing and supported shortcuts to the mirrored phone while the mirror is focused.",
+                detail: nil
+            )
+
+            settingsToggleRow(
+                icon: "tray.and.arrow.down",
+                isOn: $model.dragAndDropFileTransferEnabled,
+                title: "Allow drag-and-drop file transfer",
+                subtitle: "Installs dropped APKs or copies files to the phone’s Download folder.",
+                detail: nil
+            )
+
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+    }
+
+    private func settingsLeadingIcon(_ icon: String, isActive: Bool = false) -> some View {
+        Image(systemName: icon)
+            .font(.system(size: 18, weight: .regular))
+            .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+            .frame(width: 28, height: 28, alignment: .top)
+    }
+    private func settingsToggleRow(
+        icon: String,
+        isOn: Binding<Bool>,
+        title: String,
+        subtitle: String,
+        detail: String?
+    ) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(isOn.wrappedValue ? Color.accentColor : Color.secondary)
+                .frame(width: 28, height: 28, alignment: .top)
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(subtitle)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 24)
+
+                    Toggle(title, isOn: isOn)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+
+                if let detail {
+                    Text(detail)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func settingsActionRow(
+        icon: String,
+        title: String,
+        detail: String,
+        actionTitle: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            settingsLeadingIcon(icon)
+
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(detail)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 24)
+
+                Button(actionTitle, action: action)
+            }
+        }
+    }
+
+    private func qualityPicker(
+        _ title: String,
+        suffix: String,
+        selection: Binding<Int>,
+        options: [Int]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title.uppercased())
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Picker("", selection: selection) {
+                ForEach(options, id: \.self) { value in
+                    Text("\(value) \(suffix)").tag(value)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 116, alignment: .leading)
+        }
+        .frame(width: 140, alignment: .leading)
     }
 
     private var emptyState: some View {
@@ -82,42 +291,6 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, minHeight: 220)
-    }
-
-    private var notificationForwarding: some View {
-        HStack(alignment: .top, spacing: 14) {
-            Image(systemName: "bell.badge")
-                .font(.system(size: 18, weight: .regular))
-                .foregroundStyle(model.experimentalADBNotificationsEnabled ? Color.accentColor : Color.secondary)
-                .frame(width: 28, height: 28, alignment: .top)
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Experimental Android notifications")
-                            .font(.system(size: 14, weight: .semibold))
-                        Text(model.experimentalADBNotificationsEnabled ? "Forwarding is enabled" : "Forward Android notifications through ADB")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    Toggle("", isOn: $model.experimentalADBNotificationsEnabled)
-                        .labelsHidden()
-                }
-
-                Text("Uses ADB to poll Android notification state and repost new items as Mac notifications. Requires an authorized USB or Wireless debugging connection and may miss or redact content on some phones.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
     }
 
     private func isOnline(_ record: PairedPhoneRecord) -> Bool {
@@ -177,24 +350,15 @@ private struct PairedPhoneRow: View {
         HStack(alignment: .center, spacing: 14) {
             Image(systemName: "smartphone")
                 .font(.system(size: 18, weight: .regular))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(phoneIconColor)
                 .frame(width: 28, height: 28)
 
             VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(record.displayName)
-                        .font(.system(size: 15, weight: .semibold))
-                        .lineLimit(1)
-
-                    if isActive {
-                        Text("Connected")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.accentColor)
-                    }
-                }
+                Text(record.displayName)
+                    .font(.system(size: 15, weight: .semibold))
+                    .lineLimit(1)
 
                 HStack(spacing: 10) {
-                    statusPill
                     labeledValue("Port ID", record.lastAddress)
                 }
             }
@@ -210,21 +374,14 @@ private struct PairedPhoneRow: View {
         )
     }
 
-    private var statusPill: some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(isOnline ? Color.green : Color.secondary.opacity(0.7))
-                .frame(width: 7, height: 7)
-            Text(isOnline ? "Online" : "Offline")
-                .font(.system(size: 12, weight: .medium))
+    private var phoneIconColor: Color {
+        if isActive {
+            return .green
         }
-        .foregroundStyle(isOnline ? Color.green : Color.secondary)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(
-            Capsule(style: .continuous)
-                .fill((isOnline ? Color.green : Color.secondary).opacity(0.12))
-        )
+        if isOnline {
+            return .accentColor
+        }
+        return .secondary
     }
 
     @ViewBuilder

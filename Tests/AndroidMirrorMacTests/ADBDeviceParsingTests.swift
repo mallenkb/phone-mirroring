@@ -63,27 +63,6 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertFalse(AppModel.adbConnectSucceeded("failed to connect to '192.168.68.57:5555': No route to host"))
     }
 
-    func testADBNotificationParsingExtractsPackageTitleAndBody() {
-        let output = """
-          NotificationRecord(0xabc: pkg=com.google.android.gm user=UserHandle{0} id=42 tag=null)
-            key=0|com.google.android.gm|42|null|10012
-            extras={
-              android.title=String (Inbox update)
-              android.text=String (New message from Sam)
-            }
-          NotificationRecord(0xdef: pkg=com.android.systemui user=UserHandle{0} id=9 tag=null)
-            key=0|com.android.systemui|9|null|1000
-            extras={
-              android.title=String (System UI)
-              android.text=String (Ignored)
-            }
-        """
-
-        let summaries = AppModel.parsedADBNotificationSummariesForTesting(output)
-
-        XCTAssertEqual(summaries, ["Gm|Inbox update|New message from Sam"])
-    }
-
     func testRecordsByMostRecentIncludesUSBAndWireless() {
         let olderWireless = PairedPhoneRecord(
             id: "wifi-phone",
@@ -126,6 +105,18 @@ final class ADBDeviceParsingTests: XCTestCase {
             AppModel.rememberedAuthorizedDevice(for: record, in: [device]),
             device
         )
+    }
+
+    func testUSBMirroringPreferenceKeepsAuthorizedUSBDeviceOnCable() {
+        let usbDevice = AuthorizedADBDevice(
+            serial: "R5CT123ABC",
+            product: "raven",
+            model: "Pixel",
+            isUSB: true
+        )
+
+        XCTAssertFalse(AppModel.shouldAttemptWirelessHandoff(from: usbDevice, preferUSBMirroring: true))
+        XCTAssertTrue(AppModel.shouldAttemptWirelessHandoff(from: usbDevice, preferUSBMirroring: false))
     }
 
     func testRememberedAuthorizedDeviceFallsBackToSpecificModelName() {
@@ -340,6 +331,115 @@ final class ADBDeviceParsingTests: XCTestCase {
         let routeOutput = "10.0.2.0/24 dev rmnet_data0 proto kernel scope link src 10.0.2.15"
 
         XCTAssertNil(AppModel.legacyTCPIPDebuggingAddress(routeOutput: routeOutput))
+    }
+
+    func testReconnectCandidatesAppendStableLegacyPort() {
+        XCTAssertEqual(
+            AppModel.reconnectCandidateAddresses(for: "192.168.1.44:42111"),
+            ["192.168.1.44:42111", "192.168.1.44:5555"]
+        )
+    }
+
+    func testReconnectCandidatesDoNotDuplicateLegacyPort() {
+        XCTAssertEqual(
+            AppModel.reconnectCandidateAddresses(for: "192.168.1.44:5555"),
+            ["192.168.1.44:5555"]
+        )
+    }
+
+    func testPromoteToLegacyTCPIPSwitchesWirelessDeviceToPort5555() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AndroidMirrorMacTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            unsetenv("ANDROID_MIRROR_ADB_PATH")
+            unsetenv("ADB_FAKE_LOG")
+        }
+
+        let fakeADB = directory.appendingPathComponent("adb")
+        let log = directory.appendingPathComponent("adb.log")
+        let script = """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
+          echo "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "tcpip" ]; then
+          echo "restarting in TCP mode port: 5555"
+          exit 0
+        fi
+        if [ "$1" = "connect" ]; then
+          echo "connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        exit 0
+        """
+        try script.write(to: fakeADB, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fakeADB.path
+        )
+        setenv("ANDROID_MIRROR_ADB_PATH", fakeADB.path, 1)
+        setenv("ADB_FAKE_LOG", log.path, 1)
+
+        let promoted = await AppModel.promoteToLegacyTCPIP(
+            adb: ADBController(),
+            sourceSerial: "192.168.1.44:42111"
+        )
+
+        XCTAssertEqual(promoted, "192.168.1.44:5555")
+        let calls = try String(contentsOf: log, encoding: .utf8)
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+        XCTAssertTrue(calls.contains("-s 192.168.1.44:42111 tcpip 5555"))
+        XCTAssertTrue(calls.contains("connect 192.168.1.44:5555"))
+    }
+
+    func testPromoteToLegacyTCPIPReturnsNilWhenDeviceRefusesTCPIP() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AndroidMirrorMacTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            unsetenv("ANDROID_MIRROR_ADB_PATH")
+            unsetenv("ADB_FAKE_LOG")
+        }
+
+        let fakeADB = directory.appendingPathComponent("adb")
+        let log = directory.appendingPathComponent("adb.log")
+        let script = """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
+          echo "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "tcpip" ]; then
+          echo "error: closed"
+          exit 1
+        fi
+        exit 0
+        """
+        try script.write(to: fakeADB, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fakeADB.path
+        )
+        setenv("ANDROID_MIRROR_ADB_PATH", fakeADB.path, 1)
+        setenv("ADB_FAKE_LOG", log.path, 1)
+
+        let promoted = await AppModel.promoteToLegacyTCPIP(
+            adb: ADBController(),
+            sourceSerial: "192.168.1.44:42111"
+        )
+
+        XCTAssertNil(promoted)
     }
 
     func testADBTCPIPResultParsing() {

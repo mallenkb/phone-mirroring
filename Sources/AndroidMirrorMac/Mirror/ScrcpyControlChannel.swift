@@ -3,8 +3,8 @@ import Network
 import AppKit
 
 /// Reader/writer for scrcpy's control protocol. We implement the message types
-/// the mirror UI needs: touch, scroll, key, BACK_OR_SCREEN_ON, and SET_CLIPBOARD
-/// (host → device). The control socket is bidirectional, so we also read the
+/// the mirror UI needs: touch, scroll, key, BACK_OR_SCREEN_ON, SET_CLIPBOARD,
+/// and SET_DISPLAY_POWER (host → device). The control socket is bidirectional, so we also read the
 /// server's *device* messages — currently just clipboard sync (device → host).
 /// All wire encoding is big-endian.
 final class ScrcpyControlChannel {
@@ -16,6 +16,7 @@ final class ScrcpyControlChannel {
         case backOrScreenOn = 4
         case getClipboard = 8
         case setClipboard = 9
+        case setDisplayPower = 10
     }
 
     /// Messages the device pushes back over the control socket.
@@ -38,6 +39,7 @@ final class ScrcpyControlChannel {
 
     enum KeyAction: UInt8 { case down = 0, up = 1 }
     enum TouchAction: UInt8 { case down = 0, up = 1, move = 2 }
+    enum DisplayPowerMode: UInt8 { case off = 0, normal = 2 }
 
     /// Subset of `AKEYCODE_*` from Android's input.h that we need.
     enum AndroidKey: Int32 {
@@ -75,9 +77,11 @@ final class ScrcpyControlChannel {
     /// Invoked (on an internal queue) when the device clipboard changes.
     var onDeviceClipboard: ((String) -> Void)?
 
-    init(connection: NWConnection) {
+    init(connection: NWConnection, startConnection: Bool = true) {
         self.connection = connection
-        connection.start(queue: queue)
+        if startConnection {
+            connection.start(queue: queue)
+        }
         receiveLoop()
     }
 
@@ -146,6 +150,10 @@ final class ScrcpyControlChannel {
         buf.append(MessageType.backOrScreenOn.rawValue)
         buf.append(KeyAction.down.rawValue)
         write(buf)
+    }
+
+    func sendDisplayPowerMode(_ mode: DisplayPowerMode) {
+        write(Self.displayPowerMessage(mode))
     }
 
     func sendText(_ text: String) {
@@ -238,6 +246,13 @@ final class ScrcpyControlChannel {
         return buf
     }
 
+    static func displayPowerMessage(_ mode: DisplayPowerMode) -> Data {
+        var buf = Data(capacity: 2)
+        buf.append(MessageType.setDisplayPower.rawValue)
+        buf.append(mode.rawValue)
+        return buf
+    }
+
     /// Result of attempting to parse one device message from the front of a
     /// buffer. `consumed` is the byte count the message occupied.
     enum ParseResult: Equatable {
@@ -263,7 +278,9 @@ final class ScrcpyControlChannel {
             guard buffer.count >= 5 + length else { return .incomplete }
             let start = buffer.index(buffer.startIndex, offsetBy: 5)
             let end = buffer.index(start, offsetBy: length)
-            let text = String(decoding: buffer[start..<end], as: UTF8.self)
+            guard let text = String(data: buffer[start..<end], encoding: .utf8) else {
+                return .reset
+            }
             return .message(.clipboard(text), consumed: 5 + length)
         case .ackClipboard:
             guard buffer.count >= 9 else { return .incomplete }
