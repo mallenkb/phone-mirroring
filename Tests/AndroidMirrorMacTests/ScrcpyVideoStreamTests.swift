@@ -59,6 +59,12 @@ final class ScrcpyVideoStreamTests: XCTestCase {
         XCTAssertEqual(ScrcpyVideoStream.maxAudioPacketBytes, 4 * 1024 * 1024)
     }
 
+    func testSupportedAudioCodecIDsIncludeOnlyOpus() {
+        XCTAssertTrue(ScrcpyVideoStream.isSupportedAudioCodecID(ScrcpyVideoStream.opusAudioCodecID))
+        XCTAssertFalse(ScrcpyVideoStream.isSupportedAudioCodecID(0x0072_6177))
+        XCTAssertFalse(ScrcpyVideoStream.isSupportedAudioCodecID(0x6161_6320))
+    }
+
     func testStreamSizeValidationRejectsZeroAndImplausibleDimensions() {
         XCTAssertTrue(ScrcpyVideoStream.isValidStreamSize(width: 1080, height: 2340))
         XCTAssertFalse(ScrcpyVideoStream.isValidStreamSize(width: 0, height: 2340))

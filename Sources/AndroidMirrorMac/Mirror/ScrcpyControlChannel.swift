@@ -3,8 +3,8 @@ import Network
 import AppKit
 
 /// Reader/writer for scrcpy's control protocol. We implement the message types
-/// the mirror UI needs: touch, scroll, key, BACK_OR_SCREEN_ON, and SET_CLIPBOARD
-/// (host → device). The control socket is bidirectional, so we also read the
+/// the mirror UI needs: touch, scroll, key, BACK_OR_SCREEN_ON, SET_CLIPBOARD,
+/// and SET_DISPLAY_POWER (host → device). The control socket is bidirectional, so we also read the
 /// server's *device* messages — currently just clipboard sync (device → host).
 /// All wire encoding is big-endian.
 final class ScrcpyControlChannel {
@@ -16,6 +16,7 @@ final class ScrcpyControlChannel {
         case backOrScreenOn = 4
         case getClipboard = 8
         case setClipboard = 9
+        case setDisplayPower = 10
     }
 
     /// Messages the device pushes back over the control socket.
@@ -38,6 +39,7 @@ final class ScrcpyControlChannel {
 
     enum KeyAction: UInt8 { case down = 0, up = 1 }
     enum TouchAction: UInt8 { case down = 0, up = 1, move = 2 }
+    enum DisplayPowerMode: UInt8 { case off = 0, normal = 2 }
 
     /// Subset of `AKEYCODE_*` from Android's input.h that we need.
     enum AndroidKey: Int32 {
@@ -150,6 +152,10 @@ final class ScrcpyControlChannel {
         write(buf)
     }
 
+    func sendDisplayPowerMode(_ mode: DisplayPowerMode) {
+        write(Self.displayPowerMessage(mode))
+    }
+
     func sendText(_ text: String) {
         let message = Self.textMessage(for: text)
         guard !message.isEmpty else { return }
@@ -237,6 +243,13 @@ final class ScrcpyControlChannel {
         Self.appendUInt32BE(&buf, UInt32(bitPattern: key.rawValue))
         Self.appendUInt32BE(&buf, 1) // repeat
         Self.appendUInt32BE(&buf, metastate)
+        return buf
+    }
+
+    static func displayPowerMessage(_ mode: DisplayPowerMode) -> Data {
+        var buf = Data(capacity: 2)
+        buf.append(MessageType.setDisplayPower.rawValue)
+        buf.append(mode.rawValue)
         return buf
     }
 

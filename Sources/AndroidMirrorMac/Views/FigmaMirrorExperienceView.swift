@@ -97,6 +97,19 @@ struct FigmaMirrorExperienceView: View {
             let qrCodeSize = qrPanelSize * 0.88
 
             VStack(spacing: 0) {
+                if let error = model.activeError {
+                    ErrorBanner(
+                        error: error,
+                        accent: accent,
+                        scale: scale,
+                        onOpenLog: model.revealLogFile,
+                        onDismiss: model.dismissError
+                    )
+                    .frame(width: contentWidth)
+                    .padding(.bottom, (usesCompactLayout ? 14 : 18) * scale)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+
                 headerGroup(width: contentWidth, scale: scale)
 
                 USBConnectButton(
@@ -135,6 +148,7 @@ struct FigmaMirrorExperienceView: View {
             .padding(.horizontal, usesCompactLayout ? 22 : 36)
             .frame(width: contentWidth, alignment: .center)
             .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+            .animation(.easeInOut(duration: 0.22), value: model.activeError)
         }
     }
 
@@ -846,6 +860,68 @@ private struct StatusDot: View {
 
 /// Brand teal shared by the onboarding accent icons and call-to-action buttons.
 private let onboardingTeal = Color(red: 0.0, green: 0.66, blue: 0.59)
+
+/// Dismissible failure card shown on the connection screen when mirroring,
+/// pairing, or adb hits a problem — so failures aren't silent.
+private struct ErrorBanner: View {
+    let error: AppModel.UserFacingError
+    let accent: Color
+    let scale: CGFloat
+    let onOpenLog: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6 * scale) {
+            HStack(alignment: .firstTextBaseline, spacing: 8 * scale) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 13 * scale, weight: .semibold))
+                    .foregroundStyle(Color(red: 1.0, green: 0.82, blue: 0.42))
+
+                Text(error.title)
+                    .font(.system(size: 13.5 * scale, weight: .bold))
+                    .foregroundStyle(.white)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 4 * scale)
+
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10.5 * scale, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .padding(4 * scale)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            Text(error.message)
+                .font(.system(size: 12 * scale, weight: .regular))
+                .foregroundStyle(.white.opacity(0.82))
+                .lineSpacing(1.5 * scale)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button(action: onOpenLog) {
+                Text("Open Log")
+                    .font(.system(size: 12 * scale, weight: .semibold))
+                    .foregroundStyle(accent)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 2 * scale)
+        }
+        .padding(.horizontal, 13 * scale)
+        .padding(.vertical, 11 * scale)
+        .background(
+            RoundedRectangle(cornerRadius: 12 * scale, style: .continuous)
+                .fill(Color(red: 0.42, green: 0.13, blue: 0.11).opacity(0.4))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12 * scale, style: .continuous)
+                        .stroke(Color(red: 1.0, green: 0.5, blue: 0.42).opacity(0.32), lineWidth: 1)
+                )
+        )
+    }
+}
 
 private struct OnboardingPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {

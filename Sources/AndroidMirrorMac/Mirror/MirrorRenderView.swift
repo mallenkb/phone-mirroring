@@ -58,6 +58,9 @@ final class MirrorRenderView: NSView {
     var onPointerEvent: ((PointerEvent) -> Void)?
     var onKeyEvent: ((NSEvent) -> Void)?
     var onMouseMoved: ((NSEvent) -> Void)?
+    /// Files dropped onto the mirror — `.apk`s are installed, everything else is
+    /// pushed to the phone's Download folder.
+    var onDropFiles: (([URL]) -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -74,8 +77,30 @@ final class MirrorRenderView: NSView {
             "frame": NSNull(),
             "position": NSNull()
         ]
+        registerForDraggedTypes([.fileURL])
         setupLoadingView()
         applyCornerMask()
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        droppedFileURLs(from: sender).isEmpty ? [] : .copy
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        !droppedFileURLs(from: sender).isEmpty
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = droppedFileURLs(from: sender)
+        guard !urls.isEmpty else { return false }
+        onDropFiles?(urls)
+        return true
+    }
+
+    private func droppedFileURLs(from sender: NSDraggingInfo) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        let objects = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options)
+        return (objects as? [URL]) ?? []
     }
 
     required init?(coder: NSCoder) { nil }
@@ -208,11 +233,11 @@ final class MirrorRenderView: NSView {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) {
-            // ⌘V pastes the Mac clipboard into the phone; editing shortcuts
-            // map to Android Ctrl equivalents; let every other
+            // ⌘V pastes the Mac clipboard into the phone; ⌘L toggles the phone
+            // display; editing shortcuts map to Android Ctrl equivalents; let every other
             // command shortcut (⌘Q, app menu, etc.) bubble up untouched.
             if flags == .command,
-               ["a", "v", "x"].contains(event.charactersIgnoringModifiers?.lowercased()) {
+               ["a", "l", "v", "x"].contains(event.charactersIgnoringModifiers?.lowercased()) {
                 onKeyEvent?(event)
                 return true
             }

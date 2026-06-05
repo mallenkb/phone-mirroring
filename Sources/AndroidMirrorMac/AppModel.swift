@@ -23,18 +23,216 @@ final class AppModel: ObservableObject {
             }
         }
     }
-    @Published var experimentalADBNotificationsEnabled = false {
+    @Published var clipboardSyncEnabled: Bool =
+        (UserDefaults.standard.object(forKey: "MirrorBehavior.clipboardSyncEnabled") as? Bool) ?? true {
         didSet {
-            UserDefaults.standard.set(
-                experimentalADBNotificationsEnabled,
-                forKey: Self.experimentalADBNotificationsDefaultsKey
-            )
-            configureADBNotificationPolling()
+            UserDefaults.standard.set(clipboardSyncEnabled, forKey: "MirrorBehavior.clipboardSyncEnabled")
+            mirrorSession?.setClipboardSyncEnabled(clipboardSyncEnabled)
+        }
+    }
+    @Published var keyboardInputEnabled: Bool =
+        (UserDefaults.standard.object(forKey: "MirrorBehavior.keyboardInputEnabled") as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(keyboardInputEnabled, forKey: "MirrorBehavior.keyboardInputEnabled")
+        }
+    }
+    @Published var dragAndDropFileTransferEnabled: Bool =
+        (UserDefaults.standard.object(forKey: "MirrorBehavior.dragAndDropFileTransferEnabled") as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(dragAndDropFileTransferEnabled, forKey: "MirrorBehavior.dragAndDropFileTransferEnabled")
         }
     }
     @Published var captureCue: CaptureCue?
+
+    // MARK: - Mirroring quality (applied to the next mirror session)
+
+    /// Target video bitrate in megabits/sec.
+    @Published var mirrorBitRateMbps: Int = (UserDefaults.standard.object(forKey: "MirrorQuality.bitRateMbps") as? Int) ?? 8 {
+        didSet {
+            UserDefaults.standard.set(mirrorBitRateMbps, forKey: "MirrorQuality.bitRateMbps")
+            if !suppressMirrorSettingsRestart {
+                scheduleMirrorSettingsRestart()
+            }
+        }
+    }
+    /// Cap on the longer screen dimension (px); lower = sharper-feeling + faster.
+    @Published var mirrorMaxSize: Int = (UserDefaults.standard.object(forKey: "MirrorQuality.maxSize") as? Int) ?? 1600 {
+        didSet {
+            UserDefaults.standard.set(mirrorMaxSize, forKey: "MirrorQuality.maxSize")
+            if !suppressMirrorSettingsRestart {
+                scheduleMirrorSettingsRestart()
+            }
+        }
+    }
+    /// Frame-rate ceiling.
+    @Published var mirrorMaxFps: Int = (UserDefaults.standard.object(forKey: "MirrorQuality.maxFps") as? Int) ?? 60 {
+        didSet {
+            UserDefaults.standard.set(mirrorMaxFps, forKey: "MirrorQuality.maxFps")
+            if !suppressMirrorSettingsRestart {
+                scheduleMirrorSettingsRestart()
+            }
+        }
+    }
+    /// Play the phone's audio on the Mac. Defaults on for fresh installs, then
+    /// follows the user's saved preference.
+    @Published var mirrorAudioEnabled: Bool =
+        (UserDefaults.standard.object(forKey: "MirrorQuality.experimentalOpusAudioEnabled") as? Bool) ?? true {
+        didSet {
+            suppressMirrorAudioForReconnect = false
+            UserDefaults.standard.set(mirrorAudioEnabled, forKey: "MirrorQuality.experimentalOpusAudioEnabled")
+            if !suppressMirrorSettingsRestart {
+                scheduleMirrorSettingsRestart()
+            }
+        }
+    }
+    /// Wi-Fi handoff is the default transport behavior; this remains only so
+    /// older saved USB preferences do not silently disable handoff.
+    var preferUSBMirroring: Bool { false }
+    /// Turns the physical phone display off 30 seconds after mirroring starts.
+    @Published var mirrorScreenOffAfterThirtySecondsEnabled: Bool =
+        (UserDefaults.standard.object(forKey: "MirrorBehavior.screenOffAfterThirtySecondsEnabled") as? Bool)
+        ?? (UserDefaults.standard.object(forKey: "MirrorBehavior.screenOffAfterOneMinuteEnabled") as? Bool)
+        ?? true {
+        didSet {
+            UserDefaults.standard.set(
+                mirrorScreenOffAfterThirtySecondsEnabled,
+                forKey: "MirrorBehavior.screenOffAfterThirtySecondsEnabled"
+            )
+        }
+    }
+
+    /// Last failure worth showing the user (mirroring/pairing/adb problems).
+    @Published var activeError: UserFacingError?
+    /// Most recent saved screenshot or screen recording, for "reveal in Finder".
+    @Published private(set) var lastCaptureURL: URL?
+
+    /// A dismissible, human-readable problem surfaced in the connection UI.
+    struct UserFacingError: Identifiable, Equatable {
+        let id = UUID()
+        var title: String
+        var message: String
+    }
+
+    func reportError(_ title: String, _ message: String) {
+        Logger.log("User-facing error: \(title) — \(message)")
+        activeError = UserFacingError(title: title, message: message)
+        // The error banner lives on the connection screen, which is hidden while
+        // mirroring — mirror a copy to Notification Center so it's still seen.
+        if isMirroring {
+            notify(title: title, body: message)
+        }
+    }
+
+    /// Posts a transient macOS notification (best-effort; silently no-ops if the
+    /// user hasn't granted notification permission).
+    func notify(title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        )
+    }
+
+    /// Handles files dropped onto the mirror: `.apk`s are installed, everything
+    /// else is pushed to the phone's Download folder.
+    func handleDroppedFiles(_ urls: [URL]) {
+        let fileURLs = urls.filter { $0.isFileURL }
+        guard !fileURLs.isEmpty else { return }
+        guard dragAndDropFileTransferEnabled else {
+            reportError("File transfer disabled", "Turn on drag-and-drop file transfer in Settings to send files to the phone.")
+            return
+        }
+        guard let serial = selectedDevice.adbSerial else {
+            reportError("Can’t send files", "Connect a device before dropping files onto the mirror.")
+            return
+        }
+        Task { [weak self] in
+            var installed = 0
+            var pushed = 0
+            var failure: String?
+            for url in fileURLs where failure == nil {
+                let isAPK = url.pathExtension.lowercased() == "apk"
+                let args = Self.adbDeviceArguments(serial: serial) + (
+                    isAPK
+                        ? ["install", "-r", url.path]
+                        : ["push", url.path, "/sdcard/Download/"]
+                )
+                let result = await Task.detached {
+                    Tooling.runResult("adb", arguments: args, timeout: 300)
+                }.value
+                let ok = isAPK
+                    ? result.output.localizedCaseInsensitiveContains("success")
+                    : result.succeeded
+                if ok {
+                    if isAPK { installed += 1 } else { pushed += 1 }
+                } else {
+                    failure = Self.oneLine(result.output)
+                }
+            }
+            guard let self else { return }
+            if let failure {
+                self.reportError("Transfer failed", "Couldn’t send a file to the phone: \(failure)")
+            } else {
+                var parts: [String] = []
+                if installed > 0 { parts.append("Installed \(installed) app\(installed == 1 ? "" : "s")") }
+                if pushed > 0 { parts.append("Copied \(pushed) file\(pushed == 1 ? "" : "s") to Download") }
+                let summary = parts.joined(separator: " · ")
+                Logger.log("Dropped files: \(summary)")
+                self.notify(title: "Sent to phone", body: summary)
+            }
+        }
+    }
+
+    func dismissError() {
+        activeError = nil
+    }
+
+    /// Reveals the most recently saved screenshot or recording in Finder.
+    func revealLastCapture() {
+        guard let url = lastCaptureURL,
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    /// Reveals the rolling diagnostic log in Finder so the user can inspect or
+    /// share it when something goes wrong.
+    func revealLogFile() {
+        let url = Logger.logURL
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    /// Maps a thrown mirror/host error to a friendly, actionable sentence.
+    static func mirrorFailureMessage(for error: Error) -> String {
+        let detail: String
+        switch error {
+        case let hostError as ScrcpyServerHost.HostError: detail = hostError.description
+        case let sessionError as MirrorSession.SessionError: detail = sessionError.description
+        default: detail = error.localizedDescription
+        }
+        let lowered = detail.lowercased()
+        if lowered.contains("adb is not on path") || lowered.contains("adb is missing") {
+            return "adb wasn't found. Install Android platform-tools (e.g. `brew install android-platform-tools`) and try again."
+        }
+        if lowered.contains("scrcpy-server") {
+            return "The mirroring engine file is missing from the app. Reinstall Android Mirroring."
+        }
+        if lowered.contains("unauthorized") || lowered.contains("device unauthorized") {
+            return "This Mac isn't authorized on the phone yet. Unlock the phone and tap “Allow” on the USB-debugging prompt."
+        }
+        if lowered.contains("offline") || lowered.contains("no devices") || lowered.contains("not found") {
+            return "The phone went offline. Reconnect it (USB or Wi-Fi) and try again."
+        }
+        if lowered.contains("timed out") {
+            return "The phone didn’t respond in time. Check the cable or Wi-Fi connection and try again."
+        }
+        return detail
+    }
+
     static let minimumConnectionWindowSize = NSSize(width: 384, height: 688)
-    static let connectionWindowSize = NSSize(width: 760, height: 640)
     static var onboardingWindowSize: NSSize {
         let visibleFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 390, height: 850)
         return MirrorContentWindowController.initialWrappedShellSize(
@@ -59,16 +257,16 @@ final class AppModel: ObservableObject {
     private weak var connectionWindow: NSWindow?
     private var mirrorSession: MirrorSession?
     private var lastPresenceAutoConnectAttemptAt: Date?
-    private var devicePresenceTask: Task<Void, Never>?
-    private var usbHandoffTask: Task<Void, Never>?
+    private var deviceWatcherTask: Task<Void, Never>?
     private var lastUSBHandoffSerial: String?
     private var qrPairingTask: Task<Void, Never>?
     private var usbConnectTask: Task<Void, Never>?
     private var wirelessStartTask: Task<Void, Never>?
     private var disconnectRecoveryTask: Task<Void, Never>?
     private var screenRecordingMonitorTask: Task<Void, Never>?
-    private var adbNotificationPollingTask: Task<Void, Never>?
-    private var lastPostedADBNotificationIDs: Set<String> = []
+    private var mirrorSettingsRestartTask: Task<Void, Never>?
+    private var suppressMirrorSettingsRestart = false
+    private var suppressMirrorAudioForReconnect = false
     /// Holds the currently-playing capture cue sound so it isn't deallocated
     /// mid-playback.
     private var retainedCaptureSound: NSSound?
@@ -84,7 +282,6 @@ final class AppModel: ObservableObject {
     /// A session that dies sooner than this counts as a "quick" failure.
     static let quickMirrorFailureThreshold: TimeInterval = 12
     nonisolated static let disconnectRecoveryGracePeriod: TimeInterval = 5
-    private static let experimentalADBNotificationsDefaultsKey = "ExperimentalADBNotificationsEnabled"
 
     var hasActiveMirrorSession: Bool {
         mirrorSession != nil
@@ -121,9 +318,6 @@ final class AppModel: ObservableObject {
         startBackgroundServices: Bool = true,
         pairedPhones previewPairedPhones: [PairedPhoneRecord]? = nil
     ) {
-        experimentalADBNotificationsEnabled = UserDefaults.standard.bool(
-            forKey: Self.experimentalADBNotificationsDefaultsKey
-        )
         pairedPhones = previewPairedPhones ?? store.load()
         if let mostRecentRecord = Self.recordsByMostRecent(pairedPhones).first {
             select(record: mostRecentRecord)
@@ -136,21 +330,18 @@ final class AppModel: ObservableObject {
             self.discoveredPhones = phones
             self.autoConnectToAvailableRememberedDevice(livePhones: phones)
         }
-        startDevicePresenceWatcher()
-        startUSBHandoffWatcher()
-        configureADBNotificationPolling()
+        startDeviceWatcher()
         attemptAutoReconnect()
     }
 
     deinit {
-        devicePresenceTask?.cancel()
-        usbHandoffTask?.cancel()
+        deviceWatcherTask?.cancel()
         qrPairingTask?.cancel()
         usbConnectTask?.cancel()
         wirelessStartTask?.cancel()
         disconnectRecoveryTask?.cancel()
         screenRecordingMonitorTask?.cancel()
-        adbNotificationPollingTask?.cancel()
+        mirrorSettingsRestartTask?.cancel()
     }
 
     // MARK: - Window registration
@@ -193,7 +384,10 @@ final class AppModel: ObservableObject {
                 let devicesOutput = await Task.detached { adb.run(["devices", "-l"]) }.value
                 let authorizedDevices = Self.authorizedADBDevices(in: devicesOutput)
 
-                if let authorizedDevice = authorizedDevices.first {
+                let authorizedDevice = self.preferUSBMirroring
+                    ? authorizedDevices.first(where: \.isUSB) ?? authorizedDevices.first
+                    : authorizedDevices.first
+                if let authorizedDevice {
                     await self.mirrorAuthorizedDevicePreferringWireless(authorizedDevice)
                     return
                 }
@@ -263,6 +457,18 @@ final class AppModel: ObservableObject {
         guard !isMirroring, !isPairing else { return }
 
         if device.isUSB {
+            guard Self.shouldAttemptWirelessHandoff(from: device, preferUSBMirroring: preferUSBMirroring) else {
+                select(device: device)
+                touchPairedPhone(
+                    id: device.serial,
+                    displayName: selectedDisplayName(for: device.model),
+                    address: device.serial
+                )
+                stopQRCodePairingSession()
+                startMirroring()
+                return
+            }
+
             isPairing = true
             let startedWirelessMirror = await prepareWirelessMirror(from: device)
             if startedWirelessMirror {
@@ -379,49 +585,52 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func startUSBHandoffWatcher() {
-        guard usbHandoffTask == nil else { return }
+    /// Single `adb devices -l` poll that drives both device-presence tracking
+    /// and USB→wireless handoff. Previously these were two independent 1.5s
+    /// loops, each spawning its own `adb` process; merging them halves the idle
+    /// process churn, and the adaptive interval eases off further when there's
+    /// nothing to do — meaningfully lower idle CPU/battery.
+    private func startDeviceWatcher() {
+        guard deviceWatcherTask == nil else { return }
         let adb = self.adb
-        usbHandoffTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-                let output = await Task.detached { adb.run(["devices", "-l"]) }.value
-
-                guard let self else { return }
-                guard !self.isMirroring, !self.isPairing else {
-                    continue
-                }
-
-                guard let usbDevice = Self.usbHandoffCandidate(
-                    in: output,
-                    lastAttemptedSerial: self.lastUSBHandoffSerial
-                ) else {
-                    if Self.authorizedADBDevices(in: output).first(where: \.isUSB) == nil {
-                        self.lastUSBHandoffSerial = nil
-                    }
-                    continue
-                }
-
-                self.isPairing = true
-                let started = await self.prepareWirelessMirror(from: usbDevice)
-                self.lastUSBHandoffSerial = started ? usbDevice.serial : nil
-            }
-        }
-    }
-
-    private func startDevicePresenceWatcher() {
-        guard devicePresenceTask == nil else { return }
-        let adb = self.adb
-        devicePresenceTask = Task { [weak self] in
+        deviceWatcherTask = Task { [weak self] in
             while !Task.isCancelled {
                 let output = await Task.detached { adb.run(["devices", "-l"]) }.value
                 guard let self else { return }
+                let authorized = Self.authorizedADBDevices(in: output)
+
+                // Presence + remembered-device auto-connect (always; both self-guard).
                 self.applyDevicePresence(output)
                 self.autoConnectToAvailableRememberedDevice(
-                    authorizedDevices: Self.authorizedADBDevices(in: output),
+                    authorizedDevices: authorized,
                     livePhones: self.discoveredPhones
                 )
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
+
+                // USB → wireless handoff (only when idle, never mid-session).
+                if !self.preferUSBMirroring, !self.isMirroring, !self.isPairing {
+                    if let usbDevice = Self.usbHandoffCandidate(
+                        in: output,
+                        lastAttemptedSerial: self.lastUSBHandoffSerial
+                    ) {
+                        self.isPairing = true
+                        let started = await self.prepareWirelessMirror(from: usbDevice)
+                        self.lastUSBHandoffSerial = started ? usbDevice.serial : nil
+                    } else if authorized.first(where: \.isUSB) == nil {
+                        self.lastUSBHandoffSerial = nil
+                    }
+                }
+
+                let interval: UInt64
+                if self.isPairing {
+                    interval = 1_000_000_000          // mid-handoff: stay responsive
+                } else if self.isMirroring {
+                    interval = 2_000_000_000          // only watching for a disconnect
+                } else if authorized.isEmpty {
+                    interval = 3_000_000_000          // nothing plugged in: ease off
+                } else {
+                    interval = 1_500_000_000          // connected but idle
+                }
+                try? await Task.sleep(nanoseconds: interval)
             }
         }
     }
@@ -772,6 +981,20 @@ final class AppModel: ObservableObject {
                 return
             }
 
+            if self.preferUSBMirroring {
+                self.isPairing = false
+                self.usbConnectTask = nil
+                self.select(device: usbDevice)
+                self.touchPairedPhone(
+                    id: usbDevice.serial,
+                    displayName: self.selectedDisplayName(for: usbDevice.model),
+                    address: usbDevice.serial
+                )
+                self.stopQRCodePairingSession()
+                self.startMirroring(manual: true)
+                return
+            }
+
             let startedWirelessMirror = await self.prepareWirelessMirror(from: usbDevice)
             guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
             self.usbConnectTask = nil
@@ -899,6 +1122,13 @@ final class AppModel: ObservableObject {
                     isUSB: line.contains("usb:")
                 )
             }
+    }
+
+    nonisolated static func shouldAttemptWirelessHandoff(
+        from device: AuthorizedADBDevice,
+        preferUSBMirroring: Bool
+    ) -> Bool {
+        device.isUSB && !preferUSBMirroring
     }
 
     nonisolated static func usbHandoffCandidate(
@@ -1303,6 +1533,29 @@ final class AppModel: ObservableObject {
 
     // MARK: - Mirroring lifecycle
 
+    private func scheduleMirrorSettingsRestart() {
+        guard isMirroring, !isPairing else { return }
+        mirrorSettingsRestartTask?.cancel()
+        mirrorSettingsRestartTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled, let self, self.isMirroring, !self.isPairing else { return }
+            Logger.log("Restarting mirror to apply updated mirroring settings")
+            self.stopMirroring()
+            self.startMirroring(manual: true)
+        }
+    }
+
+    func disableMirrorAudioAfterSessionFailure() {
+        guard mirrorAudioEnabled else { return }
+        mirrorSettingsRestartTask?.cancel()
+        suppressMirrorAudioForReconnect = true
+        Logger.log("Phone audio failed; suppressing audio for reconnect and continuing video-only.")
+    }
+
+    func shouldEnableMirrorAudioForNextSession() -> Bool {
+        mirrorAudioEnabled && !suppressMirrorAudioForReconnect
+    }
+
     /// - Parameter manual: `true` for a deliberate user action, which clears
     ///   any crash-loop backoff. Auto-reconnect callers leave it `false` so a
     ///   crashing server isn't relaunched in a tight loop.
@@ -1313,6 +1566,7 @@ final class AppModel: ObservableObject {
             // A deliberate retry clears backoff.
             consecutiveQuickMirrorFailures = 0
             autoMirrorBackoffUntil = nil
+            suppressMirrorAudioForReconnect = false
             isAwaitingReconnect = false
         } else if let until = autoMirrorBackoffUntil, Date() < until {
             return
@@ -1461,6 +1715,7 @@ final class AppModel: ObservableObject {
             selectedDevice.states = [.mirroringReady, .companionConnected]
             lastMirrorStartAt = Date()
             try session.start()
+            activeError = nil
             hideConnectionWindowForNativeMirror()
         } catch {
             session.onSessionEnded = nil
@@ -1469,6 +1724,8 @@ final class AppModel: ObservableObject {
                 mirrorSession = nil
             }
             isMirroring = false
+            Logger.log("Mirror launch failed: \(error)")
+            reportError("Couldn’t start mirroring", Self.mirrorFailureMessage(for: error))
             showConnectionWindow()
         }
     }
@@ -1606,8 +1863,10 @@ final class AppModel: ObservableObject {
     }
 
     func forwardKeyEventToMirrorSession(_ event: NSEvent) -> Bool {
-        guard mirrorSession != nil,
-              MirrorSession.androidKey(for: event) != nil
+        guard keyboardInputEnabled,
+              mirrorSession != nil,
+              MirrorSession.isMirrorCommandShortcut(event)
+                || MirrorSession.androidKey(for: event) != nil
                 || MirrorSession.androidCommandShortcutKey(for: event) != nil else {
             return false
         }
@@ -1638,117 +1897,6 @@ final class AppModel: ObservableObject {
         pairedPhones = []
         store.clearAll()
         selectedDevice = .demo
-    }
-
-    // MARK: - Experimental ADB notifications
-
-    private func configureADBNotificationPolling() {
-        adbNotificationPollingTask?.cancel()
-        adbNotificationPollingTask = nil
-        lastPostedADBNotificationIDs = []
-
-        guard experimentalADBNotificationsEnabled else { return }
-        Logger.log("ADB notifications enabled; starting polling")
-
-        adbNotificationPollingTask = Task { [weak self] in
-            guard let self else { return }
-            await self.requestMacNotificationAuthorization()
-
-            while !Task.isCancelled {
-                await self.pollADBNotificationsOnce()
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
-            }
-        }
-    }
-
-    private func requestMacNotificationAuthorization() async {
-        do {
-            _ = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
-        } catch {
-            Logger.log("Mac notification authorization failed: \(error)")
-        }
-    }
-
-    private func pollADBNotificationsOnce() async {
-        let adb = self.adb
-        let selectedSerial = selectedDevice.adbSerial
-        let devicesOutput = await Task.detached {
-            adb.run(["devices", "-l"], timeout: 4)
-        }.value
-        let devices = Self.authorizedADBDevices(in: devicesOutput)
-        if devices.isEmpty {
-            Logger.log("ADB notifications found no authorized devices output=\(Self.oneLine(devicesOutput))")
-        }
-        let serial = Self.notificationPollingSerial(selectedSerial: selectedSerial, devices: devices)
-        guard selectedDevice.adbSerial == selectedSerial else { return }
-        let output = await Task.detached {
-            adb.run(
-                Self.adbDeviceArguments(serial: serial) + ["shell", "dumpsys", "notification", "--noredact"],
-                timeout: 20
-            )
-        }.value
-        let notifications = Self.parseActiveADBNotifications(output)
-        guard selectedDevice.adbSerial == selectedSerial else { return }
-        if notifications.isEmpty {
-            Logger.log("ADB notifications raw output=\(Self.oneLine(String(output.prefix(500))))")
-        }
-        Logger.log(
-            "ADB notifications poll serial=\(serial ?? "default") parsed=\(notifications.count) baseline=\(lastPostedADBNotificationIDs.count)"
-        )
-        await postNewADBNotifications(notifications, serial: serial)
-    }
-
-    private static func notificationPollingSerial(
-        selectedSerial: String?,
-        devices: [AuthorizedADBDevice]
-    ) -> String? {
-        if let selectedSerial,
-           devices.contains(where: { $0.serial == selectedSerial }) {
-            return selectedSerial
-        }
-        return devices.first?.serial
-    }
-
-    private func postNewADBNotifications(_ notifications: [ADBNotification], serial: String?) async {
-        guard experimentalADBNotificationsEnabled else { return }
-        guard selectedDevice.adbSerial == serial || selectedDevice.adbSerial == nil && serial == nil else { return }
-
-        if lastPostedADBNotificationIDs.isEmpty {
-            lastPostedADBNotificationIDs = Set(notifications.map(\.id))
-            return
-        }
-
-        let currentIDs = Set(notifications.map(\.id))
-        let newNotifications = notifications.filter { !lastPostedADBNotificationIDs.contains($0.id) }
-        lastPostedADBNotificationIDs = currentIDs
-        Logger.log("ADB notifications new=\(newNotifications.count) current=\(currentIDs.count)")
-
-        for notification in newNotifications.prefix(5) {
-            Logger.log(
-                "Posting Android notification title=\(notification.title) app=\(notification.appName) body=\(notification.body)"
-            )
-            let content = UNMutableNotificationContent()
-            content.title = notification.title
-            content.subtitle = notification.appName
-            content.body = notification.body
-            content.sound = .default
-            content.userInfo = [
-                "source": "adb",
-                "package": notification.packageName
-            ]
-
-            let request = UNNotificationRequest(
-                identifier: "adb-\(notification.id)",
-                content: content,
-                trigger: nil
-            )
-
-            do {
-                try await UNUserNotificationCenter.current().add(request)
-            } catch {
-                Logger.log("Posting Android notification failed: \(error)")
-            }
-        }
     }
 
     // MARK: - Android input
@@ -1803,12 +1951,14 @@ final class AppModel: ObservableObject {
             switch result {
             case .success(let url):
                 Logger.log("Saved screenshot: \(url.path)")
+                self.lastCaptureURL = url
             case .failure(.adbMissing):
-                Logger.log("Screenshot failed: adb is missing")
+                self.reportError("Screenshot failed", "adb wasn’t found. Install Android platform-tools and try again.")
             case .failure(.emptyOutput):
-                Logger.log("Screenshot failed: empty screencap output")
+                self.reportError("Screenshot failed", "The phone returned an empty image. Make sure the screen is on and try again.")
             case .failure(.runtime(let message)):
                 Logger.log("Screenshot failed: \(message)")
+                self.reportError("Screenshot failed", Self.mirrorFailureMessage(for: NSError(domain: "screenshot", code: 0, userInfo: [NSLocalizedDescriptionKey: message])))
             }
         }
     }
@@ -1901,11 +2051,14 @@ final class AppModel: ObservableObject {
             switch result {
             case .success(let url):
                 Logger.log("Saved screen recording: \(url.path)")
+                self?.lastCaptureURL = url
                 self?.presentCaptureCue(.recordingStopped)
             case .failure(.pullFailed(let message)):
                 Logger.log("Screen recording pull failed: \(message)")
+                self?.reportError("Recording didn’t save", "Couldn’t copy the recording off the phone. Keep it connected until the save finishes.")
             case .failure(.runtime(let message)):
                 Logger.log("Screen recording save failed: \(message)")
+                self?.reportError("Recording didn’t save", Self.mirrorFailureMessage(for: NSError(domain: "recording", code: 0, userInfo: [NSLocalizedDescriptionKey: message])))
             }
         }
     }
@@ -1962,120 +2115,6 @@ final class AppModel: ObservableObject {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         return "Android-Mirroring-\(kind)_\(formatter.string(from: Date())).\(fileExtension)"
-    }
-
-    nonisolated private struct ADBNotification: Hashable {
-        let id: String
-        let packageName: String
-        let appName: String
-        let title: String
-        let body: String
-    }
-
-    nonisolated private static func parseActiveADBNotifications(_ output: String) -> [ADBNotification] {
-        adbNotificationRecords(in: output)
-            .compactMap(parseADBNotificationRecord)
-            .filter { !$0.title.isEmpty || !$0.body.isEmpty }
-    }
-
-    nonisolated private static func adbNotificationRecords(in output: String) -> [String] {
-        let marker = "NotificationRecord"
-        var records: [String] = []
-        var current: [String] = []
-
-        for line in output.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix(marker) {
-                if !current.isEmpty {
-                    records.append(current.joined(separator: "\n"))
-                }
-                current = [line]
-            } else if !current.isEmpty {
-                current.append(line)
-            }
-        }
-
-        if !current.isEmpty {
-            records.append(current.joined(separator: "\n"))
-        }
-
-        return records
-    }
-
-    nonisolated static func parsedADBNotificationSummariesForTesting(_ output: String) -> [String] {
-        parseActiveADBNotifications(output).map { "\($0.appName)|\($0.title)|\($0.body)" }
-    }
-
-    nonisolated private static func parseADBNotificationRecord(_ record: String) -> ADBNotification? {
-        let packageName = firstMatch(in: record, pattern: #"pkg=([^\s\}]+)"#)
-            ?? firstMatch(in: record, pattern: #"StatusBarNotification\(pkg=([^\s]+)"#)
-            ?? ""
-        guard !packageName.isEmpty,
-              !packageName.hasPrefix("android"),
-              !packageName.hasPrefix("com.android.systemui")
-        else { return nil }
-
-        let key = firstMatch(in: record, pattern: #"key=([^\s]+)"#)
-            ?? firstMatch(in: record, pattern: #"Key: ([^\s]+)"#)
-            ?? "\(packageName)-\(record.hashValue)"
-        let title = sanitizedADBNotificationText(
-            firstMatch(in: record, pattern: #"android\.title=String \((.*?)\)"#)
-                ?? firstMatch(in: record, pattern: #"android\.title=(.*?)(?:\n|$)"#)
-                ?? firstMatch(in: record, pattern: #"contentTitle=(.*?)(?:\n|$)"#)
-                ?? firstMatch(in: record, pattern: #"tickerText=(.*?)(?:\n|$)"#)
-                ?? displayName(forPackageName: packageName)
-        )
-        let body = sanitizedADBNotificationText(
-            firstMatch(in: record, pattern: #"android\.text=String \((.*?)\)"#)
-                ?? firstMatch(in: record, pattern: #"android\.bigText=String \((.*?)\)"#)
-                ?? firstMatch(in: record, pattern: #"android\.text=(.*?)(?:\n|$)"#)
-                ?? firstMatch(in: record, pattern: #"contentText=(.*?)(?:\n|$)"#)
-                ?? ""
-        )
-
-        return ADBNotification(
-            id: stableNotificationID(key),
-            packageName: packageName,
-            appName: displayName(forPackageName: packageName),
-            title: title,
-            body: body
-        )
-    }
-
-    nonisolated private static func firstMatch(in text: String, pattern: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
-              let match = regex.firstMatch(
-                in: text,
-                range: NSRange(text.startIndex..<text.endIndex, in: text)
-              ),
-              match.numberOfRanges > 1,
-              let range = Range(match.range(at: 1), in: text)
-        else { return nil }
-        return String(text[range])
-    }
-
-    nonisolated private static func sanitizedADBNotificationText(_ text: String) -> String {
-        text
-            .replacingOccurrences(of: "\\n", with: " ")
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: CharacterSet(charactersIn: " \"'()[]{}").union(.whitespacesAndNewlines))
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
-    }
-
-    nonisolated private static func displayName(forPackageName packageName: String) -> String {
-        let lastComponent = packageName.split(separator: ".").last.map(String.init) ?? packageName
-        return lastComponent
-            .replacingOccurrences(of: "_", with: " ")
-            .replacingOccurrences(of: "-", with: " ")
-            .capitalized
-    }
-
-    nonisolated private static func stableNotificationID(_ key: String) -> String {
-        let hash = key.unicodeScalars.reduce(into: UInt64(14_695_981_039_346_656_037)) { hash, scalar in
-            hash ^= UInt64(scalar.value)
-            hash &*= 1_099_511_628_211
-        }
-        return String(hash, radix: 16)
     }
 
     nonisolated static func oneLine(_ text: String) -> String {

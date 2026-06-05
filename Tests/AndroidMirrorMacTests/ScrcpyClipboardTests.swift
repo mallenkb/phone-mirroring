@@ -25,6 +25,11 @@ final class ScrcpyClipboardTests: XCTestCase {
         XCTAssertTrue(ScrcpyControlChannel.setClipboardMessage(text: "", paste: false, sequence: 0).isEmpty)
     }
 
+    func testDisplayPowerOffMessageLayout() {
+        let data = ScrcpyControlChannel.displayPowerMessage(.off)
+        XCTAssertEqual([UInt8](data), [10, 0])
+    }
+
     func testUtf8TruncationKeepsCodePointsIntact() {
         // "é" is 2 UTF-8 bytes; truncating to 1 must drop the whole character.
         let truncated = ScrcpyControlChannel.utf8Truncated("é", maxBytes: 1)

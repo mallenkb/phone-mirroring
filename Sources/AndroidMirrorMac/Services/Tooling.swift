@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import os
 
 /// Discovery + execution of bundled or Homebrew CLI tools (adb, scrcpy).
 enum Tooling {
@@ -93,9 +94,35 @@ enum Tooling {
         return nil
     }
 
-    static func run(_ name: String, arguments: [String], timeout overrideTimeout: TimeInterval? = nil) -> String {
+    /// Outcome of running a CLI tool. `succeeded` lets callers branch on the
+    /// real process exit status instead of string-matching stdout, which is
+    /// brittle against localized output and benign "error" substrings.
+    struct RunResult {
+        var output: String
+        var exitCode: Int32
+        var timedOut: Bool
+        var launched: Bool
+        var succeeded: Bool { launched && !timedOut && exitCode == 0 }
+    }
+
+    /// Reference box so the background drain thread can hand the captured bytes
+    /// back across the semaphore without tripping concurrency checks.
+    private final class DataBox: @unchecked Sendable { var data = Data() }
+
+    /// Runs a tool, draining stdout+stderr on a background queue (so a child
+    /// that writes more than the pipe buffer can't deadlock against us while we
+    /// wait for it to exit) and enforcing a hard timeout. Returns the captured
+    /// output plus the real termination status.
+    static func runResult(
+        _ name: String,
+        arguments: [String],
+        timeout overrideTimeout: TimeInterval? = nil
+    ) -> RunResult {
         guard let path = toolPath(named: name) else {
-            return "\(name) is missing. Install or bundle \(name)."
+            return RunResult(
+                output: "\(name) is missing. Install or bundle \(name).",
+                exitCode: -1, timedOut: false, launched: false
+            )
         }
 
         let process = Process()
@@ -105,33 +132,67 @@ enum Tooling {
         process.standardOutput = pipe
         process.standardError = pipe
 
+        let handle = pipe.fileHandleForReading
+        let box = DataBox()
+        let readDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            box.data = handle.readDataToEndOfFile()
+            readDone.signal()
+        }
+
         do {
             try process.run()
-            let timeout: TimeInterval = overrideTimeout ?? (name == "adb" ? 5 : 30)
-            let deadline = Date().addingTimeInterval(timeout)
-            while process.isRunning && Date() < deadline {
-                Thread.sleep(forTimeInterval: 0.05)
-            }
-            if process.isRunning {
-                process.terminate()
-                Thread.sleep(forTimeInterval: 0.1)
-                if process.isRunning {
-                    process.interrupt()
-                }
-                Thread.sleep(forTimeInterval: 0.1)
-                if process.isRunning {
-                    kill(process.processIdentifier, SIGKILL)
-                }
-                return "\(name) timed out after \(Int(timeout))s: \(arguments.joined(separator: " "))"
-            }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data, encoding: .utf8) ?? ""
         } catch {
-            return "Failed to run \(name): \(error.localizedDescription)"
+            handle.closeFile()
+            readDone.signal()
+            return RunResult(
+                output: "Failed to run \(name): \(error.localizedDescription)",
+                exitCode: -1, timedOut: false, launched: false
+            )
         }
+
+        let timeout: TimeInterval = overrideTimeout ?? (name == "adb" ? 5 : 30)
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+
+        var timedOut = false
+        if process.isRunning {
+            timedOut = true
+            process.terminate()
+            Thread.sleep(forTimeInterval: 0.1)
+            if process.isRunning { process.interrupt() }
+            Thread.sleep(forTimeInterval: 0.1)
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
+
+        process.waitUntilExit()
+        _ = readDone.wait(timeout: .now() + 1)
+        let output = String(data: box.data, encoding: .utf8) ?? ""
+        return RunResult(
+            output: output,
+            exitCode: process.terminationStatus,
+            timedOut: timedOut,
+            launched: true
+        )
     }
 
-    static func runInteractive(_ name: String, arguments: [String], input: String) -> String {
+    static func run(_ name: String, arguments: [String], timeout overrideTimeout: TimeInterval? = nil) -> String {
+        let result = runResult(name, arguments: arguments, timeout: overrideTimeout)
+        if result.timedOut {
+            let timeout: TimeInterval = overrideTimeout ?? (name == "adb" ? 5 : 30)
+            return "\(name) timed out after \(Int(timeout))s: \(arguments.joined(separator: " "))"
+        }
+        return result.output
+    }
+
+    static func runInteractive(
+        _ name: String,
+        arguments: [String],
+        input: String,
+        timeout overrideTimeout: TimeInterval? = nil
+    ) -> String {
         guard let path = toolPath(named: name) else {
             return "\(name) is missing. Install or bundle \(name)."
         }
@@ -145,34 +206,82 @@ enum Tooling {
         process.standardError = outputPipe
         process.standardInput = inputPipe
 
+        let handle = outputPipe.fileHandleForReading
+        let box = DataBox()
+        let readDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            box.data = handle.readDataToEndOfFile()
+            readDone.signal()
+        }
+
         do {
             try process.run()
             inputPipe.fileHandleForWriting.write(Data(input.utf8))
-            inputPipe.fileHandleForWriting.closeFile()
-            process.waitUntilExit()
-            let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data, encoding: .utf8) ?? ""
+            try? inputPipe.fileHandleForWriting.close()
         } catch {
+            handle.closeFile()
+            readDone.signal()
             return "Failed to run \(name): \(error.localizedDescription)"
         }
+
+        // Hard timeout so a stuck `adb pair`/`adb connect` can't hang forever.
+        let timeout: TimeInterval = overrideTimeout ?? 15
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.03)
+        }
+        if process.isRunning {
+            process.terminate()
+            Thread.sleep(forTimeInterval: 0.1)
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            process.waitUntilExit()
+            _ = readDone.wait(timeout: .now() + 1)
+            return "\(name) timed out after \(Int(timeout))s: \(arguments.joined(separator: " "))"
+        }
+
+        process.waitUntilExit()
+        _ = readDone.wait(timeout: .now() + 1)
+        return String(data: box.data, encoding: .utf8) ?? ""
     }
 }
 
 enum Logger {
+    /// Unified-logging handle — visible in Console.app, filterable by subsystem.
+    private static let osLog = os.Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.mallenkb.AndroidMirrorMac",
+        category: "app"
+    )
+    /// Hard cap on the on-disk log; trimmed to the most recent half when hit so
+    /// it can never grow unbounded.
+    private static let maxLogBytes: UInt64 = 2 * 1024 * 1024
+    private static let queue = DispatchQueue(label: "android-mirroring.logger")
+    private static let timestampFormatter = ISO8601DateFormatter()
+    static let logURL = URL(
+        fileURLWithPath: NSString(string: "~/Library/Logs/Android Mirroring.log").expandingTildeInPath
+    )
+
     static func log(_ message: String) {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        let line = "[\(timestamp)] \(message)\n"
-        FileHandle.standardError.write(line.data(using: .utf8) ?? Data())
-        let logPath = NSString(string: "~/Library/Logs/Android Mirroring.log").expandingTildeInPath
-        if let data = line.data(using: .utf8) {
-            if !FileManager.default.fileExists(atPath: logPath) {
-                FileManager.default.createFile(atPath: logPath, contents: nil)
-            }
-            if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: logPath)) {
-                handle.seekToEndOfFile()
-                handle.write(data)
-                try? handle.close()
-            }
+        osLog.log("\(message, privacy: .public)")
+        queue.async { appendToFile(message) }
+    }
+
+    private static func appendToFile(_ message: String) {
+        let line = "[\(timestampFormatter.string(from: Date()))] \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: logURL.path) {
+            fm.createFile(atPath: logURL.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forUpdating: logURL) else { return }
+        defer { try? handle.close() }
+        handle.seekToEndOfFile()
+        handle.write(data)
+        if handle.offsetInFile > maxLogBytes {
+            handle.seek(toFileOffset: handle.offsetInFile - maxLogBytes / 2)
+            let tail = handle.readDataToEndOfFile()
+            handle.truncateFile(atOffset: 0)
+            handle.seek(toFileOffset: 0)
+            handle.write(tail)
         }
     }
 }

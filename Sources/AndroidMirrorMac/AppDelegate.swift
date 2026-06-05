@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var window: NSWindow?
     private var firstRunWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var shortcutsWindow: NSWindow?
     private let model = AppModel()
     private var keyMonitor: Any?
 
@@ -78,7 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let appMenu = NSMenu()
         appMenu.addItem(
             NSMenuItem(
-                title: "Settings...",
+                title: "Mirroring Settings...",
                 action: #selector(showSettings(_:)),
                 keyEquivalent: ","
             )
@@ -175,14 +176,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         viewMenu.addItem(.separator())
         viewMenu.addItem(
             NSMenuItem(
-                title: "Zoom In",
+                title: "Increase Mirror Size by 10%",
                 action: #selector(zoomIn(_:)),
                 keyEquivalent: "+"
             )
         )
         viewMenu.addItem(
             NSMenuItem(
-                title: "Zoom Out",
+                title: "Decrease Mirror Size by 10%",
                 action: #selector(zoomOut(_:)),
                 keyEquivalent: "-"
             )
@@ -194,11 +195,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 keyEquivalent: "0"
             )
         )
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(
+            NSMenuItem(
+                title: "Show Last Capture in Finder",
+                action: #selector(revealLastCapture(_:)),
+                keyEquivalent: ""
+            )
+        )
         viewItem.submenu = viewMenu
 
         let helpItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
         mainMenu.addItem(helpItem)
         let helpMenu = NSMenu(title: "Help")
+        helpMenu.addItem(
+            NSMenuItem(
+                title: "Keyboard Shortcuts",
+                action: #selector(showKeyboardShortcuts(_:)),
+                keyEquivalent: "/"
+            )
+        )
+        helpMenu.addItem(
+            NSMenuItem(
+                title: "Open Log File",
+                action: #selector(openLogFile(_:)),
+                keyEquivalent: ""
+            )
+        )
+        helpMenu.addItem(.separator())
         helpMenu.addItem(
             NSMenuItem(
                 title: "Restart Onboarding",
@@ -312,13 +336,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             backing: .buffered,
             defer: false
         )
-        window.title = "Android Mirroring Settings"
+        window.title = "Mirroring Settings"
         window.contentView = hostingView
         window.isReleasedWhenClosed = false
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow = window
+    }
+
+    @objc private func revealLastCapture(_ sender: Any?) {
+        model.revealLastCapture()
+    }
+
+    @objc private func openLogFile(_ sender: Any?) {
+        model.revealLogFile()
+    }
+
+    @objc private func showKeyboardShortcuts(_ sender: Any?) {
+        if let shortcutsWindow {
+            shortcutsWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let hosting = NSHostingController(rootView: KeyboardShortcutsView())
+        hosting.sizingOptions = [.preferredContentSize]
+        let window = NSWindow(contentViewController: hosting)
+        window.styleMask = [.titled, .closable]
+        window.title = "Keyboard Shortcuts"
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        shortcutsWindow = window
     }
 
     @objc private func restartFirstTimeOnboarding(_ sender: Any?) {
@@ -398,6 +449,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
              #selector(zoomOut(_:))?,
              #selector(centerMirror(_:))?:
             return model.hasActiveMirrorSession
+        case #selector(revealLastCapture(_:))?:
+            return model.lastCaptureURL != nil
         default:
             return true
         }

@@ -37,10 +37,13 @@ final class MirrorSession {
 
     private var serverHost: ScrcpyServerHost?
     private var stream: ScrcpyVideoStream?
+    private var audioPlayer: MirrorAudioPlayer?
     private var decoder = H264VideoToolboxDecoder()
     private(set) var controlChannel: ScrcpyControlChannel?
     private var clipboardBridge: ClipboardBridge?
     private var windowController: MirrorContentWindowController?
+    private var screenOffTask: Task<Void, Never>?
+    private var lastRequestedDisplayPowerMode: ScrcpyControlChannel.DisplayPowerMode = .normal
     private var streamWidth: UInt32 = 0
     private var streamHeight: UInt32 = 0
     private var isStopping = false
@@ -59,13 +62,24 @@ final class MirrorSession {
     func start() throws {
         guard windowController == nil else { throw SessionError.alreadyRunning }
 
-        let stream = ScrcpyVideoStream(port: localPort, expectsAudio: false)
+        let audioEnabled = (model?.shouldEnableMirrorAudioForNextSession() ?? false) && Self.supportsMirrorAudio(serial: serial)
+        Logger.log("MirrorSession audio enabled=\(audioEnabled) serial=\(serial ?? "default")")
+        let stream = ScrcpyVideoStream(port: localPort, expectsAudio: audioEnabled)
         let host = ScrcpyServerHost(options: ScrcpyServerHost.Options(
             scid: scid,
             localPort: localPort,
-            audio: false,
+            videoBitRate: UInt32(max(1, model?.mirrorBitRateMbps ?? 8)) * 1_000_000,
+            maxSize: UInt16(clamping: model?.mirrorMaxSize ?? 1600),
+            maxFps: UInt16(clamping: model?.mirrorMaxFps ?? 60),
+            audio: audioEnabled,
             serial: serial
         ))
+
+        if audioEnabled, let audioPlayer = MirrorAudioPlayer() {
+            self.audioPlayer = audioPlayer
+            stream.onAudioPacket = { data in audioPlayer.enqueue(data) }
+            audioPlayer.start()
+        }
 
         stream.onHeader = { [weak self] header in
             Task { @MainActor in
@@ -95,6 +109,10 @@ final class MirrorSession {
             Logger.log("MirrorSession stream error: \(error)")
             Task { @MainActor in
                 guard let self, !self.didStop, !self.isStopping else { return }
+                if audioEnabled,
+                   String(describing: error).localizedCaseInsensitiveContains("audio") {
+                    self.model?.disableMirrorAudioAfterSessionFailure()
+                }
                 self.stop()
             }
         }
@@ -112,7 +130,12 @@ final class MirrorSession {
             try host.start { [weak self] code, output in
                 Task { @MainActor in
                     Logger.log("scrcpy-server exited code=\(code) output=\(output.prefix(400))")
-                    self?.stop()
+                    guard let self, !self.didStop, !self.isStopping else { return }
+                    if audioEnabled,
+                       ScrcpyServerHost.isRecoverableAudioStartupFailure(code: code, output: output) {
+                        self.model?.disableMirrorAudioAfterSessionFailure()
+                    }
+                    self.stop()
                 }
             }
             self.serverHost = host
@@ -130,6 +153,7 @@ final class MirrorSession {
         let controller = MirrorContentWindowController(model: model, session: self, launchFrame: launchFrame)
         controller.show()
         windowController = controller
+        scheduleAutomaticScreenOffIfNeeded()
     }
 
     func stop() {
@@ -145,10 +169,14 @@ final class MirrorSession {
 
         clipboardBridge?.stop()
         clipboardBridge = nil
+        screenOffTask?.cancel()
+        screenOffTask = nil
         controlChannel?.close()
         controlChannel = nil
         stream?.stop()
         stream = nil
+        audioPlayer?.stop()
+        audioPlayer = nil
         windowController?.close()
         windowController = nil
         sessionEnded?(finalWindowFrame)
@@ -168,6 +196,19 @@ final class MirrorSession {
 
     func centerWindow() {
         windowController?.centerWindow()
+    }
+
+    func turnDeviceScreenOff() {
+        setDeviceScreenPower(.off)
+    }
+
+    func toggleDeviceScreenPower() {
+        setDeviceScreenPower(lastRequestedDisplayPowerMode == .off ? .normal : .off)
+    }
+
+    private func setDeviceScreenPower(_ mode: ScrcpyControlChannel.DisplayPowerMode) {
+        controlChannel?.sendDisplayPowerMode(mode)
+        lastRequestedDisplayPowerMode = mode
     }
 
     func forwardPointerEvent(_ event: MirrorRenderView.PointerEvent,
@@ -194,11 +235,19 @@ final class MirrorSession {
     func forwardKeyEvent(_ event: NSEvent) {
         guard let controlChannel else { return }
 
+        if event.type == .keyDown,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "l" {
+            toggleDeviceScreenPower()
+            return
+        }
+
         // ⌘V: push the current Mac clipboard and ask the phone to paste it into
         // the focused field. Handled before key mapping so it can't be typed.
         if event.type == .keyDown,
            event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
            event.charactersIgnoringModifiers?.lowercased() == "v" {
+            guard model?.clipboardSyncEnabled ?? true else { return }
             clipboardBridge?.pasteToDevice()
             return
         }
@@ -268,9 +317,38 @@ final class MirrorSession {
         }
         controlChannel = channel
 
-        let bridge = ClipboardBridge(channel: channel)
-        bridge.start()
-        clipboardBridge = bridge
+        setClipboardSyncEnabled(model?.clipboardSyncEnabled ?? true)
+    }
+
+    func setClipboardSyncEnabled(_ enabled: Bool) {
+        guard let controlChannel else {
+            clipboardBridge?.stop()
+            clipboardBridge = nil
+            return
+        }
+
+        if enabled {
+            guard clipboardBridge == nil else { return }
+            let bridge = ClipboardBridge(channel: controlChannel)
+            bridge.start()
+            clipboardBridge = bridge
+        } else {
+            clipboardBridge?.stop()
+            clipboardBridge = nil
+        }
+    }
+
+    private func scheduleAutomaticScreenOffIfNeeded() {
+        guard model?.mirrorScreenOffAfterThirtySecondsEnabled ?? true else { return }
+        screenOffTask?.cancel()
+        screenOffTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, !self.didStop, !self.isStopping else { return }
+                self.turnDeviceScreenOff()
+            }
+        }
     }
 
     private static func isValidStreamSize(width: UInt32, height: UInt32) -> Bool {
@@ -279,6 +357,10 @@ final class MirrorSession {
             && width <= ScrcpyVideoStream.maxStreamDimension
             && height <= ScrcpyVideoStream.maxStreamDimension
             && UInt64(width) * UInt64(height) <= ScrcpyVideoStream.maxStreamPixels
+    }
+
+    nonisolated static func supportsMirrorAudio(serial: String?) -> Bool {
+        true
     }
 
     static func androidKey(for event: NSEvent) -> ScrcpyControlChannel.AndroidKey? {
@@ -308,6 +390,15 @@ final class MirrorSession {
         case 0x53: return .home     // Keypad 1 — placeholder; user-configurable later
         default: return nil
         }
+    }
+
+    static func isMirrorCommandShortcut(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown,
+              event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+              let key = event.charactersIgnoringModifiers?.lowercased() else {
+            return false
+        }
+        return key == "l"
     }
 
     static func androidCommandShortcutKey(for event: NSEvent) -> ScrcpyControlChannel.AndroidKey? {

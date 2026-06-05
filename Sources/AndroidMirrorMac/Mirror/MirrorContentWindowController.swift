@@ -658,7 +658,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             self?.session?.forwardPointerEvent(event, in: self?.renderView ?? MirrorRenderView())
         }
         renderView.onKeyEvent = { [weak self] event in
+            guard self?.model.keyboardInputEnabled ?? true else { return }
             self?.session?.forwardKeyEvent(event)
+        }
+        renderView.onDropFiles = { [weak self] urls in
+            self?.model.handleDroppedFiles(urls)
         }
     }
 

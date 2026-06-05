@@ -48,8 +48,8 @@ final class ScrcpyVideoStream {
     typealias AudioHandler = (Data) -> Void
     typealias ErrorHandler = (Error) -> Void
 
-    /// scrcpy `AudioCodec.RAW` id ("\0raw"); 0 means the device disabled audio.
-    static let rawAudioCodecID: UInt32 = 0x0072_6177
+    /// scrcpy Opus audio codec id. 0 means the device disabled audio.
+    static let opusAudioCodecID: UInt32 = 0x6f70_7573
     static let maxVideoPacketBytes = 32 * 1024 * 1024
     static let maxAudioPacketBytes = 4 * 1024 * 1024
     static let maxStreamDimension: UInt32 = 16_384
@@ -190,6 +190,10 @@ final class ScrcpyVideoStream {
         return .reject
     }
 
+    static func isSupportedAudioCodecID(_ codecID: UInt32) -> Bool {
+        codecID == opusAudioCodecID
+    }
+
     private func readMore(on connection: NWConnection, handler: @escaping (Data) -> Void) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             guard let self, !self.isStopped else { return }
@@ -296,11 +300,10 @@ final class ScrcpyVideoStream {
                 return
             case 1:
                 Logger.log("ScrcpyVideoStream: audio configuration error reported by device")
-                audioDisabled = true
-                audioBuffer.removeAll()
+                failStream("audio configuration error reported by device")
                 return
-            case Self.rawAudioCodecID:
-                Logger.log("ScrcpyVideoStream: audio codec=raw")
+            case Self.opusAudioCodecID:
+                Logger.log("ScrcpyVideoStream: audio codec=opus")
             default:
                 Logger.log("ScrcpyVideoStream: unsupported audio codec=\(String(format: "0x%08x", codecID)); ignoring audio")
                 audioDisabled = true

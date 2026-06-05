@@ -67,9 +67,9 @@ final class ScrcpyServerHost: @unchecked Sendable {
         }
 
         let pushArgs = adbBaseArgs() + ["push", serverPath, Self.devicePath]
-        let pushOut = Tooling.run("adb", arguments: pushArgs)
-        if pushOut.localizedCaseInsensitiveContains("error") {
-            throw HostError.adbCommandFailed(stage: "adb push", output: pushOut)
+        let push = Tooling.runResult("adb", arguments: pushArgs, timeout: 30)
+        if !push.succeeded {
+            throw HostError.adbCommandFailed(stage: "adb push", output: push.output)
         }
 
         let scidHex = String(format: "%08x", options.scid)
@@ -77,9 +77,9 @@ final class ScrcpyServerHost: @unchecked Sendable {
         let reverseArgs = adbBaseArgs() + [
             "reverse", "localabstract:\(socketName)", "tcp:\(options.localPort)"
         ]
-        let reverseOut = Tooling.run("adb", arguments: reverseArgs)
-        if reverseOut.localizedCaseInsensitiveContains("error") {
-            throw HostError.adbCommandFailed(stage: "adb reverse", output: reverseOut)
+        let reverse = Tooling.runResult("adb", arguments: reverseArgs)
+        if !reverse.succeeded {
+            throw HostError.adbCommandFailed(stage: "adb reverse", output: reverse.output)
         }
         reverseInstalled = true
 
@@ -131,6 +131,14 @@ final class ScrcpyServerHost: @unchecked Sendable {
 
     static func serverArguments(for options: Options) -> [String] {
         let scidHex = String(format: "%08x", options.scid)
+        // Keep audio aligned with upstream scrcpy defaults. Some Samsung builds
+        // crash inside the device-side server when we force custom audio
+        // encoder/source/bit-rate options, while upstream `scrcpy` with only
+        // audio enabled works on the same phone.
+        var audioArgs = ["audio=false"]
+        if options.audio {
+            audioArgs = ["audio=true"]
+        }
         let args = [
             "shell",
             "CLASSPATH=\(Self.devicePath)",
@@ -140,7 +148,7 @@ final class ScrcpyServerHost: @unchecked Sendable {
             Self.serverVersion,
             "scid=\(scidHex)",
             "log_level=info",
-            "audio=false",
+        ] + audioArgs + [
             "video=true",
             "control=true",
             "tunnel_forward=false",
@@ -158,6 +166,17 @@ final class ScrcpyServerHost: @unchecked Sendable {
         ]
 
         return args
+    }
+
+    static func isSamsungAudioStackCrash(code: Int32, output: String) -> Bool {
+        code == 134
+            && output.localizedCaseInsensitiveContains("stack corruption detected")
+    }
+
+    static func isRecoverableAudioStartupFailure(code: Int32, output: String) -> Bool {
+        guard code != 0 else { return false }
+        return isSamsungAudioStackCrash(code: code, output: output)
+            || output.localizedCaseInsensitiveContains("audio")
     }
 
     func stop() {

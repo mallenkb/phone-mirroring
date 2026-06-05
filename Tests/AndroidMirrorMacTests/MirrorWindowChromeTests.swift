@@ -236,6 +236,10 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertNil(MirrorSession.androidCommandShortcutKey(for: controlA))
     }
 
+    func testMirrorAudioIsSupportedForWirelessADBSerials() {
+        XCTAssertTrue(MirrorSession.supportsMirrorAudio(serial: "192.168.68.51:5555"))
+    }
+
     func testMirrorRenderVideoLayerStaysCenteredInBounds() {
         let frame = MirrorRenderView.videoFrame(for: CGRect(x: 0, y: 0, width: 400, height: 900))
 
