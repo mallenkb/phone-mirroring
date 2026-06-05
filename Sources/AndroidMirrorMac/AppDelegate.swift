@@ -257,23 +257,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             NSApp.activate(ignoringOtherApps: true)
         }
         .environmentObject(model)
-        let hostingView = NSHostingView(rootView: rootView)
-        hostingView.frame = NSRect(origin: .zero, size: hostingView.fittingSize)
 
-        let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: hostingView.fittingSize),
-            styleMask: [.titled, .closable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
+        // Host in a controller that reports the SwiftUI content's own size, so
+        // the window wraps the content exactly (with its built-in bottom
+        // padding) and never fixed-clips the buttons.
+        let hosting = NSHostingController(rootView: rootView)
+        hosting.sizingOptions = [.preferredContentSize]
+
+        let window = NSWindow(contentViewController: hosting)
+        window.styleMask = [.titled, .closable, .miniaturizable]
         window.title = "Android Mirroring"
         window.isReleasedWhenClosed = false
-        window.isOpaque = true
-        window.hasShadow = true
         window.isMovableByWindowBackground = false
-        window.backgroundColor = .windowBackgroundColor
-        window.contentView = hostingView
-        WindowRegistrationView.applyDefaultWindowMask(to: window)
         window.center()
         window.makeKeyAndOrderFront(nil)
         firstRunWindow = window

@@ -70,12 +70,6 @@ struct WindowRegistrationView: NSViewRepresentable {
         window.contentMaxSize = size
     }
 
-    static func applyDefaultWindowMask(to window: NSWindow) {
-        window.contentView?.wantsLayer = true
-        window.contentView?.layer?.cornerRadius = 0
-        window.contentView?.layer?.masksToBounds = false
-    }
-
     static func applyPhoneWindowMask(to window: NSWindow) {
         let radius = MirrorContentWindowController.onboardingCornerRadius()
         window.contentView?.wantsLayer = true
