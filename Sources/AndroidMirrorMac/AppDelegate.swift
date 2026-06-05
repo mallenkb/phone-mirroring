@@ -153,6 +153,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         )
         viewMenu.addItem(
             NSMenuItem(
+                title: "Recent Apps",
+                action: #selector(showRecentApps(_:)),
+                keyEquivalent: "]"
+            )
+        )
+        viewMenu.addItem(
+            NSMenuItem(
                 title: "Take Screenshot",
                 action: #selector(takeScreenshot(_:)),
                 keyEquivalent: "S"
@@ -336,6 +343,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         model.sendAndroidKey("KEYCODE_BACK")
     }
 
+    @objc private func showRecentApps(_ sender: Any?) {
+        model.sendAndroidKey("KEYCODE_APP_SWITCH")
+    }
+
     @objc private func phoneVolumeUp(_ sender: Any?) {
         model.sendAndroidKey("KEYCODE_VOLUME_UP")
     }
@@ -367,6 +378,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return !model.isPairing && !model.isRecoveringConnection && model.selectedDevice.adbSerial != nil
         case #selector(goHome(_:))?,
              #selector(goBack(_:))?,
+             #selector(showRecentApps(_:))?,
              #selector(takeScreenshot(_:))?,
              #selector(toggleScreenRecording(_:))?,
              #selector(zoomIn(_:))?,

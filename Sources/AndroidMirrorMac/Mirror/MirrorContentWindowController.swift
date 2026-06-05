@@ -591,7 +591,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         chromeBar.configure(
             deviceName: model.selectedDevice.name,
             onHome: { [weak self] in self?.model.sendAndroidKey("KEYCODE_HOME") },
-            onBack: { [weak self] in self?.model.sendAndroidKey("KEYCODE_BACK") },
+            onRecentApps: { [weak self] in self?.model.sendAndroidKey("KEYCODE_APP_SWITCH") },
             onScreenshot: { [weak self] in self?.model.takeScreenshot() },
             onRecordingToggle: { [weak self] in self?.model.toggleScreenRecording() }
         )
@@ -1306,9 +1306,9 @@ final class MirrorChromeBar: NSView {
         resource: "chrome-home",
         accessibilityDescription: "Home"
     )
-    private let backBtn = MirrorChromeOutlineButton(
-        resource: "chrome-back",
-        accessibilityDescription: "Back"
+    private let recentAppsBtn = MirrorChromeOutlineButton(
+        symbol: "rectangle.stack",
+        accessibilityDescription: "Recent apps"
     )
     private let recordingBtn = MirrorChromeOutlineButton(
         resource: "chrome-record",
@@ -1333,7 +1333,7 @@ final class MirrorChromeBar: NSView {
     var chromeHeight: CGFloat = MirrorContentWindowController.chromeHeight {
         didSet {
             homeBtn.chromeScale = chromeScale
-            backBtn.chromeScale = chromeScale
+            recentAppsBtn.chromeScale = chromeScale
             recordingBtn.chromeScale = chromeScale
             screenshotBtn.chromeScale = chromeScale
         }
@@ -1347,7 +1347,7 @@ final class MirrorChromeBar: NSView {
     }
 
     override init(frame frameRect: NSRect) {
-        rightStack = NSStackView(views: [recordingBtn, screenshotBtn, homeBtn, backBtn])
+        rightStack = NSStackView(views: [recordingBtn, screenshotBtn, homeBtn, recentAppsBtn])
         super.init(frame: frameRect)
         setup()
     }
@@ -1358,7 +1358,7 @@ final class MirrorChromeBar: NSView {
     func configure(
         deviceName: String,
         onHome: @escaping () -> Void,
-        onBack: @escaping () -> Void,
+        onRecentApps: @escaping () -> Void,
         onScreenshot: @escaping () -> Void,
         onRecordingToggle: @escaping () -> Void
     ) {
@@ -1366,8 +1366,9 @@ final class MirrorChromeBar: NSView {
         homeBtn.toolTip = "Go to Android home"
         homeBtn.action = onHome
         homeBtn.minimumActionInterval = 0.35
-        backBtn.toolTip = "Android back"
-        backBtn.action = onBack
+        recentAppsBtn.toolTip = "Show Android recent apps"
+        recentAppsBtn.action = onRecentApps
+        recentAppsBtn.minimumActionInterval = 0.35
         screenshotBtn.toolTip = "Save screenshot to Downloads"
         screenshotBtn.action = onScreenshot
         recordingBtn.toolTip = "Start screen recording"
@@ -1474,14 +1475,14 @@ final class MirrorChromeBar: NSView {
     func setControlsVisible(_ visible: Bool) {
         trafficLights.isHidden = !visible
         titleLabel.isHidden = !visible
-        backBtn.isHidden = !visible
+        recentAppsBtn.isHidden = !visible
         recordingBtn.isHidden = !visible
         screenshotBtn.isHidden = !visible
         homeBtn.isHidden = !visible
     }
 
     func setTrailingActionsVisible(_ visible: Bool) {
-        backBtn.isHidden = !visible
+        recentAppsBtn.isHidden = !visible
         recordingBtn.isHidden = !visible
         screenshotBtn.isHidden = !visible
         homeBtn.isHidden = !visible
