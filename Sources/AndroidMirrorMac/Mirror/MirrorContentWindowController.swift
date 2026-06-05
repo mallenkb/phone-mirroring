@@ -40,7 +40,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     static let minimumMirrorCornerRadius: CGFloat = 24
     static let maximumMirrorCornerRadius: CGFloat = 38
     static let minimumScreenHeightRatio: CGFloat = 0.45
-    static let initialScreenHeightRatio: CGFloat = 0.50
+    static let initialScreenHeightRatio: CGFloat = 0.60
     static let maximumScreenHeightRatio: CGFloat = 0.90
     static let chromeHideDelay: TimeInterval = 0.030
     static let chromeHideAnimationDuration: TimeInterval = 0.16
@@ -300,11 +300,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         if let launchFrame {
             frame = launchFrame
         } else {
-            let visible = Self.targetVisibleFrame(for: window)
+            let visible = NSScreen.main?.visibleFrame ?? Self.targetVisibleFrame(for: window)
             let size = Self.initialWrappedShellSize(
                 for: Self.defaultMirrorSize,
                 visibleFrame: visible,
-                maximumHeightBasis: Self.resolutionHeight(for: window.screen, fallbackVisibleFrame: visible)
+                maximumHeightBasis: Self.resolutionHeight(for: NSScreen.main, fallbackVisibleFrame: visible)
             )
             frame = Self.centeredFrame(size: size, in: visible)
         }

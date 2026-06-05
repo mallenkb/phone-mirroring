@@ -37,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.contentMinSize = initialWindowSize
         window.maxSize = initialWindowSize
         window.contentMaxSize = initialWindowSize
-        window.center()
+        centerOnMainScreen(window)
         model.registerConnectionWindow(window)
         self.window = window
 
@@ -250,7 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func showFirstRunWindow() {
         if let firstRunWindow {
-            firstRunWindow.center()
+            centerOnMainScreen(firstRunWindow)
             firstRunWindow.makeKeyAndOrderFront(nil)
             return
         }
@@ -258,7 +258,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let rootView = FirstRunOnboardingView { [weak self] in
             self?.firstRunWindow?.orderOut(nil)
             self?.firstRunWindow = nil
-            self?.window?.center()
+            if let window = self?.window {
+                self?.centerOnMainScreen(window)
+            }
             self?.window?.makeKeyAndOrderFront(nil)
             self?.model.ensureQRCodePairingSession()
             NSApp.activate(ignoringOtherApps: true)
@@ -276,9 +278,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.title = "Android Mirroring"
         window.isReleasedWhenClosed = false
         window.isMovableByWindowBackground = false
-        window.center()
+        centerOnMainScreen(window)
         window.makeKeyAndOrderFront(nil)
         firstRunWindow = window
+    }
+
+    private func centerOnMainScreen(_ window: NSWindow) {
+        let visible = NSScreen.main?.visibleFrame
+            ?? window.screen?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 390, height: 850)
+        window.setFrame(
+            MirrorContentWindowController.centeredFrame(size: window.frame.size, in: visible),
+            display: false,
+            animate: false
+        )
     }
 
     @objc private func scanForAndroidDevices(_ sender: Any?) {

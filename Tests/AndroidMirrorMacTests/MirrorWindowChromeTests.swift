@@ -372,7 +372,7 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testBlankNativeMirrorStartsAtHalfScreenHeight() throws {
+    func testBlankNativeMirrorStartsAtInitialScreenHeightRatio() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
@@ -419,7 +419,7 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testNativeMirrorStreamStartsAtHalfScreenHeight() throws {
+    func testNativeMirrorStreamStartsAtInitialScreenHeightRatio() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)

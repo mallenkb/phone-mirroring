@@ -62,7 +62,14 @@ struct WindowRegistrationView: NSViewRepresentable {
 
     private func applySize(_ size: NSSize, to window: NSWindow) {
         if window.contentView?.frame.size != size {
-            window.setContentSize(size)
+            let visible = NSScreen.main?.visibleFrame
+                ?? window.screen?.visibleFrame
+                ?? NSRect(x: 0, y: 0, width: 390, height: 850)
+            window.setFrame(
+                MirrorContentWindowController.centeredFrame(size: size, in: visible),
+                display: false,
+                animate: false
+            )
         }
         window.minSize = size
         window.contentMinSize = size
