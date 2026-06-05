@@ -40,6 +40,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     static let minimumMirrorCornerRadius: CGFloat = 24
     static let maximumMirrorCornerRadius: CGFloat = 38
     static let minimumScreenHeightRatio: CGFloat = 0.45
+    static let initialScreenHeightRatio: CGFloat = 0.50
     static let maximumScreenHeightRatio: CGFloat = 0.90
     static let chromeHideDelay: TimeInterval = 0.030
     static let chromeHideAnimationDuration: TimeInterval = 0.16
@@ -195,7 +196,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         let maxScreenWidth = max(1, fullSize.width - horizontalShellInset)
         let maxScreenHeight = max(1, fullSize.height - verticalShellInset)
         let heightBasis = max(1, maximumHeightBasis ?? visibleFrame.height)
-        let targetShellHeight = min(heightBasis * maximumScreenHeightRatio, fullSize.height)
+        let targetShellHeight = min(heightBasis * initialScreenHeightRatio, fullSize.height)
         let targetScreenHeight = max(1, targetShellHeight - verticalShellInset)
         let streamAspect = streamSize.width / max(streamSize.height, 1)
         let targetScreenWidth = min(maxScreenWidth, targetScreenHeight * streamAspect) * initialMirrorScale
@@ -216,7 +217,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         }
 
         let resolutionHeight = Self.resolutionHeight(for: NSScreen.main, fallbackVisibleFrame: visibleFrame)
-        let targetScreenHeight = max(1, resolutionHeight * 0.5)
+        let targetScreenHeight = max(1, resolutionHeight * initialScreenHeightRatio)
         let maxScreenWidth = max(1, visibleFrame.width - screenMargin - horizontalShellInset)
         let maxScreenHeight = max(1, visibleFrame.height - screenMargin - verticalShellInset)
         let streamAspect = streamSize.width / max(streamSize.height, 1)

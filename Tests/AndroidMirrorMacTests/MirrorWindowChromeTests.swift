@@ -372,7 +372,7 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testBlankNativeMirrorStartsAtMaximumScreenHeightPercentage() throws {
+    func testBlankNativeMirrorStartsAtHalfScreenHeight() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
@@ -398,7 +398,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         )
         let topChromeInset = MirrorContentWindowController.visibleChromeRenderTopInset
         let targetHeight = min(
-            maximumHeightBasis * MirrorContentWindowController.maximumScreenHeightRatio,
+            maximumHeightBasis * MirrorContentWindowController.initialScreenHeightRatio,
             fullDefaultSize.height
         )
         let targetScreenHeight = targetHeight - topChromeInset
@@ -419,7 +419,7 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testNativeMirrorStreamStartsAtMaximumScreenHeightPercentage() throws {
+    func testNativeMirrorStreamStartsAtHalfScreenHeight() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
@@ -438,7 +438,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         )
         let topChromeInset = MirrorContentWindowController.visibleChromeRenderTopInset
         let targetHeight = min(
-            visibleFrame.height * MirrorContentWindowController.maximumScreenHeightRatio,
+            visibleFrame.height * MirrorContentWindowController.initialScreenHeightRatio,
             fullStreamSize.height
         )
         let targetScreenHeight = targetHeight - topChromeInset
