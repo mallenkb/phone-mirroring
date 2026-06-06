@@ -860,10 +860,6 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         isInFullscreen
     }
 
-    func setChromeVisibleForTesting(_ visible: Bool) {
-        simulateRevealZoneHover(visible)
-    }
-
     /// Drives reveal/hide as if the cursor entered or left the zone above the
     /// window — used by tests that can't position a real cursor.
     func simulateRevealZoneHover(_ inside: Bool) {

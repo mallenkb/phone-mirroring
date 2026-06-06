@@ -182,16 +182,17 @@ struct FigmaMirrorExperienceView: View {
 
     private func devicePill(width: CGFloat, scale: CGFloat) -> some View {
         let online = model.isSelectedDeviceOnline
-        let dotColor = online ? accent : Color(red: 0.96, green: 0.78, blue: 0.42)
-        let statusText = online ? "Connected" : "Waiting"
+        let connecting = isConnecting && !model.isMirroring
+        let dotColor = (online || connecting) ? accent : Color.white.opacity(0.42)
+        let statusText = connecting ? "Connecting" : (online ? "Online" : "Offline")
         let fontSize = 12 * scale
 
         return HStack(spacing: 8 * scale) {
-            StatusDot(color: dotColor, diameter: 7 * scale, pulses: !online)
+            StatusDot(color: dotColor, diameter: 7 * scale, pulses: connecting)
 
             Text(statusText)
                 .font(.system(size: fontSize, weight: .semibold))
-                .foregroundStyle(.white.opacity(online ? 0.92 : 0.82))
+                .foregroundStyle(.white.opacity((online || connecting) ? 0.92 : 0.82))
                 .fixedSize()
 
             Text(model.selectedDevice.name)
@@ -586,10 +587,6 @@ private struct MirroringLoopVisual: View {
         }
     }
 
-    private func sineEaseInOut(_ value: CGFloat) -> CGFloat {
-        -(cos(.pi * value) - 1) / 2
-    }
-
     private func cubicEaseInOut(_ value: CGFloat) -> CGFloat {
         let t = min(max(value, 0), 1)
         return t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2
@@ -623,133 +620,6 @@ private struct ResourceImage: View {
         } else {
             Color.clear
         }
-    }
-}
-
-private struct FlyingMirrorTile: View {
-    let accent: Color
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(
-                LinearGradient(
-                    colors: [
-                        accent.opacity(0.95),
-                        Color(red: 0.05, green: 0.3, blue: 0.24)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
-            .overlay(alignment: .topLeading) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Capsule(style: .continuous)
-                        .fill(.white.opacity(0.72))
-                        .frame(width: 30, height: 4)
-                    Capsule(style: .continuous)
-                        .fill(.white.opacity(0.34))
-                        .frame(width: 44, height: 4)
-                }
-                .padding(8)
-            }
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(.white.opacity(0.38), lineWidth: 1)
-            )
-    }
-}
-
-private struct MacBookGlyph: View {
-    @Environment(\.colorScheme) private var colorScheme
-    let accent: Color
-
-    var body: some View {
-        ZStack(alignment: .bottom) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.04))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(Color.primary.opacity(0.12), lineWidth: 1.2)
-                )
-                .frame(width: 132, height: 82)
-                .offset(y: -9)
-
-            Image(systemName: "arrow.left.and.right")
-                .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(accent)
-                .offset(y: -42)
-
-            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .fill(Color.primary.opacity(0.16))
-                .frame(width: 154, height: 6)
-
-            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .fill(Color.primary.opacity(0.08))
-                .frame(width: 54, height: 3)
-                .offset(y: -1)
-        }
-    }
-}
-
-private struct SignalPathGlyph: View {
-    let accent: Color
-
-    var body: some View {
-        HStack(spacing: 14) {
-            SignalArc(accent: accent, rotation: 5)
-            SignalArc(accent: accent, rotation: -2)
-            SignalArc(accent: accent, rotation: -6)
-                .scaleEffect(1.18)
-        }
-        .opacity(0.76)
-    }
-}
-
-private struct SignalArc: View {
-    let accent: Color
-    let rotation: Double
-
-    var body: some View {
-        ArcShape(startAngle: .degrees(62), endAngle: .degrees(118))
-            .stroke(accent, style: StrokeStyle(lineWidth: 5, lineCap: .round))
-            .frame(width: 30, height: 30)
-            .rotationEffect(.degrees(rotation))
-    }
-}
-
-private struct ArcShape: Shape {
-    let startAngle: Angle
-    let endAngle: Angle
-
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.addArc(
-            center: CGPoint(x: rect.midX, y: rect.midY),
-            radius: min(rect.width, rect.height) / 2,
-            startAngle: startAngle,
-            endAngle: endAngle,
-            clockwise: false
-        )
-        return path
-    }
-}
-
-private struct PhoneGlyph: View {
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(Color.primary.opacity(colorScheme == .dark ? 0.07 : 0.04))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.primary.opacity(0.12), lineWidth: 1.2)
-            )
-            .overlay(alignment: .top) {
-                Capsule(style: .continuous)
-                    .fill(Color.primary.opacity(0.14))
-                    .frame(width: 18, height: 4)
-                    .padding(.top, 9)
-            }
     }
 }
 

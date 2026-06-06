@@ -663,4 +663,214 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         XCTAssertNil(candidate)
     }
+
+    // MARK: - Remembered wireless reconnect readiness
+
+    func testConnectToRememberedWirelessRejectsConnectWhenShellReadinessFails() async throws {
+        // adb "connects" to every candidate but never accepts a shell command, so
+        // no candidate is usable — the readiness probe must veto the bare connect.
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          echo "connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          echo "error: protocol fault (couldn't read status): Undefined error: 0"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let connected = await AppModel.connectToRememberedWireless(
+            adb: ADBController(),
+            savedAddress: "192.168.1.44:42111"
+        )
+
+        XCTAssertNil(connected)
+        // Both the saved port and the stable :5555 fallback should be attempted.
+        let calls = loggedCalls(fake.log)
+        XCTAssertTrue(calls.contains("connect 192.168.1.44:42111"))
+        XCTAssertTrue(calls.contains("connect 192.168.1.44:5555"))
+    }
+
+    func testConnectToRememberedWirelessAcceptsFirstCandidateThatIsShellReady() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          echo "connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let connected = await AppModel.connectToRememberedWireless(
+            adb: ADBController(),
+            savedAddress: "192.168.1.44:42111"
+        )
+
+        XCTAssertEqual(connected, "192.168.1.44:42111")
+        // The saved port worked, so the :5555 fallback is never tried.
+        XCTAssertFalse(loggedCalls(fake.log).contains("connect 192.168.1.44:5555"))
+    }
+
+    func testConnectToRememberedWirelessFallsBackToLegacyPortWhenSavedPortNotReady() async throws {
+        // The saved TLS port connects but won't run a shell (toggle since turned
+        // off); the stable :5555 listener is shell-ready and wins.
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          echo "connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          case "$2" in
+            *:5555) echo "wifi-adb-ok" ;;
+            *) echo "error: closed" ;;
+          esac
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let connected = await AppModel.connectToRememberedWireless(
+            adb: ADBController(),
+            savedAddress: "192.168.1.44:42111"
+        )
+
+        XCTAssertEqual(connected, "192.168.1.44:5555")
+        let calls = loggedCalls(fake.log)
+        XCTAssertTrue(calls.contains("connect 192.168.1.44:42111"))
+        XCTAssertTrue(calls.contains("connect 192.168.1.44:5555"))
+    }
+
+    func testConnectToUSBDeviceOverCurrentWiFiUsesExistingLegacyListener() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
+          echo "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+          exit 0
+        fi
+        if [ "$1" = "connect" ]; then
+          echo "connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ping" ]; then
+          echo "1 packets transmitted, 1 received"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let connected = await AppModel.connectToUSBDeviceOverCurrentWiFi(
+            adb: ADBController(),
+            usbDevice: AuthorizedADBDevice(
+                serial: "R5CT123ABC",
+                product: "raven",
+                model: "Pixel 6 Pro",
+                isUSB: true
+            )
+        )
+
+        XCTAssertEqual(connected, "192.168.1.44:5555")
+        XCTAssertFalse(loggedCalls(fake.log).contains("-s R5CT123ABC tcpip 5555"))
+    }
+
+    func testConnectToUSBDeviceOverCurrentWiFiStartsTCPIPWhenNeeded() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
+          echo "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+          exit 0
+        fi
+        if [ "$1" = "connect" ]; then
+          echo "connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          if grep -q tcpip "$ADB_FAKE_LOG"; then
+            echo "wifi-adb-ok"
+          else
+            echo "error: closed"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "tcpip" ]; then
+          echo "restarting in TCP mode port: 5555"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ping" ]; then
+          echo "1 packets transmitted, 1 received"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let connected = await AppModel.connectToUSBDeviceOverCurrentWiFi(
+            adb: ADBController(),
+            usbDevice: AuthorizedADBDevice(
+                serial: "R5CT123ABC",
+                product: "raven",
+                model: "Pixel 6 Pro",
+                isUSB: true
+            )
+        )
+
+        XCTAssertEqual(connected, "192.168.1.44:5555")
+        XCTAssertTrue(loggedCalls(fake.log).contains("-s R5CT123ABC tcpip 5555"))
+    }
+
+    func testShouldPromoteToLegacyTCPIPSkipsAddressesAlreadyOnPort5555() {
+        XCTAssertFalse(AppModel.shouldPromoteToLegacyTCPIP(connectedAddress: "192.168.1.44:5555"))
+        XCTAssertTrue(AppModel.shouldPromoteToLegacyTCPIP(connectedAddress: "192.168.1.44:42111"))
+    }
+
+    // MARK: - Fake adb helpers
+
+    /// Writes an executable fake `adb` to a throwaway directory, points the
+    /// tooling env vars at it, and returns the log file each invocation appends
+    /// its arguments to plus a cleanup closure the caller defers.
+    private func installFakeADB(script: String) throws -> (log: URL, cleanup: () -> Void) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AndroidMirrorMacTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fakeADB = directory.appendingPathComponent("adb")
+        let log = directory.appendingPathComponent("adb.log")
+        try script.write(to: fakeADB, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fakeADB.path
+        )
+        setenv("ANDROID_MIRROR_ADB_PATH", fakeADB.path, 1)
+        setenv("ADB_FAKE_LOG", log.path, 1)
+        return (log, {
+            try? FileManager.default.removeItem(at: directory)
+            unsetenv("ANDROID_MIRROR_ADB_PATH")
+            unsetenv("ADB_FAKE_LOG")
+        })
+    }
+
+    private func loggedCalls(_ log: URL) -> [String] {
+        (try? String(contentsOf: log, encoding: .utf8))?
+            .split(whereSeparator: \.isNewline)
+            .map(String.init) ?? []
+    }
 }

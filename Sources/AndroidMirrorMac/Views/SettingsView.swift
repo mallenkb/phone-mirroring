@@ -230,33 +230,6 @@ struct SettingsView: View {
         }
     }
 
-    private func settingsActionRow(
-        icon: String,
-        title: String,
-        detail: String,
-        actionTitle: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            settingsLeadingIcon(icon)
-
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.system(size: 13, weight: .semibold))
-                    Text(detail)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 24)
-
-                Button(actionTitle, action: action)
-            }
-        }
-    }
-
     private func qualityPicker(
         _ title: String,
         suffix: String,
@@ -348,8 +321,13 @@ private struct PairedPhoneRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
-            Image(systemName: "smartphone")
-                .font(.system(size: 18, weight: .regular))
+            TemplateResourceIcon(
+                name: phoneIconName,
+                fallbackSystemName: phoneIconName,
+                isTemplate: !isActive,
+                scale: phoneIconScale,
+                accessibilityLabel: "Phone"
+            )
                 .foregroundStyle(phoneIconColor)
                 .frame(width: 28, height: 28)
 
@@ -372,6 +350,14 @@ private struct PairedPhoneRow: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
+    }
+
+    private var phoneIconName: String {
+        isActive ? "apps.iphone.badge.checkmark" : "apps.iphone"
+    }
+
+    private var phoneIconScale: CGFloat {
+        1
     }
 
     private var phoneIconColor: Color {
@@ -425,5 +411,43 @@ private struct PairedPhoneRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
+    }
+}
+
+private struct TemplateResourceIcon: View {
+    let name: String
+    let fallbackSystemName: String
+    let isTemplate: Bool
+    let scale: CGFloat
+    let accessibilityLabel: String
+
+    var body: some View {
+        icon
+            .frame(width: 28 * scale, height: 28 * scale)
+            .frame(width: 28, height: 28)
+            .accessibilityLabel(accessibilityLabel)
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        if let image = Self.image(named: name, isTemplate: isTemplate) {
+            Image(nsImage: image)
+                .resizable()
+                .renderingMode(isTemplate ? .template : .original)
+                .scaledToFit()
+        } else {
+            Image(systemName: fallbackSystemName)
+                .resizable()
+                .symbolRenderingMode(.monochrome)
+                .scaledToFit()
+        }
+    }
+
+    private static func image(named name: String, isTemplate: Bool) -> NSImage? {
+        guard let url = Bundle.module.url(forResource: name, withExtension: "svg"),
+              let image = NSImage(contentsOf: url)
+        else { return nil }
+        image.isTemplate = isTemplate
+        return image
     }
 }

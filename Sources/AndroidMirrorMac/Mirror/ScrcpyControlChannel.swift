@@ -145,13 +145,6 @@ final class ScrcpyControlChannel {
         }
     }
 
-    func sendBackOrScreenOn() {
-        var buf = Data(capacity: 2)
-        buf.append(MessageType.backOrScreenOn.rawValue)
-        buf.append(KeyAction.down.rawValue)
-        write(buf)
-    }
-
     func sendDisplayPowerMode(_ mode: DisplayPowerMode) {
         write(Self.displayPowerMessage(mode))
     }
