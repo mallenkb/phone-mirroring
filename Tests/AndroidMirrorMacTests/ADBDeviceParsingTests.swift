@@ -5,14 +5,14 @@ final class ADBDeviceParsingTests: XCTestCase {
     func testAuthorizedADBDevicesIncludesUSBDeviceDetails() {
         let output = """
         List of devices attached
-        R5CT123ABC device usb:336592896X product:raven model:Pixel_6_Pro device:raven transport_id:1
-        192.168.1.22:5555 device product:oriole model:Pixel_6 device:oriole transport_id:2
+        TESTDEVICE001 device usb:100000001X product:raven model:Pixel_6_Pro device:raven transport_id:1
+        192.0.2.22:5555 device product:oriole model:Pixel_6 device:oriole transport_id:2
         """
 
         let devices = AppModel.authorizedADBDevices(in: output)
 
         XCTAssertEqual(devices.count, 2)
-        XCTAssertEqual(devices[0].serial, "R5CT123ABC")
+        XCTAssertEqual(devices[0].serial, "TESTDEVICE001")
         XCTAssertEqual(devices[0].model, "Pixel 6 Pro")
         XCTAssertEqual(devices[0].product, "raven")
         XCTAssertTrue(devices[0].isUSB)
@@ -22,14 +22,14 @@ final class ADBDeviceParsingTests: XCTestCase {
     func testAuthorizedADBDevicesExcludesUnauthorizedAndOfflineDevices() {
         let output = """
         List of devices attached
-        R5CT123ABC unauthorized usb:336592896X transport_id:1
-        R5CT456DEF offline usb:336592897X transport_id:2
-        R5CT789GHI device usb:336592898X product:cheetah model:Pixel_7_Pro device:cheetah transport_id:3
+        TESTDEVICE001 unauthorized usb:100000001X transport_id:1
+        TESTDEVICE002 offline usb:100000002X transport_id:2
+        TESTDEVICE003 device usb:100000003X product:cheetah model:Pixel_7_Pro device:cheetah transport_id:3
         """
 
         let devices = AppModel.authorizedADBDevices(in: output)
 
-        XCTAssertEqual(devices.map(\.serial), ["R5CT789GHI"])
+        XCTAssertEqual(devices.map(\.serial), ["TESTDEVICE003"])
     }
 
     func testAuthorizedADBDevicesIgnoresDaemonStartupNoiseAndHeader() {
@@ -37,13 +37,13 @@ final class ADBDeviceParsingTests: XCTestCase {
         * daemon not running; starting now at tcp:5037
         * daemon started successfully
         List of devices attached
-        192.168.68.54:5555 device product:g0sxxx model:SM_S906B device:g0s transport_id:1
+        192.0.2.54:5555 device product:g0sxxx model:SM_S906B device:g0s transport_id:1
         """
 
         let devices = AppModel.authorizedADBDevices(in: output)
 
         XCTAssertEqual(devices.count, 1)
-        XCTAssertEqual(devices[0].serial, "192.168.68.54:5555")
+        XCTAssertEqual(devices[0].serial, "192.0.2.54:5555")
         XCTAssertEqual(devices[0].model, "SM S906B")
     }
 
@@ -58,44 +58,44 @@ final class ADBDeviceParsingTests: XCTestCase {
     }
 
     func testADBConnectResultParsing() {
-        XCTAssertTrue(AppModel.adbConnectSucceeded("connected to 192.168.68.57:5555"))
-        XCTAssertTrue(AppModel.adbConnectSucceeded("already connected to 192.168.68.57:5555"))
-        XCTAssertFalse(AppModel.adbConnectSucceeded("failed to connect to '192.168.68.57:5555': No route to host"))
+        XCTAssertTrue(AppModel.adbConnectSucceeded("connected to 192.0.2.57:5555"))
+        XCTAssertTrue(AppModel.adbConnectSucceeded("already connected to 192.0.2.57:5555"))
+        XCTAssertFalse(AppModel.adbConnectSucceeded("failed to connect to '192.0.2.57:5555': No route to host"))
     }
 
     func testRecordsByMostRecentIncludesUSBAndWireless() {
         let olderWireless = PairedPhoneRecord(
             id: "wifi-phone",
             displayName: "Wi-Fi Pixel",
-            lastAddress: "192.168.1.22:5555",
+            lastAddress: "192.0.2.22:5555",
             firstPaired: Date(timeIntervalSince1970: 100),
             lastConnected: Date(timeIntervalSince1970: 200)
         )
         let newerUSB = PairedPhoneRecord(
-            id: "R5CT123ABC",
+            id: "TESTDEVICE001",
             displayName: "USB Pixel",
-            lastAddress: "R5CT123ABC",
+            lastAddress: "TESTDEVICE001",
             firstPaired: Date(timeIntervalSince1970: 300),
             lastConnected: Date(timeIntervalSince1970: 900)
         )
 
         let selected = AppModel.recordsByMostRecent([olderWireless, newerUSB])
 
-        XCTAssertEqual(selected.map(\.id), ["R5CT123ABC", "wifi-phone"])
+        XCTAssertEqual(selected.map(\.id), ["TESTDEVICE001", "wifi-phone"])
         XCTAssertFalse(AppModel.isWirelessRecord(newerUSB))
         XCTAssertTrue(AppModel.isWirelessRecord(olderWireless))
     }
 
     func testRememberedAuthorizedDeviceMatchesSerialOrAddress() {
         let record = PairedPhoneRecord(
-            id: "R5CT123ABC",
+            id: "TESTDEVICE001",
             displayName: "Pixel",
-            lastAddress: "R5CT123ABC",
+            lastAddress: "TESTDEVICE001",
             firstPaired: Date(timeIntervalSince1970: 100),
             lastConnected: Date(timeIntervalSince1970: 200)
         )
         let device = AuthorizedADBDevice(
-            serial: "R5CT123ABC",
+            serial: "TESTDEVICE001",
             product: "raven",
             model: "Pixel",
             isUSB: true
@@ -109,7 +109,7 @@ final class ADBDeviceParsingTests: XCTestCase {
 
     func testUSBMirroringPreferenceKeepsAuthorizedUSBDeviceOnCable() {
         let usbDevice = AuthorizedADBDevice(
-            serial: "R5CT123ABC",
+            serial: "TESTDEVICE001",
             product: "raven",
             model: "Pixel",
             isUSB: true
@@ -123,12 +123,12 @@ final class ADBDeviceParsingTests: XCTestCase {
         let record = PairedPhoneRecord(
             id: "adb-old-session",
             displayName: "SM S906B",
-            lastAddress: "192.168.68.51:33883",
+            lastAddress: "192.0.2.51:33883",
             firstPaired: Date(timeIntervalSince1970: 100),
             lastConnected: Date(timeIntervalSince1970: 200)
         )
         let device = AuthorizedADBDevice(
-            serial: "192.168.68.57:39757",
+            serial: "192.0.2.57:39757",
             product: "g0s",
             model: "SM S906B",
             isUSB: false
@@ -144,12 +144,12 @@ final class ADBDeviceParsingTests: XCTestCase {
         let record = PairedPhoneRecord(
             id: "adb-old-session",
             displayName: "Android device",
-            lastAddress: "192.168.68.51:33883",
+            lastAddress: "192.0.2.51:33883",
             firstPaired: Date(timeIntervalSince1970: 100),
             lastConnected: Date(timeIntervalSince1970: 200)
         )
         let device = AuthorizedADBDevice(
-            serial: "192.168.68.57:39757",
+            serial: "192.0.2.57:39757",
             product: "g0s",
             model: "Android device",
             isUSB: false
@@ -162,19 +162,19 @@ final class ADBDeviceParsingTests: XCTestCase {
         let record = PairedPhoneRecord(
             id: "adb-samsung",
             displayName: "Samsung",
-            lastAddress: "192.168.1.44:42111",
+            lastAddress: "192.0.2.44:42111",
             firstPaired: Date(timeIntervalSince1970: 100),
             lastConnected: Date(timeIntervalSince1970: 200)
         )
         let matching = DiscoveredPhone(
             id: "adb-samsung",
-            address: "192.168.1.44:39001",
+            address: "192.0.2.44:39001",
             kind: .connectable,
             lastSeen: Date(timeIntervalSince1970: 300)
         )
         let sameHostDifferentID = DiscoveredPhone(
             id: "adb-other",
-            address: "192.168.1.44:42111",
+            address: "192.0.2.44:42111",
             kind: .connectable,
             lastSeen: Date(timeIntervalSince1970: 400)
         )
@@ -191,13 +191,13 @@ final class ADBDeviceParsingTests: XCTestCase {
         let record = PairedPhoneRecord(
             id: "adb-samsung",
             displayName: "Samsung",
-            lastAddress: "192.168.1.44:42111",
+            lastAddress: "192.0.2.44:42111",
             firstPaired: Date(timeIntervalSince1970: 100),
             lastConnected: Date(timeIntervalSince1970: 200)
         )
         let matching = DiscoveredPhone(
             id: "adb-new-id",
-            address: "192.168.1.44:39001",
+            address: "192.0.2.44:39001",
             kind: .connectable,
             lastSeen: Date(timeIntervalSince1970: 300)
         )
@@ -214,13 +214,13 @@ final class ADBDeviceParsingTests: XCTestCase {
         let record = PairedPhoneRecord(
             id: "adb-samsung",
             displayName: "Samsung",
-            lastAddress: "192.168.1.44:42111",
+            lastAddress: "192.0.2.44:42111",
             firstPaired: Date(timeIntervalSince1970: 100),
             lastConnected: Date(timeIntervalSince1970: 200)
         )
         let currentRoute = DiscoveredPhone(
             id: "adb-current-session",
-            address: "192.168.68.54:46507",
+            address: "192.0.2.54:46507",
             kind: .connectable,
             lastSeen: Date(timeIntervalSince1970: 300)
         )
@@ -235,30 +235,30 @@ final class ADBDeviceParsingTests: XCTestCase {
 
     func testWiFiIPAddressParsingPrefersWLANSourceAddress() {
         let output = """
-        default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44
-        192.168.1.0/24 dev wlan0 proto kernel scope link src 192.168.1.44
+        default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44
+        192.0.2.0/24 dev wlan0 proto kernel scope link src 192.0.2.44
         """
 
-        XCTAssertEqual(AppModel.wifiIPAddress(in: output), "192.168.1.44")
+        XCTAssertEqual(AppModel.wifiIPAddress(in: output), "192.0.2.44")
     }
 
     func testWiFiIPAddressParsingIgnoresNonWiFiRoutes() {
-        let output = "10.0.2.0/24 dev rmnet_data0 proto kernel scope link src 10.0.2.15"
+        let output = "198.51.100.0/24 dev rmnet_data0 proto kernel scope link src 198.51.100.15"
 
         XCTAssertNil(AppModel.wifiIPAddress(in: output))
     }
 
     func testWirelessPhoneMatchingUSBRoutePrefersSameWiFiHost() {
-        let routeOutput = "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+        let routeOutput = "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
         let other = DiscoveredPhone(
             id: "adb-other",
-            address: "192.168.1.22:39111",
+            address: "192.0.2.22:39111",
             kind: .connectable,
             lastSeen: Date(timeIntervalSince1970: 100)
         )
         let matching = DiscoveredPhone(
             id: "adb-matching",
-            address: "192.168.1.44:42111",
+            address: "192.0.2.44:42111",
             kind: .connectable,
             lastSeen: Date(timeIntervalSince1970: 200)
         )
@@ -272,10 +272,10 @@ final class ADBDeviceParsingTests: XCTestCase {
     }
 
     func testWirelessPhoneMatchingUSBRouteIgnoresPairingOnlyServices() {
-        let routeOutput = "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+        let routeOutput = "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
         let pairingOnly = DiscoveredPhone(
             id: "adb-pairing",
-            address: "192.168.1.44:39111",
+            address: "192.0.2.44:39111",
             kind: .pairable,
             lastSeen: Date(timeIntervalSince1970: 100)
         )
@@ -289,16 +289,16 @@ final class ADBDeviceParsingTests: XCTestCase {
     }
 
     func testWirelessDebuggingAddressCombinesUSBWiFiIPAndTLSPort() {
-        let routeOutput = "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+        let routeOutput = "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
 
         XCTAssertEqual(
             AppModel.wirelessDebuggingAddress(routeOutput: routeOutput, tlsPortOutput: "42111\n"),
-            "192.168.1.44:42111"
+            "192.0.2.44:42111"
         )
     }
 
     func testWirelessDebuggingAddressIgnoresInvalidTLSPort() {
-        let routeOutput = "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+        let routeOutput = "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
 
         XCTAssertNil(
             AppModel.wirelessDebuggingAddress(routeOutput: routeOutput, tlsPortOutput: "-1\n")
@@ -306,7 +306,7 @@ final class ADBDeviceParsingTests: XCTestCase {
     }
 
     func testWirelessDebuggingAddressFallsBackToLegacyTCPPort() {
-        let routeOutput = "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+        let routeOutput = "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
 
         XCTAssertEqual(
             AppModel.wirelessDebuggingAddress(
@@ -314,36 +314,36 @@ final class ADBDeviceParsingTests: XCTestCase {
                 tlsPortOutput: "\n",
                 tcpPortOutput: "5555\n"
             ),
-            "192.168.1.44:5555"
+            "192.0.2.44:5555"
         )
     }
 
     func testLegacyTCPIPDebuggingAddressUsesUSBWiFiIPAndDefaultPort() {
-        let routeOutput = "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+        let routeOutput = "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
 
         XCTAssertEqual(
             AppModel.legacyTCPIPDebuggingAddress(routeOutput: routeOutput),
-            "192.168.1.44:5555"
+            "192.0.2.44:5555"
         )
     }
 
     func testLegacyTCPIPDebuggingAddressRequiresWiFiRoute() {
-        let routeOutput = "10.0.2.0/24 dev rmnet_data0 proto kernel scope link src 10.0.2.15"
+        let routeOutput = "198.51.100.0/24 dev rmnet_data0 proto kernel scope link src 198.51.100.15"
 
         XCTAssertNil(AppModel.legacyTCPIPDebuggingAddress(routeOutput: routeOutput))
     }
 
     func testReconnectCandidatesAppendStableLegacyPort() {
         XCTAssertEqual(
-            AppModel.reconnectCandidateAddresses(for: "192.168.1.44:42111"),
-            ["192.168.1.44:42111", "192.168.1.44:5555"]
+            AppModel.reconnectCandidateAddresses(for: "192.0.2.44:42111"),
+            ["192.0.2.44:42111", "192.0.2.44:5555"]
         )
     }
 
     func testReconnectCandidatesDoNotDuplicateLegacyPort() {
         XCTAssertEqual(
-            AppModel.reconnectCandidateAddresses(for: "192.168.1.44:5555"),
-            ["192.168.1.44:5555"]
+            AppModel.reconnectCandidateAddresses(for: "192.0.2.44:5555"),
+            ["192.0.2.44:5555"]
         )
     }
 
@@ -363,7 +363,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         #!/bin/sh
         echo "$@" >> "$ADB_FAKE_LOG"
         if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
-          echo "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+          echo "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
           exit 0
         fi
         if [ "$1" = "-s" ] && [ "$3" = "tcpip" ]; then
@@ -390,15 +390,15 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         let promoted = await AppModel.promoteToLegacyTCPIP(
             adb: ADBController(),
-            sourceSerial: "192.168.1.44:42111"
+            sourceSerial: "192.0.2.44:42111"
         )
 
-        XCTAssertEqual(promoted, "192.168.1.44:5555")
+        XCTAssertEqual(promoted, "192.0.2.44:5555")
         let calls = try String(contentsOf: log, encoding: .utf8)
             .split(whereSeparator: \.isNewline)
             .map(String.init)
-        XCTAssertTrue(calls.contains("-s 192.168.1.44:42111 tcpip 5555"))
-        XCTAssertTrue(calls.contains("connect 192.168.1.44:5555"))
+        XCTAssertTrue(calls.contains("-s 192.0.2.44:42111 tcpip 5555"))
+        XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
     }
 
     func testPromoteToLegacyTCPIPReturnsNilWhenDeviceRefusesTCPIP() async throws {
@@ -417,7 +417,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         #!/bin/sh
         echo "$@" >> "$ADB_FAKE_LOG"
         if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
-          echo "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+          echo "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
           exit 0
         fi
         if [ "$1" = "-s" ] && [ "$3" = "tcpip" ]; then
@@ -436,7 +436,7 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         let promoted = await AppModel.promoteToLegacyTCPIP(
             adb: ADBController(),
-            sourceSerial: "192.168.1.44:42111"
+            sourceSerial: "192.0.2.44:42111"
         )
 
         XCTAssertNil(promoted)
@@ -489,7 +489,7 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         let connected = await AppModel.waitForADBConnect(
             adb: ADBController(),
-            address: "192.168.68.57:5555",
+            address: "192.0.2.57:5555",
             attempts: 4,
             delayNanoseconds: 1
         )
@@ -499,9 +499,9 @@ final class ADBDeviceParsingTests: XCTestCase {
             .split(whereSeparator: \.isNewline)
             .map(String.init)
         XCTAssertEqual(calls, [
-            "connect 192.168.68.57:5555",
-            "connect 192.168.68.57:5555",
-            "connect 192.168.68.57:5555"
+            "connect 192.0.2.57:5555",
+            "connect 192.0.2.57:5555",
+            "connect 192.0.2.57:5555"
         ])
     }
 
@@ -550,7 +550,7 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         let ready = await AppModel.waitForADBWirelessTargetReady(
             adb: ADBController(),
-            address: "192.168.68.57:5555",
+            address: "192.0.2.57:5555",
             attempts: 4,
             delayNanoseconds: 1
         )
@@ -560,12 +560,12 @@ final class ADBDeviceParsingTests: XCTestCase {
             .split(whereSeparator: \.isNewline)
             .map(String.init)
         XCTAssertEqual(calls, [
-            "connect 192.168.68.57:5555",
-            "-s 192.168.68.57:5555 shell echo wifi-adb-ok",
-            "connect 192.168.68.57:5555",
-            "-s 192.168.68.57:5555 shell echo wifi-adb-ok",
-            "connect 192.168.68.57:5555",
-            "-s 192.168.68.57:5555 shell echo wifi-adb-ok"
+            "connect 192.0.2.57:5555",
+            "-s 192.0.2.57:5555 shell echo wifi-adb-ok",
+            "connect 192.0.2.57:5555",
+            "-s 192.0.2.57:5555 shell echo wifi-adb-ok",
+            "connect 192.0.2.57:5555",
+            "-s 192.0.2.57:5555 shell echo wifi-adb-ok"
         ])
     }
 
@@ -615,7 +615,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         var primeCount = 0
         let ready = await AppModel.waitForADBWirelessTargetReady(
             adb: ADBController(),
-            address: "192.168.68.57:5555",
+            address: "192.0.2.57:5555",
             attempts: 4,
             delayNanoseconds: 1,
             primeRoute: {
@@ -629,17 +629,17 @@ final class ADBDeviceParsingTests: XCTestCase {
             .split(whereSeparator: \.isNewline)
             .map(String.init)
         XCTAssertEqual(calls, [
-            "connect 192.168.68.57:5555",
-            "connect 192.168.68.57:5555",
-            "connect 192.168.68.57:5555",
-            "-s 192.168.68.57:5555 shell echo wifi-adb-ok"
+            "connect 192.0.2.57:5555",
+            "connect 192.0.2.57:5555",
+            "connect 192.0.2.57:5555",
+            "-s 192.0.2.57:5555 shell echo wifi-adb-ok"
         ])
     }
 
     func testUSBHandoffCandidateReturnsNewAuthorizedUSBDevice() {
         let output = """
         List of devices attached
-        R5CT123ABC device usb:336592896X product:raven model:Pixel_6_Pro device:raven transport_id:1
+        TESTDEVICE001 device usb:100000001X product:raven model:Pixel_6_Pro device:raven transport_id:1
         """
 
         let candidate = AppModel.usbHandoffCandidate(
@@ -647,18 +647,18 @@ final class ADBDeviceParsingTests: XCTestCase {
             lastAttemptedSerial: nil
         )
 
-        XCTAssertEqual(candidate?.serial, "R5CT123ABC")
+        XCTAssertEqual(candidate?.serial, "TESTDEVICE001")
     }
 
     func testUSBHandoffCandidateIgnoresAlreadyAttemptedSerial() {
         let output = """
         List of devices attached
-        R5CT123ABC device usb:336592896X product:raven model:Pixel_6_Pro device:raven transport_id:1
+        TESTDEVICE001 device usb:100000001X product:raven model:Pixel_6_Pro device:raven transport_id:1
         """
 
         let candidate = AppModel.usbHandoffCandidate(
             in: output,
-            lastAttemptedSerial: "R5CT123ABC"
+            lastAttemptedSerial: "TESTDEVICE001"
         )
 
         XCTAssertNil(candidate)
@@ -686,14 +686,14 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         let connected = await AppModel.connectToRememberedWireless(
             adb: ADBController(),
-            savedAddress: "192.168.1.44:42111"
+            savedAddress: "192.0.2.44:42111"
         )
 
         XCTAssertNil(connected)
         // Both the saved port and the stable :5555 fallback should be attempted.
         let calls = loggedCalls(fake.log)
-        XCTAssertTrue(calls.contains("connect 192.168.1.44:42111"))
-        XCTAssertTrue(calls.contains("connect 192.168.1.44:5555"))
+        XCTAssertTrue(calls.contains("connect 192.0.2.44:42111"))
+        XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
     }
 
     func testConnectToRememberedWirelessAcceptsFirstCandidateThatIsShellReady() async throws {
@@ -714,12 +714,12 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         let connected = await AppModel.connectToRememberedWireless(
             adb: ADBController(),
-            savedAddress: "192.168.1.44:42111"
+            savedAddress: "192.0.2.44:42111"
         )
 
-        XCTAssertEqual(connected, "192.168.1.44:42111")
+        XCTAssertEqual(connected, "192.0.2.44:42111")
         // The saved port worked, so the :5555 fallback is never tried.
-        XCTAssertFalse(loggedCalls(fake.log).contains("connect 192.168.1.44:5555"))
+        XCTAssertFalse(loggedCalls(fake.log).contains("connect 192.0.2.44:5555"))
     }
 
     func testConnectToRememberedWirelessFallsBackToLegacyPortWhenSavedPortNotReady() async throws {
@@ -745,13 +745,13 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         let connected = await AppModel.connectToRememberedWireless(
             adb: ADBController(),
-            savedAddress: "192.168.1.44:42111"
+            savedAddress: "192.0.2.44:42111"
         )
 
-        XCTAssertEqual(connected, "192.168.1.44:5555")
+        XCTAssertEqual(connected, "192.0.2.44:5555")
         let calls = loggedCalls(fake.log)
-        XCTAssertTrue(calls.contains("connect 192.168.1.44:42111"))
-        XCTAssertTrue(calls.contains("connect 192.168.1.44:5555"))
+        XCTAssertTrue(calls.contains("connect 192.0.2.44:42111"))
+        XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
     }
 
     func testConnectToUSBDeviceOverCurrentWiFiUsesExistingLegacyListener() async throws {
@@ -759,7 +759,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         #!/bin/sh
         echo "$@" >> "$ADB_FAKE_LOG"
         if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
-          echo "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+          echo "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
           exit 0
         fi
         if [ "$1" = "connect" ]; then
@@ -781,15 +781,15 @@ final class ADBDeviceParsingTests: XCTestCase {
         let connected = await AppModel.connectToUSBDeviceOverCurrentWiFi(
             adb: ADBController(),
             usbDevice: AuthorizedADBDevice(
-                serial: "R5CT123ABC",
+                serial: "TESTDEVICE001",
                 product: "raven",
                 model: "Pixel 6 Pro",
                 isUSB: true
             )
         )
 
-        XCTAssertEqual(connected, "192.168.1.44:5555")
-        XCTAssertFalse(loggedCalls(fake.log).contains("-s R5CT123ABC tcpip 5555"))
+        XCTAssertEqual(connected, "192.0.2.44:5555")
+        XCTAssertFalse(loggedCalls(fake.log).contains("-s TESTDEVICE001 tcpip 5555"))
     }
 
     func testConnectToUSBDeviceOverCurrentWiFiStartsTCPIPWhenNeeded() async throws {
@@ -797,7 +797,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         #!/bin/sh
         echo "$@" >> "$ADB_FAKE_LOG"
         if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
-          echo "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.44"
+          echo "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
           exit 0
         fi
         if [ "$1" = "connect" ]; then
@@ -827,20 +827,20 @@ final class ADBDeviceParsingTests: XCTestCase {
         let connected = await AppModel.connectToUSBDeviceOverCurrentWiFi(
             adb: ADBController(),
             usbDevice: AuthorizedADBDevice(
-                serial: "R5CT123ABC",
+                serial: "TESTDEVICE001",
                 product: "raven",
                 model: "Pixel 6 Pro",
                 isUSB: true
             )
         )
 
-        XCTAssertEqual(connected, "192.168.1.44:5555")
-        XCTAssertTrue(loggedCalls(fake.log).contains("-s R5CT123ABC tcpip 5555"))
+        XCTAssertEqual(connected, "192.0.2.44:5555")
+        XCTAssertTrue(loggedCalls(fake.log).contains("-s TESTDEVICE001 tcpip 5555"))
     }
 
     func testShouldPromoteToLegacyTCPIPSkipsAddressesAlreadyOnPort5555() {
-        XCTAssertFalse(AppModel.shouldPromoteToLegacyTCPIP(connectedAddress: "192.168.1.44:5555"))
-        XCTAssertTrue(AppModel.shouldPromoteToLegacyTCPIP(connectedAddress: "192.168.1.44:42111"))
+        XCTAssertFalse(AppModel.shouldPromoteToLegacyTCPIP(connectedAddress: "192.0.2.44:5555"))
+        XCTAssertTrue(AppModel.shouldPromoteToLegacyTCPIP(connectedAddress: "192.0.2.44:42111"))
     }
 
     // MARK: - Fake adb helpers

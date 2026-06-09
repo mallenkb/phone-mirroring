@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="Android Mirroring"
 PRODUCT_NAME="AndroidMirrorMac"
-BUNDLE_ID="com.mallenkb.AndroidMirrorMac"
+BUNDLE_ID="org.example.AndroidMirrorMac"
 APP_VERSION="${APP_VERSION:-0.1.0}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"

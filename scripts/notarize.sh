@@ -16,7 +16,7 @@ set -euo pipefail
 
 APP="${1:-dist/Android Mirroring.app}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENTITLEMENTS="$ROOT_DIR/scripts/AndroidMirrorMac.entitlements"
+ENTITLEMENTS="$ROOT_DIR/scripts/AndroidMirrorMac.release.entitlements"
 
 : "${DEVELOPER_ID:?Set DEVELOPER_ID (Developer ID Application identity)}"
 : "${APPLE_ID:?Set APPLE_ID (your Apple ID email)}"
@@ -39,6 +39,13 @@ codesign --force --options runtime --timestamp \
 codesign --force --options runtime --timestamp --deep \
   --entitlements "$ENTITLEMENTS" --sign "$DEVELOPER_ID" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
+
+echo "==> Verifying release entitlements"
+ENTITLEMENTS_OUT="$(codesign -d --entitlements :- "$APP" 2>/dev/null || true)"
+if printf '%s\n' "$ENTITLEMENTS_OUT" | grep -Eq 'com\.apple\.security\.cs\.(allow-dyld-environment-variables|disable-library-validation)'; then
+  echo "Release app contains forbidden hardened-runtime exceptions." >&2
+  exit 1
+fi
 
 echo "==> Submitting to Apple notary service (this can take a few minutes)"
 ZIP="${APP%.app}.zip"

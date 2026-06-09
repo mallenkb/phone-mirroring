@@ -15,34 +15,34 @@ final class MDNSParserTests: XCTestCase {
     }
 
     func testParsesPairingService() {
-        let output = "adb-XYZ\t_adb-tls-pairing._tcp.\t192.168.1.42:39555"
+        let output = "adb-XYZ\t_adb-tls-pairing._tcp.\t192.0.2.42:39555"
         let phones = ADBController.parseMDNSServices(output)
         XCTAssertEqual(phones.count, 1)
         XCTAssertEqual(phones.first?.kind, .pairable)
-        XCTAssertEqual(phones.first?.address, "192.168.1.42:39555")
+        XCTAssertEqual(phones.first?.address, "192.0.2.42:39555")
     }
 
     func testParsesConnectService() {
-        let output = "adb-XYZ\t_adb-tls-connect._tcp.\t192.168.1.42:5555"
+        let output = "adb-XYZ\t_adb-tls-connect._tcp.\t192.0.2.42:5555"
         let phones = ADBController.parseMDNSServices(output)
         XCTAssertEqual(phones.first?.kind, .connectable)
     }
 
     func testParsesLegacyTCPService() {
-        let output = "adb-XYZ\t_adb._tcp.\t192.168.1.42:5555"
+        let output = "adb-XYZ\t_adb._tcp.\t192.0.2.42:5555"
         let phones = ADBController.parseMDNSServices(output)
         XCTAssertEqual(phones.first?.kind, .connectable, "Legacy _adb._tcp should be treated as connectable")
     }
 
     func testConnectServicePreemptsPairingForSameInstance() {
         let output = """
-        adb-XYZ\t_adb-tls-pairing._tcp.\t192.168.1.42:39555
-        adb-XYZ\t_adb-tls-connect._tcp.\t192.168.1.42:5555
+        adb-XYZ\t_adb-tls-pairing._tcp.\t192.0.2.42:39555
+        adb-XYZ\t_adb-tls-connect._tcp.\t192.0.2.42:5555
         """
         let phones = ADBController.parseMDNSServices(output)
         XCTAssertEqual(phones.count, 1)
         XCTAssertEqual(phones.first?.kind, .connectable)
-        XCTAssertEqual(phones.first?.address, "192.168.1.42:5555")
+        XCTAssertEqual(phones.first?.address, "192.0.2.42:5555")
     }
 
     func testIgnoresEntriesWithoutAddress() {
@@ -52,8 +52,8 @@ final class MDNSParserTests: XCTestCase {
 
     func testSortsByID() {
         let output = """
-        adb-ZZZ\t_adb-tls-connect._tcp.\t192.168.1.42:5555
-        adb-AAA\t_adb-tls-connect._tcp.\t192.168.1.41:5555
+        adb-ZZZ\t_adb-tls-connect._tcp.\t192.0.2.42:5555
+        adb-AAA\t_adb-tls-connect._tcp.\t192.0.2.41:5555
         """
         let phones = ADBController.parseMDNSServices(output)
         XCTAssertEqual(phones.map(\.id), ["adb-AAA", "adb-ZZZ"])

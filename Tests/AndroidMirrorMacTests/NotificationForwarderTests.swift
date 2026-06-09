@@ -181,8 +181,8 @@ final class NotificationForwarderTests: XCTestCase {
             "Messages • Telecel-FBB"
         )
         XCTAssertEqual(
-            NotificationForwarder.notificationTitle(sourceApp: "WhatsApp Business", entryTitle: "Marlon's MTN"),
-            "WhatsApp Business • Marlon's MTN"
+            NotificationForwarder.notificationTitle(sourceApp: "WhatsApp Business", entryTitle: "Example Account"),
+            "WhatsApp Business • Example Account"
         )
         XCTAssertEqual(
             NotificationForwarder.notificationTitle(sourceApp: "Instagram", entryTitle: ""),

@@ -4,7 +4,7 @@ set -euo pipefail
 APP="${1:-dist/Android Mirroring.app}"
 APP_NAME="${APP_NAME:-Android Mirroring}"
 PRODUCT_NAME="${PRODUCT_NAME:-AndroidMirrorMac}"
-BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.AndroidMirrorMac}"
+BUNDLE_ID="${BUNDLE_ID:-org.example.AndroidMirrorMac}"
 APP_VERSION="${APP_VERSION:-0.1.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
