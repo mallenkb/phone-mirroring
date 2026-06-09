@@ -237,7 +237,7 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     func testMirrorAudioIsSupportedForWirelessADBSerials() {
-        XCTAssertTrue(MirrorSession.supportsMirrorAudio(serial: "192.168.68.51:5555"))
+        XCTAssertTrue(MirrorSession.supportsMirrorAudio(serial: "192.0.2.51:5555"))
     }
 
     func testMirrorRenderVideoLayerStaysCenteredInBounds() {

@@ -248,7 +248,7 @@ enum Tooling {
 enum Logger {
     /// Unified-logging handle — visible in Console.app, filterable by subsystem.
     private static let osLog = os.Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.mallenkb.AndroidMirrorMac",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.example.AndroidMirrorMac",
         category: "app"
     )
     /// Hard cap on the on-disk log; trimmed to the most recent half when hit so

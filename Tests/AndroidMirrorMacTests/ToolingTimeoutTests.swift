@@ -34,10 +34,10 @@ final class ToolingTimeoutTests: XCTestCase {
         setenv("ADB_FAKE_LOG", log.path, 1)
 
         async let first = Task.detached {
-            ADBController().run(["connect", "192.168.68.53:5555"], timeout: 3)
+            ADBController().run(["connect", "192.0.2.53:5555"], timeout: 3)
         }.value
         async let second = Task.detached {
-            ADBController().run(["connect", "192.168.68.54:5555"], timeout: 3)
+            ADBController().run(["connect", "192.0.2.54:5555"], timeout: 3)
         }.value
         _ = await [first, second]
 
@@ -74,7 +74,7 @@ final class ToolingTimeoutTests: XCTestCase {
         )
         setenv("ANDROID_MIRROR_ADB_PATH", fakeADB.path, 1)
 
-        let output = ADBController().run(["connect", "192.168.68.53:5555"], timeout: 0.5)
+        let output = ADBController().run(["connect", "192.0.2.53:5555"], timeout: 0.5)
 
         XCTAssertTrue(output.contains("adb timed out after 0s"))
         Thread.sleep(forTimeInterval: 0.1)

@@ -6,22 +6,22 @@ final class PairedPhoneStoreTests: XCTestCase {
     private let referenceDate = Date(timeIntervalSince1970: 1_700_000_000)
 
     func testTouchInsertsNewRecord() {
-        let updated = store.touch([], id: "phone-1", displayName: "Pixel", address: "10.0.0.5:5555", now: referenceDate)
+        let updated = store.touch([], id: "phone-1", displayName: "Pixel", address: "198.51.100.5:5555", now: referenceDate)
         XCTAssertEqual(updated.count, 1)
         XCTAssertEqual(updated[0].id, "phone-1")
         XCTAssertEqual(updated[0].displayName, "Pixel")
-        XCTAssertEqual(updated[0].lastAddress, "10.0.0.5:5555")
+        XCTAssertEqual(updated[0].lastAddress, "198.51.100.5:5555")
         XCTAssertEqual(updated[0].firstPaired, referenceDate)
         XCTAssertEqual(updated[0].lastConnected, referenceDate)
     }
 
     func testTouchUpdatesExistingRecordWithoutChangingFirstPaired() {
-        let initial = store.touch([], id: "phone-1", displayName: "Pixel", address: "10.0.0.5:5555", now: referenceDate)
+        let initial = store.touch([], id: "phone-1", displayName: "Pixel", address: "198.51.100.5:5555", now: referenceDate)
         let later = referenceDate.addingTimeInterval(3600)
-        let updated = store.touch(initial, id: "phone-1", displayName: "Pixel Renamed", address: "10.0.0.5:6000", now: later)
+        let updated = store.touch(initial, id: "phone-1", displayName: "Pixel Renamed", address: "198.51.100.5:6000", now: later)
         XCTAssertEqual(updated.count, 1)
         XCTAssertEqual(updated[0].displayName, "Pixel Renamed")
-        XCTAssertEqual(updated[0].lastAddress, "10.0.0.5:6000")
+        XCTAssertEqual(updated[0].lastAddress, "198.51.100.5:6000")
         XCTAssertEqual(updated[0].firstPaired, referenceDate, "firstPaired should be sticky once set")
         XCTAssertEqual(updated[0].lastConnected, later)
     }
@@ -31,7 +31,7 @@ final class PairedPhoneStoreTests: XCTestCase {
             [],
             id: "adb-old-session",
             displayName: "SM S906B",
-            address: "192.168.68.51:33883",
+            address: "192.0.2.51:33883",
             now: referenceDate
         )
         let later = referenceDate.addingTimeInterval(3600)
@@ -40,14 +40,14 @@ final class PairedPhoneStoreTests: XCTestCase {
             initial,
             id: "adb-new-session",
             displayName: "SM S906B",
-            address: "192.168.68.57:39757",
+            address: "192.0.2.57:39757",
             now: later
         )
 
         XCTAssertEqual(updated.count, 1)
         XCTAssertEqual(updated[0].id, "adb-new-session")
         XCTAssertEqual(updated[0].displayName, "SM S906B")
-        XCTAssertEqual(updated[0].lastAddress, "192.168.68.57:39757")
+        XCTAssertEqual(updated[0].lastAddress, "192.0.2.57:39757")
         XCTAssertEqual(updated[0].firstPaired, referenceDate)
         XCTAssertEqual(updated[0].lastConnected, later)
     }
@@ -57,7 +57,7 @@ final class PairedPhoneStoreTests: XCTestCase {
             [],
             id: "adb-first",
             displayName: "Android device",
-            address: "192.168.68.51:33883",
+            address: "192.0.2.51:33883",
             now: referenceDate
         )
 
@@ -65,14 +65,14 @@ final class PairedPhoneStoreTests: XCTestCase {
             initial,
             id: "adb-second",
             displayName: "Android device",
-            address: "192.168.68.57:39757",
+            address: "192.0.2.57:39757",
             now: referenceDate.addingTimeInterval(3600)
         )
 
         XCTAssertEqual(updated.count, 1)
         XCTAssertEqual(updated[0].id, "adb-second")
         XCTAssertEqual(updated[0].displayName, "Android device")
-        XCTAssertEqual(updated[0].lastAddress, "192.168.68.57:39757")
+        XCTAssertEqual(updated[0].lastAddress, "192.0.2.57:39757")
         XCTAssertEqual(updated[0].firstPaired, referenceDate)
         XCTAssertEqual(updated[0].lastConnected, referenceDate.addingTimeInterval(3600))
     }
@@ -81,7 +81,7 @@ final class PairedPhoneStoreTests: XCTestCase {
         let older = PairedPhoneRecord(
             id: "adb-old-session",
             displayName: "SM S906B",
-            lastAddress: "192.168.68.51:33883",
+            lastAddress: "192.0.2.51:33883",
             firstPaired: referenceDate,
             lastConnected: referenceDate
         )
@@ -96,16 +96,16 @@ final class PairedPhoneStoreTests: XCTestCase {
 
         let updated = store.touch(
             [older, newer],
-            id: "192.168.68.53:5555",
+            id: "192.0.2.53:5555",
             displayName: "SM S906B",
-            address: "192.168.68.53:5555",
+            address: "192.0.2.53:5555",
             now: latest
         )
 
         XCTAssertEqual(updated.count, 1)
-        XCTAssertEqual(updated[0].id, "192.168.68.53:5555")
+        XCTAssertEqual(updated[0].id, "192.0.2.53:5555")
         XCTAssertEqual(updated[0].displayName, "SM S906B")
-        XCTAssertEqual(updated[0].lastAddress, "192.168.68.53:5555")
+        XCTAssertEqual(updated[0].lastAddress, "192.0.2.53:5555")
         XCTAssertEqual(updated[0].firstPaired, referenceDate)
         XCTAssertEqual(updated[0].lastConnected, latest)
     }
@@ -114,7 +114,7 @@ final class PairedPhoneStoreTests: XCTestCase {
         let generic = PairedPhoneRecord(
             id: "adb-generic",
             displayName: "Authorized Device",
-            lastAddress: "192.168.68.54:34921",
+            lastAddress: "192.0.2.54:34921",
             firstPaired: referenceDate,
             lastConnected: referenceDate
         )
@@ -124,14 +124,14 @@ final class PairedPhoneStoreTests: XCTestCase {
             [generic],
             id: "adb-specific",
             displayName: "SM S906B",
-            address: "192.168.68.54:46313",
+            address: "192.0.2.54:46313",
             now: later
         )
 
         XCTAssertEqual(updated.count, 1)
         XCTAssertEqual(updated[0].id, "adb-specific")
         XCTAssertEqual(updated[0].displayName, "SM S906B")
-        XCTAssertEqual(updated[0].lastAddress, "192.168.68.54:46313")
+        XCTAssertEqual(updated[0].lastAddress, "192.0.2.54:46313")
         XCTAssertEqual(updated[0].firstPaired, referenceDate)
         XCTAssertEqual(updated[0].lastConnected, later)
     }
@@ -140,7 +140,7 @@ final class PairedPhoneStoreTests: XCTestCase {
         let record = PairedPhoneRecord(
             id: "phone-1",
             displayName: "Pixel",
-            lastAddress: "10.0.0.5:5555",
+            lastAddress: "198.51.100.5:5555",
             firstPaired: referenceDate,
             lastConnected: referenceDate
         )
@@ -165,7 +165,7 @@ final class PairedPhoneStoreTests: XCTestCase {
         let record = PairedPhoneRecord(
             id: "phone-1",
             displayName: "Pixel",
-            lastAddress: "10.0.0.5:5555",
+            lastAddress: "198.51.100.5:5555",
             firstPaired: referenceDate,
             lastConnected: referenceDate
         )
@@ -196,14 +196,14 @@ final class PairedPhoneStoreTests: XCTestCase {
         let older = PairedPhoneRecord(
             id: "adb-old-session",
             displayName: "SM S906B",
-            lastAddress: "192.168.68.51:33883",
+            lastAddress: "192.0.2.51:33883",
             firstPaired: referenceDate,
             lastConnected: referenceDate
         )
         let newer = PairedPhoneRecord(
             id: "adb-new-session",
             displayName: "SM S906B",
-            lastAddress: "192.168.68.57:39757",
+            lastAddress: "192.0.2.57:39757",
             firstPaired: referenceDate.addingTimeInterval(60),
             lastConnected: referenceDate.addingTimeInterval(3600)
         )
@@ -214,7 +214,7 @@ final class PairedPhoneStoreTests: XCTestCase {
 
         XCTAssertEqual(loaded.count, 1)
         XCTAssertEqual(loaded[0].id, "adb-new-session")
-        XCTAssertEqual(loaded[0].lastAddress, "192.168.68.57:39757")
+        XCTAssertEqual(loaded[0].lastAddress, "192.0.2.57:39757")
         XCTAssertEqual(loaded[0].firstPaired, referenceDate)
         XCTAssertEqual(loaded[0].lastConnected, referenceDate.addingTimeInterval(3600))
     }
@@ -231,14 +231,14 @@ final class PairedPhoneStoreTests: XCTestCase {
         let generic = PairedPhoneRecord(
             id: "adb-generic",
             displayName: "Android device",
-            lastAddress: "192.168.68.54:34921",
+            lastAddress: "192.0.2.54:34921",
             firstPaired: referenceDate,
             lastConnected: referenceDate
         )
         let specific = PairedPhoneRecord(
             id: "adb-specific",
             displayName: "SM S906B",
-            lastAddress: "192.168.68.54:46313",
+            lastAddress: "192.0.2.54:46313",
             firstPaired: referenceDate.addingTimeInterval(60),
             lastConnected: referenceDate.addingTimeInterval(3600)
         )
@@ -250,7 +250,7 @@ final class PairedPhoneStoreTests: XCTestCase {
         XCTAssertEqual(loaded.count, 1)
         XCTAssertEqual(loaded[0].id, "adb-specific")
         XCTAssertEqual(loaded[0].displayName, "SM S906B")
-        XCTAssertEqual(loaded[0].lastAddress, "192.168.68.54:46313")
+        XCTAssertEqual(loaded[0].lastAddress, "192.0.2.54:46313")
         XCTAssertEqual(loaded[0].firstPaired, referenceDate)
         XCTAssertEqual(loaded[0].lastConnected, referenceDate.addingTimeInterval(3600))
     }
@@ -271,7 +271,7 @@ final class PairedPhoneStoreTests: XCTestCase {
         let record = PairedPhoneRecord(
             id: "phone-1",
             displayName: "Pixel",
-            lastAddress: "10.0.0.5:5555",
+            lastAddress: "198.51.100.5:5555",
             firstPaired: referenceDate,
             lastConnected: referenceDate
         )
@@ -304,7 +304,7 @@ final class PairedPhoneStoreTests: XCTestCase {
         let record = PairedPhoneRecord(
             id: "phone-1",
             displayName: "Pixel",
-            lastAddress: "10.0.0.5:5555",
+            lastAddress: "198.51.100.5:5555",
             firstPaired: referenceDate,
             lastConnected: referenceDate
         )
