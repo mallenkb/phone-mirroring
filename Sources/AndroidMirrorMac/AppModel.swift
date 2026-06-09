@@ -6,6 +6,9 @@ import UserNotifications
 
 @MainActor
 final class AppModel: ObservableObject {
+    nonisolated static let notificationPermissionReason =
+        "Allow notifications so Android Mirroring can show all unread notifications from your device on this Mac."
+
     @Published var selectedDevice: MirrorDevice = .demo
     @Published var isScanning = false
     @Published var isMirroring = false
@@ -67,6 +70,7 @@ final class AppModel: ObservableObject {
     /// Target video bitrate in megabits/sec.
     @Published var mirrorBitRateMbps: Int = (UserDefaults.standard.object(forKey: "MirrorQuality.bitRateMbps") as? Int) ?? 8 {
         didSet {
+            guard oldValue != mirrorBitRateMbps else { return }
             UserDefaults.standard.set(mirrorBitRateMbps, forKey: "MirrorQuality.bitRateMbps")
             if !suppressMirrorSettingsRestart {
                 scheduleMirrorSettingsRestart()
@@ -76,6 +80,7 @@ final class AppModel: ObservableObject {
     /// Cap on the longer screen dimension (px); lower = sharper-feeling + faster.
     @Published var mirrorMaxSize: Int = (UserDefaults.standard.object(forKey: "MirrorQuality.maxSize") as? Int) ?? 1600 {
         didSet {
+            guard oldValue != mirrorMaxSize else { return }
             UserDefaults.standard.set(mirrorMaxSize, forKey: "MirrorQuality.maxSize")
             if !suppressMirrorSettingsRestart {
                 scheduleMirrorSettingsRestart()
@@ -85,6 +90,7 @@ final class AppModel: ObservableObject {
     /// Frame-rate ceiling.
     @Published var mirrorMaxFps: Int = (UserDefaults.standard.object(forKey: "MirrorQuality.maxFps") as? Int) ?? 60 {
         didSet {
+            guard oldValue != mirrorMaxFps else { return }
             UserDefaults.standard.set(mirrorMaxFps, forKey: "MirrorQuality.maxFps")
             if !suppressMirrorSettingsRestart {
                 scheduleMirrorSettingsRestart()
@@ -96,6 +102,7 @@ final class AppModel: ObservableObject {
     @Published var mirrorAudioEnabled: Bool =
         (UserDefaults.standard.object(forKey: "MirrorQuality.experimentalOpusAudioEnabled") as? Bool) ?? true {
         didSet {
+            guard oldValue != mirrorAudioEnabled else { return }
             suppressMirrorAudioForReconnect = false
             UserDefaults.standard.set(mirrorAudioEnabled, forKey: "MirrorQuality.experimentalOpusAudioEnabled")
             if !suppressMirrorSettingsRestart {
@@ -277,6 +284,7 @@ final class AppModel: ObservableObject {
     private var lastMirrorWindowFrame: NSRect?
     private lazy var notificationForwarder = NotificationForwarder(model: self)
     private var lastPresenceAutoConnectAttemptAt: Date?
+    private var failedAutoConnectTargets: [String: Date] = [:]
     /// Authorized adb serials seen on the previous device-watcher poll. Lets us
     /// fire an immediate connect the instant a *new* device appears, instead of
     /// waiting out the presence throttle.
@@ -286,13 +294,13 @@ final class AppModel: ObservableObject {
     /// "Offline" while the first reconnect attempts run.
     private var launchReconnectDeadline: Date?
     private var deviceWatcherTask: Task<Void, Never>?
-    private var lastUSBHandoffSerial: String?
     private var qrPairingTask: Task<Void, Never>?
     private var usbConnectTask: Task<Void, Never>?
     private var wirelessStartTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var disconnectRecoveryTask: Task<Void, Never>?
     private var screenRecordingMonitorTask: Task<Void, Never>?
+    private var mirrorLaunchTask: Task<Void, Never>?
     private var mirrorSettingsRestartTask: Task<Void, Never>?
     private var suppressMirrorSettingsRestart = false
     private var suppressMirrorAudioForReconnect = false
@@ -332,12 +340,32 @@ final class AppModel: ObservableObject {
         return isWithinLaunchReconnectWindow
     }
 
+    var isManualUSBConnectDisabled: Bool {
+        Self.shouldDisableManualUSBConnectButton(
+            isPairing: isPairing,
+            isScanning: isScanning,
+            isRecoveringConnection: isRecoveringConnection,
+            isAwaitingReconnect: isAwaitingReconnect,
+            isMirroring: isMirroring,
+            isAutoConnecting: isAutoConnecting
+        )
+    }
+
     /// Status word for the device pill, derived from the same unified state.
     var connectionStatusText: String {
         Self.devicePillStatusText(
             isOnline: isSelectedDeviceOnline,
             hasSavedDevice: !pairedPhones.isEmpty,
             isActivelyConnecting: isActivelyConnecting
+        )
+    }
+
+    var connectionDeviceLabel: String {
+        Self.connectionDeviceLabel(
+            name: selectedDevice.name,
+            id: selectedDevice.id,
+            serial: selectedDevice.adbSerial,
+            network: selectedDevice.network
         )
     }
 
@@ -377,7 +405,7 @@ final class AppModel: ObservableObject {
     }
 
     init(
-        startBackgroundServices: Bool = true,
+        startBackgroundServices: Bool = AppModel.defaultStartBackgroundServices,
         pairedPhones previewPairedPhones: [PairedPhoneRecord]? = nil
     ) {
         pairedPhones = previewPairedPhones ?? store.load()
@@ -395,6 +423,10 @@ final class AppModel: ObservableObject {
         startDeviceWatcher()
         attemptAutoReconnect()
         updateNotificationForwarding()
+    }
+
+    nonisolated private static var defaultStartBackgroundServices: Bool {
+        NSClassFromString("XCTestCase") == nil
     }
 
     /// Starts or stops the no-companion-app notification poller to match the
@@ -530,7 +562,9 @@ final class AppModel: ObservableObject {
                 }
 
                 let livePhones = await Task.detached { adb.connectableMDNSTargets() }.value
-                let candidate = self.mostRecentPairedPhone(in: livePhones + self.discoveredPhones)
+                let candidate = self.mostRecentPairedPhone(
+                    in: self.autoConnectablePhones(in: livePhones + self.discoveredPhones)
+                )
                 if let candidate {
                     self.stopQRCodePairingSession()
                     self.connectAndMirror(phone: candidate)
@@ -547,13 +581,16 @@ final class AppModel: ObservableObject {
 
         let adb = self.adb
         Task { [weak self] in
-            await adb.restartServer()
-            let output = await Task.detached { adb.run(["connect", address]) }.value
+            await adb.ensureServerStarted()
+            let ready = await Self.waitForADBWirelessTargetReady(
+                adb: adb,
+                address: address,
+                attempts: 2
+            )
 
             guard let self else { return }
-            let lower = output.lowercased()
-            let ok = lower.contains("connected") || lower.contains("already")
-            if ok {
+            if ready {
+                self.failedAutoConnectTargets.removeValue(forKey: address)
                 let deviceName = await Self.connectedDeviceName(adb: adb, serial: address, fallback: label)
                 self.touchPairedPhone(id: serviceID, displayName: deviceName, address: address)
                 self.selectedDevice.adbSerial = address
@@ -561,7 +598,9 @@ final class AppModel: ObservableObject {
                 self.stopQRCodePairingSession()
                 self.startMirroring()
             } else {
-                Logger.log("Auto-connect to \(address) failed: \(Self.oneLine(output))")
+                self.noteAutoConnectFailure(for: phone)
+                self.isAutoConnecting = false
+                Logger.log("Auto-connect to \(address) failed readiness check")
             }
         }
     }
@@ -570,26 +609,7 @@ final class AppModel: ObservableObject {
         guard !isMirroring, !isPairing else { return }
 
         if device.isUSB {
-            guard Self.shouldAttemptWirelessHandoff(from: device, preferUSBMirroring: preferUSBMirroring) else {
-                select(device: device)
-                touchPairedPhone(
-                    id: device.serial,
-                    displayName: selectedDisplayName(for: device.model),
-                    address: device.serial
-                )
-                stopQRCodePairingSession()
-                startMirroring()
-                return
-            }
-
-            isPairing = true
-            let startedWirelessMirror = await prepareWirelessMirror(from: device)
-            if startedWirelessMirror {
-                return
-            }
-
-            guard !isMirroring else { return }
-            showWirelessHandoffRequired(for: device)
+            startMirroringOverUSB(device, manual: false)
             return
         }
 
@@ -617,6 +637,7 @@ final class AppModel: ObservableObject {
         }
 
         let records = Self.recordsByMostRecent(pairedPhones)
+        let livePhones = autoConnectablePhones(in: livePhones)
 
         for record in records {
             if let device = Self.rememberedAuthorizedDevice(for: record, in: authorizedDevices) {
@@ -763,20 +784,6 @@ final class AppModel: ObservableObject {
                 )
                 self.refreshAutoConnectingState(authorized: authorized)
 
-                // USB → wireless handoff (only when idle, never mid-session).
-                if !self.preferUSBMirroring, !self.isMirroring, !self.isPairing {
-                    if let usbDevice = Self.usbHandoffCandidate(
-                        in: output,
-                        lastAttemptedSerial: self.lastUSBHandoffSerial
-                    ) {
-                        self.isPairing = true
-                        let started = await self.prepareWirelessMirror(from: usbDevice)
-                        self.lastUSBHandoffSerial = started ? usbDevice.serial : nil
-                    } else if authorized.first(where: \.isUSB) == nil {
-                        self.lastUSBHandoffSerial = nil
-                    }
-                }
-
                 let interval: UInt64
                 if self.isPairing {
                     interval = 1_000_000_000          // mid-handoff: stay responsive
@@ -805,7 +812,7 @@ final class AppModel: ObservableObject {
             launchReconnectDeadline = nil
         }
         let hasLiveTarget = !authorized.isEmpty
-            || mostRecentPairedPhone(in: discoveredPhones) != nil
+            || mostRecentPairedPhone(in: autoConnectablePhones(in: discoveredPhones)) != nil
         isAutoConnecting = Self.shouldShowAutoConnecting(
             hasSavedDevice: !pairedPhones.isEmpty,
             isOnline: isSelectedDeviceOnline,
@@ -824,6 +831,29 @@ final class AppModel: ObservableObject {
     ) -> Bool {
         guard hasSavedDevice, !isOnline, !isMirroring else { return false }
         return hasLivePresentTarget
+    }
+
+    /// Keep failed background reconnects quiet briefly so stale Bonjour/adb
+    /// entries do not pin the UI in "Connecting" forever.
+    nonisolated static let autoConnectFailureCooldown: TimeInterval = 20
+
+    nonisolated static func isAutoConnectFailureCoolingDown(
+        failedAt: Date,
+        now: Date = Date(),
+        cooldown: TimeInterval = autoConnectFailureCooldown
+    ) -> Bool {
+        now.timeIntervalSince(failedAt) < cooldown
+    }
+
+    nonisolated static func shouldDisableManualUSBConnectButton(
+        isPairing: Bool,
+        isScanning: Bool,
+        isRecoveringConnection: Bool,
+        isAwaitingReconnect: Bool,
+        isMirroring: Bool,
+        isAutoConnecting: Bool
+    ) -> Bool {
+        isPairing || isScanning || isRecoveringConnection || isAwaitingReconnect || isMirroring
     }
 
     func ensureQRCodePairingSession() {
@@ -862,7 +892,7 @@ final class AppModel: ObservableObject {
 
         let adb = self.adb
         qrPairingTask = Task { [weak self] in
-            await adb.restartServer()
+            await adb.ensureServerStarted()
             guard !Task.isCancelled else { return }
 
             while !Task.isCancelled {
@@ -1145,6 +1175,14 @@ final class AppModel: ObservableObject {
     func connectViaUSB() {
         guard !isMirroring else { return }
         usbConnectTask?.cancel()
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        wirelessStartTask?.cancel()
+        wirelessStartTask = nil
+        isRecoveringConnection = false
+        isAwaitingReconnect = false
+        isAutoConnecting = false
+        launchReconnectDeadline = nil
         let generation = mirrorStartGeneration
         isPairing = true
 
@@ -1172,17 +1210,14 @@ final class AppModel: ObservableObject {
                 return
             }
 
-            if self.preferUSBMirroring {
+            if !Self.shouldAttemptWirelessHandoff(
+                from: usbDevice,
+                preferUSBMirroring: self.preferUSBMirroring,
+                isManualConnect: true
+            ) {
                 self.isPairing = false
                 self.usbConnectTask = nil
-                self.select(device: usbDevice)
-                self.touchPairedPhone(
-                    id: usbDevice.serial,
-                    displayName: self.selectedDisplayName(for: usbDevice.model),
-                    address: usbDevice.serial
-                )
-                self.stopQRCodePairingSession()
-                self.startMirroring(manual: true)
+                self.startMirroringOverUSB(usbDevice, manual: true)
                 return
             }
 
@@ -1193,6 +1228,18 @@ final class AppModel: ObservableObject {
 
             self.showWirelessHandoffRequired(for: usbDevice)
         }
+    }
+
+    private func startMirroringOverUSB(_ device: AuthorizedADBDevice, manual: Bool) {
+        isPairing = false
+        select(device: device)
+        touchPairedPhone(
+            id: device.serial,
+            displayName: selectedDisplayName(for: device.model),
+            address: device.serial
+        )
+        stopQRCodePairingSession()
+        startMirroring(manual: manual)
     }
 
     private func showWirelessHandoffRequired(for device: AuthorizedADBDevice) {
@@ -1214,6 +1261,29 @@ final class AppModel: ObservableObject {
             }
         }
         return nil
+    }
+
+    private func autoConnectablePhones(in phones: [DiscoveredPhone]) -> [DiscoveredPhone] {
+        let now = Date()
+        failedAutoConnectTargets = failedAutoConnectTargets.filter { _, failedAt in
+            Self.isAutoConnectFailureCoolingDown(
+                failedAt: failedAt,
+                now: now,
+                cooldown: Self.autoConnectFailureCooldown
+            )
+        }
+        return phones.filter { phone in
+            guard let failedAt = failedAutoConnectTargets[phone.address] else { return true }
+            return !Self.isAutoConnectFailureCoolingDown(
+                failedAt: failedAt,
+                now: now,
+                cooldown: Self.autoConnectFailureCooldown
+            )
+        }
+    }
+
+    private func noteAutoConnectFailure(for phone: DiscoveredPhone) {
+        failedAutoConnectTargets[phone.address] = Date()
     }
 
     private func applyADBOutput(_ output: String) {
@@ -1266,7 +1336,11 @@ final class AppModel: ObservableObject {
             return
         }
 
-        guard let liveDevice = devices.first(where: { $0.serial == serial }) else {
+        guard let liveDevice = Self.liveSelectedOrRememberedDevice(
+            selectedSerial: serial,
+            pairedPhones: pairedPhones,
+            authorizedDevices: devices
+        ) else {
             isSelectedDeviceOnline = false
             if selectedDevice.states.contains(.mirroringReady) {
                 selectedDevice.states = [.wirelessDebuggingRequired, .companionConnected]
@@ -1275,11 +1349,17 @@ final class AppModel: ObservableObject {
         }
 
         isSelectedDeviceOnline = true
-        selectedDevice.lastSeen = .now
-        selectedDevice.name = liveDevice.model
-        selectedDevice.model = liveDevice.product
-        selectedDevice.network = liveDevice.isUSB ? "USB debugging" : "Wireless debugging"
-        selectedDevice.states = [.mirroringReady, .companionConnected]
+        selectedDevice = MirrorDevice(
+            id: liveDevice.serial,
+            name: liveDevice.model,
+            model: liveDevice.product,
+            battery: selectedDevice.battery,
+            isCharging: selectedDevice.isCharging,
+            network: liveDevice.isUSB ? "USB debugging" : "Wireless debugging",
+            lastSeen: .now,
+            states: [.mirroringReady, .companionConnected],
+            adbSerial: liveDevice.serial
+        )
     }
 
     nonisolated static func authorizedADBDevices(in output: String) -> [AuthorizedADBDevice] {
@@ -1317,9 +1397,10 @@ final class AppModel: ObservableObject {
 
     nonisolated static func shouldAttemptWirelessHandoff(
         from device: AuthorizedADBDevice,
-        preferUSBMirroring: Bool
+        preferUSBMirroring: Bool,
+        isManualConnect: Bool = false
     ) -> Bool {
-        device.isUSB && !preferUSBMirroring
+        device.isUSB && !preferUSBMirroring && !isManualConnect
     }
 
     nonisolated static func usbHandoffCandidate(
@@ -1496,6 +1577,24 @@ final class AppModel: ObservableObject {
         }
     }
 
+    nonisolated static func liveSelectedOrRememberedDevice(
+        selectedSerial: String,
+        pairedPhones: [PairedPhoneRecord],
+        authorizedDevices: [AuthorizedADBDevice]
+    ) -> AuthorizedADBDevice? {
+        if let exact = authorizedDevices.first(where: { $0.serial == selectedSerial }) {
+            return exact
+        }
+
+        for record in recordsByMostRecent(pairedPhones) {
+            if let device = rememberedAuthorizedDevice(for: record, in: authorizedDevices) {
+                return device
+            }
+        }
+
+        return nil
+    }
+
     nonisolated static func isWirelessRecord(_ record: PairedPhoneRecord) -> Bool {
         record.lastAddress.contains(":")
     }
@@ -1615,6 +1714,13 @@ final class AppModel: ObservableObject {
             Logger.log("ADB Wi-Fi handoff shell readiness attempt \(attempt + 1)/\(attempts) address=\(address) output=\(shellOutput.trimmingCharacters(in: .whitespacesAndNewlines))")
             if shellOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "wifi-adb-ok" {
                 return true
+            }
+
+            if attempt + 1 < attempts {
+                let disconnectOutput = await Task.detached {
+                    adb.run(["disconnect", address], timeout: 2)
+                }.value
+                Logger.log("ADB Wi-Fi handoff stale transport cleanup address=\(address) output=\(disconnectOutput.trimmingCharacters(in: .whitespacesAndNewlines))")
             }
         }
 
@@ -1792,15 +1898,33 @@ final class AppModel: ObservableObject {
     // MARK: - Mirroring lifecycle
 
     private func scheduleMirrorSettingsRestart() {
-        guard isMirroring, !isPairing else { return }
+        guard Self.shouldScheduleMirrorSettingsRestart(
+            isMirroring: isMirroring,
+            isPairing: isPairing,
+            isLaunching: mirrorLaunchTask != nil
+        ) else { return }
         mirrorSettingsRestartTask?.cancel()
         mirrorSettingsRestartTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 250_000_000)
-            guard !Task.isCancelled, let self, self.isMirroring, !self.isPairing else { return }
+            guard !Task.isCancelled,
+                  let self,
+                  Self.shouldScheduleMirrorSettingsRestart(
+                    isMirroring: self.isMirroring,
+                    isPairing: self.isPairing,
+                    isLaunching: self.mirrorLaunchTask != nil
+                  ) else { return }
             Logger.log("Restarting mirror to apply updated mirroring settings")
             self.stopMirroring()
             self.startMirroring(manual: true)
         }
+    }
+
+    nonisolated static func shouldScheduleMirrorSettingsRestart(
+        isMirroring: Bool,
+        isPairing: Bool,
+        isLaunching: Bool
+    ) -> Bool {
+        isMirroring && !isPairing && !isLaunching
     }
 
     func disableMirrorAudioAfterSessionFailure() {
@@ -1926,6 +2050,8 @@ final class AppModel: ObservableObject {
 
     func stopMirroring() {
         mirrorStartGeneration += 1
+        mirrorLaunchTask?.cancel()
+        mirrorLaunchTask = nil
         usbConnectTask?.cancel()
         usbConnectTask = nil
         wirelessStartTask?.cancel()
@@ -1952,6 +2078,37 @@ final class AppModel: ObservableObject {
         }
     }
 
+    nonisolated static func launchSourceAppArguments(serial: String, package: String) -> [String] {
+        [
+            "-s", serial,
+            "shell",
+            "monkey",
+            "-p", package,
+            "-c", "android.intent.category.LAUNCHER",
+            "1"
+        ]
+    }
+
+    func openSourceAppFromForwardedNotification(package: String, serial notificationSerial: String?) {
+        let package = package.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !package.isEmpty else { return }
+
+        let serial = (notificationSerial?.isEmpty == false ? notificationSerial : nil)
+            ?? selectedDevice.adbSerial
+        guard let serial, !serial.isEmpty else {
+            reportError("Can’t open phone app", "Connect the phone before opening a forwarded notification.")
+            return
+        }
+
+        let args = Self.launchSourceAppArguments(serial: serial, package: package)
+        Task.detached(priority: .userInitiated) {
+            let result = Tooling.runResult("adb", arguments: args, timeout: 5)
+            if !result.succeeded {
+                Logger.log("Could not open notification source app package=\(package): \(result.output)")
+            }
+        }
+    }
+
     private func launchNativeMirror(serial: String?) {
         Logger.log("Launching native mirror serial=\(serial ?? "default")")
         let session = MirrorSession(model: self, serial: serial)
@@ -1974,26 +2131,33 @@ final class AppModel: ObservableObject {
             self.startDisconnectRecoveryFallback()
         }
 
-        do {
-            mirrorSession = session
-            isMirroring = true
-            isAwaitingReconnect = false
-            selectedDevice.states = [.mirroringReady, .companionConnected]
-            lastMirrorStartAt = Date()
-            hideConnectionWindowForNativeMirror()
-            try session.start()
-            activeError = nil
-            hideConnectionWindowForNativeMirror()
-        } catch {
-            session.onSessionEnded = nil
-            session.stop()
-            if mirrorSession === session {
-                mirrorSession = nil
+        mirrorLaunchTask?.cancel()
+        mirrorSession = session
+        isMirroring = true
+        isAwaitingReconnect = false
+        selectedDevice.states = [.mirroringReady, .companionConnected]
+        lastMirrorStartAt = Date()
+        hideConnectionWindowForNativeMirror()
+
+        mirrorLaunchTask = Task { [weak self, weak session] in
+            guard let self, let session else { return }
+            do {
+                try await session.start()
+                guard !Task.isCancelled, self.mirrorSession === session else { return }
+                self.activeError = nil
+                self.hideConnectionWindowForNativeMirror()
+                self.mirrorLaunchTask = nil
+            } catch {
+                guard !Task.isCancelled, self.mirrorSession === session else { return }
+                session.onSessionEnded = nil
+                session.stop()
+                self.mirrorSession = nil
+                self.isMirroring = false
+                self.mirrorLaunchTask = nil
+                Logger.log("Mirror launch failed: \(error)")
+                self.reportError("Couldn’t start mirroring", Self.mirrorFailureMessage(for: error))
+                self.showConnectionWindow()
             }
-            isMirroring = false
-            Logger.log("Mirror launch failed: \(error)")
-            reportError("Couldn’t start mirroring", Self.mirrorFailureMessage(for: error))
-            showConnectionWindow()
         }
     }
 
@@ -2071,6 +2235,40 @@ final class AppModel: ObservableObject {
         if isOnline { return "Online" }
         if hasSavedDevice { return "Offline" }
         return "Offline"
+    }
+
+    nonisolated static func connectionDeviceLabel(
+        name: String,
+        id: String,
+        serial: String?,
+        network: String
+    ) -> String {
+        if let specificName = specificDeviceName(name) {
+            return specificName
+        }
+
+        let networkPrefix = network.localizedCaseInsensitiveContains("usb") ? "USB" : "Wi-Fi"
+        if let serial = serial?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !serial.isEmpty {
+            if let host = host(in: serial), !host.isEmpty {
+                return "\(networkPrefix) \(host)"
+            }
+            return "\(networkPrefix) \(shortDeviceIdentifier(serial))"
+        }
+
+        let trimmedID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedID.isEmpty, trimmedID != MirrorDevice.demo.id {
+            return "\(networkPrefix) \(shortDeviceIdentifier(trimmedID))"
+        }
+
+        return "Saved phone"
+    }
+
+    private nonisolated static func shortDeviceIdentifier(_ value: String) -> String {
+        if value.hasPrefix("adb-") {
+            return String(value.dropFirst(4))
+        }
+        return value
     }
 
     private func hideConnectionWindowForNativeMirror() {
@@ -2223,7 +2421,7 @@ final class AppModel: ObservableObject {
         let adb = self.adb
         let generation = mirrorStartGeneration
         reconnectTask = Task { [weak self] in
-            await adb.restartServer()
+            await adb.ensureServerStarted()
 
             let deadline = Date().addingTimeInterval(Self.manualReconnectWindow)
             var sawPairingServiceOnly = false
@@ -2273,8 +2471,8 @@ final class AppModel: ObservableObject {
 
                 round += 1
                 if round == 3 {
-                    // Shake off a stale daemon caching "No route to host" mid-window.
-                    await adb.restartServer()
+                    // Keep adb alive without dropping active USB/wireless transports.
+                    await adb.ensureServerStarted()
                 }
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
             }

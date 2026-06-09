@@ -2,6 +2,32 @@ import XCTest
 @testable import AndroidMirrorMac
 
 final class MDNSParserTests: XCTestCase {
+    @MainActor
+    func testDiscoveryPollingDoesNotBlockMainActor() async {
+        let pollStarted = LockedFlag()
+        let pollFinished = LockedFlag()
+        let ping = LockedFlag()
+        let discovery = DiscoveryService {
+            pollStarted.set()
+            Thread.sleep(forTimeInterval: 2)
+            pollFinished.set()
+            return []
+        }
+        defer { discovery.stop() }
+
+        discovery.start { _ in }
+        let didStart = await waitForFlag(pollStarted)
+        XCTAssertTrue(didStart)
+
+        Task { @MainActor in
+            ping.set()
+        }
+
+        let didPing = await waitForFlag(ping, timeout: 1)
+        XCTAssertTrue(didPing, "mDNS discovery polling must not run blocking adb work on the main actor.")
+        XCTAssertFalse(pollFinished.value)
+    }
+
     func testEmptyOutput() {
         XCTAssertEqual(ADBController.parseMDNSServices(""), [])
     }
@@ -32,6 +58,40 @@ final class MDNSParserTests: XCTestCase {
         let output = "adb-XYZ\t_adb._tcp.\t192.0.2.42:5555"
         let phones = ADBController.parseMDNSServices(output)
         XCTAssertEqual(phones.first?.kind, .connectable, "Legacy _adb._tcp should be treated as connectable")
+    }
+
+    func testParsesDNSServiceBrowseOutput() {
+        let output = """
+        Browsing for _adb._tcp.local
+        DATE: ---Tue 09 Jun 2026---
+        17:04:24.694  ...STARTING...
+        Timestamp     A/R    Flags  if Domain               Service Type         Instance Name
+        17:04:24.694  Add        2  15 local.               _adb._tcp.           adb-RFCT10ZLTAJ
+        """
+
+        let services = ADBController.parseDNSServiceBrowseOutput(output, serviceType: "_adb._tcp")
+
+        XCTAssertEqual(services, [ADBController.DNSService(instance: "adb-RFCT10ZLTAJ", serviceType: "_adb._tcp")])
+    }
+
+    func testParsesDNSServiceResolveOutputAsConnectablePhone() {
+        let output = """
+        Lookup adb-RFCT10ZLTAJ._adb._tcp.local
+        DATE: ---Tue 09 Jun 2026---
+        17:04:40.597  ...STARTING...
+        17:04:40.597  adb-RFCT10ZLTAJ._adb._tcp.local. can be reached at Android.local.:5555 (interface 15)
+         api= name=SM-S906B v=1
+        """
+
+        let phone = ADBController.parseDNSServiceResolveOutput(
+            output,
+            instance: "adb-RFCT10ZLTAJ",
+            serviceType: "_adb._tcp"
+        )
+
+        XCTAssertEqual(phone?.id, "adb-RFCT10ZLTAJ")
+        XCTAssertEqual(phone?.address, "Android.local:5555")
+        XCTAssertEqual(phone?.kind, .connectable)
     }
 
     func testConnectServicePreemptsPairingForSameInstance() {

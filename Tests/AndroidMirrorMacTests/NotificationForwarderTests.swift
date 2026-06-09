@@ -31,6 +31,11 @@ final class NotificationForwarderTests: XCTestCase {
               }
         """
 
+    func testNotificationPermissionReasonExplainsUnreadDeviceNotifications() {
+        XCTAssertTrue(AppModel.notificationPermissionReason.localizedCaseInsensitiveContains("unread notifications"))
+        XCTAssertTrue(AppModel.notificationPermissionReason.localizedCaseInsensitiveContains("device"))
+    }
+
     func testParseExtractsHeaderAndContentFields() {
         let entries = NotificationForwarder.parse(dump)
         XCTAssertEqual(entries.count, 3)
@@ -163,6 +168,21 @@ final class NotificationForwarderTests: XCTestCase {
         XCTAssertEqual(content.body, "Labubu is back in stock!")
         // A sound must be attached or the banner is delivered silently.
         XCTAssertNotNil(content.sound, "Forwarded notifications should pop up with sound")
+    }
+
+    func testForwardedNotificationCarriesLaunchMetadata() {
+        let entry = NotificationForwarder.Entry(
+            key: "0|com.whatsapp|-169|null|10279",
+            pkg: "com.whatsapp",
+            title: "Mom",
+            text: "Dinner at 7?",
+            flags: 0x10
+        )
+
+        let content = NotificationForwarder.notificationContent(for: entry, serial: "ABC123")
+
+        XCTAssertEqual(content.userInfo[NotificationForwarder.UserInfoKey.sourcePackage] as? String, "com.whatsapp")
+        XCTAssertEqual(content.userInfo[NotificationForwarder.UserInfoKey.deviceSerial] as? String, "ABC123")
     }
 
     func testTitlelessNotificationFallsBackToAppNameWithSound() {

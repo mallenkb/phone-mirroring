@@ -119,6 +119,23 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertTrue(AppModel.shouldAttemptWirelessHandoff(from: usbDevice, preferUSBMirroring: false))
     }
 
+    func testManualUSBConnectDoesNotBlockOnWirelessHandoff() {
+        let usbDevice = AuthorizedADBDevice(
+            serial: "TESTDEVICE001",
+            product: "raven",
+            model: "Pixel",
+            isUSB: true
+        )
+
+        XCTAssertFalse(
+            AppModel.shouldAttemptWirelessHandoff(
+                from: usbDevice,
+                preferUSBMirroring: false,
+                isManualConnect: true
+            )
+        )
+    }
+
     func testRememberedAuthorizedDeviceFallsBackToSpecificModelName() {
         let record = PairedPhoneRecord(
             id: "adb-old-session",
@@ -138,6 +155,60 @@ final class ADBDeviceParsingTests: XCTestCase {
             AppModel.rememberedAuthorizedDevice(for: record, in: [device]),
             device
         )
+    }
+
+    func testLiveSelectedOrRememberedDeviceFallsBackAcrossTransports() {
+        let wirelessRecord = PairedPhoneRecord(
+            id: "adb-RFCT10ZLTAJ",
+            displayName: "SM-S906B",
+            lastAddress: "Android.local:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let usbDevice = AuthorizedADBDevice(
+            serial: "RFCT10ZLTAJ",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: true
+        )
+
+        let selected = AppModel.liveSelectedOrRememberedDevice(
+            selectedSerial: "Android.local:5555",
+            pairedPhones: [wirelessRecord],
+            authorizedDevices: [usbDevice]
+        )
+
+        XCTAssertEqual(selected, usbDevice)
+    }
+
+    func testLiveSelectedOrRememberedDevicePrefersExactSelectedSerial() {
+        let record = PairedPhoneRecord(
+            id: "adb-RFCT10ZLTAJ",
+            displayName: "SM-S906B",
+            lastAddress: "Android.local:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let usbDevice = AuthorizedADBDevice(
+            serial: "RFCT10ZLTAJ",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: true
+        )
+        let wirelessDevice = AuthorizedADBDevice(
+            serial: "Android.local:5555",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: false
+        )
+
+        let selected = AppModel.liveSelectedOrRememberedDevice(
+            selectedSerial: "Android.local:5555",
+            pairedPhones: [record],
+            authorizedDevices: [usbDevice, wirelessDevice]
+        )
+
+        XCTAssertEqual(selected, wirelessDevice)
     }
 
     func testRememberedAuthorizedDeviceDoesNotMatchGenericAndroidDeviceName() {
@@ -562,8 +633,10 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(calls, [
             "connect 192.0.2.57:5555",
             "-s 192.0.2.57:5555 shell echo wifi-adb-ok",
+            "disconnect 192.0.2.57:5555",
             "connect 192.0.2.57:5555",
             "-s 192.0.2.57:5555 shell echo wifi-adb-ok",
+            "disconnect 192.0.2.57:5555",
             "connect 192.0.2.57:5555",
             "-s 192.0.2.57:5555 shell echo wifi-adb-ok"
         ])
@@ -631,6 +704,55 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(calls, [
             "connect 192.0.2.57:5555",
             "connect 192.0.2.57:5555",
+            "connect 192.0.2.57:5555",
+            "-s 192.0.2.57:5555 shell echo wifi-adb-ok"
+        ])
+    }
+
+    func testWaitForADBWirelessTargetReadyDisconnectsStaleTransportBeforeRetrying() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          echo "already connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "disconnect" ]; then
+          echo "disconnected $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          current=$(cat "$ADB_FAKE_SHELL_COUNT" 2>/dev/null || echo 0)
+          current=$((current + 1))
+          echo "$current" > "$ADB_FAKE_SHELL_COUNT"
+          if [ "$current" -lt 2 ]; then
+            echo "error: closed"
+          else
+            echo "wifi-adb-ok"
+          fi
+          exit 0
+        fi
+        exit 0
+        """)
+        defer {
+            fake.cleanup()
+            unsetenv("ADB_FAKE_SHELL_COUNT")
+        }
+        let shellCount = fake.log.deletingLastPathComponent().appendingPathComponent("adb-shell.count")
+        setenv("ADB_FAKE_SHELL_COUNT", shellCount.path, 1)
+
+        let ready = await AppModel.waitForADBWirelessTargetReady(
+            adb: ADBController(),
+            address: "192.0.2.57:5555",
+            attempts: 2,
+            delayNanoseconds: 1
+        )
+
+        XCTAssertTrue(ready)
+        XCTAssertEqual(loggedCalls(fake.log), [
+            "connect 192.0.2.57:5555",
+            "-s 192.0.2.57:5555 shell echo wifi-adb-ok",
+            "disconnect 192.0.2.57:5555",
             "connect 192.0.2.57:5555",
             "-s 192.0.2.57:5555 shell echo wifi-adb-ok"
         ])
@@ -841,6 +963,19 @@ final class ADBDeviceParsingTests: XCTestCase {
     func testShouldPromoteToLegacyTCPIPSkipsAddressesAlreadyOnPort5555() {
         XCTAssertFalse(AppModel.shouldPromoteToLegacyTCPIP(connectedAddress: "192.0.2.44:5555"))
         XCTAssertTrue(AppModel.shouldPromoteToLegacyTCPIP(connectedAddress: "192.0.2.44:42111"))
+    }
+
+    func testEnsureADBServerStartedDoesNotKillExistingTransports() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        await ADBController().ensureServerStarted()
+
+        XCTAssertEqual(loggedCalls(fake.log), ["start-server"])
     }
 
     // MARK: - Fake adb helpers

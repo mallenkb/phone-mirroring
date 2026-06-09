@@ -2,34 +2,43 @@ import Foundation
 
 /// Thin wrapper around the `adb` CLI. All methods are blocking — call them
 /// from a detached Task and route results back via @MainActor.
-struct ADBController {
-    private static let connectLock = NSLock()
+struct ADBController: Sendable {
+    private static let commandLock = NSLock()
 
     @discardableResult
     func run(_ arguments: [String], timeout: TimeInterval? = nil) -> String {
-        if arguments.first == "connect" {
-            Self.connectLock.lock()
-            defer { Self.connectLock.unlock() }
-            return Tooling.run("adb", arguments: arguments, timeout: timeout)
-        }
+        Self.commandLock.lock()
+        defer { Self.commandLock.unlock() }
         return Tooling.run("adb", arguments: arguments, timeout: timeout)
     }
 
     @discardableResult
     func runInteractive(_ arguments: [String], input: String) -> String {
-        Tooling.runInteractive("adb", arguments: arguments, input: input)
+        Self.commandLock.lock()
+        defer { Self.commandLock.unlock() }
+        return Tooling.runInteractive("adb", arguments: arguments, input: input)
     }
 
-    /// Bounce the adb server. A stale daemon caches "No route to host"
-    /// failures across networks, so we restart before connect/pair flows.
+    /// Bounce the adb server as a last-resort recovery action. Normal
+    /// connect/pair flows should use `ensureServerStarted()` so they don't drop
+    /// an otherwise good USB or Wi-Fi transport.
     func restartServer() async {
         run(["kill-server"])
         try? await Task.sleep(nanoseconds: 400_000_000)
         run(["start-server"])
     }
 
+    /// Starts adb if needed without killing existing USB or Wi-Fi transports.
+    /// Use this before normal connect/pair flows; reserve `restartServer()` for
+    /// explicit recovery because `kill-server` drops every active connection.
+    func ensureServerStarted() async {
+        run(["start-server"], timeout: 2)
+    }
+
     func mdnsServices() -> [DiscoveredPhone] {
-        Self.parseMDNSServices(run(["mdns", "services"]))
+        let adbPhones = Self.parseMDNSServices(run(["mdns", "services"]))
+        guard adbPhones.isEmpty else { return adbPhones }
+        return Self.dnsServiceDiscoveredPhones()
     }
 
     func connectableMDNSTargets() -> [DiscoveredPhone] {
@@ -77,6 +86,113 @@ struct ADBController {
                 }
             } else {
                 byID[instance] = phone
+            }
+        }
+        return byID.values.sorted(by: { $0.id < $1.id })
+    }
+
+    struct DNSService: Equatable, Hashable {
+        var instance: String
+        var serviceType: String
+    }
+
+    static func dnsServiceDiscoveredPhones() -> [DiscoveredPhone] {
+        let serviceTypes = [
+            "_adb-tls-connect._tcp",
+            "_adb._tcp",
+            "_adb-tls-pairing._tcp"
+        ]
+        var phones: [DiscoveredPhone] = []
+
+        for serviceType in serviceTypes {
+            let browse = Tooling.runResult(
+                "dns-sd",
+                arguments: ["-B", serviceType, "local"],
+                timeout: 1
+            )
+            let services = parseDNSServiceBrowseOutput(browse.output, serviceType: serviceType)
+            for service in services {
+                let resolved = Tooling.runResult(
+                    "dns-sd",
+                    arguments: ["-L", service.instance, service.serviceType, "local"],
+                    timeout: 1
+                )
+                if let phone = parseDNSServiceResolveOutput(
+                    resolved.output,
+                    instance: service.instance,
+                    serviceType: service.serviceType
+                ) {
+                    phones.append(phone)
+                }
+            }
+        }
+
+        return dedupeMDNSPhones(phones)
+    }
+
+    static func parseDNSServiceBrowseOutput(_ output: String, serviceType: String) -> [DNSService] {
+        output.split(whereSeparator: \.isNewline).compactMap { rawLine in
+            let line = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard line.contains(" Add "),
+                  line.contains(serviceType)
+            else { return nil }
+
+            let parts = line.split(whereSeparator: \.isWhitespace).map(String.init)
+            guard let typeIndex = parts.firstIndex(where: { $0 == "\(serviceType)." || $0 == serviceType }),
+                  typeIndex + 1 < parts.count
+            else { return nil }
+            let instance = parts[(typeIndex + 1)...].joined(separator: " ")
+            guard !instance.isEmpty else { return nil }
+            return DNSService(instance: instance, serviceType: serviceType)
+        }
+    }
+
+    static func parseDNSServiceResolveOutput(
+        _ output: String,
+        instance: String,
+        serviceType: String
+    ) -> DiscoveredPhone? {
+        for rawLine in output.split(whereSeparator: \.isNewline) {
+            let line = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let range = line.range(of: " can be reached at ") else { continue }
+            let target = line[range.upperBound...]
+                .split(whereSeparator: \.isWhitespace)
+                .first
+                .map(String.init) ?? ""
+            guard let address = normalizedDNSServiceAddress(target), address.contains(":") else {
+                continue
+            }
+            return DiscoveredPhone(
+                id: instance,
+                address: address,
+                kind: serviceType == "_adb-tls-pairing._tcp" ? .pairable : .connectable,
+                lastSeen: .now
+            )
+        }
+        return nil
+    }
+
+    static func normalizedDNSServiceAddress(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let colon = trimmed.lastIndex(of: ":") else { return nil }
+        var host = String(trimmed[..<colon])
+        let port = String(trimmed[trimmed.index(after: colon)...])
+        while host.hasSuffix(".") {
+            host.removeLast()
+        }
+        guard !host.isEmpty, !port.isEmpty else { return nil }
+        return "\(host):\(port)"
+    }
+
+    private static func dedupeMDNSPhones(_ phones: [DiscoveredPhone]) -> [DiscoveredPhone] {
+        var byID: [String: DiscoveredPhone] = [:]
+        for phone in phones {
+            if let existing = byID[phone.id] {
+                if existing.kind == .pairable && phone.kind == .connectable {
+                    byID[phone.id] = phone
+                }
+            } else {
+                byID[phone.id] = phone
             }
         }
         return byID.values.sorted(by: { $0.id < $1.id })

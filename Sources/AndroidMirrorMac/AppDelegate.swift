@@ -56,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
     }
 
     nonisolated func userNotificationCenter(
@@ -66,7 +66,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         [.banner, .sound, .list]
     }
 
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
+
+        let userInfo = response.notification.request.content.userInfo
+        guard let package = userInfo[NotificationForwarder.UserInfoKey.sourcePackage] as? String else {
+            return
+        }
+        let serial = userInfo[NotificationForwarder.UserInfoKey.deviceSerial] as? String
+
+        await MainActor.run {
+            self.model.openSourceAppFromForwardedNotification(package: package, serial: serial)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        Logger.log("Application will terminate")
         if let keyMonitor {
             NSEvent.removeMonitor(keyMonitor)
         }

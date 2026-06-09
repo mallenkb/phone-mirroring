@@ -15,6 +15,9 @@ struct FigmaMirrorExperienceView: View {
     private var isConnecting: Bool {
         model.isActivelyConnecting || model.isMirroring
     }
+    private var isUSBButtonBusy: Bool {
+        model.isManualUSBConnectDisabled
+    }
     private let heroIconSize: CGFloat = 36
     private let maxColumnWidth: CGFloat = 620
     private let qrCodeSize: CGFloat = 216
@@ -117,8 +120,8 @@ struct FigmaMirrorExperienceView: View {
                 USBConnectButton(
                     accent: accent,
                     scale: scale,
-                    isConnecting: isConnecting,
-                    disabled: isConnecting,
+                    isConnecting: isUSBButtonBusy,
+                    disabled: isUSBButtonBusy,
                     action: model.connectViaUSB
                 )
                 .frame(width: contentWidth)
@@ -199,11 +202,11 @@ struct FigmaMirrorExperienceView: View {
                 .foregroundStyle(.white.opacity(isActive ? 0.92 : 0.82))
                 .fixedSize()
 
-            Text(model.selectedDevice.name)
+            Text(model.connectionDeviceLabel)
                 .font(.system(size: fontSize, weight: .medium))
                 .foregroundStyle(.white.opacity(0.62))
                 .lineLimit(1)
-                .fixedSize()
+                .minimumScaleFactor(0.72)
                 .layoutPriority(1)
         }
         .padding(.horizontal, 14 * scale)
@@ -408,7 +411,7 @@ struct FirstRunOnboardingView: View {
                 setupRow(
                     icon: "bell.badge",
                     title: "Mac notifications",
-                    detail: "Allow notifications so Android alerts can appear in macOS Notification Center."
+                    detail: AppModel.notificationPermissionReason
                 )
             }
             .padding(.horizontal, 18)

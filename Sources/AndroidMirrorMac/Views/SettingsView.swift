@@ -179,7 +179,7 @@ struct SettingsView: View {
                 icon: "bell.badge",
                 isOn: $model.notificationForwardingEnabled,
                 title: "Forward phone notifications to this Mac",
-                subtitle: "Shows your Android notifications in macOS Notification Center while a device is connected. Nothing is installed on the phone — they’re read over adb.",
+                subtitle: AppModel.notificationPermissionReason,
                 detail: "Group summaries and ongoing items (music, navigation) are skipped. macOS will ask for notification permission the first time."
             )
 

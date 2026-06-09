@@ -69,6 +69,42 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
+    func testConnectionDeviceLabelKeepsSpecificModelName() {
+        XCTAssertEqual(
+            AppModel.connectionDeviceLabel(
+                name: "SM-S906B",
+                id: "adb-RFCT10ZLTAJ",
+                serial: "Android.local:5555",
+                network: "Wireless debugging"
+            ),
+            "SM-S906B"
+        )
+    }
+
+    func testConnectionDeviceLabelUsesWirelessHostWhenNameIsGeneric() {
+        XCTAssertEqual(
+            AppModel.connectionDeviceLabel(
+                name: "Android device",
+                id: "adb-RFCT10ZLTAJ",
+                serial: "192.168.68.50:5555",
+                network: "Wireless debugging"
+            ),
+            "Wi-Fi 192.168.68.50"
+        )
+    }
+
+    func testConnectionDeviceLabelUsesUSBSerialWhenNameIsGeneric() {
+        XCTAssertEqual(
+            AppModel.connectionDeviceLabel(
+                name: "Android device",
+                id: "RFCT10ZLTAJ",
+                serial: "RFCT10ZLTAJ",
+                network: "USB debugging"
+            ),
+            "USB RFCT10ZLTAJ"
+        )
+    }
+
     // MARK: - Unified auto-connecting indicator
 
     func testSavedPhonePresentShowsConnecting() {
@@ -113,6 +149,85 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 isOnline: false,
                 isMirroring: true,
                 hasLivePresentTarget: true
+            )
+        )
+    }
+
+    func testBackgroundAutoConnectDoesNotDisableManualUSBButton() {
+        XCTAssertFalse(
+            AppModel.shouldDisableManualUSBConnectButton(
+                isPairing: false,
+                isScanning: false,
+                isRecoveringConnection: false,
+                isAwaitingReconnect: false,
+                isMirroring: false,
+                isAutoConnecting: true
+            )
+        )
+    }
+
+    func testActivePairingDisablesManualUSBButton() {
+        XCTAssertTrue(
+            AppModel.shouldDisableManualUSBConnectButton(
+                isPairing: true,
+                isScanning: false,
+                isRecoveringConnection: false,
+                isAwaitingReconnect: false,
+                isMirroring: false,
+                isAutoConnecting: false
+            )
+        )
+    }
+
+    func testRecentAutoConnectFailureIsCoolingDown() {
+        let now = Date(timeIntervalSince1970: 100)
+
+        XCTAssertTrue(
+            AppModel.isAutoConnectFailureCoolingDown(
+                failedAt: Date(timeIntervalSince1970: 95),
+                now: now,
+                cooldown: 10
+            )
+        )
+        XCTAssertFalse(
+            AppModel.isAutoConnectFailureCoolingDown(
+                failedAt: Date(timeIntervalSince1970: 80),
+                now: now,
+                cooldown: 10
+            )
+        )
+    }
+
+    func testMirrorSettingsRestartIsSkippedWhileMirrorLaunches() {
+        XCTAssertFalse(
+            AppModel.shouldScheduleMirrorSettingsRestart(
+                isMirroring: true,
+                isPairing: false,
+                isLaunching: true
+            )
+        )
+    }
+
+    func testMirrorSettingsRestartOnlyRunsForStableActiveMirror() {
+        XCTAssertTrue(
+            AppModel.shouldScheduleMirrorSettingsRestart(
+                isMirroring: true,
+                isPairing: false,
+                isLaunching: false
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldScheduleMirrorSettingsRestart(
+                isMirroring: false,
+                isPairing: false,
+                isLaunching: false
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldScheduleMirrorSettingsRestart(
+                isMirroring: true,
+                isPairing: true,
+                isLaunching: false
             )
         )
     }

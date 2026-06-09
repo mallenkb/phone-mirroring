@@ -36,6 +36,7 @@ final class MirrorSession {
     private let localPort: UInt16
 
     private var serverHost: ScrcpyServerHost?
+    private var startupTask: Task<Void, Error>?
     private var stream: ScrcpyVideoStream?
     private var audioPlayer: MirrorAudioPlayer?
     private var decoder = H264VideoToolboxDecoder()
@@ -59,7 +60,7 @@ final class MirrorSession {
         self.localPort = Self.allocatePort()
     }
 
-    func start() throws {
+    func start() async throws {
         guard windowController == nil else { throw SessionError.alreadyRunning }
 
         let audioEnabled = (model?.shouldEnableMirrorAudioForNextSession() ?? false) && Self.supportsMirrorAudio(serial: serial)
@@ -126,8 +127,15 @@ final class MirrorSession {
         do {
             try stream.start()
             self.stream = stream
-            try host.prepareTunnel()
-            try host.start { [weak self] code, output in
+
+            if let model {
+                let controller = MirrorContentWindowController(model: model, session: self, launchFrame: launchFrame)
+                controller.show()
+                windowController = controller
+                scheduleAutomaticScreenOffIfNeeded()
+            }
+
+            let onExit: (Int32, String) -> Void = { [weak self] code, output in
                 Task { @MainActor in
                     Logger.log("scrcpy-server exited code=\(code) output=\(output.prefix(400))")
                     guard let self, !self.didStop, !self.isStopping else { return }
@@ -138,22 +146,31 @@ final class MirrorSession {
                     self.stop()
                 }
             }
+
             self.serverHost = host
+            let startupTask = Self.startHostOffMain(host, onExit: onExit)
+            self.startupTask = startupTask
+            try await startupTask.value
+            self.startupTask = nil
+            guard !Task.isCancelled, !didStop, !isStopping else {
+                Self.stopHostOffMain(host)
+                return
+            }
         } catch let error as ScrcpyServerHost.HostError {
+            startupTask = nil
+            serverHost = nil
             stream.stop()
-            host.stop()
+            Self.stopHostOffMain(host)
+            guard !Task.isCancelled, !didStop, !isStopping else { return }
             throw SessionError.start(error.description)
         } catch {
+            startupTask = nil
+            serverHost = nil
             stream.stop()
-            host.stop()
+            Self.stopHostOffMain(host)
+            guard !Task.isCancelled, !didStop, !isStopping else { return }
             throw SessionError.start(error.localizedDescription)
         }
-
-        guard let model else { return }
-        let controller = MirrorContentWindowController(model: model, session: self, launchFrame: launchFrame)
-        controller.show()
-        windowController = controller
-        scheduleAutomaticScreenOffIfNeeded()
     }
 
     func stop() {
@@ -161,6 +178,8 @@ final class MirrorSession {
         isStopping = true
         didStop = true
 
+        startupTask?.cancel()
+        startupTask = nil
         let serverHost = serverHost
         let sessionEnded = onSessionEnded
         let finalWindowFrame = windowController?.window?.frame
@@ -182,9 +201,30 @@ final class MirrorSession {
         sessionEnded?(finalWindowFrame)
 
         if let serverHost {
-            DispatchQueue.global(qos: .utility).async {
-                serverHost.stop()
-            }
+            Self.stopHostOffMain(serverHost)
+        }
+    }
+
+    private nonisolated static func startHostOffMain(
+        _ host: ScrcpyServerHost,
+        onExit: @escaping (Int32, String) -> Void
+    ) -> Task<Void, Error> {
+        runStartupOffMain {
+            try host.prepareTunnel()
+            try Task.checkCancellation()
+            try host.start(onExit: onExit)
+        }
+    }
+
+    nonisolated static func runStartupOffMain(_ operation: @escaping () throws -> Void) -> Task<Void, Error> {
+        Task.detached(priority: .userInitiated) {
+            try operation()
+        }
+    }
+
+    private nonisolated static func stopHostOffMain(_ host: ScrcpyServerHost) {
+        Task.detached(priority: .utility) {
+            host.stop()
         }
     }
 

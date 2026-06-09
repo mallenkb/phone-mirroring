@@ -17,6 +17,11 @@ import UserNotifications
 /// re-read from the model every cycle).
 @MainActor
 final class NotificationForwarder {
+    enum UserInfoKey {
+        static let sourcePackage = "androidMirrorMac.sourcePackage"
+        static let deviceSerial = "androidMirrorMac.deviceSerial"
+    }
+
     /// One active Android notification, distilled from the dumpsys text dump.
     struct Entry: Equatable {
         /// Stable StatusBarNotification key, e.g. `0|com.foo|7|tag|10337`.
@@ -132,7 +137,7 @@ final class NotificationForwarder {
     }
 
     private func post(_ entry: Entry, serial: String?) {
-        let content = Self.notificationContent(for: entry)
+        let content = Self.notificationContent(for: entry, serial: serial)
         if let serial,
            let attachmentURL = iconAttachmentURL(for: entry.pkg, serial: serial),
            let attachment = try? UNNotificationAttachment(
@@ -151,13 +156,18 @@ final class NotificationForwarder {
     /// Builds the macOS notification for a forwarded entry. A default sound is
     /// attached so the banner pops audibly like it does on the phone — without it
     /// the banner is delivered silently. Pure/inspectable so it can be unit-tested.
-    nonisolated static func notificationContent(for entry: Entry) -> UNMutableNotificationContent {
+    nonisolated static func notificationContent(for entry: Entry, serial: String? = nil) -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
         let sourceApp = appLabel(for: entry.pkg)
         content.title = notificationTitle(sourceApp: sourceApp, entryTitle: entry.title)
         if !entry.text.isEmpty { content.body = entry.text }
         // Group banners by source app in Notification Center.
         content.threadIdentifier = entry.pkg
+        var userInfo: [String: String] = [UserInfoKey.sourcePackage: entry.pkg]
+        if let serial, !serial.isEmpty {
+            userInfo[UserInfoKey.deviceSerial] = serial
+        }
+        content.userInfo = userInfo
         content.sound = .default
         return content
     }
