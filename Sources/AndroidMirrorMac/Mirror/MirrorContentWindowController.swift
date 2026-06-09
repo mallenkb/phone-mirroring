@@ -102,7 +102,8 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private var normalWindowFrameBeforeFullscreen: NSRect?
     private var mirrorAspect: CGFloat? = defaultMirrorAspect
     private let launchFrame: NSRect?
-    private var recordingStateCancellable: AnyCancellable?
+    private var hasUserMovedWindow = false
+    private var isApplyingProgrammaticFrame = false
     private var captureCueCancellable: AnyCancellable?
     private var activeCaptureCueView: MirrorCaptureCueView?
 
@@ -309,7 +310,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             frame = Self.centeredFrame(size: size, in: visible)
         }
         Logger.log("MirrorContentWindow show frame=\(frame)")
-        window.setFrame(frame, display: true, animate: false)
+        setWindowFrame(frame, display: true, animate: false)
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(renderView)
         updateFullscreenPresentationIfNeeded()
@@ -336,12 +337,26 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         let outerSize = Self.initialWrappedShellSize(
             for: NSSize(width: CGFloat(width), height: CGFloat(height)),
             visibleFrame: visible,
-            maximumHeightBasis: Self.resolutionHeight(for: window.screen, fallbackVisibleFrame: visible)
+            maximumHeightBasis: Self.resolutionHeight(
+                for: window.screen,
+                fallbackVisibleFrame: visible
+            )
         )
         window.contentAspectRatio = outerSize
-        let newFrame = Self.centeredFrame(forContentSize: outerSize, in: visible, window: window)
+        let newFrame: NSRect
+        if hasUserMovedWindow {
+            let insets = Self.measuredFrameInsets(for: window)
+            let frameSize = NSSize(
+                width: outerSize.width + insets.width,
+                height: outerSize.height + insets.height
+            )
+            newFrame = Self.frame(size: frameSize, centeredOn: window.frame.center)
+        } else {
+            let visible = Self.targetVisibleFrame(for: window, preferWindowScreen: true)
+            newFrame = Self.centeredFrame(forContentSize: outerSize, in: visible, window: window)
+        }
         Logger.log("MirrorContentWindow streamSize=\(width)x\(height) visible=\(visible) frame=\(newFrame)")
-        window.setFrame(newFrame, display: true, animate: false)
+        setWindowFrame(newFrame, display: true, animate: false)
         applyScaledRenderInsets()
         tightenWindowAroundRenderContent()
     }
@@ -543,8 +558,24 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             width: targetFrameSize.width,
             height: targetFrameSize.height
         )
-        window.setFrame(targetFrame, display: true, animate: false)
+        setWindowFrame(targetFrame, display: true, animate: false)
         applyScaledRenderInsets()
+    }
+
+    private static func frame(size: NSSize, centeredOn center: NSPoint) -> NSRect {
+        NSRect(
+            x: center.x - size.width / 2,
+            y: center.y - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    private func setWindowFrame(_ frame: NSRect, display: Bool, animate: Bool) {
+        guard let window else { return }
+        isApplyingProgrammaticFrame = true
+        window.setFrame(frame, display: display, animate: animate)
+        isApplyingProgrammaticFrame = false
     }
 
     static func sizeLimits(
@@ -592,21 +623,8 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             deviceName: model.selectedDevice.name,
             onHome: { [weak self] in self?.model.sendAndroidKey("KEYCODE_HOME") },
             onRecentApps: { [weak self] in self?.model.sendAndroidKey("KEYCODE_APP_SWITCH") },
-            onScreenshot: { [weak self] in self?.model.takeScreenshot() },
-            onRecordingToggle: { [weak self] in self?.model.toggleScreenRecording() }
+            onScreenshot: { [weak self] in self?.model.takeScreenshot() }
         )
-        recordingStateCancellable = model.$isRecording
-            .receive(on: RunLoop.main)
-            .sink { [weak self] isRecording in
-                guard let self else { return }
-                self.chromeBar.setRecording(isRecording)
-                if isRecording && !self.isInFullscreen {
-                    self.hideWorkItem?.cancel()
-                    self.setChromeVisible(true)
-                } else {
-                    self.evaluateRevealZone()
-                }
-            }
         captureCueCancellable = model.$captureCue
             .receive(on: RunLoop.main)
             .sink { [weak self] cue in
@@ -1056,6 +1074,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             case .leftMouseUp:
                 break trackingLoop
             default:
+                hasUserMovedWindow = true
                 let current = NSEvent.mouseLocation
                 window.setFrameOrigin(NSPoint(
                     x: startOrigin.x + (current.x - startMouse.x),
@@ -1111,6 +1130,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     func windowDidMove(_ notification: Notification) {
+        if !isApplyingProgrammaticFrame {
+            hasUserMovedWindow = true
+        }
         updateFullscreenPresentationIfNeeded()
         repositionToolbarWindow()
     }
@@ -1144,6 +1166,12 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     func windowDidExitFullScreen(_ notification: Notification) {
         setFullscreenChromeSuppressed(false)
         restoreNormalWindowFrameAfterFullscreenIfNeeded(animated: true)
+    }
+}
+
+private extension NSRect {
+    var center: NSPoint {
+        NSPoint(x: midX, y: midY)
     }
 }
 
@@ -1310,31 +1338,15 @@ final class MirrorChromeBar: NSView {
         symbol: "rectangle.stack",
         accessibilityDescription: "Recent apps"
     )
-    private let recordingBtn = MirrorChromeOutlineButton(
-        resource: "chrome-record",
-        accessibilityDescription: "Screen recording"
-    )
     private let screenshotBtn = MirrorChromeOutlineButton(
         resource: "chrome-screenshot",
         accessibilityDescription: "Screenshot"
     )
     private let rightStack: NSStackView
-    private var isRecording = false {
-        didSet {
-            if isRecording {
-                recordingBtn.setSymbol("stop.circle.fill")
-            } else {
-                recordingBtn.setResource("chrome-record")
-            }
-            recordingBtn.isActive = isRecording
-            recordingBtn.toolTip = isRecording ? "Stop screen recording" : "Start screen recording"
-        }
-    }
     var chromeHeight: CGFloat = MirrorContentWindowController.chromeHeight {
         didSet {
             homeBtn.chromeScale = chromeScale
             recentAppsBtn.chromeScale = chromeScale
-            recordingBtn.chromeScale = chromeScale
             screenshotBtn.chromeScale = chromeScale
         }
     }
@@ -1347,7 +1359,7 @@ final class MirrorChromeBar: NSView {
     }
 
     override init(frame frameRect: NSRect) {
-        rightStack = NSStackView(views: [recordingBtn, screenshotBtn, homeBtn, recentAppsBtn])
+        rightStack = NSStackView(views: [screenshotBtn, homeBtn, recentAppsBtn])
         super.init(frame: frameRect)
         setup()
     }
@@ -1359,8 +1371,7 @@ final class MirrorChromeBar: NSView {
         deviceName: String,
         onHome: @escaping () -> Void,
         onRecentApps: @escaping () -> Void,
-        onScreenshot: @escaping () -> Void,
-        onRecordingToggle: @escaping () -> Void
+        onScreenshot: @escaping () -> Void
     ) {
         titleLabel.stringValue = deviceName
         homeBtn.toolTip = "Go to Android home"
@@ -1371,12 +1382,6 @@ final class MirrorChromeBar: NSView {
         recentAppsBtn.minimumActionInterval = 0.35
         screenshotBtn.toolTip = "Save screenshot to Downloads"
         screenshotBtn.action = onScreenshot
-        recordingBtn.toolTip = "Start screen recording"
-        recordingBtn.action = onRecordingToggle
-    }
-
-    func setRecording(_ isRecording: Bool) {
-        self.isRecording = isRecording
     }
 
     /// Updates the toolbar title (device name) shown beside the traffic lights.
@@ -1476,14 +1481,12 @@ final class MirrorChromeBar: NSView {
         trafficLights.isHidden = !visible
         titleLabel.isHidden = !visible
         recentAppsBtn.isHidden = !visible
-        recordingBtn.isHidden = !visible
         screenshotBtn.isHidden = !visible
         homeBtn.isHidden = !visible
     }
 
     func setTrailingActionsVisible(_ visible: Bool) {
         recentAppsBtn.isHidden = !visible
-        recordingBtn.isHidden = !visible
         screenshotBtn.isHidden = !visible
         homeBtn.isHidden = !visible
     }

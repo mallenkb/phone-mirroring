@@ -106,7 +106,6 @@ struct WindowRegistrationView: NSViewRepresentable {
             }
 
             chromeBar.setDeviceName(model.selectedDevice.name)
-            chromeBar.setRecording(model.isRecording)
             repositionToolbarWindow()
         }
 
@@ -147,8 +146,7 @@ struct WindowRegistrationView: NSViewRepresentable {
                 deviceName: model.selectedDevice.name,
                 onHome: { model.sendAndroidKey("KEYCODE_HOME") },
                 onRecentApps: { model.sendAndroidKey("KEYCODE_APP_SWITCH") },
-                onScreenshot: { model.takeScreenshot() },
-                onRecordingToggle: { model.toggleScreenRecording() }
+                onScreenshot: { model.takeScreenshot() }
             )
             chromeBar.onClose = { NSApplication.shared.terminate(nil) }
             chromeBar.onMinimize = { [weak parent] in parent?.miniaturize(nil) }

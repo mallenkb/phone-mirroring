@@ -10,8 +10,10 @@ struct FigmaMirrorExperienceView: View {
     private let edgeBleed: CGFloat = 2
     private var referenceHeight: CGFloat { AppModel.onboardingWindowSize.height }
     private var referenceWidth: CGFloat { referenceHeight * phoneAspect }
+    /// Drawn straight from the model's single connection-status source so the USB
+    /// button's loader and the device pill below it can never disagree.
     private var isConnecting: Bool {
-        model.isPairing || model.isScanning || model.isMirroring || shouldShowMirrorLoading
+        model.isActivelyConnecting || model.isMirroring
     }
     private let heroIconSize: CGFloat = 36
     private let maxColumnWidth: CGFloat = 620
@@ -115,6 +117,7 @@ struct FigmaMirrorExperienceView: View {
                 USBConnectButton(
                     accent: accent,
                     scale: scale,
+                    isConnecting: isConnecting,
                     disabled: isConnecting,
                     action: model.connectViaUSB
                 )
@@ -182,9 +185,10 @@ struct FigmaMirrorExperienceView: View {
 
     private func devicePill(width: CGFloat, scale: CGFloat) -> some View {
         let online = model.isSelectedDeviceOnline
-        let connecting = isConnecting && !model.isMirroring
-        let dotColor = (online || connecting) ? accent : Color.white.opacity(0.42)
-        let statusText = connecting ? "Connecting" : (online ? "Online" : "Offline")
+        let connecting = model.isActivelyConnecting
+        let statusText = model.connectionStatusText
+        let isActive = online || connecting
+        let dotColor = isActive ? accent : Color.white.opacity(0.42)
         let fontSize = 12 * scale
 
         return HStack(spacing: 8 * scale) {
@@ -192,7 +196,7 @@ struct FigmaMirrorExperienceView: View {
 
             Text(statusText)
                 .font(.system(size: fontSize, weight: .semibold))
-                .foregroundStyle(.white.opacity((online || connecting) ? 0.92 : 0.82))
+                .foregroundStyle(.white.opacity(isActive ? 0.92 : 0.82))
                 .fixedSize()
 
             Text(model.selectedDevice.name)
@@ -645,56 +649,71 @@ private struct OnboardingRowBadge: View {
 private struct USBConnectButton: View {
     let accent: Color
     let scale: CGFloat
+    let isConnecting: Bool
     let disabled: Bool
     let action: () -> Void
     @State private var hovering = false
 
     private var corner: CGFloat { 14 * scale }
+    private var title: String { isConnecting ? "Connecting..." : "Connect via USB" }
+    private var detail: String {
+        isConnecting
+            ? "Checking the current device. USB connect is paused briefly."
+            : "Enable USB debugging, then plug in your cable."
+    }
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 13 * scale) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 10 * scale, style: .continuous)
-                        .fill(Color.white.opacity(0.12))
-                    Image(systemName: "cable.connector.horizontal")
-                        .font(.system(size: 16 * scale, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .fill(Color.white.opacity(isConnecting ? 0.16 : 0.12))
+                    if isConnecting {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.white)
+                            .scaleEffect(max(0.75, scale))
+                    } else {
+                        Image(systemName: "cable.connector.horizontal")
+                            .font(.system(size: 16 * scale, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
                 }
                 .frame(width: 38 * scale, height: 38 * scale)
 
                 VStack(alignment: .leading, spacing: 2 * scale) {
-                    Text("Connect via USB")
+                    Text(title)
                         .font(.system(size: 15.5 * scale, weight: .bold))
-                        .foregroundStyle(.white)
-                    Text("Enable USB debugging, then plug in your cable.")
+                        .foregroundStyle(.white.opacity(isConnecting ? 0.95 : 1))
+                    Text(detail)
                         .font(.system(size: 12.5 * scale, weight: .regular))
-                        .foregroundStyle(.white.opacity(0.7))
+                        .foregroundStyle(.white.opacity(isConnecting ? 0.76 : 0.7))
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 Image(systemName: "chevron.right")
                     .font(.system(size: 13 * scale, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(.white.opacity(isConnecting ? 0.22 : 0.5))
             }
             .padding(.horizontal, 15 * scale)
             .padding(.vertical, 12 * scale)
             .background(
                 RoundedRectangle(cornerRadius: corner, style: .continuous)
-                    .fill(Color.white.opacity(hovering && !disabled ? 0.14 : 0.075))
+                    .fill(Color.white.opacity(isConnecting ? 0.105 : (hovering && !disabled ? 0.14 : 0.075)))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: corner, style: .continuous)
-                    .stroke(Color.white.opacity(hovering && !disabled ? 0.30 : 0.16), lineWidth: 1)
+                    .stroke(Color.white.opacity(isConnecting ? 0.26 : (hovering && !disabled ? 0.30 : 0.16)), lineWidth: 1)
             )
             .contentShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(disabled)
-        .opacity(disabled ? 0.55 : 1)
+        .opacity(1)
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.15), value: hovering)
+        .animation(.easeOut(duration: 0.15), value: isConnecting)
     }
 }
 

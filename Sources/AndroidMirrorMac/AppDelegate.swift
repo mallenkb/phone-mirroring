@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var firstRunWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var shortcutsWindow: NSWindow?
+    private var noticesWindow: NSWindow?
     private let model = AppModel()
     private var keyMonitor: Any?
 
@@ -55,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        false
+        true
     }
 
     nonisolated func userNotificationCenter(
@@ -69,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if let keyMonitor {
             NSEvent.removeMonitor(keyMonitor)
         }
+        model.shutdown()
     }
 
     private func installMainMenu() {
@@ -82,6 +84,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 title: "Mirroring Settings...",
                 action: #selector(showSettings(_:)),
                 keyEquivalent: ","
+            )
+        )
+        appMenu.addItem(
+            NSMenuItem(
+                title: "Third-Party Notices...",
+                action: #selector(showThirdPartyNotices(_:)),
+                keyEquivalent: ""
             )
         )
         appMenu.addItem(.separator())
@@ -123,21 +132,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
         mainMenu.addItem(viewItem)
         let viewMenu = NSMenu(title: "View")
-        viewMenu.addItem(
-            NSMenuItem(
-                title: "Scan for Android Devices",
-                action: #selector(scanForAndroidDevices(_:)),
-                keyEquivalent: "r"
-            )
-        )
-        viewMenu.addItem(
-            NSMenuItem(
-                title: "Start or Stop Mirroring",
-                action: #selector(toggleMirroring(_:)),
-                keyEquivalent: "m"
-            )
-        )
-        viewMenu.addItem(.separator())
         viewMenu.addItem(
             NSMenuItem(
                 title: "Go Home",
@@ -193,6 +187,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 title: "Center Mirror",
                 action: #selector(centerMirror(_:)),
                 keyEquivalent: "0"
+            )
+        )
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(
+            NSMenuItem(
+                title: "Scan for Android Devices",
+                action: #selector(scanForAndroidDevices(_:)),
+                keyEquivalent: "r"
+            )
+        )
+        viewMenu.addItem(
+            NSMenuItem(
+                title: "Start or Stop Mirroring",
+                action: #selector(toggleMirroring(_:)),
+                keyEquivalent: "m"
             )
         )
         viewMenu.addItem(.separator())
@@ -353,6 +362,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         model.revealLogFile()
     }
 
+    @objc private func showThirdPartyNotices(_ sender: Any?) {
+        if let noticesWindow {
+            noticesWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let textView = NSTextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.textColor = .labelColor
+        textView.backgroundColor = .textBackgroundColor
+        textView.textContainerInset = NSSize(width: 16, height: 16)
+        textView.string = Self.thirdPartyNoticesText()
+
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.documentView = textView
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 560),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Third-Party Notices"
+        window.contentView = scrollView
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        noticesWindow = window
+    }
+
     @objc private func showKeyboardShortcuts(_ sender: Any?) {
         if let shortcutsWindow {
             shortcutsWindow.makeKeyAndOrderFront(nil)
@@ -466,5 +511,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc private func centerMirror(_ sender: Any?) {
         model.centerMirrorWindow()
+    }
+
+    private static func thirdPartyNoticesText() -> String {
+        let noticeText = textResource(
+            named: "THIRD_PARTY_NOTICES",
+            extension: "md",
+            fallbackRelativePath: "THIRD_PARTY_NOTICES.md"
+        ) ?? """
+        # Third-Party Notices
+
+        This app includes components from scrcpy, licensed under the Apache License 2.0.
+        """
+
+        let licenseText = textResource(
+            named: "scrcpy-APACHE-2.0",
+            extension: "txt",
+            subdirectory: "LICENSES",
+            fallbackRelativePath: "LICENSES/scrcpy-APACHE-2.0.txt"
+        ) ?? ""
+
+        guard !licenseText.isEmpty else { return noticeText }
+        return "\(noticeText)\n\n---\n\n# Apache License 2.0 - scrcpy\n\n\(licenseText)"
+    }
+
+    private static func textResource(
+        named name: String,
+        extension fileExtension: String,
+        subdirectory: String? = nil,
+        fallbackRelativePath: String
+    ) -> String? {
+        if let url = Bundle.main.url(
+            forResource: name,
+            withExtension: fileExtension,
+            subdirectory: subdirectory
+        ), let text = try? String(contentsOf: url, encoding: .utf8) {
+            return text
+        }
+
+        var directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        for _ in 0..<6 {
+            let candidate = directory.appendingPathComponent(fallbackRelativePath)
+            if let text = try? String(contentsOf: candidate, encoding: .utf8) {
+                return text
+            }
+            directory.deleteLastPathComponent()
+        }
+        return nil
     }
 }

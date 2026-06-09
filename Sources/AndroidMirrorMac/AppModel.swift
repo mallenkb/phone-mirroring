@@ -12,6 +12,11 @@ final class AppModel: ObservableObject {
     @Published var isRecording = false
     @Published var isPairing = false
     @Published private(set) var isRecoveringConnection = false
+    /// True whenever a connect target is physically present (USB or a remembered
+    /// wireless phone advertising on the network) but we aren't online/mirroring
+    /// yet. Drives the unified "Connecting" indicator so it lights up the instant
+    /// a saved phone appears, and self-clears once we're online or it's gone.
+    @Published private(set) var isAutoConnecting = false
     @Published private(set) var isSelectedDeviceOnline = false {
         didSet {
             guard isSelectedDeviceOnline, !oldValue else { return }
@@ -40,6 +45,19 @@ final class AppModel: ObservableObject {
         (UserDefaults.standard.object(forKey: "MirrorBehavior.dragAndDropFileTransferEnabled") as? Bool) ?? true {
         didSet {
             UserDefaults.standard.set(dragAndDropFileTransferEnabled, forKey: "MirrorBehavior.dragAndDropFileTransferEnabled")
+        }
+    }
+    /// Mirrors Android notifications into macOS Notification Center by polling
+    /// `dumpsys notification` over adb — no companion app on the phone. Opt-in,
+    /// since it reads notification content and prompts for notification access.
+    @Published var notificationForwardingEnabled: Bool =
+        (UserDefaults.standard.object(forKey: "MirrorBehavior.notificationForwardingEnabled") as? Bool) ?? false {
+        didSet {
+            UserDefaults.standard.set(
+                notificationForwardingEnabled,
+                forKey: "MirrorBehavior.notificationForwardingEnabled"
+            )
+            updateNotificationForwarding()
         }
     }
     @Published var captureCue: CaptureCue?
@@ -256,7 +274,17 @@ final class AppModel: ObservableObject {
 
     private weak var connectionWindow: NSWindow?
     private var mirrorSession: MirrorSession?
+    private var lastMirrorWindowFrame: NSRect?
+    private lazy var notificationForwarder = NotificationForwarder(model: self)
     private var lastPresenceAutoConnectAttemptAt: Date?
+    /// Authorized adb serials seen on the previous device-watcher poll. Lets us
+    /// fire an immediate connect the instant a *new* device appears, instead of
+    /// waiting out the presence throttle.
+    private var previousAuthorizedSerials: Set<String> = []
+    /// On launch we keep the status indicator on "Connecting" until this moment,
+    /// so opening the app reads as "finding your last device" rather than
+    /// "Offline" while the first reconnect attempts run.
+    private var launchReconnectDeadline: Date?
     private var deviceWatcherTask: Task<Void, Never>?
     private var lastUSBHandoffSerial: String?
     private var qrPairingTask: Task<Void, Never>?
@@ -283,9 +311,42 @@ final class AppModel: ObservableObject {
     /// A session that dies sooner than this counts as a "quick" failure.
     static let quickMirrorFailureThreshold: TimeInterval = 12
     nonisolated static let disconnectRecoveryGracePeriod: TimeInterval = 5
+    /// How long after launch the status indicator keeps reading "Connecting"
+    /// while we hunt for the last-known device. Sized to the 3–5s window the
+    /// reconnect attempts run in.
+    nonisolated static let launchReconnectWindow: TimeInterval = 5
 
     var hasActiveMirrorSession: Bool {
         mirrorSession != nil
+    }
+
+    /// Single source of truth for the pre-connection status, shared by the USB
+    /// button's loader and the device pill so they can never disagree. True from
+    /// the instant a connect attempt begins — a saved phone appearing, pairing,
+    /// recovery, or the launch reconnect window — until it resolves to online.
+    var isActivelyConnecting: Bool {
+        guard !isMirroring else { return false }
+        if isPairing || isScanning || isRecoveringConnection || isAwaitingReconnect || isAutoConnecting {
+            return true
+        }
+        return isWithinLaunchReconnectWindow
+    }
+
+    /// Status word for the device pill, derived from the same unified state.
+    var connectionStatusText: String {
+        Self.devicePillStatusText(
+            isOnline: isSelectedDeviceOnline,
+            hasSavedDevice: !pairedPhones.isEmpty,
+            isActivelyConnecting: isActivelyConnecting
+        )
+    }
+
+    /// Whether we're still inside the brief post-launch window during which the
+    /// UI should read "Connecting" even before a device has been seen.
+    private var isWithinLaunchReconnectWindow: Bool {
+        guard !isSelectedDeviceOnline, !isMirroring, !pairedPhones.isEmpty,
+              let deadline = launchReconnectDeadline else { return false }
+        return Date() < deadline
     }
 
     enum CaptureCueKind: Equatable {
@@ -333,6 +394,17 @@ final class AppModel: ObservableObject {
         }
         startDeviceWatcher()
         attemptAutoReconnect()
+        updateNotificationForwarding()
+    }
+
+    /// Starts or stops the no-companion-app notification poller to match the
+    /// current setting. The poller self-idles until a real device is connected.
+    private func updateNotificationForwarding() {
+        if notificationForwardingEnabled {
+            notificationForwarder.start()
+        } else {
+            notificationForwarder.stop()
+        }
     }
 
     deinit {
@@ -344,6 +416,34 @@ final class AppModel: ObservableObject {
         disconnectRecoveryTask?.cancel()
         screenRecordingMonitorTask?.cancel()
         mirrorSettingsRestartTask?.cancel()
+    }
+
+    func shutdown() {
+        stopMirroring()
+        discovery.stop()
+        notificationForwarder.stop()
+        stopQRCodePairingSession()
+        deviceWatcherTask?.cancel()
+        deviceWatcherTask = nil
+        qrPairingTask?.cancel()
+        qrPairingTask = nil
+        usbConnectTask?.cancel()
+        usbConnectTask = nil
+        wirelessStartTask?.cancel()
+        wirelessStartTask = nil
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        disconnectRecoveryTask?.cancel()
+        disconnectRecoveryTask = nil
+        screenRecordingMonitorTask?.cancel()
+        screenRecordingMonitorTask = nil
+        mirrorSettingsRestartTask?.cancel()
+        mirrorSettingsRestartTask = nil
+        isAutoConnecting = false
+        isScanning = false
+        isPairing = false
+        isRecoveringConnection = false
+        isAwaitingReconnect = false
     }
 
     // MARK: - Window registration
@@ -372,6 +472,10 @@ final class AppModel: ObservableObject {
     /// Bluetooth-style auto-reconnect.
     private func attemptAutoReconnect() {
         guard !pairedPhones.isEmpty else { return }
+        // Show "Connecting <last device>" immediately, before the first adb poll
+        // returns, so launch reads as actively reconnecting rather than Offline.
+        launchReconnectDeadline = Date().addingTimeInterval(Self.launchReconnectWindow)
+        isAutoConnecting = true
         let adb = self.adb
         Task { [weak self] in
             for attempt in 0..<6 {
@@ -636,12 +740,22 @@ final class AppModel: ObservableObject {
                 guard let self else { return }
                 let authorized = Self.authorizedADBDevices(in: output)
 
+                // The instant a *new* device shows up, drop the presence throttle
+                // so the auto-connect below fires this very poll instead of after
+                // the next 3s window — no waiting for a freshly-plugged phone.
+                let currentSerials = Set(authorized.map(\.serial))
+                if !currentSerials.isSubset(of: self.previousAuthorizedSerials) {
+                    self.lastPresenceAutoConnectAttemptAt = nil
+                }
+                self.previousAuthorizedSerials = currentSerials
+
                 // Presence + remembered-device auto-connect (always; both self-guard).
                 self.applyDevicePresence(output)
                 self.autoConnectToAvailableRememberedDevice(
                     authorizedDevices: authorized,
                     livePhones: self.discoveredPhones
                 )
+                self.refreshAutoConnectingState(authorized: authorized)
 
                 // USB → wireless handoff (only when idle, never mid-session).
                 if !self.preferUSBMirroring, !self.isMirroring, !self.isPairing {
@@ -663,13 +777,47 @@ final class AppModel: ObservableObject {
                 } else if self.isMirroring {
                     interval = 2_000_000_000          // only watching for a disconnect
                 } else if authorized.isEmpty {
-                    interval = 3_000_000_000          // nothing plugged in: ease off
+                    // Nothing plugged in. If a saved phone could reconnect, keep
+                    // watching closely so it's caught fast; otherwise ease off.
+                    interval = self.pairedPhones.isEmpty
+                        ? 3_000_000_000
+                        : 1_200_000_000
                 } else {
                     interval = 1_500_000_000          // connected but idle
                 }
                 try? await Task.sleep(nanoseconds: interval)
             }
         }
+    }
+
+    /// Keeps `isAutoConnecting` in step with whether a connect target is actually
+    /// present, so the status indicator reads "Connecting" the moment a saved
+    /// phone shows up (USB or wireless) and clears once we're online or it's gone.
+    /// Self-clearing by construction, so a stuck flag can never pin the spinner.
+    private func refreshAutoConnectingState(authorized: [AuthorizedADBDevice]) {
+        if isMirroring || isSelectedDeviceOnline {
+            launchReconnectDeadline = nil
+        }
+        let hasLiveTarget = !authorized.isEmpty
+            || mostRecentPairedPhone(in: discoveredPhones) != nil
+        isAutoConnecting = Self.shouldShowAutoConnecting(
+            hasSavedDevice: !pairedPhones.isEmpty,
+            isOnline: isSelectedDeviceOnline,
+            isMirroring: isMirroring,
+            hasLivePresentTarget: hasLiveTarget
+        )
+    }
+
+    /// Pure decision for the unified "Connecting" indicator: we're auto-connecting
+    /// when a saved phone is physically present but not yet online or mirroring.
+    nonisolated static func shouldShowAutoConnecting(
+        hasSavedDevice: Bool,
+        isOnline: Bool,
+        isMirroring: Bool,
+        hasLivePresentTarget: Bool
+    ) -> Bool {
+        guard hasSavedDevice, !isOnline, !isMirroring else { return false }
+        return hasLivePresentTarget
     }
 
     func ensureQRCodePairingSession() {
@@ -1800,7 +1948,7 @@ final class AppModel: ObservableObject {
 
     private func launchNativeMirror(serial: String?) {
         Logger.log("Launching native mirror serial=\(serial ?? "default")")
-        let session = MirrorSession(model: self, serial: serial)
+        let session = MirrorSession(model: self, serial: serial, launchFrame: lastMirrorWindowFrame)
         session.onSessionEnded = { [weak self, weak session] finalMirrorFrame in
             guard let self else { return }
             if self.mirrorSession === session {
@@ -1813,6 +1961,7 @@ final class AppModel: ObservableObject {
             }
             self.noteMirrorSessionEnded()
             if let finalMirrorFrame {
+                self.lastMirrorWindowFrame = finalMirrorFrame
                 self.connectionWindow?.setFrame(finalMirrorFrame, display: false)
             }
             self.showConnectionWindow(startsQRCodePairing: false)
@@ -1904,6 +2053,17 @@ final class AppModel: ObservableObject {
         case 3: return 20
         default: return 30
         }
+    }
+
+    nonisolated static func devicePillStatusText(
+        isOnline: Bool,
+        hasSavedDevice: Bool,
+        isActivelyConnecting: Bool
+    ) -> String {
+        if isActivelyConnecting { return "Connecting" }
+        if isOnline { return "Online" }
+        if hasSavedDevice { return "Offline" }
+        return "Offline"
     }
 
     private func hideConnectionWindowForNativeMirror() {
@@ -2004,8 +2164,9 @@ final class AppModel: ObservableObject {
     }
 
     /// Longest a deliberate "Reconnect over Wi-Fi" attempt keeps trying before it
-    /// surfaces an actionable error. Background auto-reconnect is shorter-lived.
-    nonisolated static let manualReconnectWindow: TimeInterval = 28
+    /// surfaces an actionable error. Keep this short so stale saved addresses
+    /// do not make a clearly-online device feel stuck.
+    nonisolated static let manualReconnectWindow: TimeInterval = 10
 
     /// User-initiated Wi-Fi reconnect. Unlike background auto-reconnect it bounces
     /// the adb server first, then retries every saved wireless route — each gated
@@ -2059,7 +2220,7 @@ final class AppModel: ObservableObject {
                     if let connectedAddress = await Self.connectToRememberedWireless(
                         adb: adb,
                         savedAddress: record.lastAddress,
-                        readinessAttempts: 2
+                        readinessAttempts: 1
                     ) {
                         await self.finishManualReconnect(
                             record: record,
@@ -2075,7 +2236,7 @@ final class AppModel: ObservableObject {
                 for record in wirelessRecords {
                     if Task.isCancelled { return }
                     guard let phone = Self.rememberedConnectablePhone(for: record, in: livePhones) else { continue }
-                    if await Self.waitForADBWirelessTargetReady(adb: adb, address: phone.address, attempts: 2) {
+                    if await Self.waitForADBWirelessTargetReady(adb: adb, address: phone.address, attempts: 1) {
                         await self.finishManualReconnect(
                             record: record,
                             connectedAddress: phone.address,

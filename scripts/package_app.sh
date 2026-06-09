@@ -19,6 +19,7 @@ RESOURCE_BUNDLE=".build/release/AndroidMirrorMac_AndroidMirrorMac.bundle"
 BIN_DIR="$APP/Contents/MacOS"
 RESOURCES_DIR="$APP/Contents/Resources"
 HELPER_BIN_DIR="$RESOURCES_DIR/bin"
+LICENSES_DIR="$RESOURCES_DIR/LICENSES"
 
 swift build -c release
 
@@ -35,7 +36,7 @@ elif [ -x "$APP/Contents/Resources/bin/adb" ]; then
 fi
 
 rm -rf "$APP"
-mkdir -p "$BIN_DIR" "$RESOURCES_DIR" "$HELPER_BIN_DIR"
+mkdir -p "$BIN_DIR" "$RESOURCES_DIR" "$HELPER_BIN_DIR" "$LICENSES_DIR"
 
 cp "$HOST_BIN" "$BIN_DIR/$PRODUCT_NAME"
 chmod +x "$BIN_DIR/$PRODUCT_NAME"
@@ -50,6 +51,14 @@ fi
 
 if [ -f "$ASSET_CATALOG" ]; then
   cp "$ASSET_CATALOG" "$RESOURCES_DIR/Assets.car"
+fi
+
+if [ -f "THIRD_PARTY_NOTICES.md" ]; then
+  cp "THIRD_PARTY_NOTICES.md" "$RESOURCES_DIR/THIRD_PARTY_NOTICES.md"
+fi
+
+if [ -f "LICENSES/scrcpy-APACHE-2.0.txt" ]; then
+  cp "LICENSES/scrcpy-APACHE-2.0.txt" "$LICENSES_DIR/scrcpy-APACHE-2.0.txt"
 fi
 
 # Audio and video are handled in-process; only the scrcpy-server jar (pushed to
