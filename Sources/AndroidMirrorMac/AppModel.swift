@@ -407,6 +407,12 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Opts into Android notification forwarding from first-run onboarding and
+    /// triggers the native macOS notification permission prompt immediately.
+    func enableNotificationForwardingFromOnboarding() {
+        notificationForwardingEnabled = true
+    }
+
     deinit {
         deviceWatcherTask?.cancel()
         qrPairingTask?.cancel()
@@ -1948,7 +1954,7 @@ final class AppModel: ObservableObject {
 
     private func launchNativeMirror(serial: String?) {
         Logger.log("Launching native mirror serial=\(serial ?? "default")")
-        let session = MirrorSession(model: self, serial: serial, launchFrame: lastMirrorWindowFrame)
+        let session = MirrorSession(model: self, serial: serial)
         session.onSessionEnded = { [weak self, weak session] finalMirrorFrame in
             guard let self else { return }
             if self.mirrorSession === session {
@@ -1974,6 +1980,7 @@ final class AppModel: ObservableObject {
             isAwaitingReconnect = false
             selectedDevice.states = [.mirroringReady, .companionConnected]
             lastMirrorStartAt = Date()
+            hideConnectionWindowForNativeMirror()
             try session.start()
             activeError = nil
             hideConnectionWindowForNativeMirror()
@@ -2073,12 +2080,24 @@ final class AppModel: ObservableObject {
     }
 
     private func showConnectionWindow(startsQRCodePairing: Bool = true) {
-        guard let connectionWindow, !isMirroring else { return }
+        guard let connectionWindow, !isMirroring, mirrorSession == nil else { return }
+        centerConnectionWindow(connectionWindow)
         connectionWindow.makeKeyAndOrderFront(nil)
         if startsQRCodePairing {
             ensureQRCodePairingSession()
         }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func centerConnectionWindow(_ window: NSWindow) {
+        let visible = window.screen?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 390, height: 850)
+        window.setFrame(
+            MirrorContentWindowController.centeredFrame(size: window.frame.size, in: visible),
+            display: false,
+            animate: false
+        )
     }
 
     private func presentCaptureCue(_ kind: CaptureCueKind) {

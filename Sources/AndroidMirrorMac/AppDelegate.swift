@@ -283,8 +283,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func showFirstRunWindow() {
         if let firstRunWindow {
-            centerOnMainScreen(firstRunWindow)
+            centerOnActiveScreen(firstRunWindow)
             firstRunWindow.makeKeyAndOrderFront(nil)
+            recenterAfterLayout(firstRunWindow)
             return
         }
 
@@ -292,7 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             self?.firstRunWindow?.orderOut(nil)
             self?.firstRunWindow = nil
             if let window = self?.window {
-                self?.centerOnMainScreen(window)
+                self?.centerOnActiveScreen(window)
             }
             self?.window?.makeKeyAndOrderFront(nil)
             self?.model.ensureQRCodePairingSession()
@@ -311,15 +312,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.title = "Android Mirroring"
         window.isReleasedWhenClosed = false
         window.isMovableByWindowBackground = false
-        centerOnMainScreen(window)
+        hosting.view.layoutSubtreeIfNeeded()
+        window.setContentSize(hosting.view.fittingSize)
+        centerOnActiveScreen(window)
         window.makeKeyAndOrderFront(nil)
+        recenterAfterLayout(window)
         firstRunWindow = window
     }
 
+    private func recenterAfterLayout(_ window: NSWindow) {
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window else { return }
+            window.contentView?.layoutSubtreeIfNeeded()
+            self.centerOnActiveScreen(window)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak window] in
+            guard let self, let window else { return }
+            window.contentView?.layoutSubtreeIfNeeded()
+            self.centerOnActiveScreen(window)
+        }
+    }
+
     private func centerOnMainScreen(_ window: NSWindow) {
-        let visible = NSScreen.main?.visibleFrame
+        center(window, in: NSScreen.main?.visibleFrame)
+    }
+
+    private func centerOnActiveScreen(_ window: NSWindow) {
+        let mouse = NSEvent.mouseLocation
+        let visible = NSScreen.screens.first(where: { $0.frame.contains(mouse) })?.visibleFrame
             ?? window.screen?.visibleFrame
-            ?? NSRect(x: 0, y: 0, width: 390, height: 850)
+            ?? NSScreen.main?.visibleFrame
+        center(window, in: visible)
+    }
+
+    private func center(_ window: NSWindow, in visibleFrame: NSRect?) {
+        let visible = visibleFrame ?? NSRect(x: 0, y: 0, width: 390, height: 850)
         window.setFrame(
             MirrorContentWindowController.centeredFrame(size: window.frame.size, in: visible),
             display: false,

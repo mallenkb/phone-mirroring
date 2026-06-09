@@ -118,9 +118,9 @@ final class NotificationForwarderTests: XCTestCase {
     }
 
     func testAppLabelDerivesReadableName() {
-        XCTAssertEqual(NotificationForwarder.appLabel(for: "com.twitter.android"), "Twitter")
+        XCTAssertEqual(NotificationForwarder.appLabel(for: "com.twitter.android"), "X")
         XCTAssertEqual(NotificationForwarder.appLabel(for: "com.ubercab"), "Ubercab")
-        XCTAssertEqual(NotificationForwarder.appLabel(for: "com.whatsapp"), "Whatsapp")
+        XCTAssertEqual(NotificationForwarder.appLabel(for: "com.whatsapp"), "WhatsApp")
     }
 
     func testForwardedNotificationMessageIncludesLabubu() {
@@ -159,7 +159,7 @@ final class NotificationForwarderTests: XCTestCase {
             title: "POP MART", text: "Labubu is back in stock!", flags: 0x10
         )
         let content = NotificationForwarder.notificationContent(for: entry)
-        XCTAssertEqual(content.title, "POP MART")
+        XCTAssertEqual(content.title, "Global • POP MART")
         XCTAssertEqual(content.body, "Labubu is back in stock!")
         // A sound must be attached or the banner is delivered silently.
         XCTAssertNotNil(content.sound, "Forwarded notifications should pop up with sound")
@@ -173,5 +173,23 @@ final class NotificationForwarderTests: XCTestCase {
         XCTAssertEqual(content.title, "Global") // appLabel fallback
         XCTAssertEqual(content.body, "Restock!")
         XCTAssertNotNil(content.sound)
+    }
+
+    func testNotificationTitleIncludesReadableSourceApp() {
+        XCTAssertEqual(
+            NotificationForwarder.notificationTitle(sourceApp: "Messages", entryTitle: "Telecel-FBB"),
+            "Messages • Telecel-FBB"
+        )
+        XCTAssertEqual(
+            NotificationForwarder.notificationTitle(sourceApp: "WhatsApp Business", entryTitle: "Marlon's MTN"),
+            "WhatsApp Business • Marlon's MTN"
+        )
+        XCTAssertEqual(
+            NotificationForwarder.notificationTitle(sourceApp: "Instagram", entryTitle: ""),
+            "Instagram"
+        )
+        XCTAssertEqual(NotificationForwarder.appLabel(for: "com.google.android.apps.messaging"), "Messages")
+        XCTAssertEqual(NotificationForwarder.appLabel(for: "com.whatsapp.w4b"), "WhatsApp Business")
+        XCTAssertEqual(NotificationForwarder.appLabel(for: "com.instagram.android"), "Instagram")
     }
 }

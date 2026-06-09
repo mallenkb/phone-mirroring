@@ -402,6 +402,14 @@ struct FirstRunOnboardingView: View {
                     title: "Keep devices nearby",
                     detail: "For wireless pairing, keep your phone and Mac on the same Wi-Fi network."
                 )
+
+                Divider().overlay(cardStroke)
+
+                setupRow(
+                    icon: "bell.badge",
+                    title: "Mac notifications",
+                    detail: "Allow notifications so Android alerts can appear in macOS Notification Center."
+                )
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 16)
@@ -412,10 +420,15 @@ struct FirstRunOnboardingView: View {
             .padding(.top, 24)
 
             HStack(spacing: 12) {
-                Button("Set Up Later") { hasSeen = true }
+                Button("Later") {
+                    NSApplication.shared.terminate(nil)
+                }
                     .buttonStyle(OnboardingSecondaryButtonStyle())
 
-                Button("Continue") { hasSeen = true }
+                Button("Continue") {
+                    model.enableNotificationForwardingFromOnboarding()
+                    hasSeen = true
+                }
                     .buttonStyle(OnboardingPrimaryButtonStyle())
             }
             .padding(.top, 30)
@@ -483,7 +496,7 @@ struct FirstRunOnboardingView: View {
     }
 
     private var cardStroke: Color {
-        isEffectiveDarkMode ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
+        isEffectiveDarkMode ? Color.white.opacity(0.045) : Color.black.opacity(0.05)
     }
 }
 

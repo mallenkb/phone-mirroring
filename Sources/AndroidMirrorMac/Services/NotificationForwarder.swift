@@ -153,12 +153,24 @@ final class NotificationForwarder {
     /// the banner is delivered silently. Pure/inspectable so it can be unit-tested.
     nonisolated static func notificationContent(for entry: Entry) -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
-        content.title = entry.title.isEmpty ? appLabel(for: entry.pkg) : entry.title
+        let sourceApp = appLabel(for: entry.pkg)
+        content.title = notificationTitle(sourceApp: sourceApp, entryTitle: entry.title)
         if !entry.text.isEmpty { content.body = entry.text }
         // Group banners by source app in Notification Center.
         content.threadIdentifier = entry.pkg
         content.sound = .default
         return content
+    }
+
+    nonisolated static func notificationTitle(sourceApp: String, entryTitle: String) -> String {
+        let source = sourceApp.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = entryTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else { return title }
+        guard !title.isEmpty else { return source }
+        if title.localizedCaseInsensitiveCompare(source) == .orderedSame {
+            return title
+        }
+        return "\(source) • \(title)"
     }
 
     private func iconAttachmentURL(for pkg: String, serial: String) -> URL? {
@@ -440,6 +452,27 @@ final class NotificationForwarder {
     /// Best-effort friendly name when a notification has no title: a readable
     /// segment of the package id (`com.twitter.android` → `Twitter`).
     nonisolated static func appLabel(for pkg: String) -> String {
+        switch pkg {
+        case "com.google.android.apps.messaging":
+            return "Messages"
+        case "com.whatsapp":
+            return "WhatsApp"
+        case "com.whatsapp.w4b":
+            return "WhatsApp Business"
+        case "com.instagram.android":
+            return "Instagram"
+        case "com.facebook.orca":
+            return "Messenger"
+        case "com.facebook.katana":
+            return "Facebook"
+        case "com.twitter.android":
+            return "X"
+        case "com.google.android.gm":
+            return "Gmail"
+        default:
+            break
+        }
+
         let parts = pkg.split(separator: ".")
         let candidate: Substring
         if let last = parts.last, last == "android", parts.count >= 2 {
