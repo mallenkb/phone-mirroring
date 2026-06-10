@@ -260,6 +260,57 @@ final class PairedPhoneStoreTests: XCTestCase {
         )
     }
 
+    func testDefaultCompatibilitySuitesIncludeHistoricalBundleDomains() {
+        XCTAssertTrue(PairedPhoneStore.compatibilitySuites.contains("com.mallenkb.AndroidMirrorMac"))
+        XCTAssertTrue(PairedPhoneStore.compatibilitySuites.contains("com.mallenkb.AndroidMirroring"))
+        XCTAssertTrue(PairedPhoneStore.compatibilitySuites.contains("com.mallenkb.AndroidMirrorScrcpy"))
+    }
+
+    func testLoadMergesCurrentUSBRecordWithHistoricalWirelessRecord() {
+        let primarySuite = "AndroidMirrorMacTests.primary.\(UUID().uuidString)"
+        let compatibilitySuite = "AndroidMirrorMacTests.compat.\(UUID().uuidString)"
+        defer {
+            UserDefaults.standard.removePersistentDomain(forName: primarySuite)
+            UserDefaults.standard.removePersistentDomain(forName: compatibilitySuite)
+        }
+        guard let primaryDefaults = UserDefaults(suiteName: primarySuite),
+              let compatibilityDefaults = UserDefaults(suiteName: compatibilitySuite)
+        else {
+            return XCTFail("Expected test UserDefaults suites to be available")
+        }
+
+        let currentUSB = PairedPhoneRecord(
+            id: "RFCT10ZLTAJ",
+            displayName: "SM S906B",
+            lastAddress: "RFCT10ZLTAJ",
+            firstPaired: referenceDate.addingTimeInterval(120),
+            lastConnected: referenceDate.addingTimeInterval(3600)
+        )
+        let historicalWiFi = PairedPhoneRecord(
+            id: "adb-RFCT10ZLTAJ",
+            displayName: "SM S906B",
+            lastAddress: "192.0.2.50:5555",
+            firstPaired: referenceDate,
+            lastConnected: referenceDate.addingTimeInterval(60)
+        )
+        PairedPhoneStore(primaryDefaults: primaryDefaults, suiteNames: [])
+            .save([currentUSB])
+        PairedPhoneStore(primaryDefaults: compatibilityDefaults, suiteNames: [])
+            .save([historicalWiFi])
+
+        let loaded = PairedPhoneStore(
+            primaryDefaults: primaryDefaults,
+            suiteNames: [compatibilitySuite]
+        ).load()
+
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded[0].id, "RFCT10ZLTAJ")
+        XCTAssertEqual(loaded[0].displayName, "SM S906B")
+        XCTAssertEqual(loaded[0].lastAddress, "192.0.2.50:5555")
+        XCTAssertEqual(loaded[0].firstPaired, referenceDate)
+        XCTAssertEqual(loaded[0].lastConnected, referenceDate.addingTimeInterval(3600))
+    }
+
     func testRemovedPhoneDoesNotResurrectFromLegacySuite() {
         let primarySuite = "AndroidMirrorMacTests.primary.\(UUID().uuidString)"
         let compatibilitySuite = "AndroidMirrorMacTests.compat.\(UUID().uuidString)"

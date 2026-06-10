@@ -65,7 +65,7 @@ APPLE_ID="you@example.com" TEAM_ID="TEAMID" APP_PASSWORD="app-specific-pw" \
   scripts/notarize.sh
 ```
 
-Dev builds use `scripts/AndroidMirrorMac.entitlements`; notarized release builds use `scripts/AndroidMirrorMac.release.entitlements` (no hardened-runtime exceptions — `notarize.sh` fails if any leak in). A paid Apple Developer account is required. Before distributing, set a real bundle identifier (`BUNDLE_ID=com.yourdomain.AndroidMirroring scripts/build_and_run.sh`) — the placeholder `org.example` id should not ship, and changing the id resets Notification Center authorization.
+Dev builds use `scripts/AndroidMirrorMac.entitlements`; notarized release builds use `scripts/AndroidMirrorMac.release.entitlements` (no hardened-runtime exceptions — `notarize.sh` fails if any leak in). A paid Apple Developer account is required. Keep the bundle identifier stable (`BUNDLE_ID=com.yourdomain.AndroidMirroring scripts/build_and_run.sh` when rebranding), because changing it resets macOS privacy authorization for Notification Center and Local Network access.
 
 ## Continuous integration
 

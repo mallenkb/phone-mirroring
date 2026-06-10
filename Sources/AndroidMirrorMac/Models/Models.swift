@@ -19,9 +19,9 @@ struct MirrorDevice: Identifiable, Equatable {
     var adbSerial: String?
 
     static let demo = MirrorDevice(
-        id: "demo-pixel-8",
-        name: "Pixel 8 Pro",
-        model: "Google Pixel",
+        id: "demo-android-mirror",
+        name: "Android Mirror",
+        model: "Android",
         battery: 82,
         isCharging: false,
         network: "Local WLAN",

@@ -17,14 +17,6 @@ import UserNotifications
 /// re-read from the model every cycle).
 @MainActor
 final class NotificationForwarder {
-    enum UserInfoKey {
-        static let sourcePackage = "androidMirrorMac.sourcePackage"
-        static let deviceSerial = "androidMirrorMac.deviceSerial"
-        static let notificationKey = "androidMirrorMac.notificationKey"
-        static let notificationTitle = "androidMirrorMac.notificationTitle"
-        static let notificationText = "androidMirrorMac.notificationText"
-    }
-
     /// One active Android notification, distilled from the dumpsys text dump.
     struct Entry: Equatable {
         /// Stable StatusBarNotification key, e.g. `0|com.foo|7|tag|10337`.
@@ -76,12 +68,6 @@ final class NotificationForwarder {
         // every start makes that visible in the log instead of a mystery.
         UNUserNotificationCenter.current().getNotificationSettings { settings in
             Logger.log("Notification forwarding starting authorizationStatus=\(settings.authorizationStatus.rawValue) alertSetting=\(settings.alertSetting.rawValue)")
-        }
-        // Pre-load Vision's OCR models so the first click on a forwarded
-        // banner can locate the notification in the shade without a
-        // several-second model-load stall.
-        Task.detached(priority: .utility) {
-            NotificationTapService.warmUpTextRecognition()
         }
         task = Task { [weak self] in
             await self?.runLoop()
@@ -179,22 +165,13 @@ final class NotificationForwarder {
     /// attached so the banner pops audibly like it does on the phone — without it
     /// the banner is delivered silently. Pure/inspectable so it can be unit-tested.
     nonisolated static func notificationContent(for entry: Entry, serial: String? = nil) -> UNMutableNotificationContent {
+        _ = serial
         let content = UNMutableNotificationContent()
         let sourceApp = appLabel(for: entry.pkg)
         content.title = notificationTitle(sourceApp: sourceApp, entryTitle: entry.title)
         if !entry.text.isEmpty { content.body = entry.text }
         // Group banners by source app in Notification Center.
         content.threadIdentifier = entry.pkg
-        var userInfo: [String: String] = [
-            UserInfoKey.sourcePackage: entry.pkg,
-            UserInfoKey.notificationKey: entry.key,
-            UserInfoKey.notificationTitle: entry.title,
-            UserInfoKey.notificationText: entry.text
-        ]
-        if let serial, !serial.isEmpty {
-            userInfo[UserInfoKey.deviceSerial] = serial
-        }
-        content.userInfo = userInfo
         content.sound = .default
         return content
     }

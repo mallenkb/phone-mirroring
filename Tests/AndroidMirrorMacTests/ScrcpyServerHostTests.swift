@@ -2,6 +2,53 @@ import XCTest
 @testable import AndroidMirrorMac
 
 final class ScrcpyServerHostTests: XCTestCase {
+    func testAndroidDisplayRefreshRateParserFindsSupportedModesAndAlternatives() {
+        let output = """
+        DisplayDeviceInfo{"Built-in Screen": uniqueId="local:4630947232163847826", 1080 x 2340, modeId 1, defaultModeId 1, supportedModes [{id=1, width=1080, height=2340, fps=60.000004, alternativeRefreshRates=[120.00001]}, {id=2, width=1080, height=2340, fps=120.00001, alternativeRefreshRates=[60.000004]}]}
+        DisplayModeDirector
+          peakRefreshRate=120.0
+        """
+
+        XCTAssertEqual(MirrorSession.androidDisplayRefreshRates(in: output), [60, 120])
+    }
+
+    func testAutomaticMirrorMaxFpsCapsPhoneRateToMacDisplayRate() {
+        XCTAssertEqual(
+            MirrorSession.automaticMirrorMaxFps(
+                androidRefreshRates: [60, 120],
+                macRefreshRate: 60
+            ),
+            60
+        )
+        XCTAssertEqual(
+            MirrorSession.automaticMirrorMaxFps(
+                androidRefreshRates: [60, 120],
+                macRefreshRate: 120
+            ),
+            120
+        )
+    }
+
+    func testAutomaticMirrorMaxFpsCapsMacRateToPhoneMaximum() {
+        XCTAssertEqual(
+            MirrorSession.automaticMirrorMaxFps(
+                androidRefreshRates: [60, 90],
+                macRefreshRate: 120
+            ),
+            90
+        )
+    }
+
+    func testAutomaticMirrorMaxFpsUsesPhoneMaxWhenMacRefreshIsUnknown() {
+        XCTAssertEqual(
+            MirrorSession.automaticMirrorMaxFps(
+                androidRefreshRates: [60, 90, 120],
+                macRefreshRate: nil
+            ),
+            120
+        )
+    }
+
     func testDefaultServerArgumentsDisableAudioForStableNativeMirrorStartup() {
         let arguments = ScrcpyServerHost.serverArguments(for: .init(
             scid: 0x1234ABCD,

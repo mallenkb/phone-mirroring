@@ -4,7 +4,7 @@ set -euo pipefail
 APP="${1:-dist/Android Mirroring.app}"
 APP_NAME="${APP_NAME:-Android Mirroring}"
 PRODUCT_NAME="${PRODUCT_NAME:-AndroidMirrorMac}"
-BUNDLE_ID="${BUNDLE_ID:-org.example.AndroidMirrorMac}"
+BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.AndroidMirroring}"
 APP_VERSION="${APP_VERSION:-0.1.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
@@ -112,6 +112,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <true/>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Android Mirroring connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_adb._tcp</string>
+    <string>_adb-tls-connect._tcp</string>
+    <string>_adb-tls-pairing._tcp</string>
+  </array>
 </dict>
 </plist>
 PLIST

@@ -28,7 +28,10 @@ struct FigmaMirrorExperienceView: View {
         MirrorContentWindowController.onboardingCornerRadius()
     }
     private var shouldShowMirrorLoading: Bool {
-        model.isRecoveringConnection
+        AppModel.shouldShowReconnectSurface(
+            isRecoveringConnection: model.isRecoveringConnection,
+            isAwaitingReconnect: model.isAwaitingReconnect
+        )
     }
 
     var body: some View {
@@ -92,8 +95,10 @@ struct FigmaMirrorExperienceView: View {
             // text shrinks smoothly on lower-resolution displays and only
             // reaches its full design size at high resolution. No hard floors
             // on individual fonts — that's what previously kept them oversized.
-            let scale = min(1, max(0.5, min(proxy.size.height / 815, proxy.size.width / 390)))
-            let usesCompactLayout = proxy.size.height <= 760 || proxy.size.width <= 360
+            let hasError = model.activeError != nil
+            let scaleCap: CGFloat = hasError ? 0.82 : 1
+            let scale = min(scaleCap, max(0.5, min(proxy.size.height / 815, proxy.size.width / 390)))
+            let usesCompactLayout = hasError || proxy.size.height <= 760 || proxy.size.width <= 360
             let availableWidth = proxy.size.width - (usesCompactLayout ? 44 : 72)
             let contentWidth = min(availableWidth, maxColumnWidth)
             let qrPanelSize = min(self.qrPanelSize * scale, contentWidth * (usesCompactLayout ? 0.64 : 0.72))

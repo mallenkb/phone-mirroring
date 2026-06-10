@@ -3,9 +3,10 @@ set -euo pipefail
 
 APP_NAME="Android Mirroring"
 PRODUCT_NAME="AndroidMirrorMac"
-# Overridable so release builds can use a real reverse-DNS id without churning
-# the dev identity (Notification Center authorization is keyed to the id).
-BUNDLE_ID="${BUNDLE_ID:-org.example.AndroidMirrorMac}"
+# Keep local rebuilds on the same identity as the installed app. macOS Local
+# Network and Notification authorization are keyed to the app identity, so the
+# old placeholder id caused duplicate privacy entries and blocked Wi-Fi handoff.
+BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.AndroidMirroring}"
 APP_VERSION="${APP_VERSION:-0.1.0}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
@@ -128,6 +129,12 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
   <string>NSApplication</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Android Mirroring connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_adb._tcp</string>
+    <string>_adb-tls-connect._tcp</string>
+    <string>_adb-tls-pairing._tcp</string>
+  </array>
 </dict>
 </plist>
 PLIST

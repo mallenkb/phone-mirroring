@@ -166,6 +166,84 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertFalse(AppModel.outputIndicatesLocalNetworkBlocked("connected to 192.0.2.50:5555"))
     }
 
+    func testLocalNetworkPreflightAddressParsing() {
+        XCTAssertEqual(
+            AppModel.localNetworkEndpointParts(from: "192.0.2.57:5555"),
+            AppModel.LocalNetworkEndpointParts(host: "192.0.2.57", port: 5555)
+        )
+        XCTAssertEqual(
+            AppModel.localNetworkEndpointParts(from: "pixel.local:42111"),
+            AppModel.LocalNetworkEndpointParts(host: "pixel.local", port: 42111)
+        )
+        XCTAssertNil(AppModel.localNetworkEndpointParts(from: "TESTDEVICE001"))
+        XCTAssertNil(AppModel.localNetworkEndpointParts(from: "192.0.2.57:not-a-port"))
+        XCTAssertNil(AppModel.localNetworkEndpointParts(from: "192.0.2.57:0"))
+    }
+
+    func testWaitForWirelessTargetReadinessRunsLocalNetworkPreflightBeforeADBConnect() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          echo "connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let recorder = LocalNetworkPreflightRecorder()
+
+        let readiness = await AppModel.waitForADBWirelessTargetReadiness(
+            adb: ADBController(),
+            address: "192.0.2.57:5555",
+            attempts: 2,
+            delayNanoseconds: 1,
+            preflightLocalNetworkAccess: { address in
+                await recorder.record(address)
+            }
+        )
+
+        XCTAssertTrue(readiness.isReady)
+        XCTAssertFalse(readiness.sawNoRouteToHost)
+        let preflightedAddresses = await recorder.snapshot()
+        XCTAssertEqual(preflightedAddresses, ["192.0.2.57:5555"])
+    }
+
+    func testWaitForWirelessTargetReadinessStopsImmediatelyWhenCancelled() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          sleep 2
+          echo "connected to $2"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let task = Task {
+            await AppModel.waitForADBWirelessTargetReadiness(
+                adb: ADBController(),
+                address: "Android.local:5555",
+                attempts: 3,
+                delayNanoseconds: 1
+            )
+        }
+        task.cancel()
+
+        let readiness = await task.value
+
+        XCTAssertFalse(readiness.isReady)
+        XCTAssertEqual(readiness.connectAttempts, 0)
+        XCTAssertEqual(loggedCalls(fake.log), [])
+    }
+
     // "No route to host" on every attempt is how a denied macOS Local Network
     // permission presents; the readiness result must carry that signal up so
     // the app can tell the user instead of failing silently forever.
@@ -239,6 +317,54 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         XCTAssertFalse(readiness.isReady)
         XCTAssertFalse(readiness.sawNoRouteToHost)
+    }
+
+    func testWaitForWirelessTargetReadinessDoesNotFlagMixedNoRouteFailures() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AndroidMirrorMacTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            unsetenv("ANDROID_MIRROR_ADB_PATH")
+            unsetenv("ADB_FAKE_COUNT")
+        }
+
+        let fakeADB = directory.appendingPathComponent("adb")
+        let count = directory.appendingPathComponent("adb.count")
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "connect" ]; then
+          current=$(cat "$ADB_FAKE_COUNT" 2>/dev/null || echo 0)
+          current=$((current + 1))
+          echo "$current" > "$ADB_FAKE_COUNT"
+          if [ "$current" -eq 1 ]; then
+            echo "failed to connect to '$2': No route to host"
+          else
+            echo "failed to connect to '$2': Connection refused"
+          fi
+          exit 0
+        fi
+        exit 0
+        """
+        try script.write(to: fakeADB, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fakeADB.path
+        )
+        setenv("ANDROID_MIRROR_ADB_PATH", fakeADB.path, 1)
+        setenv("ADB_FAKE_COUNT", count.path, 1)
+
+        let readiness = await AppModel.waitForADBWirelessTargetReadiness(
+            adb: ADBController(),
+            address: "192.0.2.57:5555",
+            attempts: 3,
+            delayNanoseconds: 1
+        )
+
+        XCTAssertFalse(readiness.isReady)
+        XCTAssertFalse(readiness.sawNoRouteToHost)
+        XCTAssertEqual(readiness.connectAttempts, 3)
+        XCTAssertEqual(readiness.noRouteToHostFailures, 1)
     }
 
     // A transport that is merely settling (post-connect handshake, trust
@@ -331,6 +457,36 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         let selected = AppModel.liveSelectedOrRememberedDevice(
             selectedSerial: "Android.local:5555",
+            pairedPhones: [record],
+            authorizedDevices: [usbDevice, wirelessDevice]
+        )
+
+        XCTAssertEqual(selected, wirelessDevice)
+    }
+
+    func testLiveSelectedOrRememberedDevicePrefersRememberedWirelessOverSelectedUSB() {
+        let record = PairedPhoneRecord(
+            id: "RFCT10ZLTAJ",
+            displayName: "SM-S906B",
+            lastAddress: "192.168.68.50:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let usbDevice = AuthorizedADBDevice(
+            serial: "RFCT10ZLTAJ",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: true
+        )
+        let wirelessDevice = AuthorizedADBDevice(
+            serial: "192.168.68.50:5555",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: false
+        )
+
+        let selected = AppModel.liveSelectedOrRememberedDevice(
+            selectedSerial: "RFCT10ZLTAJ",
             pairedPhones: [record],
             authorizedDevices: [usbDevice, wirelessDevice]
         )
@@ -913,6 +1069,147 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertNil(candidate)
     }
 
+    func testFreshUSBHandoffSuppressesPresenceAutoConnectForSameWatcherPoll() {
+        let usbDevice = AuthorizedADBDevice(
+            serial: "TESTDEVICE001",
+            product: "raven",
+            model: "Pixel",
+            isUSB: true
+        )
+
+        XCTAssertTrue(
+            AppModel.shouldPrioritizeUSBHandoff(
+                authorizedDevices: [usbDevice],
+                lastAttemptedSerial: nil,
+                preferUSBMirroring: false,
+                isMirroring: false,
+                isPairing: false
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldRunPresenceAutoConnect(
+                authorizedDevices: [usbDevice],
+                lastAttemptedSerial: nil,
+                preferUSBMirroring: false,
+                isMirroring: false,
+                isPairing: false
+            )
+        )
+    }
+
+    func testFreshAuthorizedUSBCanAutoStartWithoutSavedDevice() {
+        XCTAssertTrue(
+            AppModel.shouldAutoStartAuthorizedUSB(
+                hasSavedDevices: false,
+                explicitDeviceSetupRequired: true
+            )
+        )
+        XCTAssertTrue(
+            AppModel.shouldAutoStartAuthorizedUSB(
+                hasSavedDevices: false,
+                explicitDeviceSetupRequired: false
+            )
+        )
+    }
+
+    func testAlreadyAttemptedUSBDoesNotFallBackToPresenceAutoConnect() {
+        let usbDevice = AuthorizedADBDevice(
+            serial: "TESTDEVICE001",
+            product: "raven",
+            model: "Pixel",
+            isUSB: true
+        )
+
+        XCTAssertFalse(
+            AppModel.shouldPrioritizeUSBHandoff(
+                authorizedDevices: [usbDevice],
+                lastAttemptedSerial: "TESTDEVICE001",
+                preferUSBMirroring: false,
+                isMirroring: false,
+                isPairing: false
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldRunPresenceAutoConnect(
+                authorizedDevices: [usbDevice],
+                lastAttemptedSerial: "TESTDEVICE001",
+                preferUSBMirroring: false,
+                isMirroring: false,
+                isPairing: false
+            )
+        )
+    }
+
+    func testUSBPresenceInterruptsStuckReconnectOverlay() {
+        let usbDevice = AuthorizedADBDevice(
+            serial: "TESTDEVICE001",
+            product: "raven",
+            model: "Pixel",
+            isUSB: true
+        )
+
+        XCTAssertTrue(
+            AppModel.shouldUSBInterruptReconnect(
+                authorizedDevices: [usbDevice],
+                isRecoveringConnection: true,
+                isAwaitingReconnect: false,
+                hasReconnectTask: false,
+                hasWirelessStartTask: false
+            )
+        )
+        XCTAssertTrue(
+            AppModel.shouldUSBInterruptReconnect(
+                authorizedDevices: [usbDevice],
+                isRecoveringConnection: false,
+                isAwaitingReconnect: false,
+                hasReconnectTask: true,
+                hasWirelessStartTask: false
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldUSBInterruptReconnect(
+                authorizedDevices: [],
+                isRecoveringConnection: true,
+                isAwaitingReconnect: true,
+                hasReconnectTask: true,
+                hasWirelessStartTask: true
+            )
+        )
+    }
+
+    func testBackgroundServicesStartUnlessRunningUnderXCTestEnvironment() {
+        XCTAssertTrue(
+            AppModel.shouldStartBackgroundServices(
+                environment: [:],
+                executablePath: "/Applications/Android Mirroring.app/Contents/MacOS/AndroidMirrorMac"
+            )
+        )
+        XCTAssertTrue(
+            AppModel.shouldStartBackgroundServices(
+                environment: ["SIMULATOR_DEVICE_NAME": "Mac"],
+                executablePath: "/Applications/Android Mirroring.app/Contents/MacOS/AndroidMirrorMac"
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldStartBackgroundServices(
+                environment: [:],
+                executablePath: "/Applications/Xcode.app/Contents/Developer/usr/bin/xctest"
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldStartBackgroundServices(
+                environment: ["XCTestConfigurationFilePath": "/tmp/test.xctestconfiguration"],
+                executablePath: "/Applications/Android Mirroring.app/Contents/MacOS/AndroidMirrorMac"
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldStartBackgroundServices(
+                environment: ["XCTestBundlePath": "/tmp/AndroidMirrorMacTests.xctest"],
+                executablePath: "/Applications/Android Mirroring.app/Contents/MacOS/AndroidMirrorMac"
+            )
+        )
+    }
+
     // MARK: - Remembered wireless reconnect readiness
 
     func testConnectToRememberedWirelessRejectsConnectWhenShellReadinessFails() async throws {
@@ -1134,5 +1431,17 @@ final class ADBDeviceParsingTests: XCTestCase {
         (try? String(contentsOf: log, encoding: .utf8))?
             .split(whereSeparator: \.isNewline)
             .map(String.init) ?? []
+    }
+}
+
+private actor LocalNetworkPreflightRecorder {
+    private var addresses: [String] = []
+
+    func record(_ address: String) {
+        addresses.append(address)
+    }
+
+    func snapshot() -> [String] {
+        addresses
     }
 }
