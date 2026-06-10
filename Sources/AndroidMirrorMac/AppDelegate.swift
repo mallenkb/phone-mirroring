@@ -77,9 +77,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
         let serial = userInfo[NotificationForwarder.UserInfoKey.deviceSerial] as? String
+        let notificationKey = userInfo[NotificationForwarder.UserInfoKey.notificationKey] as? String
+        let title = userInfo[NotificationForwarder.UserInfoKey.notificationTitle] as? String
+        let text = userInfo[NotificationForwarder.UserInfoKey.notificationText] as? String
 
         await MainActor.run {
-            self.model.openSourceAppFromForwardedNotification(package: package, serial: serial)
+            self.model.openSourceAppFromForwardedNotification(
+                package: package,
+                serial: serial,
+                notificationKey: notificationKey,
+                title: title,
+                text: text
+            )
             NSApp.activate(ignoringOtherApps: true)
         }
     }

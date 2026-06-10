@@ -2,12 +2,21 @@ import SwiftUI
 import AppKit
 import Foundation
 import Darwin
+import ImageIO
 import UserNotifications
+import Vision
 
 @MainActor
 final class AppModel: ObservableObject {
+    typealias NotificationAuthorizationRequester = (@escaping (Bool, Error?) -> Void) -> Void
+
     nonisolated static let notificationPermissionReason =
         "Allow notifications so Android Mirroring can show all unread notifications from your device on this Mac."
+    nonisolated static let notificationForwardingDefaultsKey = "MirrorBehavior.notificationForwardingEnabled"
+
+    nonisolated static func defaultNotificationForwardingEnabled(storedValue: Any?) -> Bool {
+        (storedValue as? Bool) ?? true
+    }
 
     @Published var selectedDevice: MirrorDevice = .demo
     @Published var isScanning = false
@@ -51,14 +60,17 @@ final class AppModel: ObservableObject {
         }
     }
     /// Mirrors Android notifications into macOS Notification Center by polling
-    /// `dumpsys notification` over adb — no companion app on the phone. Opt-in,
-    /// since it reads notification content and prompts for notification access.
+    /// `dumpsys notification` over adb — no companion app on the phone. On by
+    /// default, but disabled automatically if macOS notification permission is
+    /// denied.
     @Published var notificationForwardingEnabled: Bool =
-        (UserDefaults.standard.object(forKey: "MirrorBehavior.notificationForwardingEnabled") as? Bool) ?? false {
+        AppModel.defaultNotificationForwardingEnabled(
+            storedValue: UserDefaults.standard.object(forKey: AppModel.notificationForwardingDefaultsKey)
+        ) {
         didSet {
             UserDefaults.standard.set(
                 notificationForwardingEnabled,
-                forKey: "MirrorBehavior.notificationForwardingEnabled"
+                forKey: Self.notificationForwardingDefaultsKey
             )
             updateNotificationForwarding()
         }
@@ -283,6 +295,8 @@ final class AppModel: ObservableObject {
     private var mirrorSession: MirrorSession?
     private var lastMirrorWindowFrame: NSRect?
     private lazy var notificationForwarder = NotificationForwarder(model: self)
+    private let notificationAuthorizationRequester: NotificationAuthorizationRequester
+    private var isRequestingNotificationAuthorization = false
     private var lastPresenceAutoConnectAttemptAt: Date?
     private var failedAutoConnectTargets: [String: Date] = [:]
     /// Authorized adb serials seen on the previous device-watcher poll. Lets us
@@ -406,8 +420,10 @@ final class AppModel: ObservableObject {
 
     init(
         startBackgroundServices: Bool = AppModel.defaultStartBackgroundServices,
-        pairedPhones previewPairedPhones: [PairedPhoneRecord]? = nil
+        pairedPhones previewPairedPhones: [PairedPhoneRecord]? = nil,
+        notificationAuthorizationRequester: @escaping NotificationAuthorizationRequester = AppModel.requestNotificationAuthorization
     ) {
+        self.notificationAuthorizationRequester = notificationAuthorizationRequester
         pairedPhones = previewPairedPhones ?? store.load()
         if let mostRecentRecord = Self.recordsByMostRecent(pairedPhones).first {
             select(record: mostRecentRecord)
@@ -433,7 +449,7 @@ final class AppModel: ObservableObject {
     /// current setting. The poller self-idles until a real device is connected.
     private func updateNotificationForwarding() {
         if notificationForwardingEnabled {
-            notificationForwarder.start()
+            requestNotificationAuthorizationAndStartForwarding()
         } else {
             notificationForwarder.stop()
         }
@@ -443,6 +459,70 @@ final class AppModel: ObservableObject {
     /// triggers the native macOS notification permission prompt immediately.
     func enableNotificationForwardingFromOnboarding() {
         notificationForwardingEnabled = true
+    }
+
+    private func requestNotificationAuthorizationAndStartForwarding() {
+        guard !isRequestingNotificationAuthorization else { return }
+        isRequestingNotificationAuthorization = true
+        notificationAuthorizationRequester { [weak self] granted, error in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.isRequestingNotificationAuthorization = false
+
+                if let error {
+                    Logger.log("Notification authorization error: \(error.localizedDescription)")
+                }
+
+                guard granted else {
+                    Logger.log("Notification authorization denied; disabling notification forwarding.")
+                    if self.notificationForwardingEnabled {
+                        self.notificationForwardingEnabled = false
+                    } else {
+                        self.notificationForwarder.stop()
+                    }
+                    self.scheduleNotificationAuthorizationRecheck()
+                    return
+                }
+
+                guard self.notificationForwardingEnabled else {
+                    self.notificationForwarder.stop()
+                    return
+                }
+                self.notificationForwarder.start()
+            }
+        }
+    }
+
+    /// A rebuilt (re-signed) app's first authorization request can come back
+    /// denied even though the user approves the system prompt moments later —
+    /// macOS answers from the stale identity. One delayed recheck re-enables
+    /// forwarding so the user doesn't have to dig the toggle out of Settings
+    /// after every rebuild.
+    private func scheduleNotificationAuthorizationRecheck() {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            guard let self, !self.notificationForwardingEnabled else { return }
+            let status = await Self.currentNotificationAuthorizationStatus()
+            guard status == .authorized else { return }
+            Logger.log("Notification authorization recovered; re-enabling forwarding.")
+            self.notificationForwardingEnabled = true
+        }
+    }
+
+    private nonisolated static func currentNotificationAuthorizationStatus() async -> UNAuthorizationStatus {
+        await withCheckedContinuation { continuation in
+            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                continuation.resume(returning: settings.authorizationStatus)
+            }
+        }
+    }
+
+    private nonisolated static func requestNotificationAuthorization(
+        completion: @escaping (Bool, Error?) -> Void
+    ) {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+            completion(granted, error)
+        }
     }
 
     deinit {
@@ -2089,7 +2169,13 @@ final class AppModel: ObservableObject {
         ]
     }
 
-    func openSourceAppFromForwardedNotification(package: String, serial notificationSerial: String?) {
+    func openSourceAppFromForwardedNotification(
+        package: String,
+        serial notificationSerial: String?,
+        notificationKey: String? = nil,
+        title: String? = nil,
+        text: String? = nil
+    ) {
         let package = package.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !package.isEmpty else { return }
 
@@ -2101,12 +2187,352 @@ final class AppModel: ObservableObject {
         }
 
         let args = Self.launchSourceAppArguments(serial: serial, package: package)
-        Task.detached(priority: .userInitiated) {
+        // Serialized: two banner clicks in quick succession must not interleave
+        // (the first flow's shade collapse would yank the shade out from under
+        // the second flow's screenshot).
+        Self.forwardedNotificationTapQueue.async {
+            if Self.tapForwardedNotificationInShade(
+                serial: serial,
+                notificationKey: notificationKey,
+                title: title,
+                text: text
+            ) {
+                return
+            }
+
             let result = Tooling.runResult("adb", arguments: args, timeout: 5)
             if !result.succeeded {
                 Logger.log("Could not open notification source app package=\(package): \(result.output)")
             }
         }
+    }
+
+    private nonisolated static let forwardedNotificationTapQueue = DispatchQueue(
+        label: "android-mirroring.notification-tap",
+        qos: .userInitiated
+    )
+
+    /// A line of text recognized on a phone screenshot, with its tap point in
+    /// physical screen pixels (the same space `input tap` uses).
+    struct ShadeTextLine: Equatable {
+        var text: String
+        var center: CGPoint
+    }
+
+    /// Opens a forwarded notification by genuinely tapping its row in the
+    /// expanded shade, which fires the notification's real `contentIntent` —
+    /// extras and all — so a tweet opens the tweet, a chat opens the chat.
+    ///
+    /// The row is located by screenshotting the shade and running Vision OCR on
+    /// the Mac, not `uiautomator dump`: dumping waits for the UI to go idle and
+    /// any constantly-updating notification (data-speed meters, media progress)
+    /// makes it fail with "could not get idle state" after ~12 s.
+    ///
+    /// Tapping a collapsed group only expands it, so up to three OCR/tap passes
+    /// run until window focus leaves the shade. On failure the shade is
+    /// collapsed again so the user is never left staring at the notification
+    /// tree, and the caller falls back to launching the source app.
+    nonisolated static func tapForwardedNotificationInShade(
+        serial: String,
+        notificationKey: String?,
+        title: String?,
+        text: String?
+    ) -> Bool {
+        let title = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let text = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !title.isEmpty || !text.isEmpty else { return false }
+
+        _ = Tooling.runResult(
+            "adb",
+            arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"],
+            timeout: 2
+        )
+        // The keyguard's `showing=` flag lags the wakeup by a beat (Samsung
+        // reports false while the display is off); give it a moment so a
+        // locked phone isn't misread as unlocked.
+        Thread.sleep(forTimeInterval: 0.4)
+
+        // A locked phone shows the lockscreen shade, where content is hidden
+        // from the screenshot and taps would bounce off the keyguard anyway.
+        // Dismiss a swipe keyguard outright; for a secure one this raises the
+        // bouncer (visible in the mirror), so wait for the user to unlock.
+        if keyguardIsShowing(serial: serial) {
+            _ = Tooling.runResult(
+                "adb",
+                arguments: ["-s", serial, "shell", "wm", "dismiss-keyguard"],
+                timeout: 2
+            )
+            let unlockDeadline = Date().addingTimeInterval(15)
+            while keyguardIsShowing(serial: serial), Date() < unlockDeadline {
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+            guard !keyguardIsShowing(serial: serial) else {
+                Logger.log("Phone stayed locked; launching the source app instead for key=\(notificationKey ?? "")")
+                return false
+            }
+        }
+
+        let expand = Tooling.runResult(
+            "adb",
+            arguments: ["-s", serial, "shell", "cmd", "statusbar", "expand-notifications"],
+            timeout: 2
+        )
+        guard expand.succeeded else {
+            Logger.log("Could not expand notification shade for forwarded notification key=\(notificationKey ?? ""): \(expand.output)")
+            return false
+        }
+
+        var tappedAtLeastOnce = false
+        var scrolledShade = false
+        for pass in 1...3 {
+            Thread.sleep(forTimeInterval: pass == 1 ? 0.8 : 0.6)
+            guard let screenshot = capturePhoneScreenPNG(serial: serial) else {
+                Logger.log("Could not capture phone screen for forwarded notification key=\(notificationKey ?? "")")
+                break
+            }
+            let lines = recognizedTextLines(inPNG: screenshot)
+            guard let point = forwardedNotificationTapPoint(in: lines, title: title, text: text) else {
+                // A previous tap may have landed while the shade was still
+                // animating closed when we checked focus; recheck before giving
+                // up. Otherwise the first pass may simply have raced the shade
+                // animation, so look once more.
+                if tappedAtLeastOnce, !notificationShadeIsFocused(serial: serial) {
+                    Logger.log("Opened forwarded notification content key=\(notificationKey ?? "")")
+                    return true
+                }
+                if pass == 1 { continue }
+                // The row may sit below the fold of a full shade; scroll once
+                // and take a final look before giving up.
+                if !scrolledShade, !tappedAtLeastOnce, pass == 2,
+                   let size = pngPixelSize(screenshot) {
+                    scrolledShade = true
+                    let x = Int(size.width / 2)
+                    _ = Tooling.runResult(
+                        "adb",
+                        arguments: [
+                            "-s", serial, "shell", "input", "swipe",
+                            "\(x)", "\(Int(size.height * 0.72))",
+                            "\(x)", "\(Int(size.height * 0.30))",
+                            "250"
+                        ],
+                        timeout: 2
+                    )
+                    continue
+                }
+                Logger.log("Forwarded notification was not visible in notification shade key=\(notificationKey ?? "")")
+                break
+            }
+
+            let tap = Tooling.runResult(
+                "adb",
+                arguments: [
+                    "-s", serial,
+                    "shell",
+                    "input", "tap",
+                    "\(Int(point.x.rounded()))",
+                    "\(Int(point.y.rounded()))"
+                ],
+                timeout: 2
+            )
+            guard tap.succeeded else {
+                Logger.log("Could not tap forwarded notification key=\(notificationKey ?? ""): \(tap.output)")
+                break
+            }
+            tappedAtLeastOnce = true
+            Thread.sleep(forTimeInterval: 0.6)
+            if !notificationShadeIsFocused(serial: serial) {
+                Logger.log("Opened forwarded notification content key=\(notificationKey ?? "")")
+                return true
+            }
+        }
+
+        // Never leave the user staring at a pulled-down shade after a failure.
+        _ = Tooling.runResult(
+            "adb",
+            arguments: ["-s", serial, "shell", "cmd", "statusbar", "collapse"],
+            timeout: 2
+        )
+        return false
+    }
+
+    /// Picks the recognized line that best matches the forwarded notification.
+    /// The message text is the strong signal — it identifies one specific
+    /// notification — while the title is weaker evidence (sender names and app
+    /// labels repeat across rows), so title-only matches are discounted.
+    nonisolated static func forwardedNotificationTapPoint(
+        in lines: [ShadeTextLine],
+        title: String?,
+        text: String?
+    ) -> CGPoint? {
+        let titleTokens = matchTokens(title ?? "")
+        let textTokens = matchTokens(text ?? "")
+        guard !titleTokens.isEmpty || !textTokens.isEmpty else { return nil }
+
+        var best: (score: Double, point: CGPoint)?
+        for line in lines {
+            let candidateTokens = matchTokens(line.text)
+            guard !candidateTokens.isEmpty else { continue }
+            let score = max(
+                tokenRunScore(label: textTokens, candidate: candidateTokens),
+                tokenRunScore(label: titleTokens, candidate: candidateTokens) * 0.8
+            )
+            if score >= 0.5, score > (best?.score ?? 0) {
+                best = (score, line.center)
+            }
+        }
+        return best?.point
+    }
+
+    /// Lowercased alphanumeric words. Emoji and punctuation — and whatever OCR
+    /// renders them as — collapse into separators, so the dumpsys-sourced
+    /// notification text and the on-screen text align.
+    nonisolated static func matchTokens(_ value: String) -> [String] {
+        value.lowercased()
+            .split(whereSeparator: { !($0.isLetter || $0.isNumber) })
+            .map(String.init)
+    }
+
+    /// Longest run of consecutive label tokens appearing contiguously in the
+    /// candidate, scaled against how much of the label can plausibly be visible
+    /// (the shade truncates long texts after roughly one line, so a capped
+    /// denominator keeps truncated rows scoring high). 1.0 means fully present.
+    nonisolated static func tokenRunScore(label: [String], candidate: [String]) -> Double {
+        guard !label.isEmpty, !candidate.isEmpty else { return 0 }
+        var longest = 0
+        for start in candidate.indices {
+            for labelStart in label.indices {
+                var length = 0
+                while start + length < candidate.count,
+                      labelStart + length < label.count,
+                      candidate[start + length] == label[labelStart + length] {
+                    length += 1
+                }
+                longest = max(longest, length)
+            }
+        }
+        guard longest >= min(2, label.count) else { return 0 }
+        return min(1, Double(longest) / Double(min(label.count, 8)))
+    }
+
+    /// Vision loads its text-recognition models lazily and the first request in
+    /// a process can take several seconds; recognizing one tiny synthetic image
+    /// up front moves that cost to app startup so the first real notification
+    /// click stays fast.
+    nonisolated static func warmUpTextRecognition() {
+        let width = 120
+        let height = 40
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return }
+        context.setFillColor(CGColor.white)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let attributed = NSAttributedString(string: "warm up", attributes: [
+            .font: NSFont.systemFont(ofSize: 18),
+            .foregroundColor: NSColor.black
+        ])
+        context.textPosition = CGPoint(x: 8, y: 12)
+        CTLineDraw(CTLineCreateWithAttributedString(attributed), context)
+        guard let image = context.makeImage() else { return }
+
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+    }
+
+    /// OCRs a phone screenshot into tappable text lines. Lines in the status
+    /// bar strip (top 5%) and the shade's bottom action row (Clear /
+    /// Notification settings) are dropped so a stray match can't tap them.
+    nonisolated static func recognizedTextLines(inPNG data: Data) -> [ShadeTextLine] {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            return []
+        }
+        let width = CGFloat(image.width)
+        let height = CGFloat(image.height)
+
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+        guard (try? handler.perform([request])) != nil else { return [] }
+
+        return (request.results ?? []).compactMap { observation in
+            guard let candidate = observation.topCandidates(1).first else { return nil }
+            let box = observation.boundingBox
+            // Vision reports normalized bottom-left boxes; taps use top-left pixels.
+            let center = CGPoint(x: box.midX * width, y: (1 - box.midY) * height)
+            guard center.y > height * 0.05, center.y < height * 0.93 else { return nil }
+            return ShadeTextLine(text: candidate.string, center: center)
+        }
+    }
+
+    private nonisolated static func capturePhoneScreenPNG(serial: String) -> Data? {
+        guard let adbPath = Tooling.toolPath(named: "adb") else { return nil }
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: adbPath)
+        process.arguments = ["-s", serial, "exec-out", "screencap", "-p"]
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return data.isEmpty ? nil : data
+    }
+
+    /// The shade window holds focus (`NotificationShade` on Android 11+,
+    /// `StatusBar` before) until a tapped row's content intent fires.
+    private nonisolated static func notificationShadeIsFocused(serial: String) -> Bool {
+        let result = Tooling.runResult(
+            "adb",
+            arguments: ["-s", serial, "shell", "dumpsys window | grep mCurrentFocus"],
+            timeout: 3
+        )
+        guard result.succeeded else { return false }
+        return result.output.contains("NotificationShade") || result.output.contains("StatusBar")
+    }
+
+    /// Whether the lockscreen is up or the device still needs credentials.
+    /// Two signals because each lags differently: the KeyguardServiceDelegate
+    /// `showing=` flag (leading space distinguishes it from
+    /// `showingAndNotOccluded=`) reads false while the display is off, and
+    /// `deviceLocked=` stays 0 on swipe-only keyguards. Parse failures count
+    /// as unlocked so the tap flow degrades to its normal fallback path.
+    private nonisolated static func keyguardIsShowing(serial: String) -> Bool {
+        let policy = Tooling.runResult(
+            "adb",
+            arguments: ["-s", serial, "shell", "dumpsys window policy | grep ' showing='"],
+            timeout: 3
+        )
+        if policy.succeeded, policy.output.contains("showing=true") {
+            return true
+        }
+        let trust = Tooling.runResult(
+            "adb",
+            arguments: ["-s", serial, "shell", "dumpsys trust | grep deviceLocked="],
+            timeout: 3
+        )
+        return trust.succeeded && trust.output.contains("deviceLocked=1")
+    }
+
+    private nonisolated static func pngPixelSize(_ data: Data) -> CGSize? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+              let height = properties[kCGImagePropertyPixelHeight] as? CGFloat
+        else { return nil }
+        return CGSize(width: width, height: height)
     }
 
     private func launchNativeMirror(serial: String?) {

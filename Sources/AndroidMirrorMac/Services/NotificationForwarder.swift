@@ -20,6 +20,9 @@ final class NotificationForwarder {
     enum UserInfoKey {
         static let sourcePackage = "androidMirrorMac.sourcePackage"
         static let deviceSerial = "androidMirrorMac.deviceSerial"
+        static let notificationKey = "androidMirrorMac.notificationKey"
+        static let notificationTitle = "androidMirrorMac.notificationTitle"
+        static let notificationText = "androidMirrorMac.notificationText"
     }
 
     /// One active Android notification, distilled from the dumpsys text dump.
@@ -52,7 +55,6 @@ final class NotificationForwarder {
     private var seenOrder = [String]()
     private var baselineSerial: String?
     private var hasBaseline = false
-    private var didRequestAuthorization = false
     private var iconAttachmentCache: [String: URL] = [:]
 
     /// Cadence while a device is connected. `dumpsys notification` is cheap on a
@@ -69,7 +71,18 @@ final class NotificationForwarder {
 
     func start() {
         guard task == nil else { return }
-        requestAuthorizationIfNeeded()
+        // Re-signing or re-bundling the app resets its Notification Center
+        // identity, after which posts fail silently; logging the status at
+        // every start makes that visible in the log instead of a mystery.
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            Logger.log("Notification forwarding starting authorizationStatus=\(settings.authorizationStatus.rawValue) alertSetting=\(settings.alertSetting.rawValue)")
+        }
+        // Pre-load Vision's OCR models so the first click on a forwarded
+        // banner can locate the notification in the shade without a
+        // several-second model-load stall.
+        Task.detached(priority: .utility) {
+            AppModel.warmUpTextRecognition()
+        }
         task = Task { [weak self] in
             await self?.runLoop()
         }
@@ -147,9 +160,16 @@ final class NotificationForwarder {
            ) {
             content.attachments = [attachment]
         }
+        let pkg = entry.pkg
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        )
+        ) { error in
+            // Without this, an unauthorized identity (fresh signature/bundle
+            // id) drops every banner with no trace in the log.
+            if let error {
+                Logger.log("Notification delivery failed pkg=\(pkg): \(error.localizedDescription)")
+            }
+        }
         Logger.log("Forwarded notification pkg=\(entry.pkg) title=\(entry.title.prefix(40))")
     }
 
@@ -163,7 +183,12 @@ final class NotificationForwarder {
         if !entry.text.isEmpty { content.body = entry.text }
         // Group banners by source app in Notification Center.
         content.threadIdentifier = entry.pkg
-        var userInfo: [String: String] = [UserInfoKey.sourcePackage: entry.pkg]
+        var userInfo: [String: String] = [
+            UserInfoKey.sourcePackage: entry.pkg,
+            UserInfoKey.notificationKey: entry.key,
+            UserInfoKey.notificationTitle: entry.title,
+            UserInfoKey.notificationText: entry.text
+        ]
         if let serial, !serial.isEmpty {
             userInfo[UserInfoKey.deviceSerial] = serial
         }
@@ -192,18 +217,6 @@ final class NotificationForwarder {
         guard let url = Self.buildIconAttachment(pkg: pkg, serial: serial) else { return nil }
         iconAttachmentCache[cacheKey] = url
         return url
-    }
-
-    private func requestAuthorizationIfNeeded() {
-        guard !didRequestAuthorization else { return }
-        didRequestAuthorization = true
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
-            if let error {
-                Logger.log("Notification authorization error: \(error.localizedDescription)")
-            } else if !granted {
-                Logger.log("Notification authorization denied; forwarding will be silent.")
-            }
-        }
     }
 
     // MARK: - adb fetch
@@ -391,19 +404,26 @@ final class NotificationForwarder {
     ///
     /// Strategy: a `NotificationRecord(0x…` line opens a record (carrying pkg,
     /// key, and flags); the first `android.title=`/`android.text=` line after it
-    /// supplies the content. First-wins, so the main `extras` block beats any
-    /// later `publicNotification` copy of the same keys.
+    /// supplies title/body, with `android.bigText` as a safe fallback when
+    /// `android.text` is missing/empty.
     nonisolated static func parse(_ dump: String) -> [Entry] {
         var entries: [Entry] = []
         var current: Entry?
         var haveTitle = false
         var haveText = false
+        var fallbackText: String?
 
         func flush() {
-            if let entry = current { entries.append(entry) }
+            if var entry = current {
+                if entry.text.isEmpty, let fallbackText, !fallbackText.isEmpty {
+                    entry.text = fallbackText
+                }
+                entries.append(entry)
+            }
             current = nil
             haveTitle = false
             haveText = false
+            fallbackText = nil
         }
 
         for rawLine in dump.split(whereSeparator: \.isNewline) {
@@ -417,12 +437,19 @@ final class NotificationForwarder {
                     text: "",
                     flags: hexValue(after: "flags=0x", in: line) ?? 0
                 )
+                fallbackText = nil
             } else if current != nil, !haveTitle, line.hasPrefix("android.title=") {
                 current?.title = bundleValue(line) ?? ""
                 haveTitle = true
             } else if current != nil, !haveText, line.hasPrefix("android.text=") {
-                current?.text = bundleValue(line) ?? ""
-                haveText = true
+                if let text = bundleValue(line), !text.isEmpty {
+                    current?.text = text
+                    haveText = true
+                }
+            } else if current != nil, !haveText, line.hasPrefix("android.bigText=") {
+                if let nextText = bundleValue(line), !nextText.isEmpty {
+                    fallbackText = nextText
+                }
             }
         }
         flush()

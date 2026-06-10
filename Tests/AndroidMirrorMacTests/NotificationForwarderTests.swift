@@ -36,6 +36,41 @@ final class NotificationForwarderTests: XCTestCase {
         XCTAssertTrue(AppModel.notificationPermissionReason.localizedCaseInsensitiveContains("device"))
     }
 
+    func testNotificationForwardingDefaultsOnWhenUnset() {
+        XCTAssertTrue(AppModel.defaultNotificationForwardingEnabled(storedValue: nil))
+    }
+
+    @MainActor
+    func testNotificationForwardingTurnsOffWhenPermissionIsDenied() async {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: AppModel.notificationForwardingDefaultsKey)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: AppModel.notificationForwardingDefaultsKey)
+            } else {
+                defaults.removeObject(forKey: AppModel.notificationForwardingDefaultsKey)
+            }
+        }
+        defaults.removeObject(forKey: AppModel.notificationForwardingDefaultsKey)
+
+        var requestCount = 0
+        let model = AppModel(
+            startBackgroundServices: false,
+            pairedPhones: [],
+            notificationAuthorizationRequester: { completion in
+                requestCount += 1
+                completion(false, nil)
+            }
+        )
+
+        model.notificationForwardingEnabled = true
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertFalse(model.notificationForwardingEnabled)
+        XCTAssertFalse(defaults.bool(forKey: AppModel.notificationForwardingDefaultsKey))
+    }
+
     func testParseExtractsHeaderAndContentFields() {
         let entries = NotificationForwarder.parse(dump)
         XCTAssertEqual(entries.count, 3)
@@ -54,6 +89,23 @@ final class NotificationForwarderTests: XCTestCase {
         let whatsapp = NotificationForwarder.parse(dump)[1]
         XCTAssertEqual(whatsapp.title, "Mom")
         XCTAssertEqual(whatsapp.text, "Dinner at 7?")
+    }
+
+    func testParseFallsBackToBigTextWhenTextIsMissing() {
+        let missingTextDump = """
+            NotificationRecord(0x061d2fbf: pkg=com.whatsapp user=UserHandle{0} id=-169 tag=null importance=4 key=0|com.whatsapp|-169|null|10279: Notification(channel=Messages shortcut=null contentView=null defaults=0x0 flags=0x10 color=0xff25d366 category=msg actions=1 vis=PRIVATE))
+                  uid=10279 userId=0
+                  extras={
+                      android.title=String (Mom)
+                      android.text=null
+                      android.bigText=String (Dinner at 7?)
+                  }
+            """
+
+        let parsed = NotificationForwarder.parse(missingTextDump)
+        XCTAssertEqual(parsed.count, 1)
+        XCTAssertEqual(parsed[0].title, "Mom")
+        XCTAssertEqual(parsed[0].text, "Dinner at 7?")
     }
 
     func testParseHandilesParenthesesInValue() {
@@ -183,6 +235,9 @@ final class NotificationForwarderTests: XCTestCase {
 
         XCTAssertEqual(content.userInfo[NotificationForwarder.UserInfoKey.sourcePackage] as? String, "com.whatsapp")
         XCTAssertEqual(content.userInfo[NotificationForwarder.UserInfoKey.deviceSerial] as? String, "ABC123")
+        XCTAssertEqual(content.userInfo[NotificationForwarder.UserInfoKey.notificationKey] as? String, "0|com.whatsapp|-169|null|10279")
+        XCTAssertEqual(content.userInfo[NotificationForwarder.UserInfoKey.notificationTitle] as? String, "Mom")
+        XCTAssertEqual(content.userInfo[NotificationForwarder.UserInfoKey.notificationText] as? String, "Dinner at 7?")
     }
 
     func testTitlelessNotificationFallsBackToAppNameWithSound() {
