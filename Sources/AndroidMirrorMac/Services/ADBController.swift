@@ -5,8 +5,42 @@ import Foundation
 struct ADBController: Sendable {
     private static let commandLock = NSLock()
 
+    /// adb subcommands that mutate daemon or transport state. Only these are
+    /// serialized, so concurrent connect/pair flows can't race the server.
+    /// Read-only queries (`devices`, `shell`, `mdns`) run unlocked — blocking
+    /// them behind a 5s `connect` to a dead address stalled the device
+    /// watcher and made USB plug-in detection feel slow.
+    nonisolated static let serializedCommands: Set<String> = [
+        "connect", "disconnect", "pair", "tcpip", "usb",
+        "reconnect", "kill-server", "start-server"
+    ]
+
+    /// The adb subcommand in an argument vector, skipping option flags and
+    /// their values (e.g. `["-s", "X", "tcpip", "5555"]` → `"tcpip"`).
+    nonisolated static func commandWord(in arguments: [String]) -> String? {
+        var skipNext = false
+        for argument in arguments {
+            if skipNext {
+                skipNext = false
+                continue
+            }
+            if argument == "-s" || argument == "-t" || argument == "-L" {
+                skipNext = true
+                continue
+            }
+            if argument.hasPrefix("-") { continue }
+            return argument
+        }
+        return nil
+    }
+
     @discardableResult
     func run(_ arguments: [String], timeout: TimeInterval? = nil) -> String {
+        guard let command = Self.commandWord(in: arguments),
+              Self.serializedCommands.contains(command)
+        else {
+            return Tooling.run("adb", arguments: arguments, timeout: timeout)
+        }
         Self.commandLock.lock()
         defer { Self.commandLock.unlock() }
         return Tooling.run("adb", arguments: arguments, timeout: timeout)
@@ -32,7 +66,9 @@ struct ADBController: Sendable {
     /// Use this before normal connect/pair flows; reserve `restartServer()` for
     /// explicit recovery because `kill-server` drops every active connection.
     func ensureServerStarted() async {
-        run(["start-server"], timeout: 2)
+        // A cold `adb start-server` regularly takes longer than 2s; killing it
+        // mid-spawn left connect flows racing a half-started daemon.
+        run(["start-server"], timeout: 6)
     }
 
     func mdnsServices() -> [DiscoveredPhone] {

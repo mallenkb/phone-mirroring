@@ -108,7 +108,7 @@ final class NotificationForwarderTests: XCTestCase {
         XCTAssertEqual(parsed[0].text, "Dinner at 7?")
     }
 
-    func testParseHandilesParenthesesInValue() {
+    func testParseHandlesParenthesesInValue() {
         let uber = NotificationForwarder.parse(dump)[2]
         XCTAssertEqual(uber.title, "Uber")
         XCTAssertEqual(uber.text, "Arriving now (2 min away)")

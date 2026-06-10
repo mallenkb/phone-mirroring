@@ -21,7 +21,8 @@ final class MirrorSession {
     /// Stable enough range to avoid collisions across mirror sessions and any
     /// other adb usage. The actual port is picked by NWListener (port 0 is
     /// fine, but we want a deterministic forward, so pick one in this band).
-    private static var nextPortOffset: UInt16 = 0
+    /// Random start so a second app instance doesn't race for the same ports.
+    private static var nextPortOffset = UInt16.random(in: 0..<64)
     private static func allocatePort() -> UInt16 {
         let base: UInt16 = 37283
         let value = base + nextPortOffset

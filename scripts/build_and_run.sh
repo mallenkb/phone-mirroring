@@ -3,7 +3,9 @@ set -euo pipefail
 
 APP_NAME="Android Mirroring"
 PRODUCT_NAME="AndroidMirrorMac"
-BUNDLE_ID="org.example.AndroidMirrorMac"
+# Overridable so release builds can use a real reverse-DNS id without churning
+# the dev identity (Notification Center authorization is keyed to the id).
+BUNDLE_ID="${BUNDLE_ID:-org.example.AndroidMirrorMac}"
 APP_VERSION="${APP_VERSION:-0.1.0}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
@@ -124,6 +126,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
   <string>13.0</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Android Mirroring connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
 </dict>
 </plist>
 PLIST
@@ -138,7 +142,7 @@ sign_if_macho() {
 if command -v codesign >/dev/null 2>&1; then
   sign_if_macho "$EXECUTABLE_PATH"
   sign_if_macho "$BIN_DIR/adb"
-  codesign --force --deep --options runtime --sign - "$APP_BUNDLE"
+  codesign --force --options runtime --sign - "$APP_BUNDLE"
   codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 fi
 

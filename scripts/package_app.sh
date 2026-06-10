@@ -110,6 +110,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <string>13.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Android Mirroring connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
 </dict>
 </plist>
 PLIST
@@ -118,7 +120,7 @@ if command -v codesign >/dev/null 2>&1; then
   if [ -f "$HELPER_BIN_DIR/adb" ]; then
     codesign --force --sign "$SIGNING_IDENTITY" "$HELPER_BIN_DIR/adb"
   fi
-  codesign --force --deep --options runtime --sign "$SIGNING_IDENTITY" "$APP"
+  codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$APP"
   codesign --verify --deep --strict --verbose=2 "$APP"
 fi
 

@@ -119,21 +119,148 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertTrue(AppModel.shouldAttemptWirelessHandoff(from: usbDevice, preferUSBMirroring: false))
     }
 
-    func testManualUSBConnectDoesNotBlockOnWirelessHandoff() {
-        let usbDevice = AuthorizedADBDevice(
+    // When the same phone is live on both transports, auto-connect must take
+    // the wireless one — it mirrors immediately, no tcpip handoff round-trip.
+    func testRememberedAuthorizedDevicePrefersWirelessTransportOverUSB() {
+        let record = PairedPhoneRecord(
+            id: "TESTDEVICE001",
+            displayName: "Pixel",
+            lastAddress: "192.0.2.51:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let usb = AuthorizedADBDevice(
             serial: "TESTDEVICE001",
             product: "raven",
             model: "Pixel",
             isUSB: true
         )
+        let wireless = AuthorizedADBDevice(
+            serial: "192.0.2.51:5555",
+            product: "raven",
+            model: "Pixel",
+            isUSB: false
+        )
 
-        XCTAssertFalse(
-            AppModel.shouldAttemptWirelessHandoff(
-                from: usbDevice,
-                preferUSBMirroring: false,
-                isManualConnect: true
+        XCTAssertEqual(
+            AppModel.rememberedAuthorizedDevice(for: record, in: [usb, wireless]),
+            wireless
+        )
+        XCTAssertEqual(
+            AppModel.rememberedAuthorizedDevice(for: record, in: [usb]),
+            usb
+        )
+    }
+
+    func testOutputIndicatesLocalNetworkBlocked() {
+        XCTAssertTrue(
+            AppModel.outputIndicatesLocalNetworkBlocked(
+                "failed to connect to '192.0.2.50:5555': No route to host"
             )
         )
+        XCTAssertFalse(
+            AppModel.outputIndicatesLocalNetworkBlocked(
+                "failed to connect to '192.0.2.50:5555': Connection refused"
+            )
+        )
+        XCTAssertFalse(AppModel.outputIndicatesLocalNetworkBlocked("connected to 192.0.2.50:5555"))
+    }
+
+    // "No route to host" on every attempt is how a denied macOS Local Network
+    // permission presents; the readiness result must carry that signal up so
+    // the app can tell the user instead of failing silently forever.
+    func testWaitForWirelessTargetReadinessFlagsNoRouteToHost() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AndroidMirrorMacTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            unsetenv("ANDROID_MIRROR_ADB_PATH")
+        }
+
+        let fakeADB = directory.appendingPathComponent("adb")
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "connect" ]; then
+          echo "failed to connect to '$2': No route to host"
+          exit 0
+        fi
+        exit 0
+        """
+        try script.write(to: fakeADB, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fakeADB.path
+        )
+        setenv("ANDROID_MIRROR_ADB_PATH", fakeADB.path, 1)
+
+        let readiness = await AppModel.waitForADBWirelessTargetReadiness(
+            adb: ADBController(),
+            address: "192.0.2.57:5555",
+            attempts: 2,
+            delayNanoseconds: 1
+        )
+
+        XCTAssertFalse(readiness.isReady)
+        XCTAssertTrue(readiness.sawNoRouteToHost)
+    }
+
+    func testWaitForWirelessTargetReadinessDoesNotFlagOrdinaryFailures() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AndroidMirrorMacTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            unsetenv("ANDROID_MIRROR_ADB_PATH")
+        }
+
+        let fakeADB = directory.appendingPathComponent("adb")
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "connect" ]; then
+          echo "failed to connect to '$2': Connection refused"
+          exit 0
+        fi
+        exit 0
+        """
+        try script.write(to: fakeADB, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fakeADB.path
+        )
+        setenv("ANDROID_MIRROR_ADB_PATH", fakeADB.path, 1)
+
+        let readiness = await AppModel.waitForADBWirelessTargetReadiness(
+            adb: ADBController(),
+            address: "192.0.2.57:5555",
+            attempts: 2,
+            delayNanoseconds: 1
+        )
+
+        XCTAssertFalse(readiness.isReady)
+        XCTAssertFalse(readiness.sawNoRouteToHost)
+    }
+
+    // A transport that is merely settling (post-connect handshake, trust
+    // prompt) must not be disconnected between readiness attempts — that
+    // restarts the very handshake being waited out.
+    func testShouldDropStaleWirelessTransportLeavesSettlingTransportsAlone() {
+        XCTAssertFalse(
+            AppModel.shouldDropStaleWirelessTransport(
+                shellOutput: "adb: device offline"
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldDropStaleWirelessTransport(
+                shellOutput: "error: device unauthorized.\nThis adb server's $ADB_VENDOR_KEYS is not set"
+            )
+        )
+        XCTAssertTrue(
+            AppModel.shouldDropStaleWirelessTransport(
+                shellOutput: "error: closed"
+            )
+        )
+        XCTAssertTrue(AppModel.shouldDropStaleWirelessTransport(shellOutput: ""))
     }
 
     func testRememberedAuthorizedDeviceFallsBackToSpecificModelName() {

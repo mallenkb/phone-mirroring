@@ -81,7 +81,7 @@ final class NotificationForwarder {
         // banner can locate the notification in the shade without a
         // several-second model-load stall.
         Task.detached(priority: .utility) {
-            AppModel.warmUpTextRecognition()
+            NotificationTapService.warmUpTextRecognition()
         }
         task = Task { [weak self] in
             await self?.runLoop()
@@ -170,7 +170,9 @@ final class NotificationForwarder {
                 Logger.log("Notification delivery failed pkg=\(pkg): \(error.localizedDescription)")
             }
         }
-        Logger.log("Forwarded notification pkg=\(entry.pkg) title=\(entry.title.prefix(40))")
+        // Log the key, never the title/text: message previews must not end up
+        // in the plaintext log file users share when reporting bugs.
+        Logger.log("Forwarded notification pkg=\(entry.pkg) key=\(entry.key)")
     }
 
     /// Builds the macOS notification for a forwarded entry. A default sound is

@@ -136,6 +136,77 @@ final class PairedPhoneStoreTests: XCTestCase {
         XCTAssertEqual(updated[0].lastConnected, later)
     }
 
+    // Mirroring over the cable must not erase the remembered Wi-Fi address —
+    // it is what launch/presence auto-reconnect dial after the cable comes out.
+    func testTouchWithUSBSerialPreservesRememberedWirelessAddress() {
+        let wireless = store.touch(
+            [],
+            id: "192.0.2.51:5555",
+            displayName: "SM S906B",
+            address: "192.0.2.51:5555",
+            now: referenceDate
+        )
+        let later = referenceDate.addingTimeInterval(3600)
+
+        let touchedOverUSB = store.touch(
+            wireless,
+            id: "RFTESTSERIAL",
+            displayName: "SM S906B",
+            address: "RFTESTSERIAL",
+            now: later
+        )
+
+        XCTAssertEqual(touchedOverUSB.count, 1)
+        XCTAssertEqual(touchedOverUSB[0].lastAddress, "192.0.2.51:5555")
+        XCTAssertEqual(touchedOverUSB[0].id, "RFTESTSERIAL")
+        XCTAssertEqual(touchedOverUSB[0].lastConnected, later)
+    }
+
+    func testTouchWithNewWirelessAddressReplacesOldOne() {
+        let wireless = store.touch(
+            [],
+            id: "192.0.2.51:5555",
+            displayName: "SM S906B",
+            address: "192.0.2.51:5555",
+            now: referenceDate
+        )
+
+        let moved = store.touch(
+            wireless,
+            id: "192.0.2.77:5555",
+            displayName: "SM S906B",
+            address: "192.0.2.77:5555",
+            now: referenceDate.addingTimeInterval(3600)
+        )
+
+        XCTAssertEqual(moved.count, 1)
+        XCTAssertEqual(moved[0].lastAddress, "192.0.2.77:5555")
+    }
+
+    func testPreferredLastAddressKeepsWirelessOverBareSerial() {
+        XCTAssertEqual(
+            PairedPhoneStore.preferredLastAddress(
+                incoming: "RFTESTSERIAL",
+                existing: ["192.0.2.51:5555"]
+            ),
+            "192.0.2.51:5555"
+        )
+        XCTAssertEqual(
+            PairedPhoneStore.preferredLastAddress(
+                incoming: "192.0.2.77:5555",
+                existing: ["192.0.2.51:5555"]
+            ),
+            "192.0.2.77:5555"
+        )
+        XCTAssertEqual(
+            PairedPhoneStore.preferredLastAddress(
+                incoming: "RFTESTSERIAL",
+                existing: ["OTHERSERIAL"]
+            ),
+            "RFTESTSERIAL"
+        )
+    }
+
     func testRoundTripCoding() throws {
         let record = PairedPhoneRecord(
             id: "phone-1",
@@ -182,6 +253,45 @@ final class PairedPhoneStoreTests: XCTestCase {
             PairedPhoneStore(primaryDefaults: primaryDefaults, suiteNames: []).load(),
             [record]
         )
+        // The legacy suite is drained by the migration, not left as a stale copy.
+        XCTAssertEqual(
+            PairedPhoneStore(primaryDefaults: compatibilityDefaults, suiteNames: []).load(),
+            []
+        )
+    }
+
+    func testRemovedPhoneDoesNotResurrectFromLegacySuite() {
+        let primarySuite = "AndroidMirrorMacTests.primary.\(UUID().uuidString)"
+        let compatibilitySuite = "AndroidMirrorMacTests.compat.\(UUID().uuidString)"
+        defer {
+            UserDefaults.standard.removePersistentDomain(forName: primarySuite)
+            UserDefaults.standard.removePersistentDomain(forName: compatibilitySuite)
+        }
+        guard let primaryDefaults = UserDefaults(suiteName: primarySuite),
+              let compatibilityDefaults = UserDefaults(suiteName: compatibilitySuite)
+        else {
+            return XCTFail("Expected test UserDefaults suites to be available")
+        }
+
+        let record = PairedPhoneRecord(
+            id: "phone-1",
+            displayName: "Pixel",
+            lastAddress: "198.51.100.5:5555",
+            firstPaired: referenceDate,
+            lastConnected: referenceDate
+        )
+        PairedPhoneStore(primaryDefaults: compatibilityDefaults, suiteNames: [])
+            .save([record])
+
+        let store = PairedPhoneStore(
+            primaryDefaults: primaryDefaults,
+            suiteNames: [compatibilitySuite]
+        )
+        XCTAssertEqual(store.load(), [record])
+
+        store.save(store.removing(record.id, from: [record]))
+
+        XCTAssertEqual(store.load(), [], "deleted phone must stay deleted across reloads")
     }
 
     func testLoadDeduplicatesSpecificDeviceNameAndKeepsLatestPort() {
@@ -255,7 +365,7 @@ final class PairedPhoneStoreTests: XCTestCase {
         XCTAssertEqual(loaded[0].lastConnected, referenceDate.addingTimeInterval(3600))
     }
 
-    func testSaveWritesRecordToCompatibilitySuite() {
+    func testSaveWritesOnlyToPrimaryDefaults() {
         let primarySuite = "AndroidMirrorMacTests.primary.\(UUID().uuidString)"
         let compatibilitySuite = "AndroidMirrorMacTests.compat.\(UUID().uuidString)"
         defer {
@@ -283,9 +393,11 @@ final class PairedPhoneStoreTests: XCTestCase {
         store.save([record])
 
         XCTAssertEqual(
-            PairedPhoneStore(primaryDefaults: compatibilityDefaults, suiteNames: []).load(),
+            PairedPhoneStore(primaryDefaults: primaryDefaults, suiteNames: []).load(),
             [record]
         )
+        // Abandoned domains must not keep accumulating device names/addresses.
+        XCTAssertNil(compatibilityDefaults.data(forKey: PairedPhoneStore.defaultsKey))
     }
 
     func testClearRemovesRecordsFromPrimaryAndCompatibilitySuites() {
@@ -314,6 +426,9 @@ final class PairedPhoneStoreTests: XCTestCase {
         )
 
         store.save([record])
+        // Seed the legacy suite directly so clearAll's suite sweep is exercised.
+        PairedPhoneStore(primaryDefaults: compatibilityDefaults, suiteNames: [])
+            .save([record])
         store.clearAll()
 
         XCTAssertEqual(store.load(), [])

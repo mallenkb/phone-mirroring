@@ -2,9 +2,7 @@ import SwiftUI
 import AppKit
 import Foundation
 import Darwin
-import ImageIO
 import UserNotifications
-import Vision
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -299,10 +297,15 @@ final class AppModel: ObservableObject {
     private var isRequestingNotificationAuthorization = false
     private var lastPresenceAutoConnectAttemptAt: Date?
     private var failedAutoConnectTargets: [String: Date] = [:]
+    private var hasShownLocalNetworkPermissionHint = false
     /// Authorized adb serials seen on the previous device-watcher poll. Lets us
     /// fire an immediate connect the instant a *new* device appears, instead of
     /// waiting out the presence throttle.
     private var previousAuthorizedSerials: Set<String> = []
+    /// Serial of the USB phone the watcher last attempted a Wi-Fi handoff for.
+    /// Prevents a handoff (or its USB fallback) from re-firing every poll while
+    /// the same cable stays plugged in; cleared when the cable is removed.
+    private var lastUSBHandoffSerial: String?
     /// On launch we keep the status indicator on "Connecting" until this moment,
     /// so opening the app reads as "finding your last device" rather than
     /// "Offline" while the first reconnect attempts run.
@@ -610,7 +613,7 @@ final class AppModel: ObservableObject {
 
                 let authorizedDevice = self.preferUSBMirroring
                     ? authorizedDevices.first(where: \.isUSB) ?? authorizedDevices.first
-                    : authorizedDevices.first
+                    : authorizedDevices.first(where: { !$0.isUSB }) ?? authorizedDevices.first
                 if let authorizedDevice {
                     await self.mirrorAuthorizedDevicePreferringWireless(authorizedDevice)
                     return
@@ -662,13 +665,21 @@ final class AppModel: ObservableObject {
         let adb = self.adb
         Task { [weak self] in
             await adb.ensureServerStarted()
-            let ready = await Self.waitForADBWirelessTargetReady(
+            // 4 attempts ≈ 3s: a phone that is advertising over mDNS is awake,
+            // but its transport can sit in "offline" for a beat after connect.
+            // Giving up too early put good targets into the failure cooldown,
+            // which read as "the app never auto-connects".
+            let readiness = await Self.waitForADBWirelessTargetReadiness(
                 adb: adb,
                 address: address,
-                attempts: 2
+                attempts: 4
             )
+            let ready = readiness.isReady
 
             guard let self else { return }
+            if readiness.sawNoRouteToHost {
+                self.presentLocalNetworkPermissionHint()
+            }
             if ready {
                 self.failedAutoConnectTargets.removeValue(forKey: address)
                 let deviceName = await Self.connectedDeviceName(adb: adb, serial: address, fallback: label)
@@ -689,7 +700,22 @@ final class AppModel: ObservableObject {
         guard !isMirroring, !isPairing else { return }
 
         if device.isUSB {
-            startMirroringOverUSB(device, manual: false)
+            guard Self.shouldAttemptWirelessHandoff(
+                from: device,
+                preferUSBMirroring: preferUSBMirroring
+            ) else {
+                startMirroringOverUSB(device, manual: false)
+                return
+            }
+
+            isPairing = true
+            let startedWirelessMirror = await prepareWirelessMirror(from: device)
+            if !startedWirelessMirror, !isMirroring {
+                // No usable Wi-Fi route (hotspot, isolated network, …): mirror
+                // over the cable instead of dead-ending. The next plug-in
+                // retries the handoff automatically.
+                startMirroringOverUSB(device, manual: false)
+            }
             return
         }
 
@@ -773,6 +799,13 @@ final class AppModel: ObservableObject {
         guard let wirelessRecord = records.first(where: Self.isWirelessRecord) else {
             return
         }
+        // The same 20s cooldown the mDNS path gets: an unreachable saved
+        // address (phone asleep, off-network, or Local Network permission
+        // denied) must not be redialed every presence poll — that's the
+        // "reconnecting all the time" churn.
+        guard !isAutoConnectAddressCoolingDown(wirelessRecord.lastAddress) else {
+            return
+        }
 
         lastPresenceAutoConnectAttemptAt = Date()
         let adb = self.adb
@@ -782,11 +815,13 @@ final class AppModel: ObservableObject {
                 savedAddress: wirelessRecord.lastAddress
             )
 
-            guard let self,
-                  !self.isMirroring,
-                  !self.isPairing,
-                  let connectedAddress
-            else { return }
+            guard let self, !self.isMirroring, !self.isPairing else { return }
+            guard let connectedAddress else {
+                self.noteAutoConnectFailure(address: wirelessRecord.lastAddress)
+                return
+            }
+            self.failedAutoConnectTargets.removeValue(forKey: wirelessRecord.lastAddress)
+            self.failedAutoConnectTargets.removeValue(forKey: connectedAddress)
 
             let deviceName = await Self.connectedDeviceName(
                 adb: adb,
@@ -863,6 +898,27 @@ final class AppModel: ObservableObject {
                     livePhones: self.discoveredPhones
                 )
                 self.refreshAutoConnectingState(authorized: authorized)
+
+                // USB → Wi-Fi handoff: the moment an authorized USB phone shows
+                // up while idle, silently promote it to `tcpip 5555` and mirror
+                // over Wi-Fi so the cable can come right back out. Falls back to
+                // mirroring over the cable when no Wi-Fi route works. Never
+                // fires mid-session, and never twice for the same plug-in.
+                if !self.preferUSBMirroring, !self.isMirroring, !self.isPairing {
+                    if let usbDevice = Self.usbHandoffCandidate(
+                        in: output,
+                        lastAttemptedSerial: self.lastUSBHandoffSerial
+                    ) {
+                        self.lastUSBHandoffSerial = usbDevice.serial
+                        self.isPairing = true
+                        let startedWirelessMirror = await self.prepareWirelessMirror(from: usbDevice)
+                        if !startedWirelessMirror, !self.isMirroring {
+                            self.startMirroringOverUSB(usbDevice, manual: false)
+                        }
+                    } else if authorized.first(where: \.isUSB) == nil {
+                        self.lastUSBHandoffSerial = nil
+                    }
+                }
 
                 let interval: UInt64
                 if self.isPairing {
@@ -1103,6 +1159,7 @@ final class AppModel: ObservableObject {
         )
 
         let adb = self.adb
+        var sawNoRouteToHost = false
         let routeOutput = await Task.detached {
             adb.run(["-s", usbDevice.serial, "shell", "ip", "route"])
         }.value
@@ -1122,7 +1179,7 @@ final class AppModel: ObservableObject {
             }.value
 
             if Self.adbTCPIPSucceeded(tcpipOutput) {
-                if await Self.waitForADBWirelessTargetReady(
+                let readiness = await Self.waitForADBWirelessTargetReadiness(
                     adb: adb,
                     address: legacyAddress,
                     attempts: 15,
@@ -1133,7 +1190,9 @@ final class AppModel: ObservableObject {
                             wirelessAddress: legacyAddress
                         )
                     }
-                ) {
+                )
+                sawNoRouteToHost = sawNoRouteToHost || readiness.sawNoRouteToHost
+                if readiness.isReady {
                     isPairing = false
                     let deviceName = await Self.connectedDeviceName(
                         adb: adb,
@@ -1165,7 +1224,7 @@ final class AppModel: ObservableObject {
             tlsPortOutput: tlsPortOutput,
             tcpPortOutput: tcpPortOutput
         ) {
-            if await Self.waitForADBWirelessTargetReady(
+            let readiness = await Self.waitForADBWirelessTargetReadiness(
                 adb: adb,
                 address: tlsAddress,
                 attempts: 8,
@@ -1176,7 +1235,9 @@ final class AppModel: ObservableObject {
                         wirelessAddress: tlsAddress
                     )
                 }
-            ) {
+            )
+            sawNoRouteToHost = sawNoRouteToHost || readiness.sawNoRouteToHost
+            if readiness.isReady {
                 isPairing = false
                 let deviceName = await Self.connectedDeviceName(
                     adb: adb,
@@ -1201,7 +1262,7 @@ final class AppModel: ObservableObject {
             routeOutput,
             phones: discoveredWirelessPhones
         ) {
-            if await Self.waitForADBWirelessTargetReady(
+            let readiness = await Self.waitForADBWirelessTargetReadiness(
                 adb: adb,
                 address: wirelessPhone.address,
                 attempts: 8,
@@ -1212,7 +1273,9 @@ final class AppModel: ObservableObject {
                         wirelessAddress: wirelessPhone.address
                     )
                 }
-            ) {
+            )
+            sawNoRouteToHost = sawNoRouteToHost || readiness.sawNoRouteToHost
+            if readiness.isReady {
                 isPairing = false
                 let deviceName = await Self.connectedDeviceName(
                     adb: adb,
@@ -1231,7 +1294,24 @@ final class AppModel: ObservableObject {
         }
 
         isPairing = false
+        if sawNoRouteToHost {
+            presentLocalNetworkPermissionHint()
+        }
         return false
+    }
+
+    /// "No route to host" on every attempt — while the phone can reach the Mac
+    /// — is macOS denying this app's Local Network permission, which resets on
+    /// every ad-hoc re-sign. Tell the user how to flip it back on instead of
+    /// failing silently forever; mirroring continues over USB meanwhile.
+    private func presentLocalNetworkPermissionHint() {
+        guard !hasShownLocalNetworkPermissionHint else { return }
+        hasShownLocalNetworkPermissionHint = true
+        Logger.log("Wi-Fi connects failing with 'No route to host' — likely macOS Local Network permission; prompting user")
+        reportError(
+            "Wi-Fi handoff blocked by macOS",
+            "Every Wi-Fi connect failed with “No route to host”, which usually means macOS is blocking this app's local-network access. Open System Settings → Privacy & Security → Local Network and switch on Android Mirroring, then plug the cable in again. Mirroring keeps working over USB in the meantime."
+        )
     }
 
     private func finishWirelessHandoff(
@@ -1292,8 +1372,7 @@ final class AppModel: ObservableObject {
 
             if !Self.shouldAttemptWirelessHandoff(
                 from: usbDevice,
-                preferUSBMirroring: self.preferUSBMirroring,
-                isManualConnect: true
+                preferUSBMirroring: self.preferUSBMirroring
             ) {
                 self.isPairing = false
                 self.usbConnectTask = nil
@@ -1306,7 +1385,10 @@ final class AppModel: ObservableObject {
             self.usbConnectTask = nil
             guard !startedWirelessMirror else { return }
 
-            self.showWirelessHandoffRequired(for: usbDevice)
+            // Wi-Fi handoff unavailable; a manual connect should still deliver
+            // a mirror over the cable rather than an error state.
+            guard !self.isMirroring else { return }
+            self.startMirroringOverUSB(usbDevice, manual: true)
         }
     }
 
@@ -1320,18 +1402,6 @@ final class AppModel: ObservableObject {
         )
         stopQRCodePairingSession()
         startMirroring(manual: manual)
-    }
-
-    private func showWirelessHandoffRequired(for device: AuthorizedADBDevice) {
-        isPairing = false
-        select(device: device)
-        selectedDevice.states = [.wirelessDebuggingRequired, .companionConnected]
-        touchPairedPhone(
-            id: device.serial,
-            displayName: device.model,
-            address: device.serial
-        )
-        showConnectionWindow()
     }
 
     private func mostRecentPairedPhone(in phones: [DiscoveredPhone]) -> DiscoveredPhone? {
@@ -1363,7 +1433,16 @@ final class AppModel: ObservableObject {
     }
 
     private func noteAutoConnectFailure(for phone: DiscoveredPhone) {
-        failedAutoConnectTargets[phone.address] = Date()
+        noteAutoConnectFailure(address: phone.address)
+    }
+
+    private func noteAutoConnectFailure(address: String) {
+        failedAutoConnectTargets[address] = Date()
+    }
+
+    private func isAutoConnectAddressCoolingDown(_ address: String) -> Bool {
+        guard let failedAt = failedAutoConnectTargets[address] else { return false }
+        return Self.isAutoConnectFailureCoolingDown(failedAt: failedAt)
     }
 
     private func applyADBOutput(_ output: String) {
@@ -1477,10 +1556,9 @@ final class AppModel: ObservableObject {
 
     nonisolated static func shouldAttemptWirelessHandoff(
         from device: AuthorizedADBDevice,
-        preferUSBMirroring: Bool,
-        isManualConnect: Bool = false
+        preferUSBMirroring: Bool
     ) -> Bool {
-        device.isUSB && !preferUSBMirroring && !isManualConnect
+        device.isUSB && !preferUSBMirroring
     }
 
     nonisolated static func usbHandoffCandidate(
@@ -1642,9 +1720,15 @@ final class AppModel: ObservableObject {
         for record: PairedPhoneRecord,
         in devices: [AuthorizedADBDevice]
     ) -> AuthorizedADBDevice? {
-        if let exact = devices.first(where: { device in
+        let exactMatches = devices.filter { device in
             device.serial == record.id || device.serial == record.lastAddress
-        }) {
+        }
+        // When the same phone is live on both transports, take the wireless
+        // one: it mirrors immediately with no tcpip handoff round-trip.
+        if let wireless = exactMatches.first(where: { !$0.isUSB }) {
+            return wireless
+        }
+        if let exact = exactMatches.first {
             return exact
         }
 
@@ -1766,6 +1850,20 @@ final class AppModel: ObservableObject {
         return false
     }
 
+    /// Outcome of a wireless readiness probe. `sawNoRouteToHost` flags the
+    /// macOS-side failure ("No route to host" on a LAN whose reverse path
+    /// works) that in practice means the app's Local Network permission was
+    /// denied — every ad-hoc re-sign resets it, and macOS then fails each
+    /// connect instantly without ever showing the consent prompt again.
+    struct WirelessTargetReadiness {
+        var isReady: Bool
+        var sawNoRouteToHost: Bool
+    }
+
+    nonisolated static func outputIndicatesLocalNetworkBlocked(_ output: String) -> Bool {
+        output.localizedCaseInsensitiveContains("no route to host")
+    }
+
     nonisolated static func waitForADBWirelessTargetReady(
         adb: ADBController,
         address: String,
@@ -1773,6 +1871,23 @@ final class AppModel: ObservableObject {
         delayNanoseconds: UInt64 = 700_000_000,
         primeRoute: (() async -> Void)? = nil
     ) async -> Bool {
+        await waitForADBWirelessTargetReadiness(
+            adb: adb,
+            address: address,
+            attempts: attempts,
+            delayNanoseconds: delayNanoseconds,
+            primeRoute: primeRoute
+        ).isReady
+    }
+
+    nonisolated static func waitForADBWirelessTargetReadiness(
+        adb: ADBController,
+        address: String,
+        attempts: Int = 8,
+        delayNanoseconds: UInt64 = 700_000_000,
+        primeRoute: (() async -> Void)? = nil
+    ) async -> WirelessTargetReadiness {
+        var sawNoRouteToHost = false
         for attempt in 0..<attempts {
             if attempt > 0 {
                 try? await Task.sleep(nanoseconds: delayNanoseconds)
@@ -1784,6 +1899,9 @@ final class AppModel: ObservableObject {
                 adb.run(["connect", address])
             }.value
             Logger.log("ADB Wi-Fi handoff connect attempt \(attempt + 1)/\(attempts) address=\(address) output=\(connectOutput.trimmingCharacters(in: .whitespacesAndNewlines))")
+            if outputIndicatesLocalNetworkBlocked(connectOutput) {
+                sawNoRouteToHost = true
+            }
             guard adbConnectSucceeded(connectOutput) else {
                 continue
             }
@@ -1793,10 +1911,10 @@ final class AppModel: ObservableObject {
             }.value
             Logger.log("ADB Wi-Fi handoff shell readiness attempt \(attempt + 1)/\(attempts) address=\(address) output=\(shellOutput.trimmingCharacters(in: .whitespacesAndNewlines))")
             if shellOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "wifi-adb-ok" {
-                return true
+                return WirelessTargetReadiness(isReady: true, sawNoRouteToHost: sawNoRouteToHost)
             }
 
-            if attempt + 1 < attempts {
+            if attempt + 1 < attempts, Self.shouldDropStaleWirelessTransport(shellOutput: shellOutput) {
                 let disconnectOutput = await Task.detached {
                     adb.run(["disconnect", address], timeout: 2)
                 }.value
@@ -1804,7 +1922,21 @@ final class AppModel: ObservableObject {
             }
         }
 
-        return false
+        return WirelessTargetReadiness(isReady: false, sawNoRouteToHost: sawNoRouteToHost)
+    }
+
+    /// Whether a failed readiness probe means the transport is a zombie worth
+    /// `adb disconnect`-ing before retrying. A transport that is merely still
+    /// settling — `offline` during the post-connect handshake, or
+    /// `unauthorized` while the phone shows its trust prompt — must be left
+    /// alone: disconnecting it restarts the very handshake we're waiting out.
+    nonisolated static func shouldDropStaleWirelessTransport(shellOutput: String) -> Bool {
+        let lower = shellOutput.lowercased()
+        return !(
+            lower.contains("device offline")
+            || lower.contains("device unauthorized")
+            || lower.contains("device still authorizing")
+        )
     }
 
     nonisolated static func primeADBWirelessRoute(
@@ -2187,11 +2319,8 @@ final class AppModel: ObservableObject {
         }
 
         let args = Self.launchSourceAppArguments(serial: serial, package: package)
-        // Serialized: two banner clicks in quick succession must not interleave
-        // (the first flow's shade collapse would yank the shade out from under
-        // the second flow's screenshot).
-        Self.forwardedNotificationTapQueue.async {
-            if Self.tapForwardedNotificationInShade(
+        NotificationTapService.tapQueue.async {
+            if NotificationTapService.tapForwardedNotificationInShade(
                 serial: serial,
                 notificationKey: notificationKey,
                 title: title,
@@ -2205,334 +2334,6 @@ final class AppModel: ObservableObject {
                 Logger.log("Could not open notification source app package=\(package): \(result.output)")
             }
         }
-    }
-
-    private nonisolated static let forwardedNotificationTapQueue = DispatchQueue(
-        label: "android-mirroring.notification-tap",
-        qos: .userInitiated
-    )
-
-    /// A line of text recognized on a phone screenshot, with its tap point in
-    /// physical screen pixels (the same space `input tap` uses).
-    struct ShadeTextLine: Equatable {
-        var text: String
-        var center: CGPoint
-    }
-
-    /// Opens a forwarded notification by genuinely tapping its row in the
-    /// expanded shade, which fires the notification's real `contentIntent` —
-    /// extras and all — so a tweet opens the tweet, a chat opens the chat.
-    ///
-    /// The row is located by screenshotting the shade and running Vision OCR on
-    /// the Mac, not `uiautomator dump`: dumping waits for the UI to go idle and
-    /// any constantly-updating notification (data-speed meters, media progress)
-    /// makes it fail with "could not get idle state" after ~12 s.
-    ///
-    /// Tapping a collapsed group only expands it, so up to three OCR/tap passes
-    /// run until window focus leaves the shade. On failure the shade is
-    /// collapsed again so the user is never left staring at the notification
-    /// tree, and the caller falls back to launching the source app.
-    nonisolated static func tapForwardedNotificationInShade(
-        serial: String,
-        notificationKey: String?,
-        title: String?,
-        text: String?
-    ) -> Bool {
-        let title = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let text = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !title.isEmpty || !text.isEmpty else { return false }
-
-        _ = Tooling.runResult(
-            "adb",
-            arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"],
-            timeout: 2
-        )
-        // The keyguard's `showing=` flag lags the wakeup by a beat (Samsung
-        // reports false while the display is off); give it a moment so a
-        // locked phone isn't misread as unlocked.
-        Thread.sleep(forTimeInterval: 0.4)
-
-        // A locked phone shows the lockscreen shade, where content is hidden
-        // from the screenshot and taps would bounce off the keyguard anyway.
-        // Dismiss a swipe keyguard outright; for a secure one this raises the
-        // bouncer (visible in the mirror), so wait for the user to unlock.
-        if keyguardIsShowing(serial: serial) {
-            _ = Tooling.runResult(
-                "adb",
-                arguments: ["-s", serial, "shell", "wm", "dismiss-keyguard"],
-                timeout: 2
-            )
-            let unlockDeadline = Date().addingTimeInterval(15)
-            while keyguardIsShowing(serial: serial), Date() < unlockDeadline {
-                Thread.sleep(forTimeInterval: 0.5)
-            }
-            guard !keyguardIsShowing(serial: serial) else {
-                Logger.log("Phone stayed locked; launching the source app instead for key=\(notificationKey ?? "")")
-                return false
-            }
-        }
-
-        let expand = Tooling.runResult(
-            "adb",
-            arguments: ["-s", serial, "shell", "cmd", "statusbar", "expand-notifications"],
-            timeout: 2
-        )
-        guard expand.succeeded else {
-            Logger.log("Could not expand notification shade for forwarded notification key=\(notificationKey ?? ""): \(expand.output)")
-            return false
-        }
-
-        var tappedAtLeastOnce = false
-        var scrolledShade = false
-        for pass in 1...3 {
-            Thread.sleep(forTimeInterval: pass == 1 ? 0.8 : 0.6)
-            guard let screenshot = capturePhoneScreenPNG(serial: serial) else {
-                Logger.log("Could not capture phone screen for forwarded notification key=\(notificationKey ?? "")")
-                break
-            }
-            let lines = recognizedTextLines(inPNG: screenshot)
-            guard let point = forwardedNotificationTapPoint(in: lines, title: title, text: text) else {
-                // A previous tap may have landed while the shade was still
-                // animating closed when we checked focus; recheck before giving
-                // up. Otherwise the first pass may simply have raced the shade
-                // animation, so look once more.
-                if tappedAtLeastOnce, !notificationShadeIsFocused(serial: serial) {
-                    Logger.log("Opened forwarded notification content key=\(notificationKey ?? "")")
-                    return true
-                }
-                if pass == 1 { continue }
-                // The row may sit below the fold of a full shade; scroll once
-                // and take a final look before giving up.
-                if !scrolledShade, !tappedAtLeastOnce, pass == 2,
-                   let size = pngPixelSize(screenshot) {
-                    scrolledShade = true
-                    let x = Int(size.width / 2)
-                    _ = Tooling.runResult(
-                        "adb",
-                        arguments: [
-                            "-s", serial, "shell", "input", "swipe",
-                            "\(x)", "\(Int(size.height * 0.72))",
-                            "\(x)", "\(Int(size.height * 0.30))",
-                            "250"
-                        ],
-                        timeout: 2
-                    )
-                    continue
-                }
-                Logger.log("Forwarded notification was not visible in notification shade key=\(notificationKey ?? "")")
-                break
-            }
-
-            let tap = Tooling.runResult(
-                "adb",
-                arguments: [
-                    "-s", serial,
-                    "shell",
-                    "input", "tap",
-                    "\(Int(point.x.rounded()))",
-                    "\(Int(point.y.rounded()))"
-                ],
-                timeout: 2
-            )
-            guard tap.succeeded else {
-                Logger.log("Could not tap forwarded notification key=\(notificationKey ?? ""): \(tap.output)")
-                break
-            }
-            tappedAtLeastOnce = true
-            Thread.sleep(forTimeInterval: 0.6)
-            if !notificationShadeIsFocused(serial: serial) {
-                Logger.log("Opened forwarded notification content key=\(notificationKey ?? "")")
-                return true
-            }
-        }
-
-        // Never leave the user staring at a pulled-down shade after a failure.
-        _ = Tooling.runResult(
-            "adb",
-            arguments: ["-s", serial, "shell", "cmd", "statusbar", "collapse"],
-            timeout: 2
-        )
-        return false
-    }
-
-    /// Picks the recognized line that best matches the forwarded notification.
-    /// The message text is the strong signal — it identifies one specific
-    /// notification — while the title is weaker evidence (sender names and app
-    /// labels repeat across rows), so title-only matches are discounted.
-    nonisolated static func forwardedNotificationTapPoint(
-        in lines: [ShadeTextLine],
-        title: String?,
-        text: String?
-    ) -> CGPoint? {
-        let titleTokens = matchTokens(title ?? "")
-        let textTokens = matchTokens(text ?? "")
-        guard !titleTokens.isEmpty || !textTokens.isEmpty else { return nil }
-
-        var best: (score: Double, point: CGPoint)?
-        for line in lines {
-            let candidateTokens = matchTokens(line.text)
-            guard !candidateTokens.isEmpty else { continue }
-            let score = max(
-                tokenRunScore(label: textTokens, candidate: candidateTokens),
-                tokenRunScore(label: titleTokens, candidate: candidateTokens) * 0.8
-            )
-            if score >= 0.5, score > (best?.score ?? 0) {
-                best = (score, line.center)
-            }
-        }
-        return best?.point
-    }
-
-    /// Lowercased alphanumeric words. Emoji and punctuation — and whatever OCR
-    /// renders them as — collapse into separators, so the dumpsys-sourced
-    /// notification text and the on-screen text align.
-    nonisolated static func matchTokens(_ value: String) -> [String] {
-        value.lowercased()
-            .split(whereSeparator: { !($0.isLetter || $0.isNumber) })
-            .map(String.init)
-    }
-
-    /// Longest run of consecutive label tokens appearing contiguously in the
-    /// candidate, scaled against how much of the label can plausibly be visible
-    /// (the shade truncates long texts after roughly one line, so a capped
-    /// denominator keeps truncated rows scoring high). 1.0 means fully present.
-    nonisolated static func tokenRunScore(label: [String], candidate: [String]) -> Double {
-        guard !label.isEmpty, !candidate.isEmpty else { return 0 }
-        var longest = 0
-        for start in candidate.indices {
-            for labelStart in label.indices {
-                var length = 0
-                while start + length < candidate.count,
-                      labelStart + length < label.count,
-                      candidate[start + length] == label[labelStart + length] {
-                    length += 1
-                }
-                longest = max(longest, length)
-            }
-        }
-        guard longest >= min(2, label.count) else { return 0 }
-        return min(1, Double(longest) / Double(min(label.count, 8)))
-    }
-
-    /// Vision loads its text-recognition models lazily and the first request in
-    /// a process can take several seconds; recognizing one tiny synthetic image
-    /// up front moves that cost to app startup so the first real notification
-    /// click stays fast.
-    nonisolated static func warmUpTextRecognition() {
-        let width = 120
-        let height = 40
-        guard let context = CGContext(
-            data: nil,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return }
-        context.setFillColor(CGColor.white)
-        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        let attributed = NSAttributedString(string: "warm up", attributes: [
-            .font: NSFont.systemFont(ofSize: 18),
-            .foregroundColor: NSColor.black
-        ])
-        context.textPosition = CGPoint(x: 8, y: 12)
-        CTLineDraw(CTLineCreateWithAttributedString(attributed), context)
-        guard let image = context.makeImage() else { return }
-
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = false
-        try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
-    }
-
-    /// OCRs a phone screenshot into tappable text lines. Lines in the status
-    /// bar strip (top 5%) and the shade's bottom action row (Clear /
-    /// Notification settings) are dropped so a stray match can't tap them.
-    nonisolated static func recognizedTextLines(inPNG data: Data) -> [ShadeTextLine] {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-            return []
-        }
-        let width = CGFloat(image.width)
-        let height = CGFloat(image.height)
-
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = false
-        let handler = VNImageRequestHandler(cgImage: image, options: [:])
-        guard (try? handler.perform([request])) != nil else { return [] }
-
-        return (request.results ?? []).compactMap { observation in
-            guard let candidate = observation.topCandidates(1).first else { return nil }
-            let box = observation.boundingBox
-            // Vision reports normalized bottom-left boxes; taps use top-left pixels.
-            let center = CGPoint(x: box.midX * width, y: (1 - box.midY) * height)
-            guard center.y > height * 0.05, center.y < height * 0.93 else { return nil }
-            return ShadeTextLine(text: candidate.string, center: center)
-        }
-    }
-
-    private nonisolated static func capturePhoneScreenPNG(serial: String) -> Data? {
-        guard let adbPath = Tooling.toolPath(named: "adb") else { return nil }
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: adbPath)
-        process.arguments = ["-s", serial, "exec-out", "screencap", "-p"]
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return data.isEmpty ? nil : data
-    }
-
-    /// The shade window holds focus (`NotificationShade` on Android 11+,
-    /// `StatusBar` before) until a tapped row's content intent fires.
-    private nonisolated static func notificationShadeIsFocused(serial: String) -> Bool {
-        let result = Tooling.runResult(
-            "adb",
-            arguments: ["-s", serial, "shell", "dumpsys window | grep mCurrentFocus"],
-            timeout: 3
-        )
-        guard result.succeeded else { return false }
-        return result.output.contains("NotificationShade") || result.output.contains("StatusBar")
-    }
-
-    /// Whether the lockscreen is up or the device still needs credentials.
-    /// Two signals because each lags differently: the KeyguardServiceDelegate
-    /// `showing=` flag (leading space distinguishes it from
-    /// `showingAndNotOccluded=`) reads false while the display is off, and
-    /// `deviceLocked=` stays 0 on swipe-only keyguards. Parse failures count
-    /// as unlocked so the tap flow degrades to its normal fallback path.
-    private nonisolated static func keyguardIsShowing(serial: String) -> Bool {
-        let policy = Tooling.runResult(
-            "adb",
-            arguments: ["-s", serial, "shell", "dumpsys window policy | grep ' showing='"],
-            timeout: 3
-        )
-        if policy.succeeded, policy.output.contains("showing=true") {
-            return true
-        }
-        let trust = Tooling.runResult(
-            "adb",
-            arguments: ["-s", serial, "shell", "dumpsys trust | grep deviceLocked="],
-            timeout: 3
-        )
-        return trust.succeeded && trust.output.contains("deviceLocked=1")
-    }
-
-    private nonisolated static func pngPixelSize(_ data: Data) -> CGSize? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
-              let height = properties[kCGImagePropertyPixelHeight] as? CGFloat
-        else { return nil }
-        return CGSize(width: width, height: height)
     }
 
     private func launchNativeMirror(serial: String?) {
