@@ -2,6 +2,32 @@ import XCTest
 @testable import AndroidMirrorMac
 
 final class MirrorWindowChromeTests: XCTestCase {
+    func testMirrorStartupDoesNotBlockMainActorDuringADBPreparation() async throws {
+        let startupStarted = LockedFlag()
+        let startupFinished = LockedFlag()
+        let ping = LockedFlag()
+
+        let startupTask = MirrorSession.runStartupOffMain {
+            startupStarted.set()
+            Thread.sleep(forTimeInterval: 2)
+            startupFinished.set()
+        }
+        defer {
+            startupTask.cancel()
+        }
+
+        let didStart = await waitForFlag(startupStarted)
+        XCTAssertTrue(didStart)
+
+        Task { @MainActor in
+            ping.set()
+        }
+
+        let didPing = await waitForFlag(ping, timeout: 1)
+        XCTAssertTrue(didPing, "Mirror startup must not block main-actor UI work while adb prepares the scrcpy tunnel.")
+        XCTAssertFalse(startupFinished.value)
+    }
+
     @MainActor
     func testNativeMirrorBorderlessWindowCanReceiveKeyboardFocus() throws {
         let model = AppModel()
@@ -237,7 +263,7 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     func testMirrorAudioIsSupportedForWirelessADBSerials() {
-        XCTAssertTrue(MirrorSession.supportsMirrorAudio(serial: "192.168.68.51:5555"))
+        XCTAssertTrue(MirrorSession.supportsMirrorAudio(serial: "192.0.2.51:5555"))
     }
 
     func testMirrorRenderVideoLayerStaysCenteredInBounds() {
@@ -987,6 +1013,34 @@ private extension NSView {
     var allTextFieldValues: [String] {
         allSubviews.compactMap { ($0 as? NSTextField)?.stringValue }
     }
+}
+
+final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = false
+
+    var value: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set() {
+        lock.lock()
+        stored = true
+        lock.unlock()
+    }
+}
+
+func waitForFlag(_ flag: LockedFlag, timeout: TimeInterval = 1) async -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if flag.value {
+            return true
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+    }
+    return false
 }
 
 private extension MirrorWindowChromeTests {

@@ -56,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
     }
 
     nonisolated func userNotificationCenter(
@@ -66,7 +66,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         [.banner, .sound, .list]
     }
 
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
+
+        await MainActor.run {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        Logger.log("Application will terminate")
         if let keyMonitor {
             NSEvent.removeMonitor(keyMonitor)
         }
@@ -81,7 +93,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let appMenu = NSMenu()
         appMenu.addItem(
             NSMenuItem(
-                title: "Mirroring Settings...",
+                title: "About Android Mirroring",
+                action: #selector(showAbout(_:)),
+                keyEquivalent: ""
+            )
+        )
+        appMenu.addItem(.separator())
+        appMenu.addItem(
+            NSMenuItem(
+                title: "Settings...",
                 action: #selector(showSettings(_:)),
                 keyEquivalent: ","
             )
@@ -358,6 +378,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         model.scanADBDevices()
     }
 
+    @objc private func showAbout(_ sender: Any?) {
+        let bundle = Bundle.main
+        let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        var options: [NSApplication.AboutPanelOptionKey: Any] = [
+            .applicationName: "Android Mirroring",
+            .credits: NSAttributedString(
+                string: "Local-first Android screen mirroring and notification forwarding for macOS.",
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                    .foregroundColor: NSColor.secondaryLabelColor
+                ]
+            )
+        ]
+
+        if let version, !version.isEmpty {
+            options[.applicationVersion] = version
+        }
+        if let build, !build.isEmpty {
+            options[.version] = "Build \(build)"
+        }
+        if let icon = NSImage(named: "AppIcon") ?? NSApp.applicationIconImage {
+            options[.applicationIcon] = icon
+        }
+
+        NSApp.orderFrontStandardAboutPanel(options: options)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     @objc private func showSettings(_ sender: Any?) {
         if let settingsWindow {
             settingsWindow.makeKeyAndOrderFront(nil)
@@ -372,7 +421,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             backing: .buffered,
             defer: false
         )
-        window.title = "Mirroring Settings"
+        window.title = "Settings"
         window.contentView = hostingView
         window.isReleasedWhenClosed = false
         window.center()

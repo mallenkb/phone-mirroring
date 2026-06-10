@@ -31,6 +31,52 @@ final class NotificationForwarderTests: XCTestCase {
               }
         """
 
+    func testNotificationPermissionReasonExplainsUnreadDeviceNotifications() {
+        XCTAssertTrue(AppModel.notificationPermissionReason.localizedCaseInsensitiveContains("unread notifications"))
+        XCTAssertTrue(AppModel.notificationPermissionReason.localizedCaseInsensitiveContains("device"))
+    }
+
+    func testNotificationForwardingDefaultsOnWhenUnset() {
+        XCTAssertTrue(AppModel.defaultNotificationForwardingEnabled(storedValue: nil))
+    }
+
+    @MainActor
+    func testNotificationForwardingTurnsOffWhenPermissionIsDenied() async {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: AppModel.notificationForwardingDefaultsKey)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: AppModel.notificationForwardingDefaultsKey)
+            } else {
+                defaults.removeObject(forKey: AppModel.notificationForwardingDefaultsKey)
+            }
+        }
+        defaults.removeObject(forKey: AppModel.notificationForwardingDefaultsKey)
+
+        var requestCount = 0
+        var openedSettings = false
+        let model = AppModel(
+            startBackgroundServices: false,
+            pairedPhones: [],
+            notificationAuthorizationRequester: { completion in
+                requestCount += 1
+                completion(false, nil)
+            },
+            notificationSettingsOpener: {
+                openedSettings = true
+            }
+        )
+
+        model.notificationForwardingEnabled = true
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertTrue(openedSettings)
+        XCTAssertFalse(model.notificationForwardingEnabled)
+        XCTAssertTrue(model.notificationForwardingPermissionDenied)
+        XCTAssertFalse(defaults.bool(forKey: AppModel.notificationForwardingDefaultsKey))
+    }
+
     func testParseExtractsHeaderAndContentFields() {
         let entries = NotificationForwarder.parse(dump)
         XCTAssertEqual(entries.count, 3)
@@ -51,7 +97,24 @@ final class NotificationForwarderTests: XCTestCase {
         XCTAssertEqual(whatsapp.text, "Dinner at 7?")
     }
 
-    func testParseHandilesParenthesesInValue() {
+    func testParseFallsBackToBigTextWhenTextIsMissing() {
+        let missingTextDump = """
+            NotificationRecord(0x061d2fbf: pkg=com.whatsapp user=UserHandle{0} id=-169 tag=null importance=4 key=0|com.whatsapp|-169|null|10279: Notification(channel=Messages shortcut=null contentView=null defaults=0x0 flags=0x10 color=0xff25d366 category=msg actions=1 vis=PRIVATE))
+                  uid=10279 userId=0
+                  extras={
+                      android.title=String (Mom)
+                      android.text=null
+                      android.bigText=String (Dinner at 7?)
+                  }
+            """
+
+        let parsed = NotificationForwarder.parse(missingTextDump)
+        XCTAssertEqual(parsed.count, 1)
+        XCTAssertEqual(parsed[0].title, "Mom")
+        XCTAssertEqual(parsed[0].text, "Dinner at 7?")
+    }
+
+    func testParseHandlesParenthesesInValue() {
         let uber = NotificationForwarder.parse(dump)[2]
         XCTAssertEqual(uber.title, "Uber")
         XCTAssertEqual(uber.text, "Arriving now (2 min away)")
@@ -165,6 +228,20 @@ final class NotificationForwarderTests: XCTestCase {
         XCTAssertNotNil(content.sound, "Forwarded notifications should pop up with sound")
     }
 
+    func testForwardedNotificationDoesNotCarryPhoneLaunchMetadata() {
+        let entry = NotificationForwarder.Entry(
+            key: "0|com.whatsapp|-169|null|10279",
+            pkg: "com.whatsapp",
+            title: "Mom",
+            text: "Dinner at 7?",
+            flags: 0x10
+        )
+
+        let content = NotificationForwarder.notificationContent(for: entry, serial: "ABC123")
+
+        XCTAssertTrue(content.userInfo.isEmpty)
+    }
+
     func testTitlelessNotificationFallsBackToAppNameWithSound() {
         let entry = NotificationForwarder.Entry(
             key: "k", pkg: "com.popmart.global", title: "", text: "Restock!", flags: 0
@@ -181,8 +258,8 @@ final class NotificationForwarderTests: XCTestCase {
             "Messages • Telecel-FBB"
         )
         XCTAssertEqual(
-            NotificationForwarder.notificationTitle(sourceApp: "WhatsApp Business", entryTitle: "Marlon's MTN"),
-            "WhatsApp Business • Marlon's MTN"
+            NotificationForwarder.notificationTitle(sourceApp: "WhatsApp Business", entryTitle: "Example Account"),
+            "WhatsApp Business • Example Account"
         )
         XCTAssertEqual(
             NotificationForwarder.notificationTitle(sourceApp: "Instagram", entryTitle: ""),

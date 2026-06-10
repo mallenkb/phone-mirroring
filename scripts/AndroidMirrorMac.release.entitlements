@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Release builds should not weaken the hardened runtime with dynamic-loader
+      exceptions. The app launches adb/scrcpy helpers as signed executables,
+      which does not require DYLD environment variables or disabled library
+      validation in the main app process.
+    -->
+</dict>
+</plist>

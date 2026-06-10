@@ -47,7 +47,6 @@ final class NotificationForwarder {
     private var seenOrder = [String]()
     private var baselineSerial: String?
     private var hasBaseline = false
-    private var didRequestAuthorization = false
     private var iconAttachmentCache: [String: URL] = [:]
 
     /// Cadence while a device is connected. `dumpsys notification` is cheap on a
@@ -64,7 +63,12 @@ final class NotificationForwarder {
 
     func start() {
         guard task == nil else { return }
-        requestAuthorizationIfNeeded()
+        // Re-signing or re-bundling the app resets its Notification Center
+        // identity, after which posts fail silently; logging the status at
+        // every start makes that visible in the log instead of a mystery.
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            Logger.log("Notification forwarding starting authorizationStatus=\(settings.authorizationStatus.rawValue) alertSetting=\(settings.alertSetting.rawValue)")
+        }
         task = Task { [weak self] in
             await self?.runLoop()
         }
@@ -132,7 +136,7 @@ final class NotificationForwarder {
     }
 
     private func post(_ entry: Entry, serial: String?) {
-        let content = Self.notificationContent(for: entry)
+        let content = Self.notificationContent(for: entry, serial: serial)
         if let serial,
            let attachmentURL = iconAttachmentURL(for: entry.pkg, serial: serial),
            let attachment = try? UNNotificationAttachment(
@@ -142,16 +146,26 @@ final class NotificationForwarder {
            ) {
             content.attachments = [attachment]
         }
+        let pkg = entry.pkg
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        )
-        Logger.log("Forwarded notification pkg=\(entry.pkg) title=\(entry.title.prefix(40))")
+        ) { error in
+            // Without this, an unauthorized identity (fresh signature/bundle
+            // id) drops every banner with no trace in the log.
+            if let error {
+                Logger.log("Notification delivery failed pkg=\(pkg): \(error.localizedDescription)")
+            }
+        }
+        // Log the key, never the title/text: message previews must not end up
+        // in the plaintext log file users share when reporting bugs.
+        Logger.log("Forwarded notification pkg=\(entry.pkg) key=\(entry.key)")
     }
 
     /// Builds the macOS notification for a forwarded entry. A default sound is
     /// attached so the banner pops audibly like it does on the phone — without it
     /// the banner is delivered silently. Pure/inspectable so it can be unit-tested.
-    nonisolated static func notificationContent(for entry: Entry) -> UNMutableNotificationContent {
+    nonisolated static func notificationContent(for entry: Entry, serial: String? = nil) -> UNMutableNotificationContent {
+        _ = serial
         let content = UNMutableNotificationContent()
         let sourceApp = appLabel(for: entry.pkg)
         content.title = notificationTitle(sourceApp: sourceApp, entryTitle: entry.title)
@@ -182,18 +196,6 @@ final class NotificationForwarder {
         guard let url = Self.buildIconAttachment(pkg: pkg, serial: serial) else { return nil }
         iconAttachmentCache[cacheKey] = url
         return url
-    }
-
-    private func requestAuthorizationIfNeeded() {
-        guard !didRequestAuthorization else { return }
-        didRequestAuthorization = true
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
-            if let error {
-                Logger.log("Notification authorization error: \(error.localizedDescription)")
-            } else if !granted {
-                Logger.log("Notification authorization denied; forwarding will be silent.")
-            }
-        }
     }
 
     // MARK: - adb fetch
@@ -381,19 +383,26 @@ final class NotificationForwarder {
     ///
     /// Strategy: a `NotificationRecord(0x…` line opens a record (carrying pkg,
     /// key, and flags); the first `android.title=`/`android.text=` line after it
-    /// supplies the content. First-wins, so the main `extras` block beats any
-    /// later `publicNotification` copy of the same keys.
+    /// supplies title/body, with `android.bigText` as a safe fallback when
+    /// `android.text` is missing/empty.
     nonisolated static func parse(_ dump: String) -> [Entry] {
         var entries: [Entry] = []
         var current: Entry?
         var haveTitle = false
         var haveText = false
+        var fallbackText: String?
 
         func flush() {
-            if let entry = current { entries.append(entry) }
+            if var entry = current {
+                if entry.text.isEmpty, let fallbackText, !fallbackText.isEmpty {
+                    entry.text = fallbackText
+                }
+                entries.append(entry)
+            }
             current = nil
             haveTitle = false
             haveText = false
+            fallbackText = nil
         }
 
         for rawLine in dump.split(whereSeparator: \.isNewline) {
@@ -407,12 +416,19 @@ final class NotificationForwarder {
                     text: "",
                     flags: hexValue(after: "flags=0x", in: line) ?? 0
                 )
+                fallbackText = nil
             } else if current != nil, !haveTitle, line.hasPrefix("android.title=") {
                 current?.title = bundleValue(line) ?? ""
                 haveTitle = true
             } else if current != nil, !haveText, line.hasPrefix("android.text=") {
-                current?.text = bundleValue(line) ?? ""
-                haveText = true
+                if let text = bundleValue(line), !text.isEmpty {
+                    current?.text = text
+                    haveText = true
+                }
+            } else if current != nil, !haveText, line.hasPrefix("android.bigText=") {
+                if let nextText = bundleValue(line), !nextText.isEmpty {
+                    fallbackText = nextText
+                }
             }
         }
         flush()

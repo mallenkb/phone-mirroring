@@ -15,6 +15,9 @@ struct FigmaMirrorExperienceView: View {
     private var isConnecting: Bool {
         model.isActivelyConnecting || model.isMirroring
     }
+    private var isUSBButtonBusy: Bool {
+        model.isManualUSBConnectDisabled
+    }
     private let heroIconSize: CGFloat = 36
     private let maxColumnWidth: CGFloat = 620
     private let qrCodeSize: CGFloat = 216
@@ -25,7 +28,10 @@ struct FigmaMirrorExperienceView: View {
         MirrorContentWindowController.onboardingCornerRadius()
     }
     private var shouldShowMirrorLoading: Bool {
-        model.isRecoveringConnection
+        AppModel.shouldShowReconnectSurface(
+            isRecoveringConnection: model.isRecoveringConnection,
+            isAwaitingReconnect: model.isAwaitingReconnect
+        )
     }
 
     var body: some View {
@@ -89,8 +95,10 @@ struct FigmaMirrorExperienceView: View {
             // text shrinks smoothly on lower-resolution displays and only
             // reaches its full design size at high resolution. No hard floors
             // on individual fonts — that's what previously kept them oversized.
-            let scale = min(1, max(0.5, min(proxy.size.height / 815, proxy.size.width / 390)))
-            let usesCompactLayout = proxy.size.height <= 760 || proxy.size.width <= 360
+            let hasError = model.activeError != nil
+            let scaleCap: CGFloat = hasError ? 0.82 : 1
+            let scale = min(scaleCap, max(0.5, min(proxy.size.height / 815, proxy.size.width / 390)))
+            let usesCompactLayout = hasError || proxy.size.height <= 760 || proxy.size.width <= 360
             let availableWidth = proxy.size.width - (usesCompactLayout ? 44 : 72)
             let contentWidth = min(availableWidth, maxColumnWidth)
             let qrPanelSize = min(self.qrPanelSize * scale, contentWidth * (usesCompactLayout ? 0.64 : 0.72))
@@ -117,8 +125,8 @@ struct FigmaMirrorExperienceView: View {
                 USBConnectButton(
                     accent: accent,
                     scale: scale,
-                    isConnecting: isConnecting,
-                    disabled: isConnecting,
+                    isConnecting: isUSBButtonBusy,
+                    disabled: isUSBButtonBusy,
                     action: model.connectViaUSB
                 )
                 .frame(width: contentWidth)
@@ -199,11 +207,11 @@ struct FigmaMirrorExperienceView: View {
                 .foregroundStyle(.white.opacity(isActive ? 0.92 : 0.82))
                 .fixedSize()
 
-            Text(model.selectedDevice.name)
+            Text(model.connectionDeviceLabel)
                 .font(.system(size: fontSize, weight: .medium))
                 .foregroundStyle(.white.opacity(0.62))
                 .lineLimit(1)
-                .fixedSize()
+                .minimumScaleFactor(0.72)
                 .layoutPriority(1)
         }
         .padding(.horizontal, 14 * scale)
@@ -408,7 +416,7 @@ struct FirstRunOnboardingView: View {
                 setupRow(
                     icon: "bell.badge",
                     title: "Mac notifications",
-                    detail: "Allow notifications so Android alerts can appear in macOS Notification Center."
+                    detail: AppModel.notificationPermissionReason
                 )
             }
             .padding(.horizontal, 18)

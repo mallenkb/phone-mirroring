@@ -6,7 +6,10 @@ struct PairedPhoneStore {
     static let defaultsKey = "AndroidMirror.PairedPhones.v1"
     static let compatibilitySuites = [
         "com.mallenkb.AndroidMirrorMac",
+        "com.mallenkb.AndroidMirroring",
         "com.mallenkb.AndroidMirrorScrcpy",
+        "org.example.AndroidMirrorMac",
+        "org.example.AndroidMirrorScrcpy",
         "local.androidmirrormac",
         "AndroidMirrorMac"
     ]
@@ -31,6 +34,10 @@ struct PairedPhoneStore {
             }) {
                 storedRecords.append(record)
             }
+            // One-time migration: clear the legacy copy after merging so a
+            // phone the user later removes can't resurrect from an abandoned
+            // domain (save() no longer mirrors into these suites).
+            defaults.removeObject(forKey: Self.defaultsKey)
         }
 
         storedRecords = deduplicated(storedRecords)
@@ -42,12 +49,11 @@ struct PairedPhoneStore {
         return storedRecords
     }
 
+    /// Legacy compatibility suites are read-only migration sources (drained in
+    /// `load()`); new state is written solely to the primary defaults.
     func save(_ records: [PairedPhoneRecord]) {
         guard let data = try? JSONEncoder().encode(records) else { return }
         primaryDefaults.set(data, forKey: Self.defaultsKey)
-        for suite in suiteNames {
-            UserDefaults(suiteName: suite)?.set(data, forKey: Self.defaultsKey)
-        }
     }
 
     func clearAll() {
@@ -100,7 +106,10 @@ struct PairedPhoneStore {
         let refreshed = PairedPhoneRecord(
             id: id,
             displayName: sanitizedDisplayName,
-            lastAddress: address,
+            lastAddress: Self.preferredLastAddress(
+                incoming: address,
+                existing: matchingIndexes.map { records[$0].lastAddress }
+            ),
             firstPaired: firstPaired,
             lastConnected: now
         )
@@ -129,6 +138,7 @@ struct PairedPhoneStore {
 
     private func merged(_ existing: PairedPhoneRecord, with incoming: PairedPhoneRecord) -> PairedPhoneRecord {
         let latest = existing.lastConnected >= incoming.lastConnected ? existing : incoming
+        let older = existing.lastConnected >= incoming.lastConnected ? incoming : existing
         let specificName = [incoming.displayName, existing.displayName]
             .map(Self.sanitizedDisplayName)
             .first(where: Self.isSpecificDeviceName)
@@ -136,10 +146,22 @@ struct PairedPhoneStore {
         return PairedPhoneRecord(
             id: latest.id,
             displayName: displayName,
-            lastAddress: latest.lastAddress,
+            lastAddress: Self.preferredLastAddress(
+                incoming: latest.lastAddress,
+                existing: [older.lastAddress]
+            ),
             firstPaired: min(existing.firstPaired, incoming.firstPaired),
             lastConnected: max(existing.lastConnected, incoming.lastConnected)
         )
+    }
+
+    /// A bare USB serial must never overwrite a remembered wireless
+    /// `host:port`: the wireless address is what launch and presence
+    /// auto-reconnect dial after the cable is unplugged, and a USB session
+    /// has no wireless address of its own to contribute.
+    static func preferredLastAddress(incoming: String, existing: [String]) -> String {
+        if incoming.contains(":") { return incoming }
+        return existing.first(where: { $0.contains(":") }) ?? incoming
     }
 
     private func matchingRecordIndex(

@@ -178,6 +178,84 @@ enum Tooling {
         )
     }
 
+    /// Outcome of `runDataResult` — raw stdout bytes instead of merged text.
+    struct DataRunResult {
+        var data: Data
+        var exitCode: Int32
+        var timedOut: Bool
+        var launched: Bool
+        var succeeded: Bool { launched && !timedOut && exitCode == 0 }
+    }
+
+    /// Like `runResult`, but keeps stdout as raw bytes and drains stderr on a
+    /// separate pipe so binary output (e.g. `adb exec-out screencap -p`) can't
+    /// be corrupted by interleaved stderr text. Same hard timeout and
+    /// terminate → interrupt → SIGKILL escalation as `runResult`.
+    static func runDataResult(
+        _ name: String,
+        arguments: [String],
+        timeout overrideTimeout: TimeInterval? = nil
+    ) -> DataRunResult {
+        guard let path = toolPath(named: name) else {
+            return DataRunResult(data: Data(), exitCode: -1, timedOut: false, launched: false)
+        }
+
+        let process = Process()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        let stdoutHandle = stdoutPipe.fileHandleForReading
+        let stderrHandle = stderrPipe.fileHandleForReading
+        let box = DataBox()
+        let readDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            box.data = stdoutHandle.readDataToEndOfFile()
+            readDone.signal()
+        }
+        // stderr must be drained too, or a chatty child deadlocks on a full pipe.
+        DispatchQueue.global(qos: .utility).async {
+            _ = stderrHandle.readDataToEndOfFile()
+        }
+
+        do {
+            try process.run()
+        } catch {
+            stdoutHandle.closeFile()
+            stderrHandle.closeFile()
+            readDone.signal()
+            return DataRunResult(data: Data(), exitCode: -1, timedOut: false, launched: false)
+        }
+
+        let timeout: TimeInterval = overrideTimeout ?? (name == "adb" ? 5 : 30)
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+
+        var timedOut = false
+        if process.isRunning {
+            timedOut = true
+            process.terminate()
+            Thread.sleep(forTimeInterval: 0.1)
+            if process.isRunning { process.interrupt() }
+            Thread.sleep(forTimeInterval: 0.1)
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
+
+        process.waitUntilExit()
+        _ = readDone.wait(timeout: .now() + 1)
+        return DataRunResult(
+            data: box.data,
+            exitCode: process.terminationStatus,
+            timedOut: timedOut,
+            launched: true
+        )
+    }
+
     static func run(_ name: String, arguments: [String], timeout overrideTimeout: TimeInterval? = nil) -> String {
         let result = runResult(name, arguments: arguments, timeout: overrideTimeout)
         if result.timedOut {
@@ -248,7 +326,7 @@ enum Tooling {
 enum Logger {
     /// Unified-logging handle — visible in Console.app, filterable by subsystem.
     private static let osLog = os.Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.mallenkb.AndroidMirrorMac",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.example.AndroidMirrorMac",
         category: "app"
     )
     /// Hard cap on the on-disk log; trimmed to the most recent half when hit so

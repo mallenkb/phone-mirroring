@@ -8,3 +8,24 @@ Package.resolved
 # Local packaged builds and downloaded tool sources
 dist/
 scrcpy-source/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.p8
+*.p12
+*.cer
+*.crt
+*.key
+*.mobileprovision
+*.provisionprofile
+*.xcuserstate
+*.log
+
+# IDE and user-local state
+.vscode/settings.json
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+DerivedData/

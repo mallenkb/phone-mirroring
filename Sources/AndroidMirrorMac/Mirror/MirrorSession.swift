@@ -21,7 +21,8 @@ final class MirrorSession {
     /// Stable enough range to avoid collisions across mirror sessions and any
     /// other adb usage. The actual port is picked by NWListener (port 0 is
     /// fine, but we want a deterministic forward, so pick one in this band).
-    private static var nextPortOffset: UInt16 = 0
+    /// Random start so a second app instance doesn't race for the same ports.
+    private static var nextPortOffset = UInt16.random(in: 0..<64)
     private static func allocatePort() -> UInt16 {
         let base: UInt16 = 37283
         let value = base + nextPortOffset
@@ -36,6 +37,7 @@ final class MirrorSession {
     private let localPort: UInt16
 
     private var serverHost: ScrcpyServerHost?
+    private var startupTask: Task<Void, Error>?
     private var stream: ScrcpyVideoStream?
     private var audioPlayer: MirrorAudioPlayer?
     private var decoder = H264VideoToolboxDecoder()
@@ -59,10 +61,11 @@ final class MirrorSession {
         self.localPort = Self.allocatePort()
     }
 
-    func start() throws {
+    func start() async throws {
         guard windowController == nil else { throw SessionError.alreadyRunning }
 
         let audioEnabled = (model?.shouldEnableMirrorAudioForNextSession() ?? false) && Self.supportsMirrorAudio(serial: serial)
+        let maxFps = await Self.resolvedAutomaticMaxFps(serial: serial)
         Logger.log("MirrorSession audio enabled=\(audioEnabled) serial=\(serial ?? "default")")
         let stream = ScrcpyVideoStream(port: localPort, expectsAudio: audioEnabled)
         let host = ScrcpyServerHost(options: ScrcpyServerHost.Options(
@@ -70,7 +73,7 @@ final class MirrorSession {
             localPort: localPort,
             videoBitRate: UInt32(max(1, model?.mirrorBitRateMbps ?? 8)) * 1_000_000,
             maxSize: UInt16(clamping: model?.mirrorMaxSize ?? 1600),
-            maxFps: UInt16(clamping: model?.mirrorMaxFps ?? 60),
+            maxFps: UInt16(clamping: maxFps),
             audio: audioEnabled,
             serial: serial
         ))
@@ -126,8 +129,15 @@ final class MirrorSession {
         do {
             try stream.start()
             self.stream = stream
-            try host.prepareTunnel()
-            try host.start { [weak self] code, output in
+
+            if let model {
+                let controller = MirrorContentWindowController(model: model, session: self, launchFrame: launchFrame)
+                controller.show()
+                windowController = controller
+                scheduleAutomaticScreenOffIfNeeded()
+            }
+
+            let onExit: (Int32, String) -> Void = { [weak self] code, output in
                 Task { @MainActor in
                     Logger.log("scrcpy-server exited code=\(code) output=\(output.prefix(400))")
                     guard let self, !self.didStop, !self.isStopping else { return }
@@ -138,22 +148,31 @@ final class MirrorSession {
                     self.stop()
                 }
             }
+
             self.serverHost = host
+            let startupTask = Self.startHostOffMain(host, onExit: onExit)
+            self.startupTask = startupTask
+            try await startupTask.value
+            self.startupTask = nil
+            guard !Task.isCancelled, !didStop, !isStopping else {
+                Self.stopHostOffMain(host)
+                return
+            }
         } catch let error as ScrcpyServerHost.HostError {
+            startupTask = nil
+            serverHost = nil
             stream.stop()
-            host.stop()
+            Self.stopHostOffMain(host)
+            guard !Task.isCancelled, !didStop, !isStopping else { return }
             throw SessionError.start(error.description)
         } catch {
+            startupTask = nil
+            serverHost = nil
             stream.stop()
-            host.stop()
+            Self.stopHostOffMain(host)
+            guard !Task.isCancelled, !didStop, !isStopping else { return }
             throw SessionError.start(error.localizedDescription)
         }
-
-        guard let model else { return }
-        let controller = MirrorContentWindowController(model: model, session: self, launchFrame: launchFrame)
-        controller.show()
-        windowController = controller
-        scheduleAutomaticScreenOffIfNeeded()
     }
 
     func stop() {
@@ -161,6 +180,8 @@ final class MirrorSession {
         isStopping = true
         didStop = true
 
+        startupTask?.cancel()
+        startupTask = nil
         let serverHost = serverHost
         let sessionEnded = onSessionEnded
         let finalWindowFrame = windowController?.window?.frame
@@ -182,9 +203,118 @@ final class MirrorSession {
         sessionEnded?(finalWindowFrame)
 
         if let serverHost {
-            DispatchQueue.global(qos: .utility).async {
-                serverHost.stop()
+            Self.stopHostOffMain(serverHost)
+        }
+    }
+
+    private nonisolated static func startHostOffMain(
+        _ host: ScrcpyServerHost,
+        onExit: @escaping (Int32, String) -> Void
+    ) -> Task<Void, Error> {
+        runStartupOffMain {
+            try host.prepareTunnel()
+            try Task.checkCancellation()
+            try host.start(onExit: onExit)
+        }
+    }
+
+    nonisolated static func runStartupOffMain(_ operation: @escaping () throws -> Void) -> Task<Void, Error> {
+        Task.detached(priority: .userInitiated) {
+            try operation()
+        }
+    }
+
+    nonisolated static func androidDisplayRefreshRates(in output: String) -> [Int] {
+        var rates = Set<Int>()
+        let scalarPattern = #"(?:fps|peakRefreshRate|mRefreshRate|refreshRate)\s*[=:]\s*([0-9]+(?:\.[0-9]+)?)"#
+        for value in regexCapturedDoubles(pattern: scalarPattern, in: output) {
+            let rounded = Int(value.rounded())
+            if rounded > 0 {
+                rates.insert(rounded)
             }
+        }
+
+        let alternativesPattern = #"alternativeRefreshRates\s*=\s*\[([^\]]+)\]"#
+        for list in regexCapturedStrings(pattern: alternativesPattern, in: output) {
+            for value in regexCapturedDoubles(pattern: #"([0-9]+(?:\.[0-9]+)?)"#, in: list) {
+                let rounded = Int(value.rounded())
+                if rounded > 0 {
+                    rates.insert(rounded)
+                }
+            }
+        }
+
+        return rates.sorted()
+    }
+
+    nonisolated static func automaticMirrorMaxFps(
+        androidRefreshRates: [Int],
+        macRefreshRate: Int?
+    ) -> Int {
+        guard let phoneMax = androidRefreshRates.max(), phoneMax > 0 else {
+            return macRefreshRate.map { max(1, $0) } ?? 60
+        }
+        guard let macRefreshRate, macRefreshRate > 0 else {
+            return phoneMax
+        }
+        return max(1, min(phoneMax, macRefreshRate))
+    }
+
+    private static func resolvedAutomaticMaxFps(serial: String?) async -> Int {
+        let androidRates = await androidRefreshRates(serial: serial)
+        let macRefresh = currentMacRefreshRate()
+        let maxFps = automaticMirrorMaxFps(
+            androidRefreshRates: androidRates,
+            macRefreshRate: macRefresh
+        )
+        Logger.log("Automatic mirror max_fps=\(maxFps) phoneRates=\(androidRates) macRefresh=\(macRefresh.map(String.init) ?? "unknown") serial=\(serial ?? "default")")
+        return maxFps
+    }
+
+    private nonisolated static func androidRefreshRates(serial: String?) async -> [Int] {
+        await Task.detached(priority: .utility) {
+            var args: [String] = []
+            if let serial, !serial.isEmpty {
+                args += ["-s", serial]
+            }
+            args += ["shell", "dumpsys", "display"]
+            let output = Tooling.run("adb", arguments: args, timeout: 4)
+            return androidDisplayRefreshRates(in: output)
+        }.value
+    }
+
+    private static func currentMacRefreshRate() -> Int? {
+        if let screenMax = NSScreen.main?.maximumFramesPerSecond, screenMax > 0 {
+            return screenMax
+        }
+        guard let screenNumber = NSScreen.main?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+            return nil
+        }
+        let displayID = CGDirectDisplayID(screenNumber.uint32Value)
+        guard let mode = CGDisplayCopyDisplayMode(displayID), mode.refreshRate > 0 else {
+            return nil
+        }
+        return Int(mode.refreshRate.rounded())
+    }
+
+    private nonisolated static func regexCapturedDoubles(pattern: String, in text: String) -> [Double] {
+        regexCapturedStrings(pattern: pattern, in: text).compactMap(Double.init)
+    }
+
+    private nonisolated static func regexCapturedStrings(pattern: String, in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.matches(in: text, range: range).compactMap { match in
+            guard match.numberOfRanges > 1,
+                  let captureRange = Range(match.range(at: 1), in: text)
+            else { return nil }
+            return String(text[captureRange])
+        }
+    }
+
+    private nonisolated static func stopHostOffMain(_ host: ScrcpyServerHost) {
+        Task.detached(priority: .utility) {
+            host.stop()
         }
     }
 

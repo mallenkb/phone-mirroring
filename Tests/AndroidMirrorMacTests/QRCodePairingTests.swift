@@ -36,19 +36,19 @@ final class QRCodePairingTests: XCTestCase {
     func testQRCodePairingServiceMatchesRequestedPairingServiceOnly() {
         let expected = DiscoveredPhone(
             id: "studio-Abc123xyZ9",
-            address: "192.168.1.42:39555",
+            address: "192.0.2.42:39555",
             kind: .pairable,
             lastSeen: Date(timeIntervalSince1970: 200)
         )
         let sameHostConnectable = DiscoveredPhone(
             id: "adb-XYZ",
-            address: "192.168.1.42:42111",
+            address: "192.0.2.42:42111",
             kind: .connectable,
             lastSeen: Date(timeIntervalSince1970: 300)
         )
         let otherPairing = DiscoveredPhone(
             id: "studio-Other1234",
-            address: "192.168.1.43:39555",
+            address: "192.0.2.43:39555",
             kind: .pairable,
             lastSeen: Date(timeIntervalSince1970: 100)
         )
@@ -65,19 +65,19 @@ final class QRCodePairingTests: XCTestCase {
     func testConnectableWirelessPhonePrefersSameHostAsPairingService() {
         let otherHost = DiscoveredPhone(
             id: "adb-other",
-            address: "192.168.1.99:42111",
+            address: "192.0.2.99:42111",
             kind: .connectable,
             lastSeen: Date(timeIntervalSince1970: 100)
         )
         let expected = DiscoveredPhone(
             id: "adb-XYZ",
-            address: "192.168.1.42:42111",
+            address: "192.0.2.42:42111",
             kind: .connectable,
             lastSeen: Date(timeIntervalSince1970: 200)
         )
         let pairingOnly = DiscoveredPhone(
             id: "studio-Abc123xyZ9",
-            address: "192.168.1.42:39555",
+            address: "192.0.2.42:39555",
             kind: .pairable,
             lastSeen: Date(timeIntervalSince1970: 300)
         )

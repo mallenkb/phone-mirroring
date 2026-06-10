@@ -123,11 +123,7 @@ struct SettingsView: View {
                             selection: $model.mirrorBitRateMbps,
                             options: [2, 4, 8, 16, 24]
                         )
-                        qualityPicker(
-                            "Frame rate", suffix: "fps",
-                            selection: $model.mirrorMaxFps,
-                            options: [30, 60, 90, 120]
-                        )
+                        qualityValue("Frame rate", value: "Auto")
                         Spacer(minLength: 0)
                     }
                 }
@@ -179,10 +175,20 @@ struct SettingsView: View {
                 icon: "bell.badge",
                 isOn: $model.notificationForwardingEnabled,
                 title: "Forward phone notifications to this Mac",
-                subtitle: "Shows your Android notifications in macOS Notification Center while a device is connected. Nothing is installed on the phone — they’re read over adb.",
-                detail: "Group summaries and ongoing items (music, navigation) are skipped. macOS will ask for notification permission the first time."
+                subtitle: AppModel.notificationPermissionReason,
+                detail: model.notificationForwardingPermissionDenied
+                    ? "macOS is blocking notifications for Android Mirroring. Enable this app in System Settings, then turn this switch on again."
+                    : "Group summaries and ongoing items (music, navigation) are skipped. macOS will ask for notification permission the first time."
             )
 
+            if model.notificationForwardingPermissionDenied {
+                Button("Open macOS Notification Settings") {
+                    model.openNotificationSettings()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .padding(.leading, 42)
+            }
         }
         .padding(14)
         .background(
@@ -256,6 +262,19 @@ struct SettingsView: View {
             .labelsHidden()
             .pickerStyle(.menu)
             .frame(width: 116, alignment: .leading)
+        }
+        .frame(width: 140, alignment: .leading)
+    }
+
+    private func qualityValue(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title.uppercased())
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 116, height: 22, alignment: .leading)
         }
         .frame(width: 140, alignment: .leading)
     }

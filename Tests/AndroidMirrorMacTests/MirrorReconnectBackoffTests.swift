@@ -2,6 +2,145 @@ import XCTest
 @testable import AndroidMirrorMac
 
 final class MirrorReconnectBackoffTests: XCTestCase {
+    private let explicitDeviceSetupRequiredDefaultsKey = "MirrorBehavior.explicitDeviceSetupRequired"
+
+    @MainActor
+    func testClearAllDevicesResetsSelectedDeviceAndRequiresExplicitSetup() {
+        let defaults = UserDefaults.standard
+        let previousExplicitSetup = defaults.object(forKey: explicitDeviceSetupRequiredDefaultsKey)
+        defer {
+            if let previousExplicitSetup {
+                defaults.set(previousExplicitSetup, forKey: explicitDeviceSetupRequiredDefaultsKey)
+            } else {
+                defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
+            }
+        }
+        defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
+
+        let record = PairedPhoneRecord(
+            id: "adb-RFCT10ZLTAJ",
+            displayName: "SM-S906B",
+            lastAddress: "192.168.68.50:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+
+        model.forgetAllPairedPhones()
+
+        XCTAssertTrue(model.pairedPhones.isEmpty)
+        XCTAssertTrue(model.discoveredPhones.isEmpty)
+        XCTAssertEqual(model.selectedDevice, .demo)
+        XCTAssertFalse(model.isSelectedDeviceOnline)
+        XCTAssertFalse(model.isAutoConnecting)
+        XCTAssertFalse(model.isPairing)
+        XCTAssertTrue(defaults.bool(forKey: explicitDeviceSetupRequiredDefaultsKey))
+    }
+
+    func testClearedDeviceStateBlocksLaunchRecoveryReconnect() {
+        XCTAssertFalse(
+            AppModel.shouldAttemptRecoveredWiFiReconnect(
+                hasSavedDevices: false,
+                explicitDeviceSetupRequired: true
+            )
+        )
+        XCTAssertTrue(
+            AppModel.shouldAttemptRecoveredWiFiReconnect(
+                hasSavedDevices: false,
+                explicitDeviceSetupRequired: false
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldAttemptRecoveredWiFiReconnect(
+                hasSavedDevices: true,
+                explicitDeviceSetupRequired: false
+            )
+        )
+    }
+
+    @MainActor
+    func testClearedDeviceStateIgnoresLiveADBPresence() {
+        let defaults = UserDefaults.standard
+        let previousExplicitSetup = defaults.object(forKey: explicitDeviceSetupRequiredDefaultsKey)
+        defer {
+            if let previousExplicitSetup {
+                defaults.set(previousExplicitSetup, forKey: explicitDeviceSetupRequiredDefaultsKey)
+            } else {
+                defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
+            }
+        }
+        defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
+
+        let model = AppModel(startBackgroundServices: false)
+        model.forgetAllPairedPhones()
+
+        model.applyDevicePresence("""
+        List of devices attached
+        RFCT10ZLTAJ device usb:336592896X product:g0qxxx model:SM_S906B device:g0q transport_id:4
+        """)
+
+        XCTAssertEqual(model.selectedDevice, .demo)
+        XCTAssertFalse(model.isSelectedDeviceOnline)
+        XCTAssertEqual(model.connectionDeviceLabel, "Android Mirror")
+    }
+
+    @MainActor
+    func testUnsavedLiveADBPresenceDoesNotCreateOnlineDevicePill() {
+        let defaults = UserDefaults.standard
+        let previousExplicitSetup = defaults.object(forKey: explicitDeviceSetupRequiredDefaultsKey)
+        defer {
+            if let previousExplicitSetup {
+                defaults.set(previousExplicitSetup, forKey: explicitDeviceSetupRequiredDefaultsKey)
+            } else {
+                defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
+            }
+        }
+        defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
+
+        let model = AppModel(startBackgroundServices: false)
+
+        model.applyDevicePresence("""
+        List of devices attached
+        RFCT10ZLTAJ device usb:336592896X product:g0qxxx model:SM_S906B device:g0q transport_id:4
+        """)
+
+        XCTAssertTrue(model.pairedPhones.isEmpty)
+        XCTAssertEqual(model.selectedDevice, .demo)
+        XCTAssertFalse(model.isSelectedDeviceOnline)
+        XCTAssertEqual(model.connectionDeviceLabel, "Android Mirror")
+    }
+
+    func testClearAllDisconnectTargetsIncludeOnlyWirelessADBTransports() {
+        let records = [
+            PairedPhoneRecord(
+                id: "usb-record",
+                displayName: "USB Phone",
+                lastAddress: "RFCT10ZLTAJ",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 100)
+            ),
+            PairedPhoneRecord(
+                id: "wifi-record",
+                displayName: "Wi-Fi Phone",
+                lastAddress: "192.168.68.50:5555",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 200)
+            )
+        ]
+
+        XCTAssertEqual(
+            AppModel.wirelessTargetsToDisconnect(
+                selectedSerial: "adb-RFCT10ZLTAJ._adb-tls-connect._tcp",
+                selectedID: "RFCT10ZLTAJ",
+                records: records
+            ),
+            [
+                "adb-RFCT10ZLTAJ._adb-tls-connect._tcp",
+                "192.168.68.50:5555"
+            ]
+        )
+    }
+
     func testFirstQuickFailureDoesNotBackOff() {
         XCTAssertEqual(AppModel.mirrorBackoffInterval(forFailureCount: 0), 0)
         XCTAssertEqual(AppModel.mirrorBackoffInterval(forFailureCount: 1), 0)
@@ -69,17 +208,62 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
+    func testConnectionDeviceLabelKeepsSpecificModelName() {
+        XCTAssertEqual(
+            AppModel.connectionDeviceLabel(
+                name: "SM-S906B",
+                id: "adb-RFCT10ZLTAJ",
+                serial: "Android.local:5555",
+                network: "Wireless debugging"
+            ),
+            "SM-S906B"
+        )
+    }
+
+    func testConnectionDeviceLabelUsesWirelessHostWhenNameIsGeneric() {
+        XCTAssertEqual(
+            AppModel.connectionDeviceLabel(
+                name: "Android device",
+                id: "adb-RFCT10ZLTAJ",
+                serial: "192.168.68.50:5555",
+                network: "Wireless debugging"
+            ),
+            "Wi-Fi 192.168.68.50"
+        )
+    }
+
+    func testConnectionDeviceLabelUsesUSBSerialWhenNameIsGeneric() {
+        XCTAssertEqual(
+            AppModel.connectionDeviceLabel(
+                name: "Android device",
+                id: "RFCT10ZLTAJ",
+                serial: "RFCT10ZLTAJ",
+                network: "USB debugging"
+            ),
+            "USB RFCT10ZLTAJ"
+        )
+    }
+
     // MARK: - Unified auto-connecting indicator
 
-    func testSavedPhonePresentShowsConnecting() {
-        // A remembered phone has appeared (USB or wireless) but isn't online yet:
-        // the indicator must read "Connecting", never "Offline".
+    func testSavedPhonePresentWithoutReconnectWorkStaysOffline() {
+        XCTAssertTrue(
+            !AppModel.shouldShowAutoConnecting(
+                hasSavedDevice: true,
+                isOnline: false,
+                isMirroring: false,
+                hasActiveReconnectWork: false
+            )
+        )
+    }
+
+    func testSavedReconnectWorkShowsConnecting() {
         XCTAssertTrue(
             AppModel.shouldShowAutoConnecting(
                 hasSavedDevice: true,
                 isOnline: false,
                 isMirroring: false,
-                hasLivePresentTarget: true
+                hasActiveReconnectWork: true
             )
         )
     }
@@ -90,7 +274,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 hasSavedDevice: true,
                 isOnline: false,
                 isMirroring: false,
-                hasLivePresentTarget: false
+                hasActiveReconnectWork: false
             )
         )
     }
@@ -101,7 +285,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 hasSavedDevice: true,
                 isOnline: true,
                 isMirroring: false,
-                hasLivePresentTarget: true
+                hasActiveReconnectWork: true
             )
         )
     }
@@ -112,7 +296,86 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 hasSavedDevice: true,
                 isOnline: false,
                 isMirroring: true,
-                hasLivePresentTarget: true
+                hasActiveReconnectWork: true
+            )
+        )
+    }
+
+    func testBackgroundAutoConnectDoesNotDisableManualUSBButton() {
+        XCTAssertFalse(
+            AppModel.shouldDisableManualUSBConnectButton(
+                isPairing: false,
+                isScanning: false,
+                isRecoveringConnection: false,
+                isAwaitingReconnect: false,
+                isMirroring: false,
+                isAutoConnecting: true
+            )
+        )
+    }
+
+    func testActivePairingDisablesManualUSBButton() {
+        XCTAssertTrue(
+            AppModel.shouldDisableManualUSBConnectButton(
+                isPairing: true,
+                isScanning: false,
+                isRecoveringConnection: false,
+                isAwaitingReconnect: false,
+                isMirroring: false,
+                isAutoConnecting: false
+            )
+        )
+    }
+
+    func testRecentAutoConnectFailureIsCoolingDown() {
+        let now = Date(timeIntervalSince1970: 100)
+
+        XCTAssertTrue(
+            AppModel.isAutoConnectFailureCoolingDown(
+                failedAt: Date(timeIntervalSince1970: 95),
+                now: now,
+                cooldown: 10
+            )
+        )
+        XCTAssertFalse(
+            AppModel.isAutoConnectFailureCoolingDown(
+                failedAt: Date(timeIntervalSince1970: 80),
+                now: now,
+                cooldown: 10
+            )
+        )
+    }
+
+    func testMirrorSettingsRestartIsSkippedWhileMirrorLaunches() {
+        XCTAssertFalse(
+            AppModel.shouldScheduleMirrorSettingsRestart(
+                isMirroring: true,
+                isPairing: false,
+                isLaunching: true
+            )
+        )
+    }
+
+    func testMirrorSettingsRestartOnlyRunsForStableActiveMirror() {
+        XCTAssertTrue(
+            AppModel.shouldScheduleMirrorSettingsRestart(
+                isMirroring: true,
+                isPairing: false,
+                isLaunching: false
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldScheduleMirrorSettingsRestart(
+                isMirroring: false,
+                isPairing: false,
+                isLaunching: false
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldScheduleMirrorSettingsRestart(
+                isMirroring: true,
+                isPairing: true,
+                isLaunching: false
             )
         )
     }
@@ -123,9 +386,170 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 hasSavedDevice: false,
                 isOnline: false,
                 isMirroring: false,
-                hasLivePresentTarget: true
+                hasActiveReconnectWork: true
             )
         )
+    }
+
+    func testMirroredWirelessDeviceMissingFromADBStartsRecovery() {
+        XCTAssertTrue(
+            AppModel.shouldRecoverMissingMirrorTransport(
+                isMirroring: true,
+                selectedSerial: "192.168.68.50:5555",
+                pairedPhones: [],
+                authorizedDevices: []
+            )
+        )
+    }
+
+    func testLiveMirroredWirelessDeviceDoesNotStartRecovery() {
+        let device = AuthorizedADBDevice(
+            serial: "192.168.68.50:5555",
+            product: "g0sxxx",
+            model: "SM S906B",
+            isUSB: false
+        )
+
+        XCTAssertFalse(
+            AppModel.shouldRecoverMissingMirrorTransport(
+                isMirroring: true,
+                selectedSerial: "192.168.68.50:5555",
+                pairedPhones: [],
+                authorizedDevices: [device]
+            )
+        )
+    }
+
+    func testOnlineIdleSelectedDeviceAutoStartsMirror() {
+        XCTAssertTrue(
+            AppModel.shouldAutoStartOnlineSelectedDevice(
+                isOnline: true,
+                isMirroring: false,
+                isPairing: false,
+                hasMirrorLaunchTask: false,
+                hasWirelessStartTask: false,
+                hasReconnectTask: false,
+                hasUSBConnectTask: false,
+                isAwaitingReconnect: false,
+                selectedSerial: "192.168.68.50:5555"
+            )
+        )
+    }
+
+    func testOnlineSelectedDeviceDoesNotAutoStartWhileReconnectOwnsTransition() {
+        XCTAssertFalse(
+            AppModel.shouldAutoStartOnlineSelectedDevice(
+                isOnline: true,
+                isMirroring: false,
+                isPairing: false,
+                hasMirrorLaunchTask: false,
+                hasWirelessStartTask: true,
+                hasReconnectTask: false,
+                hasUSBConnectTask: false,
+                isAwaitingReconnect: false,
+                selectedSerial: "192.168.68.50:5555"
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldAutoStartOnlineSelectedDevice(
+                isOnline: true,
+                isMirroring: false,
+                isPairing: false,
+                hasMirrorLaunchTask: false,
+                hasWirelessStartTask: false,
+                hasReconnectTask: false,
+                hasUSBConnectTask: false,
+                isAwaitingReconnect: true,
+                selectedSerial: "192.168.68.50:5555"
+            )
+        )
+    }
+
+    func testOnlineUSBDeviceCanRetryHandoffWhenItIsIdle() {
+        XCTAssertTrue(
+            AppModel.shouldAutoStartOnlineSelectedDevice(
+                isOnline: true,
+                isMirroring: false,
+                isPairing: false,
+                hasMirrorLaunchTask: false,
+                hasWirelessStartTask: false,
+                hasReconnectTask: false,
+                hasUSBConnectTask: false,
+                isAwaitingReconnect: false,
+                selectedSerial: "RFCT10ZLTAJ"
+            )
+        )
+    }
+
+    func testAwaitingReconnectShowsReconnectSurface() {
+        XCTAssertTrue(
+            AppModel.shouldShowReconnectSurface(
+                isRecoveringConnection: false,
+                isAwaitingReconnect: true
+            )
+        )
+    }
+
+    func testSingleConnectablePhoneCanRecoverMissingPairingRecord() {
+        let phone = DiscoveredPhone(
+            id: "adb-RFCT10ZLTAJ",
+            address: "192.168.68.50:5555",
+            kind: .connectable,
+            lastSeen: Date(timeIntervalSince1970: 100)
+        )
+
+        XCTAssertEqual(
+            AppModel.singleConnectableRecoveryCandidate(in: [phone]),
+            phone
+        )
+    }
+
+    func testRecoveryDoesNotGuessBetweenMultipleConnectablePhones() {
+        let phones = [
+            DiscoveredPhone(
+                id: "adb-one",
+                address: "192.168.68.50:5555",
+                kind: .connectable,
+                lastSeen: Date(timeIntervalSince1970: 100)
+            ),
+            DiscoveredPhone(
+                id: "adb-two",
+                address: "192.168.68.51:5555",
+                kind: .connectable,
+                lastSeen: Date(timeIntervalSince1970: 100)
+            )
+        ]
+
+        XCTAssertNil(AppModel.singleConnectableRecoveryCandidate(in: phones))
+    }
+
+    func testPairingOnlyMDNSServiceDoesNotRecoverMissingPairingRecord() {
+        let phone = DiscoveredPhone(
+            id: "adb-RFCT10ZLTAJ",
+            address: "192.168.68.50:37123",
+            kind: .pairable,
+            lastSeen: Date(timeIntervalSince1970: 100)
+        )
+
+        XCTAssertNil(AppModel.singleConnectableRecoveryCandidate(in: [phone]))
+    }
+
+    func testUnauthorizedUSBDeviceIsDetected() {
+        let output = """
+        List of devices attached
+        RFCT10ZLTAJ            unauthorized usb:1-1 transport_id:1
+        """
+
+        XCTAssertTrue(AppModel.hasUnauthorizedUSBDevice(in: output))
+    }
+
+    func testWirelessUnauthorizedOutputDoesNotCountAsUSBPrompt() {
+        let output = """
+        List of devices attached
+        192.168.68.50:5555     unauthorized product:foo model:Pixel transport_id:2
+        """
+
+        XCTAssertFalse(AppModel.hasUnauthorizedUSBDevice(in: output))
     }
 
     func testLaunchReconnectWindowMatchesThreeToFiveSecondTarget() {

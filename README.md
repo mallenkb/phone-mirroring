@@ -12,7 +12,7 @@ Native SwiftUI macOS prototype for a local-first Android mirroring client.
 - Native in-process mirroring backed by the bundled `scrcpy-server` artifact
 - Adjustable mirroring quality (resolution / bitrate / frame-rate) in Settings
 - Drag-and-drop onto the mirror to install `.apk`s or push files to the phone
-- Screenshot, screen recording, and optional experimental Android notification forwarding
+- Screenshot, screen recording, and Android notification forwarding (on by default, auto-disabled if macOS notification permission is denied; toggle in Settings)
 - Dismissible in-app error banner (with **Open Log**) so failures aren't silent
 - Keyboard-shortcuts reference under **Help ▸ Keyboard Shortcuts**
 
@@ -44,7 +44,7 @@ swift run AndroidMirrorMac
 For app-bundle testing, use:
 
 ```sh
-script/build_and_run.sh
+scripts/build_and_run.sh
 ```
 
 For release-style packaging without launching the app:
@@ -57,7 +57,7 @@ The app does not require the standalone `scrcpy` CLI for live mirroring. It push
 
 ## Sharing the app (signing & notarization)
 
-`script/build_and_run.sh` ad-hoc signs the bundle, which only runs on the machine that built it. To distribute it to other Macs without Gatekeeper warnings, sign with a Developer ID and notarize:
+`scripts/build_and_run.sh` ad-hoc signs the bundle, which only runs on the machine that built it. To distribute it to other Macs without Gatekeeper warnings, sign with a Developer ID and notarize:
 
 ```sh
 DEVELOPER_ID="Developer ID Application: You (TEAMID)" \
@@ -65,7 +65,7 @@ APPLE_ID="you@example.com" TEAM_ID="TEAMID" APP_PASSWORD="app-specific-pw" \
   scripts/notarize.sh
 ```
 
-Entitlements live in `scripts/AndroidMirrorMac.entitlements`. A paid Apple Developer account is required.
+Dev builds use `scripts/AndroidMirrorMac.entitlements`; notarized release builds use `scripts/AndroidMirrorMac.release.entitlements` (no hardened-runtime exceptions — `notarize.sh` fails if any leak in). A paid Apple Developer account is required. Keep the bundle identifier stable (`BUNDLE_ID=com.yourdomain.AndroidMirroring scripts/build_and_run.sh` when rebranding), because changing it resets macOS privacy authorization for Notification Center and Local Network access.
 
 ## Continuous integration
 
