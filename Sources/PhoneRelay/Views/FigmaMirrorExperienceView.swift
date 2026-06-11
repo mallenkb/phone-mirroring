@@ -367,6 +367,13 @@ struct FirstRunOnboardingView: View {
         NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
 
+    private var canContinue: Bool {
+        AppModel.canCompleteFirstRunOnboarding(
+            hasLocalNetworkPermission: model.localNetworkPermissionGrantedForOnboarding,
+            hasNotificationPermission: model.notificationPermissionGrantedForOnboarding
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             MirroringLoopVisual(accent: accent)
@@ -407,25 +414,9 @@ struct FirstRunOnboardingView: View {
                 Divider().overlay(cardStroke)
 
                 setupRow(
-                    icon: "hand.raised",
-                    title: "Android permissions",
-                    detail: "When Android opens System Settings, grant the requested PhoneRelay access so mirroring and notification features can work."
-                )
-
-                Divider().overlay(cardStroke)
-
-                setupRow(
                     icon: "wifi",
                     title: "Keep devices nearby",
                     detail: "For wireless pairing, keep your phone and Mac on the same Wi-Fi network."
-                )
-
-                Divider().overlay(cardStroke)
-
-                setupRow(
-                    icon: "bell.badge",
-                    title: "Mac notifications",
-                    detail: AppModel.notificationPermissionReason
                 )
             }
             .padding(.horizontal, 18)
@@ -436,17 +427,22 @@ struct FirstRunOnboardingView: View {
             )
             .padding(.top, 24)
 
+            permissionsPanel
+                .padding(.top, 14)
+
             HStack(spacing: 12) {
                 Button("Later") {
                     NSApplication.shared.terminate(nil)
                 }
-                    .buttonStyle(OnboardingSecondaryButtonStyle())
+                .buttonStyle(.bordered)
 
                 Button("Continue") {
-                    model.enableNotificationForwardingFromOnboarding()
+                    guard canContinue else { return }
                     hasSeen = true
                 }
-                    .buttonStyle(OnboardingPrimaryButtonStyle())
+                .buttonStyle(.borderedProminent)
+                .disabled(!canContinue)
+                .help(canContinue ? "Continue to PhoneRelay" : "Allow Local Network and Notifications to continue")
             }
             .padding(.top, 30)
         }
@@ -456,14 +452,73 @@ struct FirstRunOnboardingView: View {
         .frame(width: contentWidth + 80)
         .background(background)
         .onAppear {
-            if hasSeen || model.isSelectedDeviceOnline { onDismiss() }
+            if hasSeen { onDismiss() }
         }
         .onChange(of: hasSeen) { seen in
             if seen { onDismiss() }
         }
-        .onChange(of: model.isSelectedDeviceOnline) { online in
-            if online { onDismiss() }
+    }
+
+    private var permissionsPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Permissions for a better experience")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(primaryText)
+
+                Text("USB works without these. Allow them when you want wireless handoff and forwarded phone alerts.")
+                    .font(.system(size: 12.5, weight: .regular))
+                    .foregroundStyle(secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider().overlay(cardStroke)
+
+            PermissionActionRow(
+                icon: "network",
+                title: "Local Network",
+                detail: AppModel.localNetworkPermissionReason,
+                actionTitle: model.localNetworkPermissionGrantedForOnboarding ? "Allowed" : "Allow",
+                tint: accent,
+                primaryText: primaryText,
+                secondaryText: secondaryText,
+                isComplete: model.localNetworkPermissionGrantedForOnboarding,
+                action: model.requestLocalNetworkPermissionFromOnboarding
+            )
+
+            Divider().overlay(cardStroke)
+
+            PermissionActionRow(
+                icon: "bell.badge",
+                title: "Notifications",
+                detail: AppModel.notificationPermissionReason,
+                actionTitle: notificationPermissionActionTitle,
+                tint: accent,
+                primaryText: primaryText,
+                secondaryText: secondaryText,
+                isComplete: model.notificationPermissionGrantedForOnboarding,
+                action: {
+                    guard !model.notificationPermissionGrantedForOnboarding else { return }
+                    if model.notificationForwardingPermissionDenied {
+                        model.openNotificationSettings()
+                    } else {
+                        model.enableNotificationForwardingFromOnboarding()
+                    }
+                }
+            )
         }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .frame(width: contentWidth)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous).fill(cardFill)
+        )
+    }
+
+    private var notificationPermissionActionTitle: String {
+        if model.notificationPermissionGrantedForOnboarding { return "Allowed" }
+        if model.notificationForwardingPermissionDenied { return "Open Settings" }
+        return "Allow"
     }
 
     private func setupRow(icon: String, title: String, detail: String) -> some View {
@@ -675,6 +730,83 @@ private struct OnboardingRowBadge: View {
     }
 }
 
+private struct PermissionActionRow: View {
+    let icon: String
+    let title: String
+    let detail: String
+    let actionTitle: String
+    let tint: Color
+    let primaryText: Color
+    let secondaryText: Color
+    let isComplete: Bool
+    let action: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            OnboardingRowBadge(systemName: icon, tint: tint, size: 32)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 13.5, weight: .bold))
+                    .foregroundStyle(primaryText)
+
+                Text(detail)
+                    .font(.system(size: 12.5, weight: .regular))
+                    .foregroundStyle(secondaryText)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 1)
+
+            Spacer(minLength: 10)
+
+            Button(action: action) {
+                HStack(spacing: 5) {
+                    if isComplete {
+                        Image(systemName: "checkmark")
+                    }
+                    Text(actionTitle)
+                }
+            }
+            .buttonStyle(PermissionRoundedButtonStyle(isComplete: isComplete))
+            .disabled(isComplete)
+            .padding(.top, 1)
+        }
+    }
+}
+
+private struct PermissionRoundedButtonStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var colorScheme
+    let isComplete: Bool
+
+    private var fillColor: Color {
+        if isComplete {
+            return Color.green.opacity(colorScheme == .dark ? 0.18 : 0.13)
+        }
+        return Color.accentColor.opacity(colorScheme == .dark ? 0.22 : 0.14)
+    }
+
+    private var textColor: Color {
+        isComplete ? Color.green : Color.accentColor
+    }
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(textColor.opacity(configuration.isPressed ? 0.72 : 1))
+            .padding(.horizontal, 14)
+            .frame(height: 34)
+            .background(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(fillColor.opacity(configuration.isPressed ? 0.78 : 1))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .stroke(textColor.opacity(colorScheme == .dark ? 0.16 : 0.20), lineWidth: 1)
+            )
+    }
+}
+
 /// Full-width USB action with an obvious tappable surface and hover feedback.
 private struct USBConnectButton: View {
     let accent: Color
@@ -839,45 +971,6 @@ private struct ErrorBanner: View {
                         .stroke(Color(red: 1.0, green: 0.5, blue: 0.42).opacity(0.32), lineWidth: 1)
                 )
         )
-    }
-}
-
-private struct OnboardingPrimaryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 24)
-            .frame(height: 44)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(onboardingTeal.opacity(configuration.isPressed ? 0.78 : 1))
-            )
-    }
-}
-
-private struct OnboardingSecondaryButtonStyle: ButtonStyle {
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var labelColor: Color {
-        colorScheme == .dark
-            ? Color(red: 0.24, green: 0.80, blue: 0.72)
-            : Color(red: 0.0, green: 0.52, blue: 0.47)
-    }
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(labelColor)
-            .padding(.horizontal, 22)
-            .frame(height: 44)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(
-                        onboardingTeal
-                            .opacity(configuration.isPressed ? 0.30 : colorScheme == .dark ? 0.18 : 0.12)
-                    )
-            )
     }
 }
 

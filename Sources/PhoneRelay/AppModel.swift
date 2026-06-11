@@ -25,7 +25,10 @@ private final class OneShotCallback: @unchecked Sendable {
 final class AppModel: ObservableObject {
     typealias NotificationAuthorizationRequester = (@escaping (Bool, Error?) -> Void) -> Void
     typealias NotificationSettingsOpener = () -> Void
+    typealias LocalNetworkPermissionPrompter = (@escaping (Bool) -> Void) -> Void
 
+    nonisolated static let localNetworkPermissionReason =
+        "Allow Local Network so PhoneRelay can find your phone on Wi-Fi for wireless pairing, USB-to-Wi-Fi handoff, and automatic reconnect."
     nonisolated static let notificationPermissionReason =
         "Allow notifications so PhoneRelay can show all unread notifications from your device on this Mac."
     nonisolated static let notificationForwardingDefaultsKey = "MirrorBehavior.notificationForwardingEnabled"
@@ -34,11 +37,18 @@ final class AppModel: ObservableObject {
     }
     private nonisolated static let explicitDeviceSetupRequiredDefaultsKey =
         "MirrorBehavior.explicitDeviceSetupRequired"
-    private nonisolated static let notificationSettingsURL =
-        URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!
+    private nonisolated static let localNetworkSettingsURL =
+        URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!
 
     nonisolated static func defaultNotificationForwardingEnabled(storedValue: Any?) -> Bool {
         (storedValue as? Bool) ?? true
+    }
+
+    nonisolated static func canCompleteFirstRunOnboarding(
+        hasLocalNetworkPermission: Bool,
+        hasNotificationPermission: Bool
+    ) -> Bool {
+        hasLocalNetworkPermission && hasNotificationPermission
     }
 
     @Published var selectedDevice: MirrorDevice = .demo
@@ -52,17 +62,7 @@ final class AppModel: ObservableObject {
     /// yet. Drives the unified "Connecting" indicator so it lights up the instant
     /// a saved phone appears, and self-clears once we're online or it's gone.
     @Published private(set) var isAutoConnecting = false
-    @Published private(set) var isSelectedDeviceOnline = false {
-        didSet {
-            guard isSelectedDeviceOnline, !oldValue else { return }
-            // A live device (USB or wireless) just appeared. Permanently leave
-            // first-run onboarding so its fixed default-window sizing can never
-            // persist into the connected or mirroring state.
-            if !UserDefaults.standard.bool(forKey: "hasSeenFirstTimeUserOnboarding") {
-                UserDefaults.standard.set(true, forKey: "hasSeenFirstTimeUserOnboarding")
-            }
-        }
-    }
+    @Published private(set) var isSelectedDeviceOnline = false
     @Published var clipboardSyncEnabled: Bool =
         (UserDefaults.standard.object(forKey: "MirrorBehavior.clipboardSyncEnabled") as? Bool) ?? true {
         didSet {
@@ -99,6 +99,8 @@ final class AppModel: ObservableObject {
         }
     }
     @Published private(set) var notificationForwardingPermissionDenied = false
+    @Published private(set) var localNetworkPermissionGrantedForOnboarding = false
+    @Published private(set) var notificationPermissionGrantedForOnboarding = false
     @Published var captureCue: CaptureCue?
 
     // MARK: - Mirroring quality (applied to the next mirror session)
@@ -321,6 +323,7 @@ final class AppModel: ObservableObject {
     private lazy var notificationForwarder = NotificationForwarder(model: self)
     private let notificationAuthorizationRequester: NotificationAuthorizationRequester
     private let notificationSettingsOpener: NotificationSettingsOpener
+    private let localNetworkPermissionPrompter: LocalNetworkPermissionPrompter
     private var isRequestingNotificationAuthorization = false
     private var lastPresenceAutoConnectAttemptAt: Date?
     private var failedAutoConnectTargets: [String: Date] = [:]
@@ -455,10 +458,12 @@ final class AppModel: ObservableObject {
         startBackgroundServices: Bool = AppModel.defaultStartBackgroundServices,
         pairedPhones previewPairedPhones: [PairedPhoneRecord]? = nil,
         notificationAuthorizationRequester: @escaping NotificationAuthorizationRequester = AppModel.requestNotificationAuthorization,
-        notificationSettingsOpener: @escaping NotificationSettingsOpener = AppModel.openSystemNotificationSettings
+        notificationSettingsOpener: @escaping NotificationSettingsOpener = AppModel.openSystemNotificationSettings,
+        localNetworkPermissionPrompter: @escaping LocalNetworkPermissionPrompter = AppModel.promptForLocalNetworkPermission
     ) {
         self.notificationAuthorizationRequester = notificationAuthorizationRequester
         self.notificationSettingsOpener = notificationSettingsOpener
+        self.localNetworkPermissionPrompter = localNetworkPermissionPrompter
         explicitDeviceSetupRequired = Self.explicitDeviceSetupRequiredPreference()
         if explicitDeviceSetupRequired {
             store.clearAll()
@@ -536,6 +541,7 @@ final class AppModel: ObservableObject {
                 guard granted else {
                     Logger.log("Notification authorization denied; disabling notification forwarding.")
                     self.notificationForwardingPermissionDenied = true
+                    self.notificationPermissionGrantedForOnboarding = false
                     self.notificationSettingsOpener()
                     if self.notificationForwardingEnabled {
                         self.notificationForwardingEnabled = false
@@ -546,6 +552,7 @@ final class AppModel: ObservableObject {
                     return
                 }
                 self.notificationForwardingPermissionDenied = false
+                self.notificationPermissionGrantedForOnboarding = true
 
                 guard self.notificationForwardingEnabled else {
                     self.notificationForwarder.stop()
@@ -593,8 +600,59 @@ final class AppModel: ObservableObject {
         notificationSettingsOpener()
     }
 
+    func requestLocalNetworkPermissionFromOnboarding() {
+        localNetworkPermissionPrompter { [weak self] granted in
+            Task { @MainActor [weak self] in
+                self?.localNetworkPermissionGrantedForOnboarding = granted
+            }
+        }
+    }
+
     private nonisolated static func openSystemNotificationSettings() {
-        NSWorkspace.shared.open(notificationSettingsURL)
+        let bundleIdentifier = Bundle.main.bundleIdentifier ?? "com.mallenkb.PhoneRelay"
+        NSWorkspace.shared.open(notificationSettingsURL(bundleIdentifier: bundleIdentifier))
+    }
+
+    nonisolated static func notificationSettingsURL(bundleIdentifier: String) -> URL {
+        URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(bundleIdentifier)")!
+    }
+
+    private nonisolated static func promptForLocalNetworkPermission(completion: @escaping (Bool) -> Void) {
+        let parameters = NWParameters.tcp
+        let browser = NWBrowser(
+            for: .bonjour(type: "_adb-tls-connect._tcp", domain: nil),
+            using: parameters
+        )
+        let queue = DispatchQueue(label: "PhoneRelay.local-network-permission")
+        let once = OneShotCallback()
+
+        browser.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                once.run {
+                    browser.cancel()
+                    completion(true)
+                }
+            case .failed, .waiting:
+                once.run {
+                    browser.cancel()
+                    NSWorkspace.shared.open(localNetworkSettingsURL)
+                    completion(false)
+                }
+            case .cancelled:
+                break
+            default:
+                break
+            }
+        }
+
+        browser.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + 2) {
+            once.run {
+                browser.cancel()
+                completion(false)
+            }
+        }
     }
 
     deinit {

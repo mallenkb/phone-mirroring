@@ -36,8 +36,59 @@ final class NotificationForwarderTests: XCTestCase {
         XCTAssertTrue(AppModel.notificationPermissionReason.localizedCaseInsensitiveContains("device"))
     }
 
+    func testNotificationSettingsURLTargetsPhoneRelayDetailPane() {
+        let url = AppModel.notificationSettingsURL(bundleIdentifier: "com.mallenkb.PhoneRelay")
+
+        XCTAssertTrue(url.absoluteString.contains("com.apple.Notifications-Settings.extension"))
+        XCTAssertTrue(url.absoluteString.contains("id=com.mallenkb.PhoneRelay"))
+    }
+
+    func testLocalNetworkPermissionReasonExplainsWirelessHandoff() {
+        XCTAssertTrue(AppModel.localNetworkPermissionReason.localizedCaseInsensitiveContains("local network"))
+        XCTAssertTrue(AppModel.localNetworkPermissionReason.localizedCaseInsensitiveContains("Wi-Fi"))
+        XCTAssertTrue(AppModel.localNetworkPermissionReason.localizedCaseInsensitiveContains("handoff"))
+    }
+
+    func testOnboardingRequiresBothMacPermissions() {
+        XCTAssertFalse(AppModel.canCompleteFirstRunOnboarding(
+            hasLocalNetworkPermission: false,
+            hasNotificationPermission: false
+        ))
+        XCTAssertFalse(AppModel.canCompleteFirstRunOnboarding(
+            hasLocalNetworkPermission: true,
+            hasNotificationPermission: false
+        ))
+        XCTAssertFalse(AppModel.canCompleteFirstRunOnboarding(
+            hasLocalNetworkPermission: false,
+            hasNotificationPermission: true
+        ))
+        XCTAssertTrue(AppModel.canCompleteFirstRunOnboarding(
+            hasLocalNetworkPermission: true,
+            hasNotificationPermission: true
+        ))
+    }
+
     func testNotificationForwardingDefaultsOnWhenUnset() {
         XCTAssertTrue(AppModel.defaultNotificationForwardingEnabled(storedValue: nil))
+    }
+
+    @MainActor
+    func testOnboardingLocalNetworkGrantUsesPrompter() async {
+        var promptCount = 0
+        let model = AppModel(
+            startBackgroundServices: false,
+            pairedPhones: [],
+            localNetworkPermissionPrompter: { completion in
+                promptCount += 1
+                completion(true)
+            }
+        )
+
+        model.requestLocalNetworkPermissionFromOnboarding()
+        await Task.yield()
+
+        XCTAssertEqual(promptCount, 1)
+        XCTAssertTrue(model.localNetworkPermissionGrantedForOnboarding)
     }
 
     @MainActor
