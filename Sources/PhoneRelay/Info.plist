@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Embedded into the bare executable (__TEXT,__info_plist) so debug runs
+       from Xcode / `swift run` carry the same identity and local-network
+       usage declarations as the packaged app. When the binary runs inside
+       an .app bundle, the bundle's own Info.plist takes precedence. -->
+  <key>CFBundleIdentifier</key>
+  <string>com.mallenkb.PhoneRelay</string>
+  <key>CFBundleName</key>
+  <string>PhoneRelay</string>
+  <key>CFBundleDisplayName</key>
+  <string>PhoneRelay</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>CFBundleVersion</key>
+  <string>0.1.0</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>PhoneRelay for Android connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_adb._tcp</string>
+    <string>_adb-tls-connect._tcp</string>
+    <string>_adb-tls-pairing._tcp</string>
+  </array>
+  <!-- Keep the pre-macOS-26 ("Liquid Glass") control appearance: rounded
+       segmented controls and no visible card behind grouped content. Building
+       against the macOS 26+ SDK otherwise opts the app into the new design. -->
+  <key>UIDesignRequiresCompatibility</key>
+  <true/>
+</dict>
+</plist>

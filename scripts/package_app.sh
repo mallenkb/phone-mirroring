@@ -1,21 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP="${1:-dist/Android Mirroring.app}"
-APP_NAME="${APP_NAME:-Android Mirroring}"
-PRODUCT_NAME="${PRODUCT_NAME:-AndroidMirrorMac}"
-BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.AndroidMirroring}"
+APP="${1:-dist/PhoneRelay.app}"
+APP_NAME="${APP_NAME:-PhoneRelay}"
+PRODUCT_NAME="${PRODUCT_NAME:-PhoneRelay}"
+BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
 APP_VERSION="${APP_VERSION:-0.1.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
-SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
+# Prefer a real Apple Development identity when one is in the keychain: TCC
+# grants (Local Network, Notifications) are keyed to the signing identity, and
+# ad-hoc signatures change every build, which silently revokes them.
+if [ -z "${SIGNING_IDENTITY:-}" ]; then
+  # Prefer the Nokofio Platforms Ltd development cert; fall back to any
+  # Apple Development identity, then ad-hoc.
+  SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+    | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' \
+    | grep "allenmarlon4@gmail.com" | head -1)
+  if [ -z "$SIGNING_IDENTITY" ]; then
+    SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+      | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)
+  fi
+  SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
+fi
 OPEN_AFTER_PACKAGE="${OPEN_AFTER_PACKAGE:-0}"
 BUILD_DIR="scrcpy-source/build-mac"
 SCRCPY_SERVER="$BUILD_DIR/server/scrcpy-server"
-RESOURCE_SCRCPY_SERVER="Sources/AndroidMirrorMac/Resources/scrcpy-server"
-APP_ICON="Sources/AndroidMirrorMac/Resources/AppIcon.icns"
-ASSET_CATALOG="Sources/AndroidMirrorMac/Resources/Assets.car"
-HOST_BIN=".build/release/AndroidMirrorMac"
-RESOURCE_BUNDLE=".build/release/AndroidMirrorMac_AndroidMirrorMac.bundle"
+RESOURCE_SCRCPY_SERVER="Sources/PhoneRelay/Resources/scrcpy-server"
+ASSET_CATALOG="Sources/PhoneRelay/Resources/Assets.car"
+# The SwiftPM product is "PhoneRelay" (Dock name for debug runs); the
+# binary is renamed to $PRODUCT_NAME inside the bundle (CFBundleExecutable).
+HOST_BIN=".build/release/PhoneRelayBinary"
+RESOURCE_BUNDLE=".build/release/PhoneRelay_PhoneRelay.bundle"
 BIN_DIR="$APP/Contents/MacOS"
 RESOURCES_DIR="$APP/Contents/Resources"
 HELPER_BIN_DIR="$RESOURCES_DIR/bin"
@@ -42,11 +57,7 @@ cp "$HOST_BIN" "$BIN_DIR/$PRODUCT_NAME"
 chmod +x "$BIN_DIR/$PRODUCT_NAME"
 
 if [ -d "$RESOURCE_BUNDLE" ]; then
-  cp -R "$RESOURCE_BUNDLE" "$RESOURCES_DIR/AndroidMirrorMac_AndroidMirrorMac.bundle"
-fi
-
-if [ -f "$APP_ICON" ]; then
-  cp "$APP_ICON" "$RESOURCES_DIR/AppIcon.icns"
+  cp -R "$RESOURCE_BUNDLE" "$RESOURCES_DIR/PhoneRelay_PhoneRelay.bundle"
 fi
 
 if [ -f "$ASSET_CATALOG" ]; then
@@ -96,8 +107,6 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <string>$APP_NAME</string>
   <key>CFBundleDisplayName</key>
   <string>$APP_NAME</string>
-  <key>CFBundleIconFile</key>
-  <string>AppIcon</string>
   <key>CFBundleIconName</key>
   <string>AppIcon</string>
   <key>CFBundlePackageType</key>
@@ -111,7 +120,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>Android Mirroring connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
+  <string>PhoneRelay for Android connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
   <key>NSBonjourServices</key>
   <array>
     <string>_adb._tcp</string>

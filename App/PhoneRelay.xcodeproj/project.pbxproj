@@ -1,0 +1,324 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		AA00000000000000000B0001 /* Main.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000F0001 /* Main.swift */; };
+		AA00000000000000000B0003 /* PhoneRelayKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000D0001 /* PhoneRelayKit */; };
+		AA00000000000000000B0004 /* Vendor/adb in Copy adb into Resources/bin */ = {isa = PBXBuildFile; fileRef = AA00000000000000000F0005 /* Vendor/adb */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		AA00000000000000000B0005 /* scrcpy-server in Copy scrcpy-server into Resources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000F0006 /* scrcpy-server */; };
+		AA00000000000000000B0006 /* Assets.car in Copy themed app icon into Resources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000F0008 /* Assets.car */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AA00000000000000000C0001 /* Copy adb into Resources/bin */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = bin;
+			dstSubfolderSpec = 7;
+			files = (
+				AA00000000000000000B0004 /* Vendor/adb in Copy adb into Resources/bin */,
+			);
+			name = "Copy adb into Resources/bin";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA00000000000000000C0002 /* Copy scrcpy-server into Resources */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 7;
+			files = (
+				AA00000000000000000B0005 /* scrcpy-server in Copy scrcpy-server into Resources */,
+			);
+			name = "Copy scrcpy-server into Resources";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA00000000000000000C0007 /* Copy themed app icon into Resources */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 7;
+			files = (
+				AA00000000000000000B0006 /* Assets.car in Copy themed app icon into Resources */,
+			);
+			name = "Copy themed app icon into Resources";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		AA00000000000000000F0001 /* Main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Main.swift; path = ../Sources/PhoneRelayApp/Main.swift; sourceTree = "<group>"; };
+		AA00000000000000000F0003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		AA00000000000000000F0004 /* PhoneRelay.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PhoneRelay.entitlements; sourceTree = "<group>"; };
+		AA00000000000000000F0005 /* Vendor/adb */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; path = Vendor/adb; sourceTree = "<group>"; };
+		AA00000000000000000F0006 /* scrcpy-server */ = {isa = PBXFileReference; lastKnownFileType = file; name = "scrcpy-server"; path = "../Sources/PhoneRelay/Resources/scrcpy-server"; sourceTree = "<group>"; };
+		AA00000000000000000F0007 /* PhoneRelay.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PhoneRelay.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA00000000000000000F0008 /* Assets.car */ = {isa = PBXFileReference; lastKnownFileType = file; name = Assets.car; path = ../Sources/PhoneRelay/Resources/Assets.car; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AA00000000000000000C0003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA00000000000000000B0003 /* PhoneRelayKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AA00000000000000000A0001 = {
+			isa = PBXGroup;
+			children = (
+				AA00000000000000000F0001 /* Main.swift */,
+				AA00000000000000000F0008 /* Assets.car */,
+				AA00000000000000000F0003 /* Info.plist */,
+				AA00000000000000000F0004 /* PhoneRelay.entitlements */,
+				AA00000000000000000F0005 /* Vendor/adb */,
+				AA00000000000000000F0006 /* scrcpy-server */,
+				AA00000000000000000A0002 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AA00000000000000000A0002 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AA00000000000000000F0007 /* PhoneRelay.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		AA0000000000000000001001 /* PhoneRelayApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA00000000000000000E0003 /* Build configuration list for PBXNativeTarget "PhoneRelayApp" */;
+			buildPhases = (
+				AA00000000000000000C0004 /* Sources */,
+				AA00000000000000000C0003 /* Frameworks */,
+				AA00000000000000000C0005 /* Resources */,
+				AA00000000000000000C0001 /* Copy adb into Resources/bin */,
+				AA00000000000000000C0002 /* Copy scrcpy-server into Resources */,
+				AA00000000000000000C0007 /* Copy themed app icon into Resources */,
+				AA00000000000000000C0006 /* Sign adb with inherited sandbox */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = PhoneRelayApp;
+			packageProductDependencies = (
+				AA00000000000000000D0001 /* PhoneRelayKit */,
+			);
+			productName = PhoneRelay;
+			productReference = AA00000000000000000F0007 /* PhoneRelay.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AA0000000000000000002001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					AA0000000000000000001001 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = AA00000000000000000E0001 /* Build configuration list for PBXProject "PhoneRelay" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AA00000000000000000A0001;
+			packageReferences = (
+				AA00000000000000000D0002 /* XCLocalSwiftPackageReference ".." */,
+			);
+			productRefGroup = AA00000000000000000A0002 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AA0000000000000000001001 /* PhoneRelayApp */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AA00000000000000000C0005 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		AA00000000000000000C0006 /* Sign adb with inherited sandbox */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(FULL_PRODUCT_NAME)/Contents/Resources/bin/adb",
+				"$(SRCROOT)/HelperInherit.entitlements",
+			);
+			name = "Sign adb with inherited sandbox";
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/sign-adb-with-inherited-sandbox.stamp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "ADB=\"$CODESIGNING_FOLDER_PATH/Contents/Resources/bin/adb\"\nif [ -f \"$ADB\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  codesign --force --options runtime --entitlements \"$SRCROOT/HelperInherit.entitlements\" --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$ADB\"\nfi\nif [ -n \"$SCRIPT_OUTPUT_FILE_0\" ]; then\n  touch \"$SCRIPT_OUTPUT_FILE_0\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AA00000000000000000C0004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA00000000000000000B0001 /* Main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		AA00000000000000000E0011 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		AA00000000000000000E0012 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		AA00000000000000000E0021 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = PhoneRelay.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 982T43ATCM;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INSTALL_PATH = "$(LOCAL_APPS_DIR)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mallenkb.PhoneRelay;
+				PRODUCT_MODULE_NAME = PhoneRelayApp;
+				PRODUCT_NAME = PhoneRelay;
+				SKIP_INSTALL = NO;
+			};
+			name = Debug;
+		};
+		AA00000000000000000E0022 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = PhoneRelay.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 982T43ATCM;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INSTALL_PATH = "$(LOCAL_APPS_DIR)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mallenkb.PhoneRelay;
+				PRODUCT_MODULE_NAME = PhoneRelayApp;
+				PRODUCT_NAME = PhoneRelay;
+				SKIP_INSTALL = NO;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AA00000000000000000E0001 /* Build configuration list for PBXProject "PhoneRelay" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA00000000000000000E0011 /* Debug */,
+				AA00000000000000000E0012 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA00000000000000000E0003 /* Build configuration list for PBXNativeTarget "PhoneRelayApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA00000000000000000E0021 /* Debug */,
+				AA00000000000000000E0022 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		AA00000000000000000D0002 /* XCLocalSwiftPackageReference ".." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ..;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AA00000000000000000D0001 /* PhoneRelayKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PhoneRelayKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = AA0000000000000000002001 /* Project object */;
+}

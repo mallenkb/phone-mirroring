@@ -1,4 +1,4 @@
-# Android Mirroring
+# PhoneRelay
 
 Native SwiftUI macOS prototype for a local-first Android mirroring client.
 
@@ -38,7 +38,7 @@ brew install android-platform-tools
 Run from SwiftPM:
 
 ```sh
-swift run AndroidMirrorMac
+swift run PhoneRelayBinary
 ```
 
 For app-bundle testing, use:
@@ -65,7 +65,7 @@ APPLE_ID="you@example.com" TEAM_ID="TEAMID" APP_PASSWORD="app-specific-pw" \
   scripts/notarize.sh
 ```
 
-Dev builds use `scripts/AndroidMirrorMac.entitlements`; notarized release builds use `scripts/AndroidMirrorMac.release.entitlements` (no hardened-runtime exceptions — `notarize.sh` fails if any leak in). A paid Apple Developer account is required. Keep the bundle identifier stable (`BUNDLE_ID=com.yourdomain.AndroidMirroring scripts/build_and_run.sh` when rebranding), because changing it resets macOS privacy authorization for Notification Center and Local Network access.
+Dev builds use `scripts/PhoneRelay.entitlements`; notarized release builds use `scripts/PhoneRelay.release.entitlements` (no hardened-runtime exceptions — `notarize.sh` fails if any leak in). A paid Apple Developer account is required. Keep the bundle identifier stable (`BUNDLE_ID=com.yourdomain.PhoneRelay scripts/build_and_run.sh` when rebranding), because changing it resets macOS privacy authorization for Notification Center and Local Network access.
 
 ## Continuous integration
 
@@ -75,6 +75,6 @@ To pair, enable Wireless debugging on the Android phone and scan the QR code sho
 
 Troubleshooting:
 
-- Logs are written to `~/Library/Logs/Android Mirroring.log`.
+- Logs are written to `~/Library/Logs/PhoneRelay.log`.
 - Debug builds can override the adb path with `ANDROID_MIRROR_ADB_PATH=/path/to/adb`.
 - Run `swift test` for the Swift parser/unit test suite. Hardware-dependent mirroring and USB/Wi-Fi handoff still need manual device validation.

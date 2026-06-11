@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="Android Mirroring"
-PRODUCT_NAME="AndroidMirrorMac"
+APP_NAME="PhoneRelay"
+PRODUCT_NAME="PhoneRelay"
 # Keep local rebuilds on the same identity as the installed app. macOS Local
 # Network and Notification authorization are keyed to the app identity, so the
 # old placeholder id caused duplicate privacy entries and blocked Wi-Fi handoff.
-BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.AndroidMirroring}"
+BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
 APP_VERSION="${APP_VERSION:-0.1.0}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
@@ -16,10 +16,9 @@ RESOURCES_DIR="$APP_BUNDLE/Contents/Resources"
 BIN_DIR="$RESOURCES_DIR/bin"
 LICENSES_DIR="$RESOURCES_DIR/LICENSES"
 SCRCPY_SERVER="$ROOT_DIR/scrcpy-source/build-mac/server/scrcpy-server"
-RESOURCE_SCRCPY_SERVER="$ROOT_DIR/Sources/AndroidMirrorMac/Resources/scrcpy-server"
-APP_ICON="$ROOT_DIR/Sources/AndroidMirrorMac/Resources/AppIcon.icns"
-APP_ASSETS="$ROOT_DIR/Sources/AndroidMirrorMac/Resources/Assets.car"
-RESOURCE_BUNDLE="$ROOT_DIR/.build/debug/AndroidMirrorMac_AndroidMirrorMac.bundle"
+RESOURCE_SCRCPY_SERVER="$ROOT_DIR/Sources/PhoneRelay/Resources/scrcpy-server"
+APP_ASSETS="$ROOT_DIR/Sources/PhoneRelay/Resources/Assets.car"
+RESOURCE_BUNDLE="$ROOT_DIR/.build/debug/PhoneRelay_PhoneRelay.bundle"
 
 VERIFY=false
 LOGS=false
@@ -54,25 +53,22 @@ if [[ -n "$old_pids" ]]; then
 fi
 
 cd "$ROOT_DIR"
-swift build --product "$PRODUCT_NAME"
+# The SwiftPM product is "PhoneRelay" (Dock name for debug runs); the
+# binary is renamed to $PRODUCT_NAME inside the bundle (CFBundleExecutable).
+BUILD_PRODUCT="PhoneRelayBinary"
+swift build --product "$BUILD_PRODUCT"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$RESOURCES_DIR" "$BIN_DIR" "$LICENSES_DIR"
-cp ".build/debug/$PRODUCT_NAME" "$EXECUTABLE_PATH"
+cp ".build/debug/$BUILD_PRODUCT" "$EXECUTABLE_PATH"
 chmod +x "$EXECUTABLE_PATH"
-
-if [[ -f "$APP_ICON" ]]; then
-  cp "$APP_ICON" "$RESOURCES_DIR/AppIcon.icns"
-else
-  echo "warning: AppIcon.icns was not found; the app bundle will use the default icon" >&2
-fi
 
 if [[ -f "$APP_ASSETS" ]]; then
   cp "$APP_ASSETS" "$RESOURCES_DIR/Assets.car"
 fi
 
 if [[ -d "$RESOURCE_BUNDLE" ]]; then
-  cp -R "$RESOURCE_BUNDLE" "$RESOURCES_DIR/AndroidMirrorMac_AndroidMirrorMac.bundle"
+  cp -R "$RESOURCE_BUNDLE" "$RESOURCES_DIR/PhoneRelay_PhoneRelay.bundle"
 fi
 
 if [[ -f "$ROOT_DIR/THIRD_PARTY_NOTICES.md" ]]; then
@@ -115,8 +111,6 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
   <string>$APP_VERSION</string>
   <key>CFBundleVersion</key>
   <string>$APP_VERSION</string>
-  <key>CFBundleIconFile</key>
-  <string>AppIcon</string>
   <key>CFBundleIconName</key>
   <string>AppIcon</string>
   <key>CFBundleName</key>
@@ -128,7 +122,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>Android Mirroring connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
+  <string>PhoneRelay for Android connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
   <key>NSBonjourServices</key>
   <array>
     <string>_adb._tcp</string>
@@ -139,17 +133,33 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# Prefer a real Apple Development identity when one is in the keychain: TCC
+# grants (Local Network, Notifications) are keyed to the signing identity, and
+# ad-hoc signatures change every build, which silently revokes them.
+if [[ -z "${SIGNING_IDENTITY:-}" ]]; then
+  # Prefer the Nokofio Platforms Ltd development cert; fall back to any
+  # Apple Development identity, then ad-hoc.
+  SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+    | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' \
+    | grep "allenmarlon4@gmail.com" | head -1)
+  if [[ -z "$SIGNING_IDENTITY" ]]; then
+    SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+      | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)
+  fi
+  SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
+fi
+
 sign_if_macho() {
   local path="$1"
   if [[ -f "$path" ]] && file "$path" | grep -q "Mach-O"; then
-    codesign --force --sign - "$path"
+    codesign --force --sign "$SIGNING_IDENTITY" "$path"
   fi
 }
 
 if command -v codesign >/dev/null 2>&1; then
   sign_if_macho "$EXECUTABLE_PATH"
   sign_if_macho "$BIN_DIR/adb"
-  codesign --force --options runtime --sign - "$APP_BUNDLE"
+  codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"
   codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 fi
 

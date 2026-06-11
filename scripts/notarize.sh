@@ -15,9 +15,9 @@
 # Usage:  ./scripts/notarize.sh [path/to/App.app]
 set -euo pipefail
 
-APP="${1:-dist/Android Mirroring.app}"
+APP="${1:-dist/PhoneRelay.app}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENTITLEMENTS="$ROOT_DIR/scripts/AndroidMirrorMac.release.entitlements"
+ENTITLEMENTS="$ROOT_DIR/scripts/PhoneRelay.release.entitlements"
 
 : "${DEVELOPER_ID:?Set DEVELOPER_ID (Developer ID Application identity)}"
 : "${APPLE_ID:?Set APPLE_ID (your Apple ID email)}"

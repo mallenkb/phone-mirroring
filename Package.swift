@@ -2,28 +2,56 @@
 import PackageDescription
 
 let package = Package(
-    name: "AndroidMirrorMac",
+    name: "PhoneRelay",
     platforms: [
         .macOS(.v13)
     ],
     products: [
+        // The product (and thus the built executable) is named "Android
+        // Mirroring" so debug runs show the real app name in the Dock; the
+        // packaging scripts rename it back to PhoneRelay inside the
+        // bundle to keep CFBundleExecutable (and the app identity) unchanged.
         .executable(
-            name: "AndroidMirrorMac",
-            targets: ["AndroidMirrorMac"]
+            name: "PhoneRelayBinary",
+            targets: ["PhoneRelayApp"]
+        ),
+        // Library product so the Xcode wrapper app (App/) can link the same
+        // code for Archive/App Store distribution.
+        .library(
+            name: "PhoneRelayKit",
+            targets: ["PhoneRelay"]
         )
     ],
     targets: [
         .executableTarget(
-            name: "AndroidMirrorMac",
-            path: "Sources/AndroidMirrorMac",
+            name: "PhoneRelayApp",
+            dependencies: ["PhoneRelay"],
+            path: "Sources/PhoneRelayApp",
+            linkerSettings: [
+                // Embed Info.plist into the executable so debug runs (Xcode /
+                // `swift run`) have a bundle identity and local-network usage
+                // declarations; without these macOS denies Local Network
+                // access and Wi-Fi adb fails with "No route to host".
+                .unsafeFlags([
+                    "-Xlinker", "-sectcreate",
+                    "-Xlinker", "__TEXT",
+                    "-Xlinker", "__info_plist",
+                    "-Xlinker", "Sources/PhoneRelay/Info.plist"
+                ])
+            ]
+        ),
+        .target(
+            name: "PhoneRelay",
+            path: "Sources/PhoneRelay",
+            exclude: ["Info.plist"],
             resources: [
                 .process("Resources")
             ]
         ),
         .testTarget(
-            name: "AndroidMirrorMacTests",
-            dependencies: ["AndroidMirrorMac"],
-            path: "Tests/AndroidMirrorMacTests"
+            name: "PhoneRelayTests",
+            dependencies: ["PhoneRelay"],
+            path: "Tests/PhoneRelayTests"
         )
     ]
 )
