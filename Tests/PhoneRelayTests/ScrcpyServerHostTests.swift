@@ -49,6 +49,28 @@ final class ScrcpyServerHostTests: XCTestCase {
         )
     }
 
+    func testScreenOffDeadlineMovesForwardAfterActivity() {
+        let firstActivity = Date(timeIntervalSince1970: 100)
+        let laterActivity = Date(timeIntervalSince1970: 125)
+
+        XCTAssertEqual(
+            MirrorSession.screenOffDeadline(after: firstActivity, delay: 30),
+            Date(timeIntervalSince1970: 130)
+        )
+        XCTAssertEqual(
+            MirrorSession.screenOffDeadline(after: laterActivity, delay: 30),
+            Date(timeIntervalSince1970: 155)
+        )
+    }
+
+    func testScreenOffOnlyFiresAfterIdleDeadline() {
+        let deadline = Date(timeIntervalSince1970: 130)
+
+        XCTAssertFalse(MirrorSession.shouldTurnScreenOff(now: Date(timeIntervalSince1970: 129.9), deadline: deadline))
+        XCTAssertTrue(MirrorSession.shouldTurnScreenOff(now: Date(timeIntervalSince1970: 130), deadline: deadline))
+        XCTAssertTrue(MirrorSession.shouldTurnScreenOff(now: Date(timeIntervalSince1970: 131), deadline: deadline))
+    }
+
     func testDefaultServerArgumentsDisableAudioForStableNativeMirrorStartup() {
         let arguments = ScrcpyServerHost.serverArguments(for: .init(
             scid: 0x1234ABCD,

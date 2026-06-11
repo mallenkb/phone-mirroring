@@ -15,7 +15,7 @@ if [ -z "${SIGNING_IDENTITY:-}" ]; then
   # Apple Development identity, then ad-hoc.
   SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
     | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' \
-    | grep "allenmarlon4@gmail.com" | head -1)
+    | grep "Marlon Alenya" | head -1)
   if [ -z "$SIGNING_IDENTITY" ]; then
     SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
       | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)

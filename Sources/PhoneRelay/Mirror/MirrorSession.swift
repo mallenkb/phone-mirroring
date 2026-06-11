@@ -45,6 +45,7 @@ final class MirrorSession {
     private var clipboardBridge: ClipboardBridge?
     private var windowController: MirrorContentWindowController?
     private var screenOffTask: Task<Void, Never>?
+    private var screenOffDeadline: Date?
     private var lastRequestedDisplayPowerMode: ScrcpyControlChannel.DisplayPowerMode = .normal
     private var streamWidth: UInt32 = 0
     private var streamHeight: UInt32 = 0
@@ -129,6 +130,7 @@ final class MirrorSession {
         decoder.onSample = { [weak self] sample in
             Task { @MainActor in
                 guard let self, !self.didStop, !self.isStopping else { return }
+                self.recordMirrorActivity()
                 self.windowController?.renderView.enqueue(sample)
             }
         }
@@ -199,6 +201,7 @@ final class MirrorSession {
         clipboardBridge = nil
         screenOffTask?.cancel()
         screenOffTask = nil
+        screenOffDeadline = nil
         controlChannel?.close()
         controlChannel = nil
         stream?.stop()
@@ -353,16 +356,20 @@ final class MirrorSession {
         guard let controlChannel else { return }
         switch event.kind {
         case .down:
+            recordMirrorActivity()
             controlChannel.sendTouch(action: .down, normalized: event.normalized,
                                      button: ScrcpyControlChannel.buttonPrimary)
         case .dragged:
+            recordMirrorActivity()
             controlChannel.sendTouch(action: .move, normalized: event.normalized,
                                      button: ScrcpyControlChannel.buttonPrimary)
         case .up:
+            recordMirrorActivity()
             controlChannel.sendTouch(action: .up, normalized: event.normalized)
         case .moved:
             break // not a touch event on Android; ignore
         case .scroll:
+            recordMirrorActivity()
             controlChannel.sendScroll(normalized: event.normalized,
                                       deltaX: event.scrollDX,
                                       deltaY: event.scrollDY)
@@ -371,6 +378,9 @@ final class MirrorSession {
 
     func forwardKeyEvent(_ event: NSEvent) {
         guard let controlChannel else { return }
+        if event.type == .keyDown || event.type == .keyUp || event.type == .systemDefined {
+            recordMirrorActivity()
+        }
 
         if event.type == .keyDown,
            event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
@@ -478,14 +488,49 @@ final class MirrorSession {
     private func scheduleAutomaticScreenOffIfNeeded() {
         guard model?.mirrorScreenOffAfterThirtySecondsEnabled ?? true else { return }
         screenOffTask?.cancel()
+        recordMirrorActivity()
         screenOffTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 30_000_000_000)
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                guard let self, !self.didStop, !self.isStopping else { return }
-                self.turnDeviceScreenOff()
+            while !Task.isCancelled {
+                let delay = await MainActor.run { () -> TimeInterval? in
+                    guard let self, !self.didStop, !self.isStopping else { return nil }
+                    guard let deadline = self.screenOffDeadline else { return nil }
+                    return max(0, deadline.timeIntervalSinceNow)
+                }
+                guard let delay else { return }
+                if delay > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    guard !Task.isCancelled else { return }
+                }
+                let shouldTurnOff = await MainActor.run { () -> Bool in
+                    guard let self, !self.didStop, !self.isStopping else { return false }
+                    guard let deadline = self.screenOffDeadline else { return false }
+                    return Self.shouldTurnScreenOff(now: Date(), deadline: deadline)
+                }
+                if shouldTurnOff {
+                    await MainActor.run {
+                        guard let self, !self.didStop, !self.isStopping else { return }
+                        self.turnDeviceScreenOff()
+                        self.screenOffDeadline = nil
+                    }
+                    return
+                }
             }
         }
+    }
+
+    private func recordMirrorActivity(now: Date = Date()) {
+        guard model?.mirrorScreenOffAfterThirtySecondsEnabled ?? true else { return }
+        screenOffDeadline = Self.screenOffDeadline(after: now, delay: Self.automaticScreenOffDelay)
+    }
+
+    nonisolated static let automaticScreenOffDelay: TimeInterval = 30
+
+    nonisolated static func screenOffDeadline(after activityDate: Date, delay: TimeInterval) -> Date {
+        activityDate.addingTimeInterval(delay)
+    }
+
+    nonisolated static func shouldTurnScreenOff(now: Date, deadline: Date) -> Bool {
+        now >= deadline
     }
 
     private static func isValidStreamSize(width: UInt32, height: UInt32) -> Bool {
