@@ -71,6 +71,8 @@ Dev builds use `scripts/PhoneRelay.entitlements`; notarized release builds use `
 
 `.github/workflows/ci.yml` runs `swift build` and `swift test` on every push and pull request.
 
+`.github/workflows/auto-update-release.yml` builds the `PhoneRelay.dmg` asset used by the in-app updater and publishes it to GitHub Releases. Run it manually as **Auto Update** with a version such as `0.1.2`, or push a tag such as `v0.1.2`. For notarized releases, configure repository secrets for `DEVELOPER_ID_CERTIFICATE_BASE64`, `DEVELOPER_ID_CERTIFICATE_PASSWORD`, `DEVELOPER_ID`, `APPLE_ID`, `TEAM_ID`, and `APP_PASSWORD`; without those secrets the workflow still creates an ad-hoc signed DMG for testing.
+
 ## Download site
 
 The static download page lives in `docs/` and is deployed by `.github/workflows/pages.yml` through GitHub Pages when Pages is enabled for the repository. During deploy, the workflow reads GitHub's latest release with `GITHUB_TOKEN`, writes `docs/release.json`, and publishes the site artifact. The page reads that metadata file and updates the visible version number, file size, published date, release link, and `.dmg` download link automatically. Publishing a new GitHub release with a `PhoneRelay.dmg` asset is enough to update the site link on the next Pages deploy. Private repositories require a GitHub plan that supports private Pages, or the repository must be made public.

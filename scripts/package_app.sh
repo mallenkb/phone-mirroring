@@ -5,8 +5,8 @@ APP="${1:-dist/PhoneRelay.app}"
 APP_NAME="${APP_NAME:-PhoneRelay}"
 PRODUCT_NAME="${PRODUCT_NAME:-PhoneRelay}"
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
-APP_VERSION="${APP_VERSION:-0.1.1}"
-BUILD_NUMBER="${BUILD_NUMBER:-2}"
+APP_VERSION="${APP_VERSION:-0.1.2}"
+BUILD_NUMBER="${BUILD_NUMBER:-3}"
 # Prefer a real Apple Development identity when one is in the keychain: TCC
 # grants (Local Network, Notifications) are keyed to the signing identity, and
 # ad-hoc signatures change every build, which silently revokes them.

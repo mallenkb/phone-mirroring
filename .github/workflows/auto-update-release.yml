@@ -1,0 +1,165 @@
+name: Auto Update
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, without the leading v"
+        required: true
+        type: string
+      build_number:
+        description: "Bundle build number"
+        required: false
+        type: string
+      prerelease:
+        description: "Publish as a prerelease"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-update-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build DMG and Publish Release
+    runs-on: macos-14
+    env:
+      HAS_DEVELOPER_ID_CERTIFICATE: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 != '' }}
+      HAS_NOTARY_CREDENTIALS: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 != '' && secrets.DEVELOPER_ID != '' && secrets.APPLE_ID != '' && secrets.TEAM_ID != '' && secrets.APP_PASSWORD != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          if [ -d /Applications/Xcode_15.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          else
+            echo "Xcode 15.4 not present; using preinstalled default" >&2
+          fi
+
+      - name: Resolve release metadata
+        id: release
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${INPUT_VERSION:-}" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+
+          if [ -z "$VERSION" ]; then
+            echo "Could not resolve a release version. Use a v* tag or provide workflow_dispatch.version." >&2
+            exit 1
+          fi
+
+          BUILD_NUMBER="${INPUT_BUILD_NUMBER:-${GITHUB_RUN_NUMBER}}"
+          TAG="v$VERSION"
+
+          {
+            echo "version=$VERSION"
+            echo "build_number=$BUILD_NUMBER"
+            echo "tag=$TAG"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Import Developer ID certificate
+        if: ${{ env.HAS_DEVELOPER_ID_CERTIFICATE == 'true' }}
+        env:
+          DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="${KEYCHAIN_PASSWORD:-temporary-keychain-password}"
+
+          echo "$DEVELOPER_ID_CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -P "$DEVELOPER_ID_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+      - name: Build app bundle
+        env:
+          APP_VERSION: ${{ steps.release.outputs.version }}
+          BUILD_NUMBER: ${{ steps.release.outputs.build_number }}
+          SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 != '' && secrets.DEVELOPER_ID || '-' }}
+        run: scripts/package_app.sh
+
+      - name: Notarize app
+        if: ${{ env.HAS_NOTARY_CREDENTIALS == 'true' }}
+        env:
+          DEVELOPER_ID: ${{ secrets.DEVELOPER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+        run: scripts/notarize.sh dist/PhoneRelay.app
+
+      - name: Create DMG
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          rm -f dist/PhoneRelay.dmg
+          hdiutil create \
+            -volname "PhoneRelay" \
+            -srcfolder "dist/PhoneRelay.app" \
+            -ov \
+            -format UDZO \
+            "dist/PhoneRelay.dmg"
+          shasum -a 256 dist/PhoneRelay.dmg | tee dist/PhoneRelay.dmg.sha256
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhoneRelay-${{ steps.release.outputs.tag }}
+          path: |
+            dist/PhoneRelay.dmg
+            dist/PhoneRelay.dmg.sha256
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          printf -v NOTES 'Auto-update release for PhoneRelay %s.\n\nThe in-app updater reads GitHub latest release and downloads the PhoneRelay.dmg asset.' "$VERSION"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/PhoneRelay.dmg dist/PhoneRelay.dmg.sha256 --clobber
+          else
+            args=(
+              "$TAG"
+              dist/PhoneRelay.dmg
+              dist/PhoneRelay.dmg.sha256
+              --title "PhoneRelay $VERSION"
+              --notes "$NOTES"
+            )
+            if [ "${PRERELEASE:-false}" = "true" ]; then
+              args+=(--prerelease)
+            fi
+            gh release create "${args[@]}"
+          fi
