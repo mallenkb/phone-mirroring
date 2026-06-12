@@ -1,4 +1,5 @@
 import AppKit
+import Sparkle
 import SwiftUI
 import UserNotifications
 
@@ -33,10 +34,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private var shortcutsWindow: NSWindow?
     private var noticesWindow: NSWindow?
     private let model = AppModel()
-    private let updater = GitHubReleaseUpdater()
+    private let updaterController = SPUStandardUpdaterController(
+        startingUpdater: true,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+    )
     private var keyMonitor: Any?
     private var launchedInBackground = false
-    private var updateCheckInFlight = false
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
         if yieldToExistingInstanceIfNeeded() {
@@ -292,13 +296,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                 keyEquivalent: ""
             )
         )
-        appMenu.addItem(
-            NSMenuItem(
-                title: "Check for Updates...",
-                action: #selector(checkForUpdates(_:)),
-                keyEquivalent: ""
-            )
+        let checkForUpdatesItem = NSMenuItem(
+            title: "Check for Updates...",
+            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+            keyEquivalent: ""
         )
+        checkForUpdatesItem.target = updaterController
+        appMenu.addItem(checkForUpdatesItem)
         appMenu.addItem(.separator())
         appMenu.addItem(
             NSMenuItem(
@@ -644,52 +648,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    @objc private func checkForUpdates(_ sender: Any?) {
-        guard !updateCheckInFlight else {
-            showUpdateAlert(
-                title: "Checking for updates",
-                message: "PhoneRelay is already checking for an update."
-            )
-            return
-        }
-
-        updateCheckInFlight = true
-        Task {
-            defer {
-                Task { @MainActor in
-                    self.updateCheckInFlight = false
-                    NSApp.mainMenu?.update()
-                }
-            }
-
-            do {
-                let currentVersion = Self.currentAppVersion()
-                guard let update = try await updater.availableUpdate(currentVersion: currentVersion) else {
-                    await MainActor.run {
-                        self.showUpdateAlert(
-                            title: "You're up to date!",
-                            message: "PhoneRelay \(currentVersion) is currently the newest version available."
-                        )
-                    }
-                    return
-                }
-
-                let downloadedInstaller = try await updater.download(update)
-                await MainActor.run {
-                    self.promptToInstallUpdate(update, installerURL: downloadedInstaller)
-                }
-            } catch {
-                await MainActor.run {
-                    self.showUpdateAlert(
-                        title: "Update check failed",
-                        message: error.localizedDescription,
-                        style: .warning
-                    )
-                }
-            }
-        }
-    }
-
     @objc private func showSettings(_ sender: Any?) {
         if let settingsWindow {
             settingsWindow.makeKeyAndOrderFront(nil)
@@ -723,34 +681,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
     @objc private func openReleaseWorkflow(_ sender: Any?) {
         NSWorkspace.shared.open(Self.releaseWorkflowURL)
-    }
-
-    private func promptToInstallUpdate(_ update: GitHubReleaseUpdate, installerURL: URL) {
-        let alert = NSAlert()
-        alert.messageText = "PhoneRelay \(update.version) is ready to install"
-        alert.informativeText = "The update has been downloaded. Restart now to open the installer and quit PhoneRelay, or restart later from the downloaded DMG."
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Restart Now")
-        alert.addButton(withTitle: "Restart Later")
-
-        let response = alert.runModal()
-        guard response == .alertFirstButtonReturn else { return }
-
-        NSWorkspace.shared.open(installerURL)
-        NSApp.terminate(nil)
-    }
-
-    private func showUpdateAlert(
-        title: String,
-        message: String,
-        style: NSAlert.Style = .informational
-    ) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = style
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
     }
 
     @objc private func showThirdPartyNotices(_ sender: Any?) {
@@ -893,9 +823,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             return model.hasActiveMirrorSession
         case #selector(revealLastCapture(_:))?:
             return model.lastCaptureURL != nil
-        case #selector(checkForUpdates(_:))?:
-            menuItem.title = updateCheckInFlight ? "Checking for Updates..." : "Check for Updates..."
-            return !updateCheckInFlight
         default:
             return true
         }
@@ -911,11 +838,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
     @objc private func centerMirror(_ sender: Any?) {
         model.centerMirrorWindow()
-    }
-
-    private static func currentAppVersion() -> String {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-        return version?.isEmpty == false ? version! : "0"
     }
 
     private static func thirdPartyNoticesText() -> String {

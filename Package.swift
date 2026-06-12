@@ -22,6 +22,9 @@ let package = Package(
             targets: ["PhoneRelay"]
         )
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.3")
+    ],
     targets: [
         .executableTarget(
             name: "PhoneRelayApp",
@@ -42,6 +45,9 @@ let package = Package(
         ),
         .target(
             name: "PhoneRelay",
+            dependencies: [
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             path: "Sources/PhoneRelay",
             exclude: ["Info.plist"],
             resources: [

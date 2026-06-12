@@ -34,6 +34,11 @@ while IFS= read -r -d '' bin; do
   codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID" "$bin"
 done < <(find "$APP/Contents" -type f \( -name adb -o -name 'scrcpy-server' \) -print0)
 
+if [ -d "$APP/Contents/Frameworks/Sparkle.framework" ]; then
+  echo "==> Signing Sparkle.framework"
+  codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID" "$APP/Contents/Frameworks/Sparkle.framework"
+fi
+
 echo "==> Signing the main executable + app bundle"
 # Inside-out signing: helpers above, executables, then the bundle. No --deep —
 # it is deprecated for signing and would stamp the app's entitlements onto
