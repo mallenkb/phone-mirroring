@@ -78,7 +78,7 @@ final class GitHubReleaseUpdater {
 
     func download(_ update: GitHubReleaseUpdate) async throws -> URL {
         let (temporaryURL, response) = try await session.download(from: update.asset.browserDownloadURL)
-        guard (response as? HTTPURLResponse)?.statusCode.map({ 200..<300 ~= $0 }) ?? true else {
+        guard ((response as? HTTPURLResponse)?.statusCode).map({ 200..<300 ~= $0 }) ?? true else {
             throw GitHubReleaseUpdaterError.invalidResponse
         }
 
