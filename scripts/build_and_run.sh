@@ -13,12 +13,14 @@ DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 EXECUTABLE_PATH="$APP_BUNDLE/Contents/MacOS/$PRODUCT_NAME"
 RESOURCES_DIR="$APP_BUNDLE/Contents/Resources"
+FRAMEWORKS_DIR="$APP_BUNDLE/Contents/Frameworks"
 BIN_DIR="$RESOURCES_DIR/bin"
 LICENSES_DIR="$RESOURCES_DIR/LICENSES"
 SCRCPY_SERVER="$ROOT_DIR/scrcpy-source/build-mac/server/scrcpy-server"
 RESOURCE_SCRCPY_SERVER="$ROOT_DIR/Sources/PhoneRelay/Resources/scrcpy-server"
 APP_ASSETS="$ROOT_DIR/App/Assets.xcassets"
 RESOURCE_BUNDLE="$ROOT_DIR/.build/debug/PhoneRelay_PhoneRelay.bundle"
+SPARKLE_FRAMEWORK="$ROOT_DIR/.build/arm64-apple-macosx/debug/Sparkle.framework"
 
 VERIFY=false
 LOGS=false
@@ -80,9 +82,19 @@ cd "$ROOT_DIR"
 swift build --product "$BUILD_PRODUCT"
 
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_BUNDLE/Contents/MacOS" "$RESOURCES_DIR" "$BIN_DIR" "$LICENSES_DIR"
+mkdir -p "$APP_BUNDLE/Contents/MacOS" "$RESOURCES_DIR" "$FRAMEWORKS_DIR" "$BIN_DIR" "$LICENSES_DIR"
 cp ".build/debug/$BUILD_PRODUCT" "$EXECUTABLE_PATH"
 chmod +x "$EXECUTABLE_PATH"
+if command -v install_name_tool >/dev/null 2>&1 \
+  && ! otool -l "$EXECUTABLE_PATH" | grep -q '@executable_path/../Frameworks'; then
+  install_name_tool -add_rpath "@executable_path/../Frameworks" "$EXECUTABLE_PATH"
+fi
+
+if [[ -d "$SPARKLE_FRAMEWORK" ]]; then
+  cp -R "$SPARKLE_FRAMEWORK" "$FRAMEWORKS_DIR/Sparkle.framework"
+else
+  echo "warning: Sparkle.framework was not found at $SPARKLE_FRAMEWORK; app launch may fail" >&2
+fi
 
 if [[ -d "$APP_ASSETS" ]]; then
   ASSET_BUILD_DIR="$(mktemp -d)"
@@ -191,6 +203,9 @@ sign_if_macho() {
 }
 
 if command -v codesign >/dev/null 2>&1; then
+  if [[ -d "$FRAMEWORKS_DIR/Sparkle.framework" ]]; then
+    codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework"
+  fi
   sign_if_macho "$EXECUTABLE_PATH"
   sign_if_macho "$BIN_DIR/adb"
   codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"

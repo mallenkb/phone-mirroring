@@ -371,14 +371,14 @@ final class AppModel: ObservableObject {
     static let quickMirrorFailureThreshold: TimeInterval = 12
     nonisolated static let disconnectRecoveryGracePeriod: TimeInterval = 5
     nonisolated static let wirelessHandoffReadinessAttempts = 8
-    nonisolated static let wirelessHandoffMaxDuration: TimeInterval = 3
+    nonisolated static let wirelessHandoffMaxDuration: TimeInterval = 10
     nonisolated static let wirelessHandoffRetryDelayNanoseconds: UInt64 = 250_000_000
-    nonisolated static let wirelessHandoffConnectTimeout: TimeInterval = 0.5
-    nonisolated static let wirelessHandoffShellTimeout: TimeInterval = 0.5
+    nonisolated static let wirelessHandoffConnectTimeout: TimeInterval = 2
+    nonisolated static let wirelessHandoffShellTimeout: TimeInterval = 2
     nonisolated static let wirelessHandoffRouteQueryTimeout: TimeInterval = 1
     nonisolated static let wirelessHandoffRoutePrimeTimeout: TimeInterval = 0.5
-    nonisolated static let wirelessHandoffTCPIPTimeout: TimeInterval = 1
-    nonisolated static let wirelessHandoffPreflightTimeoutNanoseconds: UInt64 = 300_000_000
+    nonisolated static let wirelessHandoffTCPIPTimeout: TimeInterval = 3
+    nonisolated static let wirelessHandoffPreflightTimeoutNanoseconds: UInt64 = 1_200_000_000
     nonisolated static let adbDeviceListTimeout: TimeInterval = 2
     /// How long after launch the status indicator keeps reading "Connecting"
     /// while we hunt for the last-known device. Sized to the 3–5s window the
@@ -2833,6 +2833,7 @@ final class AppModel: ObservableObject {
             lower.contains("device offline")
             || lower.contains("device unauthorized")
             || lower.contains("device still authorizing")
+            || lower.contains("timed out after")
         )
     }
 

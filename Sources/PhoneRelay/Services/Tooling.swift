@@ -266,9 +266,17 @@ enum Tooling {
         let result = runResult(name, arguments: arguments, timeout: overrideTimeout)
         if result.timedOut {
             let timeout: TimeInterval = overrideTimeout ?? (name == "adb" ? 5 : 30)
-            return "\(name) timed out after \(Int(timeout))s: \(arguments.joined(separator: " "))"
+            return "\(name) timed out after \(formattedTimeout(timeout)): \(arguments.joined(separator: " "))"
         }
         return result.output
+    }
+
+    private static func formattedTimeout(_ timeout: TimeInterval) -> String {
+        let rounded = (timeout * 10).rounded() / 10
+        if rounded.rounded(.towardZero) == rounded {
+            return "\(Int(rounded))s"
+        }
+        return String(format: "%.1fs", rounded)
     }
 
     static func runInteractive(
@@ -320,7 +328,7 @@ enum Tooling {
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }
             process.waitUntilExit()
             _ = readDone.wait(timeout: .now() + 1)
-            return "\(name) timed out after \(Int(timeout))s: \(arguments.joined(separator: " "))"
+            return "\(name) timed out after \(formattedTimeout(timeout)): \(arguments.joined(separator: " "))"
         }
 
         process.waitUntilExit()

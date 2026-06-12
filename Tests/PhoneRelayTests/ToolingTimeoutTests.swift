@@ -76,7 +76,7 @@ final class ToolingTimeoutTests: XCTestCase {
 
         let output = ADBController().run(["connect", "192.0.2.53:5555"], timeout: 0.5)
 
-        XCTAssertTrue(output.contains("adb timed out after 0s"))
+        XCTAssertTrue(output.contains("adb timed out after 0.5s"))
         Thread.sleep(forTimeInterval: 0.1)
         let lingering = Tooling.run("pgrep", arguments: ["-f", fakeADB.path], timeout: 1)
         XCTAssertTrue(lingering.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

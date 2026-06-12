@@ -381,6 +381,11 @@ final class ADBDeviceParsingTests: XCTestCase {
                 shellOutput: "error: device unauthorized.\nThis adb server's $ADB_VENDOR_KEYS is not set"
             )
         )
+        XCTAssertFalse(
+            AppModel.shouldDropStaleWirelessTransport(
+                shellOutput: "adb timed out after 0.5s: -s 192.0.2.57:5555 shell echo wifi-adb-ok"
+            )
+        )
         XCTAssertTrue(
             AppModel.shouldDropStaleWirelessTransport(
                 shellOutput: "error: closed"
@@ -1406,6 +1411,50 @@ final class ADBDeviceParsingTests: XCTestCase {
                 model: "Pixel 6 Pro",
                 isUSB: true
             )
+        )
+
+        XCTAssertEqual(connected, "192.0.2.44:5555")
+        XCTAssertTrue(loggedCalls(fake.log).contains("-s TESTDEVICE001 tcpip 5555"))
+    }
+
+    func testConnectToUSBDeviceOverCurrentWiFiAllowsSettlingTCPIPConnect() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
+          echo "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
+          exit 0
+        fi
+        if [ "$1" = "connect" ]; then
+          if grep -q "tcpip 5555" "$ADB_FAKE_LOG"; then
+            sleep 1
+            echo "connected to $2"
+          else
+            echo "failed to connect to '$2': Connection refused"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "tcpip" ]; then
+          echo "restarting in TCP mode port: 5555"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let connected = await AppModel.connectToUSBDeviceOverCurrentWiFi(
+            adb: ADBController(),
+            usbDevice: AuthorizedADBDevice(
+                serial: "TESTDEVICE001",
+                product: "raven",
+                model: "Pixel 6 Pro",
+                isUSB: true
+            ),
+            readinessAttempts: 4
         )
 
         XCTAssertEqual(connected, "192.0.2.44:5555")
