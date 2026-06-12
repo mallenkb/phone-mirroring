@@ -203,9 +203,15 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         let streamAspect = streamSize.width / max(streamSize.height, 1)
         let targetScreenWidth = min(maxScreenWidth, targetScreenHeight * streamAspect) * initialMirrorScale
         let screenHeight = min(maxScreenHeight, targetScreenWidth / max(streamAspect, 0.001))
-        return NSSize(
+        let proposedSize = NSSize(
             width: targetScreenWidth + horizontalShellInset,
             height: screenHeight + verticalShellInset
+        )
+        return clampedShellSize(
+            proposedSize,
+            aspect: streamAspect,
+            visibleFrame: visibleFrame,
+            maximumHeightBasis: heightBasis
         )
     }
 
@@ -230,6 +236,27 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         return NSSize(
             width: screenWidth + horizontalShellInset,
             height: fittedScreenHeight + verticalShellInset
+        )
+    }
+
+    private static func clampedShellSize(
+        _ size: NSSize,
+        aspect: CGFloat,
+        visibleFrame: NSRect,
+        maximumHeightBasis: CGFloat?
+    ) -> NSSize {
+        let limits = sizeLimits(
+            visibleFrame: visibleFrame,
+            aspect: aspect,
+            chromeHeight: verticalShellInset,
+            horizontalChromeWidth: horizontalShellInset,
+            maximumHeightBasis: maximumHeightBasis
+        )
+        let height = min(max(size.height, limits.min.height), limits.max.height)
+        let contentHeight = max(1, height - verticalShellInset)
+        return NSSize(
+            width: contentHeight * aspect + horizontalShellInset,
+            height: height
         )
     }
 
@@ -568,8 +595,14 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
     private func setWindowFrame(_ frame: NSRect, display: Bool, animate: Bool) {
         guard let window else { return }
+        let requestedCenter = frame.center
         isApplyingProgrammaticFrame = true
         window.setFrame(frame, display: display, animate: animate)
+        let appliedFrame = window.frame
+        if abs(appliedFrame.midX - requestedCenter.x) > 0.5
+            || abs(appliedFrame.midY - requestedCenter.y) > 0.5 {
+            window.setFrame(Self.frame(size: appliedFrame.size, centeredOn: requestedCenter), display: display, animate: false)
+        }
         isApplyingProgrammaticFrame = false
     }
 

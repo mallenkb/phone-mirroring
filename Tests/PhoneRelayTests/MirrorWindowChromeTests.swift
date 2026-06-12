@@ -566,30 +566,35 @@ final class MirrorWindowChromeTests: XCTestCase {
                 height: maximumHeightBasis
             )
         )
+        let topChromeInset = MirrorContentWindowController.visibleChromeRenderTopInset
+        let limits = MirrorContentWindowController.sizeLimits(
+            visibleFrame: visibleFrame,
+            aspect: MirrorContentWindowController.defaultMirrorAspect,
+            chromeHeight: topChromeInset,
+            maximumHeightBasis: maximumHeightBasis
+        )
         let initialSize = MirrorContentWindowController.initialWrappedShellSize(
             for: MirrorContentWindowController.defaultMirrorSize,
             visibleFrame: visibleFrame,
             maximumHeightBasis: maximumHeightBasis
         )
-        let topChromeInset = MirrorContentWindowController.visibleChromeRenderTopInset
         let targetHeight = min(
             maximumHeightBasis * MirrorContentWindowController.initialScreenHeightRatio,
             fullDefaultSize.height
         )
-        let targetScreenHeight = targetHeight - topChromeInset
 
         XCTAssertEqual(window.frame.width, initialSize.width, accuracy: 1)
         XCTAssertEqual(window.frame.height, initialSize.height, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(initialSize.height, limits.min.height - 0.001)
+        XCTAssertLessThanOrEqual(initialSize.height, limits.max.height + 0.001)
         XCTAssertEqual(
             initialSize.width,
-            targetScreenHeight * MirrorContentWindowController.defaultMirrorAspect
-                * MirrorContentWindowController.initialMirrorScale,
+            (initialSize.height - topChromeInset) * MirrorContentWindowController.defaultMirrorAspect,
             accuracy: 0.001
         )
-        XCTAssertEqual(
-            initialSize.height - topChromeInset,
-            targetScreenHeight * MirrorContentWindowController.initialMirrorScale,
-            accuracy: 0.001
+        XCTAssertGreaterThanOrEqual(
+            initialSize.height,
+            min(targetHeight, limits.max.height) - 0.001
         )
     }
 
