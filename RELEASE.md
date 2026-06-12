@@ -39,16 +39,49 @@ Use the Nokofio Apple Developer team for Apple credentials:
 
 ```text
 Team: Nokofio Platforms Ltd
+Team ID: 982T43ATCM
 Certificate type: Developer ID Application
 ```
 
 The signing identity should look like:
 
 ```text
-Developer ID Application: Nokofio Platforms Ltd (TEAM_ID)
+Developer ID Application: Nokofio Platforms Ltd (982T43ATCM)
 ```
 
 Do not use Apple Development or Apple Distribution certificates for direct Mac app updates. Sparkle releases need Developer ID Application signing.
+
+Xcode beta confirms the Nokofio account is available as an Admin team, but its certificate manager only exposes Apple Development, Apple Distribution, and Mac Installer Distribution. Create the Developer ID Application certificate from Apple Developer instead:
+
+```text
+developer.apple.com/account/resources/certificates
+  -> Certificates
+  -> Add
+  -> Developer ID Application
+  -> Upload a local CSR
+  -> Download the certificate
+  -> Import it into Keychain Access
+  -> Export it as a password-protected .p12
+```
+
+After exporting the `.p12`, upload the signing and notarization secrets:
+
+```bash
+scripts/configure_release_secrets.sh /path/to/Nokofio-Developer-ID-Application.p12
+```
+
+The script sets:
+
+```text
+DEVELOPER_ID_CERTIFICATE_BASE64
+DEVELOPER_ID_CERTIFICATE_PASSWORD
+DEVELOPER_ID
+APPLE_ID
+TEAM_ID
+APP_PASSWORD
+```
+
+The Release workflow verifies that `TEAM_ID` is `982T43ATCM`, that the signing identity is a Developer ID Application identity, and that the imported certificate actually contains that identity before it builds the public release.
 
 ## Normal Release
 

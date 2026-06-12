@@ -40,6 +40,8 @@ env:
   APP_BUNDLE: dist/PhoneRelay.app
   DMG_PATH: dist/PhoneRelay.dmg
   PUBLIC_DOWNLOAD_BASE_URL: https://phonerelay.mallenkb.com/downloads/
+  NOKOFIO_TEAM_ID: 982T43ATCM
+  NOKOFIO_TEAM_NAME: Nokofio Platforms Ltd
 
 jobs:
   validate:
@@ -137,6 +139,21 @@ jobs:
             exit 1
           fi
 
+          if [ "$TEAM_ID" != "$NOKOFIO_TEAM_ID" ]; then
+            echo "TEAM_ID must be the Nokofio Platforms Ltd team ($NOKOFIO_TEAM_ID)." >&2
+            exit 1
+          fi
+
+          if [[ "$DEVELOPER_ID" != Developer\ ID\ Application:* ]]; then
+            echo "DEVELOPER_ID must be a Developer ID Application identity, not Apple Development, Apple Distribution, or Mac Installer Distribution." >&2
+            exit 1
+          fi
+
+          if [[ "$DEVELOPER_ID" != *"$NOKOFIO_TEAM_NAME"* || "$DEVELOPER_ID" != *"($TEAM_ID)"* ]]; then
+            echo "DEVELOPER_ID must be the Nokofio Platforms Ltd Developer ID Application identity for team $TEAM_ID." >&2
+            exit 1
+          fi
+
       - name: Resolve release metadata
         id: release
         env:
@@ -200,6 +217,27 @@ jobs:
           security list-keychain -d user -s "$keychain_path"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
           security find-identity -v -p codesigning "$keychain_path"
+
+      - name: Verify Developer ID certificate
+        run: |
+          set -euo pipefail
+          keychain_path="$RUNNER_TEMP/signing.keychain-db"
+
+          if ! security find-identity -v -p codesigning "$keychain_path" | grep -F "\"$DEVELOPER_ID\"" >/dev/null; then
+            echo "The imported certificate does not contain the configured Developer ID identity:" >&2
+            echo "  $DEVELOPER_ID" >&2
+            echo "Available identities:" >&2
+            security find-identity -v -p codesigning "$keychain_path" >&2
+            exit 1
+          fi
+
+      - name: Validate Apple notarization credentials
+        run: |
+          set -euo pipefail
+          xcrun notarytool history \
+            --apple-id "$APPLE_ID" \
+            --team-id "$TEAM_ID" \
+            --password "$APP_PASSWORD" >/dev/null
 
       - name: Build signed app bundle
         env:

@@ -17,11 +17,13 @@ scrcpy-source/
 *.pem
 *.p8
 *.p12
+*.csr
 *.cer
 *.crt
 *.key
 *.mobileprovision
 *.provisionprofile
+.release-credentials/
 *.xcuserstate
 *.log
 

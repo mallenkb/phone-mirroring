@@ -73,6 +73,12 @@ Dev builds use `scripts/PhoneRelay.entitlements`; notarized release builds use `
 
 Public releases require these repository secrets: `DEVELOPER_ID_CERTIFICATE_BASE64`, `DEVELOPER_ID_CERTIFICATE_PASSWORD`, `DEVELOPER_ID`, `APPLE_ID`, `TEAM_ID`, `APP_PASSWORD`, `SPARKLE_PUBLIC_ED_KEY`, `SPARKLE_PRIVATE_ED_KEY`, and `WEBSITE_REPO_TOKEN`. Generate Sparkle keys with `.build/artifacts/sparkle/Sparkle/bin/generate_keys` after running `swift package resolve`.
 
+For Nokofio releases, use `Team ID 982T43ATCM` and the identity `Developer ID Application: Nokofio Platforms Ltd (982T43ATCM)`. Xcode beta can confirm the Nokofio team, but the Developer ID Application certificate must be created in Apple Developer and exported from Keychain Access as a `.p12`. After that, run:
+
+```sh
+scripts/configure_release_secrets.sh /path/to/Nokofio-Developer-ID-Application.p12
+```
+
 ## Download site
 
 The production download mirror is updated by the release workflow through `WEBSITE_REPO_TOKEN` and the `mallenkb/phonerelay-website` repository dispatch. Sparkle reads the public appcast at `https://phonerelay.mallenkb.com/downloads/appcast.xml`; do not point Sparkle at private GitHub release asset URLs.
