@@ -5,8 +5,8 @@ APP="${1:-dist/PhoneRelay.app}"
 APP_NAME="${APP_NAME:-PhoneRelay}"
 PRODUCT_NAME="${PRODUCT_NAME:-PhoneRelay}"
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
-APP_VERSION="${APP_VERSION:-0.1.4}"
-BUILD_NUMBER="${BUILD_NUMBER:-5}"
+APP_VERSION="${APP_VERSION:-1.0.0}"
+BUILD_NUMBER="${BUILD_NUMBER:-6}"
 # The source repo is private, so the feed lives on the public website mirror
 # (synced from each GitHub release by the phonerelay-website repo).
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://phonerelay.mallenkb.com/downloads/appcast.xml}"

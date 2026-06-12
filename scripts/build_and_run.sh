@@ -7,12 +7,12 @@ PRODUCT_NAME="PhoneRelay"
 # Network and Notification authorization are keyed to the app identity, so the
 # old placeholder id caused duplicate privacy entries and blocked Wi-Fi handoff.
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
-APP_VERSION="${APP_VERSION:-0.1.4}"
+APP_VERSION="${APP_VERSION:-1.0.0}"
 # Sparkle compares CFBundleVersion between the running app and the appcast, so
 # dev bundles must use the same build-number scheme as scripts/package_app.sh —
 # a version string here would compare lower than a released build number and
 # Sparkle would offer a downgrade.
-BUILD_NUMBER="${BUILD_NUMBER:-5}"
+BUILD_NUMBER="${BUILD_NUMBER:-6}"
 # Same Sparkle feed/key as release builds so "Check for Updates" works from
 # dev bundles too instead of erroring about a missing SUFeedURL.
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://phonerelay.mallenkb.com/downloads/appcast.xml}"

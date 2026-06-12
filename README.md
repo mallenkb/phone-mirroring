@@ -69,7 +69,7 @@ Dev builds use `scripts/PhoneRelay.entitlements`; notarized release builds use `
 
 ## Release workflow
 
-`.github/workflows/release.yml` is the only workflow in this repo. It runs `swift build`, `swift test`, and a package dry run on pull requests and pushes to `main`. When you push a version tag such as `v0.1.4`, it also builds the signed/notarized `PhoneRelay.dmg`, generates the signed Sparkle `appcast.xml`, publishes the GitHub Release, and triggers the public download mirror.
+`.github/workflows/release.yml` is the only workflow in this repo. It runs `swift build`, `swift test`, and a package dry run on pull requests and pushes to `main`. When you push a version tag such as `v1.0.0`, it also builds the signed/notarized `PhoneRelay.dmg`, generates the signed Sparkle `appcast.xml`, publishes the GitHub Release, and triggers the public download mirror.
 
 Public releases require these repository secrets: `DEVELOPER_ID_CERTIFICATE_BASE64`, `DEVELOPER_ID_CERTIFICATE_PASSWORD`, `DEVELOPER_ID`, `APPLE_ID`, `TEAM_ID`, `APP_PASSWORD`, `SPARKLE_PUBLIC_ED_KEY`, `SPARKLE_PRIVATE_ED_KEY`, and `WEBSITE_REPO_TOKEN`. Generate Sparkle keys with `.build/artifacts/sparkle/Sparkle/bin/generate_keys` after running `swift package resolve`.
 
