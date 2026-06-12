@@ -339,10 +339,11 @@ final class MirrorLoadingView: NSView {
         wantsLayer = true
         layer = CALayer()
         applyCornerMask()
+        let deepCyan = PhoneRelayBrand.deepCyanNSColor.cgColor
         gradientLayer.colors = [
-            NSColor(calibratedRed: 0.0, green: 0.48, blue: 0.43, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.0, green: 0.35, blue: 0.31, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.0, green: 0.22, blue: 0.19, alpha: 1).cgColor
+            deepCyan,
+            deepCyan,
+            deepCyan
         ]
         gradientLayer.locations = [0, 0.46, 1]
         gradientLayer.startPoint = CGPoint(x: 0.06, y: 1)

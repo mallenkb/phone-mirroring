@@ -1041,6 +1041,34 @@ final class ADBDeviceParsingTests: XCTestCase {
         ])
     }
 
+    func testWiFiHandoffReadinessStopsAfterThreeSecondBudget() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          echo "failed to connect to '$2': No route to host"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let startedAt = Date()
+        let readiness = await AppModel.waitForADBWirelessTargetReadiness(
+            adb: ADBController(),
+            address: "192.0.2.57:5555",
+            attempts: 8,
+            delayNanoseconds: 500_000_000,
+            maximumDuration: 3
+        )
+        let elapsed = Date().timeIntervalSince(startedAt)
+        let connectCalls = loggedCalls(fake.log).filter { $0 == "connect 192.0.2.57:5555" }
+
+        XCTAssertFalse(readiness.isReady)
+        XCTAssertLessThan(elapsed, 3.4)
+        XCTAssertLessThan(connectCalls.count, 8)
+    }
+
     func testUSBHandoffCandidateReturnsNewAuthorizedUSBDevice() {
         let output = """
         List of devices attached
@@ -1382,6 +1410,199 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         XCTAssertEqual(connected, "192.0.2.44:5555")
         XCTAssertTrue(loggedCalls(fake.log).contains("-s TESTDEVICE001 tcpip 5555"))
+    }
+
+    func testUSBWiFiHandoffDoesNotBlockUSBFallbackPastThreeSeconds() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
+          echo "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ping" ]; then
+          echo "1 packets transmitted, 1 received"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "tcpip" ]; then
+          echo "restarting in TCP mode port: 5555"
+          exit 0
+        fi
+        if [ "$1" = "connect" ]; then
+          sleep 1
+          echo "failed to connect to '$2': No route to host"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let startedAt = Date()
+        let connected = await AppModel.connectToUSBDeviceOverCurrentWiFi(
+            adb: ADBController(),
+            usbDevice: AuthorizedADBDevice(
+                serial: "TESTDEVICE001",
+                product: "raven",
+                model: "Pixel 6 Pro",
+                isUSB: true
+            ),
+            readinessAttempts: 8,
+            maximumDuration: 3
+        )
+        let elapsed = Date().timeIntervalSince(startedAt)
+        let connectCalls = loggedCalls(fake.log).filter { $0 == "connect 192.0.2.44:5555" }
+
+        XCTAssertNil(connected)
+        XCTAssertLessThan(elapsed, 3.6)
+        XCTAssertLessThan(connectCalls.count, 8)
+    }
+
+    @MainActor
+    func testManualUSBConnectStartsMirrorBeforeWiFiHandoffCompletes() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "devices" ]; then
+          echo "List of devices attached"
+          echo "TESTDEVICE001 device usb:100000001X product:raven model:Pixel_6_Pro device:raven transport_id:1"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
+          echo "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ping" ]; then
+          echo "1 packets transmitted, 1 received"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "tcpip" ]; then
+          echo "restarting in TCP mode port: 5555"
+          exit 0
+        fi
+        if [ "$1" = "connect" ]; then
+          sleep 1
+          echo "failed to connect to '$2': No route to host"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "input" ]; then
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "pkill" ]; then
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          case "$4" in
+            CLASSPATH=*) sleep 5; exit 0 ;;
+          esac
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+
+        model.connectViaUSB()
+        let startedAt = Date()
+        while !model.hasActiveMirrorSession, Date().timeIntervalSince(startedAt) < 1.5 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertTrue(model.hasActiveMirrorSession)
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 1.5)
+        model.stopMirroring()
+        try await Task.sleep(nanoseconds: 500_000_000)
+    }
+
+    @MainActor
+    func testManualUSBConnectClearsPairingWhenDeviceScanStalls() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "devices" ]; then
+          sleep 5
+          echo "List of devices attached"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        defer { model.shutdown() }
+
+        model.connectViaUSB()
+        let startedAt = Date()
+        while model.isPairing, Date().timeIntervalSince(startedAt) < 3 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertFalse(model.isPairing)
+        XCTAssertFalse(model.hasActiveMirrorSession)
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 3)
+    }
+
+    @MainActor
+    func testManualUSBConnectPreparesStableWiFiHandoffInBackground() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "devices" ]; then
+          echo "List of devices attached"
+          echo "TESTDEVICE001 device usb:100000001X product:raven model:Pixel_6_Pro device:raven transport_id:1"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
+          echo "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "tcpip" ]; then
+          echo "restarting in TCP mode port: 5555"
+          exit 0
+        fi
+        if [ "$1" = "connect" ]; then
+          echo "connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "input" ]; then
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "pkill" ]; then
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          case "$4" in
+            CLASSPATH=*) sleep 5; exit 0 ;;
+          esac
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+
+        model.connectViaUSB()
+        let startedAt = Date()
+        while (!model.hasActiveMirrorSession
+            || !model.pairedPhones.contains(where: { $0.lastAddress == "192.0.2.44:5555" })),
+              Date().timeIntervalSince(startedAt) < 2.5 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertTrue(model.hasActiveMirrorSession)
+        XCTAssertEqual(model.selectedDevice.adbSerial, "TESTDEVICE001")
+        XCTAssertTrue(model.pairedPhones.contains(where: { $0.lastAddress == "192.0.2.44:5555" }))
+        model.stopMirroring()
+        try await Task.sleep(nanoseconds: 500_000_000)
     }
 
     func testShouldPromoteToLegacyTCPIPSkipsAddressesAlreadyOnPort5555() {

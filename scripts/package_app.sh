@@ -5,8 +5,8 @@ APP="${1:-dist/PhoneRelay.app}"
 APP_NAME="${APP_NAME:-PhoneRelay}"
 PRODUCT_NAME="${PRODUCT_NAME:-PhoneRelay}"
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
-APP_VERSION="${APP_VERSION:-0.1.0}"
-BUILD_NUMBER="${BUILD_NUMBER:-1}"
+APP_VERSION="${APP_VERSION:-0.1.1}"
+BUILD_NUMBER="${BUILD_NUMBER:-2}"
 # Prefer a real Apple Development identity when one is in the keychain: TCC
 # grants (Local Network, Notifications) are keyed to the signing identity, and
 # ad-hoc signatures change every build, which silently revokes them.
@@ -26,7 +26,7 @@ OPEN_AFTER_PACKAGE="${OPEN_AFTER_PACKAGE:-0}"
 BUILD_DIR="scrcpy-source/build-mac"
 SCRCPY_SERVER="$BUILD_DIR/server/scrcpy-server"
 RESOURCE_SCRCPY_SERVER="Sources/PhoneRelay/Resources/scrcpy-server"
-ASSET_CATALOG="Sources/PhoneRelay/Resources/Assets.car"
+ASSET_CATALOG="App/Assets.xcassets"
 # The SwiftPM product is "PhoneRelay" (Dock name for debug runs); the
 # binary is renamed to $PRODUCT_NAME inside the bundle (CFBundleExecutable).
 HOST_BIN=".build/release/PhoneRelayBinary"
@@ -60,8 +60,21 @@ if [ -d "$RESOURCE_BUNDLE" ]; then
   cp -R "$RESOURCE_BUNDLE" "$RESOURCES_DIR/PhoneRelay_PhoneRelay.bundle"
 fi
 
-if [ -f "$ASSET_CATALOG" ]; then
-  cp "$ASSET_CATALOG" "$RESOURCES_DIR/Assets.car"
+if [ -d "$ASSET_CATALOG" ]; then
+  ASSET_BUILD_DIR="$TMP_HELPERS/assets"
+  mkdir -p "$ASSET_BUILD_DIR"
+  xcrun actool "$ASSET_CATALOG" \
+    --compile "$ASSET_BUILD_DIR" \
+    --platform macosx \
+    --minimum-deployment-target 13.0 \
+    --app-icon AppIcon \
+    --output-partial-info-plist "$ASSET_BUILD_DIR/asset-info.plist" >/dev/null
+  if [ -f "$ASSET_BUILD_DIR/Assets.car" ]; then
+    cp "$ASSET_BUILD_DIR/Assets.car" "$RESOURCES_DIR/Assets.car"
+  fi
+  if [ -f "$ASSET_BUILD_DIR/AppIcon.icns" ]; then
+    cp "$ASSET_BUILD_DIR/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
+  fi
 fi
 
 if [ -f "THIRD_PARTY_NOTICES.md" ]; then

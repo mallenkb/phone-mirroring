@@ -23,8 +23,9 @@ struct FigmaMirrorExperienceView: View {
     private let maxColumnWidth: CGFloat = 620
     private let qrCodeSize: CGFloat = 216
     private let qrPanelSize: CGFloat = 244
-    private let accent = onboardingTeal
+    private let accent = onboardingAccentCyan
     private let qrRefreshTimer = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
+    private let errorPillDuration: UInt64 = 5_000_000_000
     private var frameCornerRadius: CGFloat {
         MirrorContentWindowController.onboardingCornerRadius()
     }
@@ -82,7 +83,7 @@ struct FigmaMirrorExperienceView: View {
     private var reconnectingContent: some View {
         MirrorLoadingSurface(
             statusText: "Reconnecting to",
-            deviceName: model.selectedDevice.name,
+            deviceName: model.mirrorWindowDeviceTitle,
             cornerRadius: frameCornerRadius,
             repeatsProgress: true
         )
@@ -96,10 +97,8 @@ struct FigmaMirrorExperienceView: View {
             // text shrinks smoothly on lower-resolution displays and only
             // reaches its full design size at high resolution. No hard floors
             // on individual fonts — that's what previously kept them oversized.
-            let hasError = model.activeError != nil
-            let scaleCap: CGFloat = hasError ? 0.82 : 1
-            let scale = min(scaleCap, max(0.5, min(proxy.size.height / 815, proxy.size.width / 390)))
-            let usesCompactLayout = hasError || proxy.size.height <= 760 || proxy.size.width <= 360
+            let scale = min(1, max(0.5, min(proxy.size.height / 815, proxy.size.width / 390)))
+            let usesCompactLayout = proxy.size.height <= 760 || proxy.size.width <= 360
             let availableWidth = proxy.size.width - (usesCompactLayout ? 44 : 72)
             let contentWidth = min(availableWidth, maxColumnWidth)
             let qrPanelSize = min(self.qrPanelSize * scale, contentWidth * (usesCompactLayout ? 0.64 : 0.72))
@@ -108,19 +107,6 @@ struct FigmaMirrorExperienceView: View {
             let qrCodeSize = qrPanelSize * 0.88
 
             VStack(spacing: 0) {
-                if let error = model.activeError {
-                    ErrorBanner(
-                        error: error,
-                        accent: accent,
-                        scale: scale,
-                        onOpenLog: model.revealLogFile,
-                        onDismiss: model.dismissError
-                    )
-                    .frame(width: contentWidth)
-                    .padding(.bottom, (usesCompactLayout ? 14 : 18) * scale)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                }
-
                 headerGroup(width: contentWidth, scale: scale)
 
                 USBConnectButton(
@@ -160,7 +146,16 @@ struct FigmaMirrorExperienceView: View {
             .padding(.horizontal, usesCompactLayout ? 22 : 36)
             .frame(width: contentWidth, alignment: .center)
             .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
-            .animation(.easeInOut(duration: 0.22), value: model.activeError)
+            .task(id: model.activeError?.id) {
+                guard let error = model.activeError else { return }
+                do {
+                    try await Task.sleep(nanoseconds: errorPillDuration)
+                    guard !Task.isCancelled, model.activeError?.id == error.id else { return }
+                    model.dismissError()
+                } catch {
+                    return
+                }
+            }
         }
     }
 
@@ -193,22 +188,25 @@ struct FigmaMirrorExperienceView: View {
     }
 
     private func devicePill(width: CGFloat, scale: CGFloat) -> some View {
+        let error = model.activeError
         let online = model.isSelectedDeviceOnline
         let connecting = model.isActivelyConnecting
-        let statusText = model.connectionStatusText
+        let statusText = error == nil ? model.connectionStatusText : "Connection failed"
+        let deviceLabel = error == nil ? model.connectionDeviceLabel : Self.shortFailureMessage(error?.message)
         let isActive = online || connecting
-        let dotColor = isActive ? accent : Color.white.opacity(0.42)
+        let isError = error != nil
+        let dotColor = isError ? Color(red: 1.0, green: 0.48, blue: 0.38) : (isActive ? accent : Color.white.opacity(0.42))
         let fontSize = 12 * scale
 
         return HStack(spacing: 8 * scale) {
-            StatusDot(color: dotColor, diameter: 7 * scale, pulses: connecting)
+            StatusDot(color: dotColor, diameter: 7 * scale, pulses: connecting && !isError)
 
             Text(statusText)
                 .font(.system(size: fontSize, weight: .semibold))
-                .foregroundStyle(.white.opacity(isActive ? 0.92 : 0.82))
+                .foregroundStyle(.white.opacity(isActive || isError ? 0.92 : 0.82))
                 .fixedSize()
 
-            Text(model.connectionDeviceLabel)
+            Text(deviceLabel)
                 .font(.system(size: fontSize, weight: .medium))
                 .foregroundStyle(.white.opacity(0.62))
                 .lineLimit(1)
@@ -226,6 +224,21 @@ struct FigmaMirrorExperienceView: View {
                 )
         )
         .frame(maxWidth: width, alignment: .center)
+    }
+
+    private static func shortFailureMessage(_ message: String?) -> String {
+        guard let message else { return "Try again" }
+        let lower = message.lowercased()
+        if lower.contains("offline") {
+            return "Phone offline"
+        }
+        if lower.contains("unauthorized") || lower.contains("authorize") {
+            return "Authorize USB"
+        }
+        if lower.contains("wi-fi") || lower.contains("wifi") || lower.contains("network") {
+            return "Check Wi-Fi"
+        }
+        return "Try again"
     }
 
     private func connectionInstruction(
@@ -329,18 +342,11 @@ struct FigmaPhoneFrame<Content: View>: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.0, green: 0.48, blue: 0.43),
-                    Color(red: 0.0, green: 0.22, blue: 0.19)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .overlay(
-                frameShape
-                    .inset(by: 0.5)
-                    .stroke(Color.white.opacity(0.14), lineWidth: 1)
+            onboardingDeepCyan
+                .overlay(
+                    frameShape
+                        .inset(by: 0.5)
+                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
                 )
 
             content
@@ -355,13 +361,38 @@ struct FigmaPhoneFrame<Content: View>: View {
 /// (fixed width, intrinsic height, real bottom padding) so the host window can
 /// wrap it. It dismisses itself via `onDismiss` when the user proceeds or as
 /// soon as a live device (USB or wireless) appears.
+///
+/// The flow has two steps: a welcome step explaining how to connect, then a
+/// permissions step. Both step surfaces stay mounted so the host window's
+/// one-shot `fittingSize` covers the taller step and never changes while
+/// paging.
+///
+/// Styled as a borderless rounded card: a full-bleed gradient hero banner on
+/// top (artwork crossfades per step), then a flat panel with a left-aligned
+/// title, subtitle, rows, and capsule buttons pinned to the bottom corners.
 struct FirstRunOnboardingView: View {
+    enum Step: Int, CaseIterable {
+        case welcome
+        case permissions
+    }
+
     @EnvironmentObject private var model: AppModel
     @AppStorage("hasSeenFirstTimeUserOnboarding") private var hasSeen = false
+    @State private var step: Step
+    @State private var hasAutoRequestedLocalNetwork = false
     let onDismiss: () -> Void
 
-    private let accent = onboardingTeal
-    private let contentWidth: CGFloat = 540
+    private let panelWidth: CGFloat = 660
+    private let panelPadding: CGFloat = 44
+    private let heroHeight: CGFloat = 250
+    private let panelCornerRadius: CGFloat = 22
+    private var innerWidth: CGFloat { panelWidth - panelPadding * 2 }
+    private let stepAnimation = Animation.easeInOut(duration: 0.28)
+
+    init(initialStep: Step = .welcome, onDismiss: @escaping () -> Void) {
+        _step = State(initialValue: initialStep)
+        self.onDismiss = onDismiss
+    }
 
     private var isEffectiveDarkMode: Bool {
         NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
@@ -376,34 +407,176 @@ struct FirstRunOnboardingView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            MirroringLoopVisual(accent: accent)
-                .frame(width: 380, height: 176)
+            heroBanner
 
-            VStack(spacing: 8) {
-                Text("Mirror your Android on this Mac")
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundStyle(primaryText)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text("Connect with USB or scan a QR code to pair wirelessly.")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(secondaryText)
-                    .lineSpacing(2)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+            ZStack(alignment: .topLeading) {
+                stepSurface(welcomeContent, isActive: step == .welcome, hiddenOffset: -28)
+                stepSurface(permissionsContent, isActive: step == .permissions, hiddenOffset: 28)
             }
-            .frame(width: contentWidth)
-            .padding(.top, 18)
+            .padding(.horizontal, panelPadding)
+            .padding(.top, 28)
+            .animation(stepAnimation, value: step)
 
-            VStack(spacing: 14) {
+            footerButtons
+                .padding(.horizontal, panelPadding)
+                .padding(.top, 26)
+                .padding(.bottom, 30)
+        }
+        .frame(width: panelWidth)
+        .background(panelColor)
+        .clipShape(RoundedRectangle(cornerRadius: panelCornerRadius, style: .continuous))
+        .overlay(alignment: .topLeading) {
+            QuitDotButton()
+                .padding(18)
+        }
+        .onAppear {
+            if hasSeen { onDismiss() }
+        }
+        .onChange(of: hasSeen) { seen in
+            if seen { onDismiss() }
+        }
+        .onChange(of: step) { newStep in
+            guard newStep == .permissions, !hasAutoRequestedLocalNetwork else { return }
+            hasAutoRequestedLocalNetwork = true
+            // Fire the system prompt as the permission step lands so the dialog
+            // arrives with its on-screen explanation; the row's Allow button
+            // remains the manual retry path.
+            if !model.localNetworkPermissionGrantedForOnboarding {
+                model.requestLocalNetworkPermissionFromOnboarding()
+            }
+        }
+    }
+
+    // MARK: - Hero banner
+
+    private var heroBanner: some View {
+        ZStack {
+            LinearGradient(
+                colors: heroGradientColors,
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            heroStreaks
+
+            tiltedPhoneSheet
+                .opacity(step == .welcome ? 1 : 0)
+
+            appIconBadge
+                .opacity(step == .welcome ? 1 : 0)
+
+            permissionBadges
+                .opacity(step == .permissions ? 1 : 0)
+        }
+        .frame(width: panelWidth, height: heroHeight)
+        .clipped()
+        .animation(stepAnimation, value: step)
+        .accessibilityHidden(true)
+    }
+
+    private var heroGradientColors: [Color] {
+        isEffectiveDarkMode
+            ? [Color(red: 0.10, green: 0.34, blue: 0.43), Color(red: 0.05, green: 0.18, blue: 0.24)]
+            : [Color(red: 0.38, green: 0.71, blue: 0.83), onboardingDeepCyan]
+    }
+
+    /// Soft diagonal light bands over the gradient, echoing the brushed-sky
+    /// look of the reference design.
+    private var heroStreaks: some View {
+        ZStack {
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(isEffectiveDarkMode ? 0.10 : 0.30))
+                .frame(width: 620, height: 110)
+                .rotationEffect(.degrees(-22))
+                .offset(x: -120, y: -52)
+                .blur(radius: 38)
+
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(isEffectiveDarkMode ? 0.07 : 0.20))
+                .frame(width: 640, height: 120)
+                .rotationEffect(.degrees(-22))
+                .offset(x: 210, y: 64)
+                .blur(radius: 46)
+        }
+    }
+
+    /// A pale phone mockup tilted into the lower-left corner of the hero, the
+    /// way the reference tilts its browser-tab sheet.
+    private var tiltedPhoneSheet: some View {
+        RoundedRectangle(cornerRadius: 34, style: .continuous)
+            .fill(sheetColor)
+            .frame(width: 250, height: 500)
+            .overlay(alignment: .top) {
+                VStack(spacing: 18) {
+                    Circle()
+                        .fill(Color.black.opacity(0.10))
+                        .frame(width: 11, height: 11)
+                        .padding(.top, 18)
+
+                    Capsule(style: .continuous)
+                        .fill(Color.black.opacity(0.07))
+                        .frame(width: 150, height: 13)
+                }
+            }
+            .rotationEffect(.degrees(-17))
+            .offset(x: -235, y: 215)
+            .shadow(color: Color.black.opacity(0.18), radius: 22, x: 6, y: -2)
+    }
+
+    private var sheetColor: Color {
+        isEffectiveDarkMode
+            ? Color(red: 0.82, green: 0.88, blue: 0.91)
+            : Color(red: 0.93, green: 0.96, blue: 0.98)
+    }
+
+    private var appIconBadge: some View {
+        AppIconHeroImage()
+            .frame(width: 116, height: 116)
+            .shadow(color: Color.black.opacity(0.30), radius: 18, x: 0, y: 10)
+    }
+
+    /// Overlapping circular badges for the permissions step, standing in for
+    /// the reference design's joined-stats medallions.
+    private var permissionBadges: some View {
+        HStack(spacing: -18) {
+            heroPermissionCircle(icon: "network", size: 106)
+            heroPermissionCircle(icon: "iphone.gen3.radiowaves.left.and.right", size: 132)
+                .zIndex(1)
+            heroPermissionCircle(icon: "bell.badge", size: 106)
+        }
+    }
+
+    private func heroPermissionCircle(icon: String, size: CGFloat) -> some View {
+        ZStack {
+            Circle()
+                .fill(Color(red: 0.87, green: 0.93, blue: 0.97).opacity(isEffectiveDarkMode ? 0.92 : 0.95))
+            Image(systemName: icon)
+                .font(.system(size: size * 0.32, weight: .regular))
+                .foregroundStyle(onboardingDeepCyan.opacity(0.6))
+        }
+        .frame(width: size, height: size)
+        .shadow(color: Color.black.opacity(0.12), radius: 12, x: 0, y: 7)
+    }
+
+    private func stepSurface(_ content: some View, isActive: Bool, hiddenOffset: CGFloat) -> some View {
+        content
+            .opacity(isActive ? 1 : 0)
+            .offset(x: isActive ? 0 : hiddenOffset)
+            .allowsHitTesting(isActive)
+            .accessibilityHidden(!isActive)
+    }
+
+    private var welcomeContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            stepTitle("Mirror your Android on this Mac")
+            stepSubtitle("Connect with USB or scan a QR code to pair wirelessly.")
+
+            VStack(alignment: .leading, spacing: 16) {
                 setupRow(
                     icon: "cable.connector",
                     title: "USB",
                     detail: "Plug in your phone and allow USB debugging."
                 )
-
-                Divider().overlay(cardStroke)
 
                 setupRow(
                     icon: "qrcode.viewfinder",
@@ -411,108 +584,130 @@ struct FirstRunOnboardingView: View {
                     detail: "Scan a QR code from your phone's Wireless debugging settings."
                 )
 
-                Divider().overlay(cardStroke)
-
                 setupRow(
                     icon: "wifi",
                     title: "Keep devices nearby",
                     detail: "For wireless pairing, keep your phone and Mac on the same Wi-Fi network."
                 )
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 16)
-            .frame(width: contentWidth)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous).fill(cardFill)
-            )
             .padding(.top, 24)
+        }
+        .frame(width: innerWidth, alignment: .leading)
+    }
 
-            permissionsPanel
-                .padding(.top, 14)
+    private var permissionsContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            stepTitle("Permissions for a better experience")
+            stepSubtitle("Local Network is required to continue. Notifications are optional and only used for forwarded phone alerts.")
 
-            HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 18) {
+                PermissionActionRow(
+                    icon: "network",
+                    title: "Local Network",
+                    detail: AppModel.localNetworkPermissionReason,
+                    actionTitle: model.localNetworkPermissionGrantedForOnboarding ? "Allowed" : "Allow",
+                    tint: rowTint,
+                    primaryText: primaryText,
+                    secondaryText: secondaryText,
+                    isComplete: model.localNetworkPermissionGrantedForOnboarding,
+                    action: model.requestLocalNetworkPermissionFromOnboarding
+                )
+
+                PermissionActionRow(
+                    icon: "bell.badge",
+                    title: "Notifications",
+                    detail: AppModel.notificationPermissionReason,
+                    actionTitle: notificationPermissionActionTitle,
+                    tint: rowTint,
+                    primaryText: primaryText,
+                    secondaryText: secondaryText,
+                    isComplete: model.notificationPermissionGrantedForOnboarding,
+                    action: {
+                        guard !model.notificationPermissionGrantedForOnboarding else { return }
+                        if model.notificationForwardingPermissionDenied {
+                            model.openNotificationSettings()
+                        } else {
+                            model.enableNotificationForwardingFromOnboarding()
+                        }
+                    }
+                )
+            }
+            .padding(.top, 24)
+        }
+        .frame(width: innerWidth, alignment: .leading)
+    }
+
+    private func stepTitle(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 27, weight: .bold))
+            .foregroundStyle(primaryText)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func stepSubtitle(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 15.5, weight: .regular))
+            .foregroundStyle(secondaryText)
+            .lineSpacing(3)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 10)
+    }
+
+    private var stepIndicator: some View {
+        HStack(spacing: 7) {
+            ForEach(Step.allCases, id: \.rawValue) { candidate in
+                Capsule(style: .continuous)
+                    .fill(candidate == step ? rowTint : secondaryText.opacity(0.3))
+                    .frame(width: candidate == step ? 18 : 6.5, height: 6.5)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Step \(step.rawValue + 1) of \(Step.allCases.count)")
+    }
+
+    private var footerButtons: some View {
+        HStack(spacing: 12) {
+            switch step {
+            case .welcome:
                 Button("Later") {
                     NSApplication.shared.terminate(nil)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(OnboardingPillButtonStyle(kind: .secondary, isDarkMode: isEffectiveDarkMode))
+
+                Spacer()
 
                 Button("Continue") {
-                    guard canContinue else { return }
-                    hasSeen = true
+                    step = .permissions
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!canContinue)
-                .help(canContinue ? "Continue to PhoneRelay" : "Allow Local Network and Notifications to continue")
-            }
-            .padding(.top, 30)
-        }
-        .padding(.horizontal, 40)
-        .padding(.top, 30)
-        .padding(.bottom, 34)
-        .frame(width: contentWidth + 80)
-        .background(background)
-        .onAppear {
-            if hasSeen { onDismiss() }
-        }
-        .onChange(of: hasSeen) { seen in
-            if seen { onDismiss() }
-        }
-    }
-
-    private var permissionsPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Permissions for a better experience")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(primaryText)
-
-                Text("USB works without these. Allow them when you want wireless handoff and forwarded phone alerts.")
-                    .font(.system(size: 12.5, weight: .regular))
-                    .foregroundStyle(secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Divider().overlay(cardStroke)
-
-            PermissionActionRow(
-                icon: "network",
-                title: "Local Network",
-                detail: AppModel.localNetworkPermissionReason,
-                actionTitle: model.localNetworkPermissionGrantedForOnboarding ? "Allowed" : "Allow",
-                tint: accent,
-                primaryText: primaryText,
-                secondaryText: secondaryText,
-                isComplete: model.localNetworkPermissionGrantedForOnboarding,
-                action: model.requestLocalNetworkPermissionFromOnboarding
-            )
-
-            Divider().overlay(cardStroke)
-
-            PermissionActionRow(
-                icon: "bell.badge",
-                title: "Notifications",
-                detail: AppModel.notificationPermissionReason,
-                actionTitle: notificationPermissionActionTitle,
-                tint: accent,
-                primaryText: primaryText,
-                secondaryText: secondaryText,
-                isComplete: model.notificationPermissionGrantedForOnboarding,
-                action: {
-                    guard !model.notificationPermissionGrantedForOnboarding else { return }
-                    if model.notificationForwardingPermissionDenied {
-                        model.openNotificationSettings()
-                    } else {
-                        model.enableNotificationForwardingFromOnboarding()
+                .buttonStyle(OnboardingPillButtonStyle(kind: .primary, isDarkMode: isEffectiveDarkMode))
+                .keyboardShortcut(.defaultAction)
+            case .permissions:
+                Button {
+                    step = .welcome
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("Back")
                     }
                 }
-            )
+                .buttonStyle(OnboardingPillButtonStyle(kind: .secondary, isDarkMode: isEffectiveDarkMode))
+
+                Spacer()
+
+                Button("Get Started") {
+                    guard canContinue else { return }
+                    model.completeFirstTimeUserOnboarding()
+                }
+                .buttonStyle(OnboardingPillButtonStyle(kind: .primary, isDarkMode: isEffectiveDarkMode))
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canContinue)
+                .opacity(canContinue ? 1 : 0.45)
+                .help(canContinue ? "Start using PhoneRelay" : "Allow Local Network to continue")
+            }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 16)
-        .frame(width: contentWidth)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous).fill(cardFill)
-        )
+        .overlay(stepIndicator)
+        .animation(stepAnimation, value: step)
     }
 
     private var notificationPermissionActionTitle: String {
@@ -522,12 +717,12 @@ struct FirstRunOnboardingView: View {
     }
 
     private func setupRow(icon: String, title: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            OnboardingRowBadge(systemName: icon, tint: accent, size: 34)
+        HStack(alignment: .center, spacing: 14) {
+            OnboardingRowBadge(systemName: icon, tint: rowTint, size: 34)
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 14, weight: .bold))
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(primaryText)
 
                 Text(detail)
@@ -535,184 +730,183 @@ struct FirstRunOnboardingView: View {
                     .foregroundStyle(secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.top, 2)
 
             Spacer(minLength: 0)
         }
     }
 
-    private var background: some View {
-        LinearGradient(colors: backgroundColors, startPoint: .top, endPoint: .bottom)
-    }
-
-    private var backgroundColors: [Color] {
-        isEffectiveDarkMode
-            ? [Color(red: 0.105, green: 0.108, blue: 0.103), Color(red: 0.075, green: 0.082, blue: 0.078)]
-            : [Color(red: 0.965, green: 0.958, blue: 0.936), Color(red: 0.925, green: 0.94, blue: 0.918)]
+    private var panelColor: Color {
+        isEffectiveDarkMode ? Color(red: 0.105, green: 0.11, blue: 0.118) : .white
     }
 
     private var primaryText: Color {
         isEffectiveDarkMode
-            ? Color(red: 0.92, green: 0.93, blue: 0.91)
-            : Color(red: 0.13, green: 0.14, blue: 0.13)
+            ? Color(red: 0.93, green: 0.94, blue: 0.95)
+            : Color(red: 0.10, green: 0.11, blue: 0.12)
     }
 
     private var secondaryText: Color {
         isEffectiveDarkMode
-            ? Color(red: 0.68, green: 0.7, blue: 0.67)
-            : Color(red: 0.38, green: 0.4, blue: 0.38)
+            ? Color(red: 0.62, green: 0.64, blue: 0.66)
+            : Color(red: 0.45, green: 0.46, blue: 0.48)
     }
 
-    private var cardFill: Color {
-        isEffectiveDarkMode ? Color.white.opacity(0.045) : Color.white.opacity(0.55)
-    }
-
-    private var cardStroke: Color {
-        isEffectiveDarkMode ? Color.white.opacity(0.045) : Color.black.opacity(0.05)
+    /// Tint for the row badges and the step indicator dots.
+    private var rowTint: Color {
+        isEffectiveDarkMode ? onboardingCyan : onboardingDeepCyan
     }
 }
 
-private struct MirroringLoopVisual: View {
-    @Environment(\.colorScheme) private var colorScheme
-    let accent: Color
-    private let cycle: Double = 12.0
-    private let baseAspect: CGFloat = 1600.0 / 898.0
-    private let screenAspect: CGFloat = 600.0 / 1338.0
-    private let startLeft: CGFloat = 0.00812
-    private let startTop: CGFloat = 0.19376
-    private let startW: CGFloat = 0.17625
-    private let endLeft: CGFloat = 0.46812
-    private let endTop: CGFloat = 0.18486
-    private let endW: CGFloat = 0.14125
-    private let flyingScreenScale: CGFloat = 1.0
-    private var isEffectiveDarkMode: Bool {
-        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-    }
+/// Atlas-style window dot: the only chrome on the borderless onboarding card.
+private struct QuitDotButton: View {
+    @State private var hovering = false
 
     var body: some View {
-        TimelineView(.animation) { timeline in
-            let phase = loopPhase(at: timeline.date)
-            let cast = castState(for: phase)
-
-            GeometryReader { proxy in
-                let stageW = min(proxy.size.width, proxy.size.height * baseAspect)
-                let stageH = stageW / baseAspect
-                let sW = stageW * startW
-                let sH = sW / screenAspect
-                let sX = stageW * startLeft
-                let sY = stageH * startTop
-
-                ZStack(alignment: .topLeading) {
-                    ResourceImage(name: "base_scene", extension: "png")
-                        .frame(width: stageW, height: stageH)
-                        .brightness(isEffectiveDarkMode ? -0.2 : -0.04)
-                        .contrast(isEffectiveDarkMode ? 1.08 : 1.04)
-                        .saturation(isEffectiveDarkMode ? 0.82 : 0.96)
-
-                    ResourceImage(name: "phone_screen", extension: "png")
-                        .frame(width: sW * flyingScreenScale, height: sH * flyingScreenScale)
-                        .scaleEffect(cast.scale, anchor: .topLeading)
-                        .offset(x: sX + cast.offsetX * stageW, y: sY + cast.offsetY * stageH)
-                        .shadow(
-                            color: Color(red: 30 / 255, green: 40 / 255, blue: 25 / 255).opacity(0.16),
-                            radius: 12,
-                            x: 0,
-                            y: 12
+        Button {
+            NSApplication.shared.terminate(nil)
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(hovering ? OnboardingWindowDotStyle.closeRed : Color.white.opacity(0.46))
+                    .shadow(color: Color.black.opacity(0.25), radius: 2, x: 0, y: 1)
+                if hovering {
+                    QuitDotX()
+                        .stroke(
+                            Color.black.opacity(0.62),
+                            style: StrokeStyle(
+                                lineWidth: OnboardingWindowDotStyle.xStrokeWidth,
+                                lineCap: .round,
+                                lineJoin: .round
+                            )
                         )
-                        .opacity(cast.opacity)
+                        .frame(width: 6, height: 6)
                 }
-                .frame(width: stageW, height: stageH)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(width: 13, height: 13)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .help("Quit PhoneRelay")
+        .accessibilityLabel("Quit PhoneRelay")
+    }
+}
+
+enum OnboardingWindowDotStyle {
+    static let closeRedComponents = (red: 1.0, green: 0.37, blue: 0.34)
+    static let xStrokeWidth: CGFloat = 1.3
+
+    static var closeRed: Color {
+        Color(
+            red: closeRedComponents.red,
+            green: closeRedComponents.green,
+            blue: closeRedComponents.blue
+        )
+    }
+}
+
+private struct QuitDotX: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        return path
+    }
+}
+
+/// Capsule buttons in the Atlas onboarding style: filled near-black primary,
+/// hairline-outlined secondary (inverted in dark mode).
+private struct OnboardingPillButtonStyle: ButtonStyle {
+    enum Kind {
+        case primary
+        case secondary
+    }
+
+    let kind: Kind
+    let isDarkMode: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 14.5, weight: .semibold))
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 24)
+            .frame(height: 42)
+            .background(Capsule(style: .continuous).fill(fill))
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(stroke, lineWidth: kind == .secondary ? 1 : 0)
+            )
+            .contentShape(Capsule(style: .continuous))
+            .opacity(configuration.isPressed ? 0.75 : 1)
+    }
+
+    private var fill: Color {
+        switch kind {
+        case .primary:
+            return isDarkMode
+                ? Color(red: 0.94, green: 0.95, blue: 0.96)
+                : Color(red: 0.07, green: 0.08, blue: 0.09)
+        case .secondary:
+            return isDarkMode ? Color.white.opacity(0.06) : .white
+        }
+    }
+
+    private var foreground: Color {
+        switch kind {
+        case .primary:
+            return isDarkMode ? Color(red: 0.08, green: 0.09, blue: 0.10) : .white
+        case .secondary:
+            return isDarkMode
+                ? Color(red: 0.92, green: 0.93, blue: 0.94)
+                : Color(red: 0.12, green: 0.13, blue: 0.14)
+        }
+    }
+
+    private var stroke: Color {
+        isDarkMode ? Color.white.opacity(0.18) : Color.black.opacity(0.14)
+    }
+}
+
+/// The app icon rendered as hero artwork; falls back to a branded glyph tile
+/// when the icns isn't reachable (bare `swift run` debug binaries).
+private struct AppIconHeroImage: View {
+    var body: some View {
+        if let icon = Self.bundledIcon {
+            Image(nsImage: icon)
+                .resizable()
+                .interpolation(.high)
+        } else {
+            ZStack {
+                RoundedRectangle(cornerRadius: 27, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [onboardingCyan.opacity(0.9), onboardingDeepCyan],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                Image(systemName: "iphone.gen3.radiowaves.left.and.right")
+                    .font(.system(size: 46, weight: .medium))
+                    .foregroundStyle(.white)
             }
         }
-        .accessibilityLabel("Animation showing the phone screen moving to the Mac for mirroring")
     }
 
-    private func loopPhase(at date: Date) -> Double {
-        date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: cycle) / cycle
-    }
-
-    private func castState(for phase: Double) -> CastState {
-        let scale = endW / (startW * flyingScreenScale)
-        let dx = endLeft - startLeft
-        let dy = endTop - startTop
-        let lift: CGFloat = 0.08
-        let preHold = 0.5 / cycle
-        let flight = 2.2 / cycle
-        let holdLap = 3.5 / cycle
-        let fadeOut = 0.8 / cycle
-        let snap = 0.1 / cycle
-        let fadeIn = 0.8 / cycle
-        let holdStart = preHold + flight
-        let fadeStart = holdStart + holdLap
-        let snapStart = fadeStart + fadeOut
-        let fadeInStart = snapStart + snap
-
-        switch phase {
-        case ..<preHold:
-            return CastState()
-        case ..<holdStart:
-            let t = CGFloat((phase - preHold) / flight)
-            let eased = smootherStep(t)
-            let arc = sin(.pi * eased) * lift
-            return CastState(
-                offsetX: dx * eased,
-                offsetY: dy * eased - arc,
-                scale: 1 + (scale - 1) * eased,
-                opacity: 1
-            )
-        case ..<fadeStart:
-            return CastState(offsetX: dx, offsetY: dy, scale: scale, opacity: 1)
-        case ..<snapStart:
-            let t = (phase - fadeStart) / fadeOut
-            return CastState(offsetX: dx, offsetY: dy, scale: scale, opacity: 1 - t)
-        case ..<fadeInStart:
-            return CastState(opacity: 0)
-        case ..<(fadeInStart + fadeIn):
-            let t = (phase - fadeInStart) / fadeIn
-            return CastState(opacity: Double(cubicEaseInOut(CGFloat(t))))
-        default:
-            return CastState()
+    private static let bundledIcon: NSImage? = {
+        if let appIcon = NSImage(named: "AppIcon") {
+            return appIcon
         }
-    }
-
-    private func cubicEaseInOut(_ value: CGFloat) -> CGFloat {
-        let t = min(max(value, 0), 1)
-        return t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2
-    }
-
-    /// Perlin smootherstep: 6t^5 - 15t^4 + 10t^3. Zero first *and* second
-    /// derivative at both ends, so the phone glides continuously from start to
-    /// finish with no perceptible acceleration "snap" at either end.
-    private func smootherStep(_ value: CGFloat) -> CGFloat {
-        let t = min(max(value, 0), 1)
-        return t * t * t * (t * (t * 6 - 15) + 10)
-    }
-}
-
-private struct CastState {
-    var offsetX: CGFloat = 0
-    var offsetY: CGFloat = 0
-    var scale: CGFloat = 1
-    var opacity: Double = 1
-}
-
-private struct ResourceImage: View {
-    let name: String
-    let `extension`: String
-
-    var body: some View {
-        if let url = Bundle.module.url(forResource: name, withExtension: `extension`),
-           let image = NSImage(contentsOf: url) {
-            Image(nsImage: image)
-                .resizable()
-        } else {
-            Color.clear
+        guard let url = Bundle.module.url(forResource: "AppIcon", withExtension: "icns") else {
+            return nil
         }
-    }
+        return NSImage(contentsOf: url)
+    }()
 }
 
-/// Rounded tinted badge for list-row glyphs (first-run setup steps).
+/// Circular tinted badge for list-row glyphs (first-run setup steps).
 private struct OnboardingRowBadge: View {
     let systemName: String
     let tint: Color
@@ -720,10 +914,10 @@ private struct OnboardingRowBadge: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: size * 0.32, style: .continuous)
-                .fill(tint.opacity(0.14))
+            Circle()
+                .fill(tint.opacity(0.13))
             Image(systemName: systemName)
-                .font(.system(size: size * 0.46, weight: .semibold))
+                .font(.system(size: size * 0.44, weight: .semibold))
                 .foregroundStyle(tint)
         }
         .frame(width: size, height: size)
@@ -775,6 +969,8 @@ private struct PermissionActionRow: View {
     }
 }
 
+/// Small monochrome pill for the permission rows: filled near-black while
+/// actionable, soft green once granted.
 private struct PermissionRoundedButtonStyle: ButtonStyle {
     @Environment(\.colorScheme) private var colorScheme
     let isComplete: Bool
@@ -783,26 +979,34 @@ private struct PermissionRoundedButtonStyle: ButtonStyle {
         if isComplete {
             return Color.green.opacity(colorScheme == .dark ? 0.18 : 0.13)
         }
-        return Color.accentColor.opacity(colorScheme == .dark ? 0.22 : 0.14)
+        return colorScheme == .dark
+            ? Color(red: 0.94, green: 0.95, blue: 0.96)
+            : Color(red: 0.07, green: 0.08, blue: 0.09)
     }
 
     private var textColor: Color {
-        isComplete ? Color.green : Color.accentColor
+        if isComplete {
+            return .green
+        }
+        return colorScheme == .dark ? Color(red: 0.08, green: 0.09, blue: 0.10) : .white
     }
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(textColor.opacity(configuration.isPressed ? 0.72 : 1))
-            .padding(.horizontal, 14)
-            .frame(height: 34)
+            .padding(.horizontal, 16)
+            .frame(height: 32)
             .background(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                Capsule(style: .continuous)
                     .fill(fillColor.opacity(configuration.isPressed ? 0.78 : 1))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .stroke(textColor.opacity(colorScheme == .dark ? 0.16 : 0.20), lineWidth: 1)
+                Capsule(style: .continuous)
+                    .stroke(
+                        isComplete ? Color.green.opacity(colorScheme == .dark ? 0.25 : 0.30) : .clear,
+                        lineWidth: 1
+                    )
             )
     }
 }
@@ -909,70 +1113,10 @@ private struct StatusDot: View {
     }
 }
 
-/// Brand teal shared by the onboarding accent icons and call-to-action buttons.
-private let onboardingTeal = Color(red: 0.0, green: 0.66, blue: 0.59)
-
-/// Dismissible failure card shown on the connection screen when mirroring,
-/// pairing, or adb hits a problem — so failures aren't silent.
-private struct ErrorBanner: View {
-    let error: AppModel.UserFacingError
-    let accent: Color
-    let scale: CGFloat
-    let onOpenLog: () -> Void
-    let onDismiss: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6 * scale) {
-            HStack(alignment: .firstTextBaseline, spacing: 8 * scale) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 13 * scale, weight: .semibold))
-                    .foregroundStyle(Color(red: 1.0, green: 0.82, blue: 0.42))
-
-                Text(error.title)
-                    .font(.system(size: 13.5 * scale, weight: .bold))
-                    .foregroundStyle(.white)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Spacer(minLength: 4 * scale)
-
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10.5 * scale, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.6))
-                        .padding(4 * scale)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-
-            Text(error.message)
-                .font(.system(size: 12 * scale, weight: .regular))
-                .foregroundStyle(.white.opacity(0.82))
-                .lineSpacing(1.5 * scale)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            Button(action: onOpenLog) {
-                Text("Open Log")
-                    .font(.system(size: 12 * scale, weight: .semibold))
-                    .foregroundStyle(accent)
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 2 * scale)
-        }
-        .padding(.horizontal, 13 * scale)
-        .padding(.vertical, 11 * scale)
-        .background(
-            RoundedRectangle(cornerRadius: 12 * scale, style: .continuous)
-                .fill(Color(red: 0.42, green: 0.13, blue: 0.11).opacity(0.4))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12 * scale, style: .continuous)
-                        .stroke(Color(red: 1.0, green: 0.5, blue: 0.42).opacity(0.32), lineWidth: 1)
-                )
-        )
-    }
-}
+/// Brand cyan palette shared by onboarding accents and gradient backgrounds.
+private let onboardingDeepCyan = PhoneRelayBrand.deepCyanColor
+private let onboardingCyan = PhoneRelayBrand.cyanColor
+private let onboardingAccentCyan = onboardingCyan
 
 #if DEBUG
 @MainActor
@@ -985,6 +1129,11 @@ private func connectionPreview() -> some View {
 
 #Preview("First-run onboarding") {
     FirstRunOnboardingView(onDismiss: {})
+        .environmentObject(AppModel(startBackgroundServices: false))
+}
+
+#Preview("First-run onboarding — permissions") {
+    FirstRunOnboardingView(initialStep: .permissions, onDismiss: {})
         .environmentObject(AppModel(startBackgroundServices: false))
 }
 

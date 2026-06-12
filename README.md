@@ -71,6 +71,10 @@ Dev builds use `scripts/PhoneRelay.entitlements`; notarized release builds use `
 
 `.github/workflows/ci.yml` runs `swift build` and `swift test` on every push and pull request.
 
+## Download site
+
+The static download page lives in `docs/` and is deployed by `.github/workflows/pages.yml` through GitHub Pages when Pages is enabled for the repository. During deploy, the workflow reads GitHub's latest release with `GITHUB_TOKEN`, writes `docs/release.json`, and publishes the site artifact. The page reads that metadata file and updates the visible version number, file size, published date, release link, and `.dmg` download link automatically. Publishing a new GitHub release with a `PhoneRelay.dmg` asset is enough to update the site link on the next Pages deploy. Private repositories require a GitHub plan that supports private Pages, or the repository must be made public.
+
 To pair, enable Wireless debugging on the Android phone and scan the QR code shown by the app. USB debugging is also supported: connect the phone, authorize the Mac, then use the USB flow. When possible the app promotes the connection to Wi-Fi ADB on port `5555`; `scripts/verify_usb_wifi_handoff.sh` can validate that handoff.
 
 Troubleshooting:

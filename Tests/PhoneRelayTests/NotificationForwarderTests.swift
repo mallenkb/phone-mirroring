@@ -49,12 +49,12 @@ final class NotificationForwarderTests: XCTestCase {
         XCTAssertTrue(AppModel.localNetworkPermissionReason.localizedCaseInsensitiveContains("handoff"))
     }
 
-    func testOnboardingRequiresBothMacPermissions() {
+    func testOnboardingRequiresLocalNetworkPermission() {
         XCTAssertFalse(AppModel.canCompleteFirstRunOnboarding(
             hasLocalNetworkPermission: false,
             hasNotificationPermission: false
         ))
-        XCTAssertFalse(AppModel.canCompleteFirstRunOnboarding(
+        XCTAssertTrue(AppModel.canCompleteFirstRunOnboarding(
             hasLocalNetworkPermission: true,
             hasNotificationPermission: false
         ))

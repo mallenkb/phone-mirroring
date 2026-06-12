@@ -7,7 +7,7 @@ PRODUCT_NAME="PhoneRelay"
 # Network and Notification authorization are keyed to the app identity, so the
 # old placeholder id caused duplicate privacy entries and blocked Wi-Fi handoff.
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
-APP_VERSION="${APP_VERSION:-0.1.0}"
+APP_VERSION="${APP_VERSION:-0.1.1}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
@@ -17,45 +17,66 @@ BIN_DIR="$RESOURCES_DIR/bin"
 LICENSES_DIR="$RESOURCES_DIR/LICENSES"
 SCRCPY_SERVER="$ROOT_DIR/scrcpy-source/build-mac/server/scrcpy-server"
 RESOURCE_SCRCPY_SERVER="$ROOT_DIR/Sources/PhoneRelay/Resources/scrcpy-server"
-APP_ASSETS="$ROOT_DIR/Sources/PhoneRelay/Resources/Assets.car"
+APP_ASSETS="$ROOT_DIR/App/Assets.xcassets"
 RESOURCE_BUNDLE="$ROOT_DIR/.build/debug/PhoneRelay_PhoneRelay.bundle"
 
 VERIFY=false
 LOGS=false
+FOREGROUND=false
 
 for arg in "$@"; do
   case "$arg" in
     --verify) VERIFY=true ;;
     --logs) LOGS=true ;;
+    --foreground) FOREGROUND=true ;;
     *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
 
+# The SwiftPM product is "PhoneRelayBinary"; the binary is renamed to
+# $PRODUCT_NAME inside the bundle (CFBundleExecutable).
+BUILD_PRODUCT="PhoneRelayBinary"
+
 collect_app_pids() {
   {
     pgrep -x "$PRODUCT_NAME" 2>/dev/null || true
+    pgrep -x "$BUILD_PRODUCT" 2>/dev/null || true
     pgrep -f "$APP_BUNDLE/Contents/MacOS/$PRODUCT_NAME" 2>/dev/null || true
     pgrep -f "$ROOT_DIR/.build/.*/$PRODUCT_NAME" 2>/dev/null || true
   } | sort -u
 }
 
+wait_for_app_exit() {
+  for _ in {1..30}; do
+    if [[ -z "$(collect_app_pids)" ]]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+# Kill old instances and wait until they are actually gone before launching a
+# new one, so two copies never overlap (the app also self-terminates duplicate
+# instances as a safety net).
 old_pids="$(collect_app_pids)"
 if [[ -n "$old_pids" ]]; then
   for pid in $old_pids; do
     pkill -TERM -P "$pid" 2>/dev/null || true
     kill "$pid" 2>/dev/null || true
   done
-  sleep 0.5
-  for pid in $old_pids; do
-    pkill -KILL -P "$pid" 2>/dev/null || true
-    kill -KILL "$pid" 2>/dev/null || true
-  done
+  if ! wait_for_app_exit; then
+    for pid in $old_pids; do
+      pkill -KILL -P "$pid" 2>/dev/null || true
+      kill -KILL "$pid" 2>/dev/null || true
+    done
+    if ! wait_for_app_exit; then
+      echo "warning: an existing $PRODUCT_NAME instance is still running; the new copy will defer to it" >&2
+    fi
+  fi
 fi
 
 cd "$ROOT_DIR"
-# The SwiftPM product is "PhoneRelay" (Dock name for debug runs); the
-# binary is renamed to $PRODUCT_NAME inside the bundle (CFBundleExecutable).
-BUILD_PRODUCT="PhoneRelayBinary"
 swift build --product "$BUILD_PRODUCT"
 
 rm -rf "$APP_BUNDLE"
@@ -63,8 +84,21 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS" "$RESOURCES_DIR" "$BIN_DIR" "$LICENSES_DIR
 cp ".build/debug/$BUILD_PRODUCT" "$EXECUTABLE_PATH"
 chmod +x "$EXECUTABLE_PATH"
 
-if [[ -f "$APP_ASSETS" ]]; then
-  cp "$APP_ASSETS" "$RESOURCES_DIR/Assets.car"
+if [[ -d "$APP_ASSETS" ]]; then
+  ASSET_BUILD_DIR="$(mktemp -d)"
+  xcrun actool "$APP_ASSETS" \
+    --compile "$ASSET_BUILD_DIR" \
+    --platform macosx \
+    --minimum-deployment-target 13.0 \
+    --app-icon AppIcon \
+    --output-partial-info-plist "$ASSET_BUILD_DIR/asset-info.plist" >/dev/null
+  if [[ -f "$ASSET_BUILD_DIR/Assets.car" ]]; then
+    cp "$ASSET_BUILD_DIR/Assets.car" "$RESOURCES_DIR/Assets.car"
+  fi
+  if [[ -f "$ASSET_BUILD_DIR/AppIcon.icns" ]]; then
+    cp "$ASSET_BUILD_DIR/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
+  fi
+  rm -rf "$ASSET_BUILD_DIR"
 fi
 
 if [[ -d "$RESOURCE_BUNDLE" ]]; then
@@ -163,7 +197,14 @@ if command -v codesign >/dev/null 2>&1; then
   codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 fi
 
-/usr/bin/open -n "$APP_BUNDLE"
+# Launch in the background by default so scripted rebuild loops never steal
+# focus from whatever the user is doing; pass --foreground for the old
+# behavior. The flag tells the app to skip its own launch activation.
+if "$FOREGROUND"; then
+  /usr/bin/open -n "$APP_BUNDLE"
+else
+  /usr/bin/open -n -g "$APP_BUNDLE" --args --launched-in-background
+fi
 
 if "$VERIFY"; then
   for _ in {1..20}; do

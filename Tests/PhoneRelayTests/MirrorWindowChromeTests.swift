@@ -40,6 +40,60 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(controller.renderView.acceptsFirstResponder)
     }
 
+    @MainActor
+    func testNativeMirrorTitleUsesConnectedDeviceName() throws {
+        let model = AppModel(startBackgroundServices: false)
+        model.selectedDevice = MirrorDevice(
+            id: "adb-RFCT10ZLTAJ",
+            name: "SM-S906B",
+            model: "SM-S906B",
+            battery: 39,
+            isCharging: false,
+            network: "USB debugging",
+            lastSeen: .now,
+            states: [.mirroringReady, .companionConnected],
+            adbSerial: "RFCT10ZLTAJ"
+        )
+        let session = MirrorSession(model: model, serial: model.selectedDevice.adbSerial)
+        let controller = MirrorContentWindowController(model: model, session: session)
+        let window = try XCTUnwrap(controller.window)
+
+        XCTAssertEqual(window.title, "SM-S906B")
+        XCTAssertTrue(controller.chromeBarForTesting.allTextFieldValues.contains("SM-S906B"))
+        XCTAssertFalse(controller.chromeBarForTesting.allTextFieldValues.contains("Android Device"))
+    }
+
+    @MainActor
+    func testNativeMirrorTitleUpdatesWhenConnectedDeviceNameArrives() throws {
+        let model = AppModel(startBackgroundServices: false)
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+        let window = try XCTUnwrap(controller.window)
+
+        model.selectedDevice = MirrorDevice(
+            id: "adb-192.168.68.50:5555",
+            name: "Work Phone",
+            model: "SM-S906B",
+            battery: 39,
+            isCharging: false,
+            network: "Wi-Fi debugging",
+            lastSeen: .now,
+            states: [.mirroringReady, .companionConnected],
+            adbSerial: "192.168.68.50:5555"
+        )
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(window.title, "Work Phone")
+        XCTAssertTrue(controller.chromeBarForTesting.allTextFieldValues.contains("Work Phone"))
+    }
+
+    func testOnboardingQuitDotUsesTrafficLightRedAndThinXStroke() {
+        XCTAssertEqual(OnboardingWindowDotStyle.closeRedComponents.red, 1.0, accuracy: 0.001)
+        XCTAssertEqual(OnboardingWindowDotStyle.closeRedComponents.green, 0.37, accuracy: 0.001)
+        XCTAssertEqual(OnboardingWindowDotStyle.closeRedComponents.blue, 0.34, accuracy: 0.001)
+        XCTAssertEqual(OnboardingWindowDotStyle.xStrokeWidth, 1.3, accuracy: 0.001)
+    }
+
     func testScrcpyTextMessageEncodesUtf8Payload() {
         let message = ScrcpyControlChannel.textMessage(for: "Hi")
 
@@ -187,6 +241,59 @@ final class MirrorWindowChromeTests: XCTestCase {
             "Connecting to your",
             "Pixel 8 Pro"
         ])
+    }
+
+    @MainActor
+    func testMirrorLoadingBackgroundUsesBrandDarkCyan() throws {
+        let loadingView = MirrorLoadingView(frame: NSRect(x: 0, y: 0, width: 390, height: 850))
+        let gradientLayer = try XCTUnwrap(
+            loadingView.layer?.sublayers?.compactMap { $0 as? CAGradientLayer }.first
+        )
+        let colors = try XCTUnwrap(gradientLayer.colors as? [CGColor])
+        let expected = try XCTUnwrap(
+            PhoneRelayBrand.deepCyanNSColor.usingColorSpace(.sRGB)
+        )
+
+        XCTAssertEqual(colors.count, 3)
+        for color in colors {
+            let actual = try XCTUnwrap(NSColor(cgColor: color)?.usingColorSpace(.sRGB))
+            XCTAssertEqual(actual.redComponent, expected.redComponent, accuracy: 0.001)
+            XCTAssertEqual(actual.greenComponent, expected.greenComponent, accuracy: 0.001)
+            XCTAssertEqual(actual.blueComponent, expected.blueComponent, accuracy: 0.001)
+            XCTAssertEqual(actual.alphaComponent, expected.alphaComponent, accuracy: 0.001)
+        }
+    }
+
+    func testConnectionOnboardingDoesNotUseDecorativeAnimatedGlowVisuals() throws {
+        let testURL = URL(fileURLWithPath: #filePath)
+        let packageRoot = testURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageRoot
+            .appendingPathComponent("Sources/PhoneRelay/Views/FigmaMirrorExperienceView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("AnimatedOnboardingBackdrop"))
+        XCTAssertFalse(source.contains("ConnectionOrbVisual"))
+        XCTAssertFalse(source.contains("MacOnboardingHeroVisual"))
+        XCTAssertFalse(source.contains("MirroringLoopVisual"))
+        XCTAssertFalse(source.contains("TimelineView(.animation)"))
+        XCTAssertFalse(source.contains("RadialGradient"))
+    }
+
+    func testReconnectSurfaceUsesSanitizedDeviceTitle() throws {
+        let testURL = URL(fileURLWithPath: #filePath)
+        let packageRoot = testURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageRoot
+            .appendingPathComponent("Sources/PhoneRelay/Views/FigmaMirrorExperienceView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("deviceName: model.mirrorWindowDeviceTitle"))
+        XCTAssertFalse(source.contains("deviceName: model.selectedDevice.name"))
     }
 
     @MainActor

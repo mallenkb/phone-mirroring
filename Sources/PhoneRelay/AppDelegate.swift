@@ -2,6 +2,23 @@ import AppKit
 import SwiftUI
 import UserNotifications
 
+/// Borderless windows refuse key status by default, which would break the
+/// onboarding card's buttons and its Return-key default action.
+private final class KeyableBorderlessWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
+/// Identity and age snapshot of a running process, lifted out of
+/// `NSRunningApplication` so duplicate-instance detection stays testable.
+struct AppInstanceDescriptor {
+    var pid: Int32
+    var bundleID: String?
+    var executableName: String?
+    var launchDate: Date?
+    var isTerminated: Bool
+}
+
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     public override init() {
@@ -15,8 +32,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private var noticesWindow: NSWindow?
     private let model = AppModel()
     private var keyMonitor: Any?
+    private var launchedInBackground = false
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        if yieldToExistingInstanceIfNeeded() {
+            return
+        }
+        launchedInBackground = Self.isBackgroundLaunch(arguments: CommandLine.arguments)
+
         if AppModel.canUseUserNotifications {
             UNUserNotificationCenter.current().delegate = self
         } else {
@@ -53,15 +76,136 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         self.window = window
 
         if shouldShowFirstRunIntro {
+            model.setFirstRunOnboardingActive(true)
             showFirstRunWindow()
             window.orderOut(nil)
+        } else if launchedInBackground {
+            window.orderFront(nil)
         } else {
             window.makeKeyAndOrderFront(nil)
         }
 
         installMainMenu()
         installKeyboardScaling()
-        NSApp.activate(ignoringOtherApps: true)
+        if !launchedInBackground {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    // MARK: - Single-instance guard
+
+    /// How long a fresh launch waits for an older instance to exit before
+    /// concluding it is a duplicate. Sized for the restart-onboarding relaunch,
+    /// where the old process quits moments after the new one starts.
+    nonisolated static let duplicateInstanceExitGracePeriod: TimeInterval = 2.5
+
+    /// Executables that count as "this app": the bundled binary and the bare
+    /// SwiftPM debug binary.
+    nonisolated static let phoneRelayExecutableNames: Set<String> = ["PhoneRelay", "PhoneRelayBinary"]
+
+    nonisolated static func isBackgroundLaunch(arguments: [String]) -> Bool {
+        arguments.contains("--launched-in-background")
+    }
+
+    nonisolated static func describesSamePhoneRelayApp(
+        _ candidate: AppInstanceDescriptor,
+        as current: AppInstanceDescriptor
+    ) -> Bool {
+        if let candidateBundleID = candidate.bundleID, let currentBundleID = current.bundleID {
+            return candidateBundleID == currentBundleID
+        }
+        guard let candidateExecutable = candidate.executableName,
+              let currentExecutable = current.executableName else {
+            return false
+        }
+        if phoneRelayExecutableNames.contains(candidateExecutable),
+           phoneRelayExecutableNames.contains(currentExecutable) {
+            return true
+        }
+        return candidateExecutable == currentExecutable
+    }
+
+    nonisolated static func instancePrecedes(
+        _ lhs: AppInstanceDescriptor,
+        _ rhs: AppInstanceDescriptor
+    ) -> Bool {
+        switch (lhs.launchDate, rhs.launchDate) {
+        case let (left?, right?) where left != right:
+            return left < right
+        case (.some, .none):
+            return true
+        case (.none, .some):
+            return false
+        default:
+            return lhs.pid < rhs.pid
+        }
+    }
+
+    /// The still-running older sibling this instance must defer to, or nil when
+    /// this instance is the rightful single copy.
+    nonisolated static func blockingDuplicateInstance(
+        candidates: [AppInstanceDescriptor],
+        current: AppInstanceDescriptor
+    ) -> AppInstanceDescriptor? {
+        candidates.first { candidate in
+            candidate.pid != current.pid
+                && !candidate.isTerminated
+                && describesSamePhoneRelayApp(candidate, as: current)
+                && instancePrecedes(candidate, current)
+        }
+    }
+
+    /// PhoneRelay owns exclusive resources — the adb server, scrcpy sessions,
+    /// and the connection window — so concurrent copies fight over the phone
+    /// and flood the screen with duplicate "Connecting…" windows (e.g. from
+    /// `open -n`, or a dev build launched next to the installed app). The
+    /// newest instance yields: it waits briefly for older instances to exit
+    /// (covering the restart-onboarding relaunch handoff), then activates the
+    /// survivor and terminates itself.
+    private func yieldToExistingInstanceIfNeeded() -> Bool {
+        let current = Self.descriptor(for: .current)
+        let deadline = Date().addingTimeInterval(Self.duplicateInstanceExitGracePeriod)
+        while true {
+            // NSWorkspace's list only refreshes when the run loop turns, which
+            // it can't while this wait blocks — re-verify liveness via signal 0
+            // so an already-exited sibling never strands or kills this launch.
+            let candidates = NSWorkspace.shared.runningApplications.map { app in
+                var descriptor = Self.descriptor(for: app)
+                if !descriptor.isTerminated, !Self.isProcessAlive(descriptor.pid) {
+                    descriptor.isTerminated = true
+                }
+                return descriptor
+            }
+            guard let blocker = Self.blockingDuplicateInstance(candidates: candidates, current: current) else {
+                return false
+            }
+            guard Date() < deadline else {
+                Logger.log("Another PhoneRelay instance (pid \(blocker.pid)) is already running; terminating this duplicate copy.")
+                NSWorkspace.shared.runningApplications
+                    .first { $0.processIdentifier == blocker.pid }?
+                    .activate(options: [])
+                NSApp.terminate(nil)
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+    }
+
+    private nonisolated static func descriptor(for app: NSRunningApplication) -> AppInstanceDescriptor {
+        AppInstanceDescriptor(
+            pid: app.processIdentifier,
+            bundleID: app.bundleIdentifier,
+            executableName: app.executableURL?.lastPathComponent,
+            launchDate: app.launchDate,
+            isTerminated: app.isTerminated
+        )
+    }
+
+    private nonisolated static func isProcessAlive(_ pid: Int32) -> Bool {
+        if kill(pid, 0) == 0 {
+            return true
+        }
+        return errno == EPERM
     }
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -361,6 +505,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     }
 
     private func showFirstRunWindow() {
+        model.setFirstRunOnboardingActive(true)
         if let firstRunWindow {
             centerOnActiveScreen(firstRunWindow)
             firstRunWindow.makeKeyAndOrderFront(nil)
@@ -369,6 +514,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         }
 
         let rootView = FirstRunOnboardingView { [weak self] in
+            self?.model.setFirstRunOnboardingActive(false)
             self?.firstRunWindow?.orderOut(nil)
             self?.firstRunWindow = nil
             if let window = self?.window {
@@ -386,15 +532,29 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         let hosting = NSHostingController(rootView: rootView)
         hosting.sizingOptions = [.preferredContentSize]
 
-        let window = NSWindow(contentViewController: hosting)
-        window.styleMask = [.titled, .closable, .miniaturizable]
+        // Borderless rounded card: the SwiftUI content draws all chrome
+        // (rounded panel, quit dot), the window contributes shadow and drag.
+        let window = KeyableBorderlessWindow(
+            contentRect: NSRect(origin: .zero, size: NSSize(width: 660, height: 600)),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = hosting
         window.title = "PhoneRelay"
         window.isReleasedWhenClosed = false
-        window.isMovableByWindowBackground = false
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
+        window.isMovableByWindowBackground = true
         hosting.view.layoutSubtreeIfNeeded()
         window.setContentSize(hosting.view.fittingSize)
         centerOnActiveScreen(window)
-        window.makeKeyAndOrderFront(nil)
+        if launchedInBackground {
+            window.orderFront(nil)
+        } else {
+            window.makeKeyAndOrderFront(nil)
+        }
         recenterAfterLayout(window)
         firstRunWindow = window
     }
@@ -555,23 +715,24 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     @objc private func restartFirstTimeOnboarding(_ sender: Any?) {
         let alert = NSAlert()
         alert.messageText = "Restart onboarding?"
-        alert.informativeText = "This clears saved onboarding and paired-phone records, then relaunches the app into onboarding."
+        alert.informativeText = "This clears saved onboarding and paired-phone records, then returns to the onboarding screen."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Restart Onboarding")
         alert.addButton(withTitle: "Cancel")
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        // Everything happens in-process. Relaunching here used to race the
+        // old instance against the new one — the old process's terminate ran
+        // on a background queue and could fail, leaving its connection window
+        // on screen next to the new instance's onboarding card.
+        model.setFirstRunOnboardingActive(true)
+        model.stopMirroring()
         model.resetFirstTimeUserOnboardingState()
-        relaunchApp()
-    }
-
-    private func relaunchApp() {
-        let bundleURL = Bundle.main.bundleURL
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration) { _, _ in
-            NSApp.terminate(nil)
-        }
+        window?.orderOut(nil)
+        firstRunWindow?.orderOut(nil)
+        firstRunWindow = nil
+        showFirstRunWindow()
+        NSApp.activate(ignoringOtherApps: true)
     }
 
 

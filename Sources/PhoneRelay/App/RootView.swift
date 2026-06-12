@@ -108,7 +108,10 @@ struct WindowRegistrationView: NSViewRepresentable {
                 install(parent: parent, model: model)
             }
 
-            chromeBar.setDeviceName(model.selectedDevice.name)
+            let deviceName = model.mirrorWindowDeviceTitle
+            parent.title = deviceName
+            toolbarWindow?.title = deviceName
+            chromeBar.setDeviceName(deviceName)
             repositionToolbarWindow()
         }
 
@@ -146,7 +149,7 @@ struct WindowRegistrationView: NSViewRepresentable {
             chromeBar.autoresizingMask = [.width, .height]
             chromeBar.chromeHeight = MirrorContentWindowController.toolbarBarHeight
             chromeBar.configure(
-                deviceName: model.selectedDevice.name,
+                deviceName: model.mirrorWindowDeviceTitle,
                 onHome: { model.sendAndroidKey("KEYCODE_HOME") },
                 onRecentApps: { model.sendAndroidKey("KEYCODE_APP_SWITCH") },
                 onScreenshot: { model.takeScreenshot() }

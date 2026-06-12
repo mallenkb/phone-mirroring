@@ -81,7 +81,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
 
         XCTAssertEqual(model.selectedDevice, .demo)
         XCTAssertFalse(model.isSelectedDeviceOnline)
-        XCTAssertEqual(model.connectionDeviceLabel, "Android device")
+        XCTAssertEqual(model.connectionDeviceLabel, "Android Device")
     }
 
     @MainActor
@@ -107,7 +107,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         XCTAssertTrue(model.pairedPhones.isEmpty)
         XCTAssertEqual(model.selectedDevice, .demo)
         XCTAssertFalse(model.isSelectedDeviceOnline)
-        XCTAssertEqual(model.connectionDeviceLabel, "Android device")
+        XCTAssertEqual(model.connectionDeviceLabel, "Android Device")
     }
 
     func testClearAllDisconnectTargetsIncludeOnlyWirelessADBTransports() {
@@ -208,7 +208,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
-    func testConnectionDeviceLabelKeepsSpecificModelName() {
+    func testConnectionDeviceLabelKeepsKnownModelName() {
         XCTAssertEqual(
             AppModel.connectionDeviceLabel(
                 name: "SM-S906B",
@@ -220,7 +220,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
-    func testConnectionDeviceLabelUsesWirelessHostWhenNameIsGeneric() {
+    func testConnectionDeviceLabelUsesAndroidDeviceInsteadOfWirelessHost() {
         XCTAssertEqual(
             AppModel.connectionDeviceLabel(
                 name: "Android device",
@@ -228,11 +228,11 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 serial: "192.168.68.50:5555",
                 network: "Wireless debugging"
             ),
-            "Wi-Fi 192.168.68.50"
+            "Android Device"
         )
     }
 
-    func testConnectionDeviceLabelUsesUSBSerialWhenNameIsGeneric() {
+    func testConnectionDeviceLabelUsesAndroidDeviceInsteadOfUSBSerial() {
         XCTAssertEqual(
             AppModel.connectionDeviceLabel(
                 name: "Android device",
@@ -240,7 +240,33 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 serial: "RFCT10ZLTAJ",
                 network: "USB debugging"
             ),
-            "USB RFCT10ZLTAJ"
+            "Android Device"
+        )
+    }
+
+    func testConnectionDeviceLabelKeepsUserNamedDevice() {
+        XCTAssertEqual(
+            AppModel.connectionDeviceLabel(
+                name: "Work phone",
+                id: "adb-RFCT10ZLTAJ",
+                serial: "192.168.68.50:5555",
+                network: "Wireless debugging"
+            ),
+            "Work phone"
+        )
+    }
+
+    func testMirrorWindowTitleKeepsKnownPixelModelName() {
+        XCTAssertEqual(
+            AppModel.mirrorWindowDeviceTitle(name: "Pixel 6 Pro"),
+            "Pixel 6 Pro"
+        )
+    }
+
+    func testMirrorWindowTitleKeepsUserNamedDevice() {
+        XCTAssertEqual(
+            AppModel.mirrorWindowDeviceTitle(name: "Work phone"),
+            "Work phone"
         )
     }
 
@@ -426,6 +452,24 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 isOnline: true,
                 isMirroring: false,
                 isPairing: false,
+                explicitDeviceSetupRequired: false,
+                hasMirrorLaunchTask: false,
+                hasWirelessStartTask: false,
+                hasReconnectTask: false,
+                hasUSBConnectTask: false,
+                isAwaitingReconnect: false,
+                selectedSerial: "192.168.68.50:5555"
+            )
+        )
+    }
+
+    func testOnlineIdleSelectedDeviceDoesNotAutoStartDuringExplicitSetup() {
+        XCTAssertFalse(
+            AppModel.shouldAutoStartOnlineSelectedDevice(
+                isOnline: true,
+                isMirroring: false,
+                isPairing: false,
+                explicitDeviceSetupRequired: true,
                 hasMirrorLaunchTask: false,
                 hasWirelessStartTask: false,
                 hasReconnectTask: false,
@@ -442,6 +486,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 isOnline: true,
                 isMirroring: false,
                 isPairing: false,
+                explicitDeviceSetupRequired: false,
                 hasMirrorLaunchTask: false,
                 hasWirelessStartTask: true,
                 hasReconnectTask: false,
@@ -455,6 +500,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 isOnline: true,
                 isMirroring: false,
                 isPairing: false,
+                explicitDeviceSetupRequired: false,
                 hasMirrorLaunchTask: false,
                 hasWirelessStartTask: false,
                 hasReconnectTask: false,
@@ -471,6 +517,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 isOnline: true,
                 isMirroring: false,
                 isPairing: false,
+                explicitDeviceSetupRequired: false,
                 hasMirrorLaunchTask: false,
                 hasWirelessStartTask: false,
                 hasReconnectTask: false,

@@ -105,6 +105,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private var hasUserMovedWindow = false
     private var isApplyingProgrammaticFrame = false
     private var captureCueCancellable: AnyCancellable?
+    private var deviceTitleCancellable: AnyCancellable?
     private var activeCaptureCueView: MirrorCaptureCueView?
 
     init(model: AppModel, session: MirrorSession, launchFrame: NSRect? = nil) {
@@ -449,7 +450,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     // MARK: - Setup
 
     private func configure(window: NSWindow) {
-        window.title = "Android device"
+        window.title = model.mirrorWindowDeviceTitle
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
@@ -610,11 +611,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
         renderView.translatesAutoresizingMaskIntoConstraints = false
         renderView.cornerRadius = Self.renderCornerRadius
-        renderView.setLoadingDeviceName(model.selectedDevice.name)
+        renderView.setLoadingDeviceName(model.mirrorWindowDeviceTitle)
         rootView.addSubview(renderView)
 
         chromeBar.configure(
-            deviceName: model.selectedDevice.name,
+            deviceName: model.mirrorWindowDeviceTitle,
             onHome: { [weak self] in self?.model.sendAndroidKey("KEYCODE_HOME") },
             onRecentApps: { [weak self] in self?.model.sendAndroidKey("KEYCODE_APP_SWITCH") },
             onScreenshot: { [weak self] in self?.model.takeScreenshot() }
@@ -639,6 +640,12 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             self?.dragWindowFromChrome(with: event)
         }
         chromeBar.onHoverChange = { [weak self] _ in self?.evaluateRevealZone() }
+        applyDeviceTitle()
+        deviceTitleCancellable = model.$selectedDevice
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.applyDeviceTitle()
+            }
 
         // The toolbar lives in its own borderless child window floating above
         // the phone — not inside this content view.
@@ -676,6 +683,14 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         renderView.onDropFiles = { [weak self] urls in
             self?.model.handleDroppedFiles(urls)
         }
+    }
+
+    private func applyDeviceTitle() {
+        let deviceName = model.mirrorWindowDeviceTitle
+        window?.title = deviceName
+        toolbarWindow?.title = deviceName
+        chromeBar.setDeviceName(deviceName)
+        renderView.setLoadingDeviceName(deviceName)
     }
 
     // MARK: - Hover
