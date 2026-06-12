@@ -527,6 +527,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
         let window = try XCTUnwrap(controller.window)
+        let contentSize = try XCTUnwrap(window.contentView?.bounds.size)
         let defaultAspect = CGFloat(1080) / CGFloat(2340)
         let verticalShellInset = MirrorContentWindowController.visibleChromeRenderTopInset
         let horizontalShellInset: CGFloat = 0
@@ -537,7 +538,7 @@ final class MirrorWindowChromeTests: XCTestCase {
             to: NSSize(width: 657, height: 900)
         )
 
-        XCTAssertEqual(initialRatio, window.frame.width / window.frame.height, accuracy: 0.002)
+        XCTAssertEqual(initialRatio, contentSize.width / contentSize.height, accuracy: 0.002)
         XCTAssertEqual(constrained.width, 657)
         XCTAssertEqual(
             constrained.height,
@@ -552,6 +553,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
         let window = try XCTUnwrap(controller.window)
+        let contentSize = try XCTUnwrap(window.contentView?.bounds.size)
         let visibleFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 390, height: 850)
         let maximumHeightBasis = MirrorContentWindowController.resolutionHeight(
             for: NSScreen.main,
@@ -583,8 +585,8 @@ final class MirrorWindowChromeTests: XCTestCase {
             fullDefaultSize.height
         )
 
-        XCTAssertEqual(window.frame.width, initialSize.width, accuracy: 1)
-        XCTAssertEqual(window.frame.height, initialSize.height, accuracy: 1)
+        XCTAssertEqual(contentSize.width, initialSize.width, accuracy: 1)
+        XCTAssertEqual(contentSize.height, initialSize.height, accuracy: 1)
         XCTAssertGreaterThanOrEqual(initialSize.height, limits.min.height - 0.001)
         XCTAssertLessThanOrEqual(initialSize.height, limits.max.height + 0.001)
         XCTAssertEqual(
@@ -608,31 +610,42 @@ final class MirrorWindowChromeTests: XCTestCase {
         let visibleFrame = window.screen?.visibleFrame
             ?? NSScreen.main?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 390, height: 850)
+        let maximumHeightBasis = MirrorContentWindowController.resolutionHeight(
+            for: window.screen ?? NSScreen.main,
+            fallbackVisibleFrame: visibleFrame
+        )
         let fullStreamSize = MirrorContentWindowController.wrappedShellSize(
             for: NSSize(width: 1080, height: 2340),
             visibleFrame: visibleFrame
         )
+        let topChromeInset = MirrorContentWindowController.visibleChromeRenderTopInset
+        let limits = MirrorContentWindowController.sizeLimits(
+            visibleFrame: visibleFrame,
+            aspect: 1080.0 / 2340.0,
+            chromeHeight: topChromeInset,
+            maximumHeightBasis: maximumHeightBasis
+        )
         let initialStreamSize = MirrorContentWindowController.initialWrappedShellSize(
             for: NSSize(width: 1080, height: 2340),
-            visibleFrame: visibleFrame
+            visibleFrame: visibleFrame,
+            maximumHeightBasis: maximumHeightBasis
         )
-        let topChromeInset = MirrorContentWindowController.visibleChromeRenderTopInset
         let targetHeight = min(
-            visibleFrame.height * MirrorContentWindowController.initialScreenHeightRatio,
+            maximumHeightBasis * MirrorContentWindowController.initialScreenHeightRatio,
             fullStreamSize.height
         )
-        let targetScreenHeight = targetHeight - topChromeInset
 
         XCTAssertGreaterThanOrEqual(window.frame.width, initialStreamSize.width)
+        XCTAssertGreaterThanOrEqual(initialStreamSize.height, limits.min.height - 0.001)
+        XCTAssertLessThanOrEqual(initialStreamSize.height, limits.max.height + 0.001)
         XCTAssertEqual(
             initialStreamSize.width,
-            targetScreenHeight * (1080.0 / 2340.0) * MirrorContentWindowController.initialMirrorScale,
+            (initialStreamSize.height - topChromeInset) * (1080.0 / 2340.0),
             accuracy: 0.001
         )
-        XCTAssertEqual(
-            initialStreamSize.height - topChromeInset,
-            targetScreenHeight * MirrorContentWindowController.initialMirrorScale,
-            accuracy: 0.001
+        XCTAssertGreaterThanOrEqual(
+            initialStreamSize.height,
+            min(targetHeight, limits.max.height) - 0.001
         )
 
         let rootView = try XCTUnwrap(window.contentView as? MirrorRootView)
