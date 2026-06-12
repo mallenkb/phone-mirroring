@@ -5,10 +5,12 @@ APP="${1:-dist/PhoneRelay.app}"
 APP_NAME="${APP_NAME:-PhoneRelay}"
 PRODUCT_NAME="${PRODUCT_NAME:-PhoneRelay}"
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
-APP_VERSION="${APP_VERSION:-0.1.2}"
-BUILD_NUMBER="${BUILD_NUMBER:-3}"
-SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://github.com/mallenkb/phone-mirroring/releases/latest/download/appcast.xml}"
-SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-REPLACE_WITH_SPARKLE_PUBLIC_ED_KEY}"
+APP_VERSION="${APP_VERSION:-0.1.4}"
+BUILD_NUMBER="${BUILD_NUMBER:-5}"
+# The source repo is private, so the feed lives on the public website mirror
+# (synced from each GitHub release by the phonerelay-website repo).
+SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://phonerelay.mallenkb.com/downloads/appcast.xml}"
+SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-BRG3UL9d/8qtx7RJdobbGi1q87hpbEflfn1izHj/qgc=}"
 # Prefer a real Apple Development identity when one is in the keychain: TCC
 # grants (Local Network, Notifications) are keyed to the signing identity, and
 # ad-hoc signatures change every build, which silently revokes them.
@@ -161,6 +163,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <string>$SPARKLE_FEED_URL</string>
   <key>SUPublicEDKey</key>
   <string>$SPARKLE_PUBLIC_ED_KEY</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUScheduledCheckInterval</key>
+  <integer>86400</integer>
+  <key>SUAutomaticallyUpdate</key>
+  <true/>
 </dict>
 </plist>
 PLIST

@@ -2,8 +2,14 @@ name: Auto Update
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
+    paths-ignore:
+      - "README.md"
+      - "docs/**"
+      - "**/*.md"
   workflow_dispatch:
     inputs:
       version:
@@ -57,8 +63,10 @@ jobs:
 
           if [ -n "${INPUT_VERSION:-}" ]; then
             VERSION="$INPUT_VERSION"
-          else
+          elif [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
             VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Sources/PhoneRelay/Info.plist)"
           fi
 
           if [ -z "$VERSION" ]; then
@@ -67,7 +75,11 @@ jobs:
           fi
 
           BUILD_NUMBER="${INPUT_BUILD_NUMBER:-${GITHUB_RUN_NUMBER}}"
-          TAG="v$VERSION"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] || [ -n "${INPUT_VERSION:-}" ]; then
+            TAG="v$VERSION"
+          else
+            TAG="v$VERSION-build.$BUILD_NUMBER"
+          fi
 
           {
             echo "version=$VERSION"
@@ -150,11 +162,17 @@ jobs:
           UPDATES_DIR="dist/sparkle-updates"
           mkdir -p "$UPDATES_DIR"
           cp dist/PhoneRelay.dmg "$UPDATES_DIR/PhoneRelay.dmg"
+          # Enclosure URLs must point at the public website mirror: the repo is
+          # private, so GitHub release asset URLs 404 for Sparkle.
           printf '%s' "$SPARKLE_PRIVATE_ED_KEY" | "$SPARKLE_BIN/generate_appcast" \
             --ed-key-file - \
-            --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/" \
+            --download-url-prefix "https://phonerelay.mallenkb.com/downloads/" \
             "$UPDATES_DIR"
           cp "$UPDATES_DIR/appcast.xml" dist/appcast.xml
+          if ! grep -q 'sparkle:edSignature' dist/appcast.xml; then
+            echo "appcast.xml is missing the EdDSA signature; aborting release." >&2
+            exit 1
+          fi
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4

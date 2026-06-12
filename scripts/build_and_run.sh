@@ -7,7 +7,16 @@ PRODUCT_NAME="PhoneRelay"
 # Network and Notification authorization are keyed to the app identity, so the
 # old placeholder id caused duplicate privacy entries and blocked Wi-Fi handoff.
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
-APP_VERSION="${APP_VERSION:-0.1.2}"
+APP_VERSION="${APP_VERSION:-0.1.4}"
+# Sparkle compares CFBundleVersion between the running app and the appcast, so
+# dev bundles must use the same build-number scheme as scripts/package_app.sh —
+# a version string here would compare lower than a released build number and
+# Sparkle would offer a downgrade.
+BUILD_NUMBER="${BUILD_NUMBER:-5}"
+# Same Sparkle feed/key as release builds so "Check for Updates" works from
+# dev bundles too instead of erroring about a missing SUFeedURL.
+SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://phonerelay.mallenkb.com/downloads/appcast.xml}"
+SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-BRG3UL9d/8qtx7RJdobbGi1q87hpbEflfn1izHj/qgc=}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
@@ -156,7 +165,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key>
   <string>$APP_VERSION</string>
   <key>CFBundleVersion</key>
-  <string>$APP_VERSION</string>
+  <string>$BUILD_NUMBER</string>
   <key>CFBundleIconName</key>
   <string>AppIcon</string>
   <key>CFBundleName</key>
@@ -175,6 +184,18 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <string>_adb-tls-connect._tcp</string>
     <string>_adb-tls-pairing._tcp</string>
   </array>
+  <key>SUEnableInstallerLauncherService</key>
+  <true/>
+  <key>SUFeedURL</key>
+  <string>$SPARKLE_FEED_URL</string>
+  <key>SUPublicEDKey</key>
+  <string>$SPARKLE_PUBLIC_ED_KEY</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUScheduledCheckInterval</key>
+  <integer>86400</integer>
+  <key>SUAutomaticallyUpdate</key>
+  <true/>
 </dict>
 </plist>
 PLIST

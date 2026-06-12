@@ -10,6 +10,51 @@ private final class KeyableBorderlessWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
+private final class AppUpdateAdapter: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
+    private static let appcastURLString = "https://phonerelay.mallenkb.com/downloads/appcast.xml"
+    private static let sparkleNoUpdateErrorCode = 1001
+
+    func feedURLString(for updater: SPUUpdater) -> String? {
+        Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String ?? Self.appcastURLString
+    }
+
+    func updaterShouldPromptForPermissionToCheck(forUpdates updater: SPUUpdater) -> Bool {
+        false
+    }
+
+    func updater(
+        _ updater: SPUUpdater,
+        willScheduleUpdateCheckAfterDelay delay: TimeInterval
+    ) {
+        Logger.log("Next automatic update check scheduled in \(Int(delay)) seconds.")
+    }
+
+    func updaterWillNotScheduleUpdateCheck(_ updater: SPUUpdater) {
+        Logger.log("Automatic update checks are disabled or could not be scheduled.")
+    }
+
+    func updater(
+        _ updater: SPUUpdater,
+        didAbortWithError error: Error
+    ) {
+        let nsError = error as NSError
+        if nsError.domain == SUSparkleErrorDomain, nsError.code == Self.sparkleNoUpdateErrorCode {
+            return
+        }
+        Logger.log("Updater failed: \(nsError.localizedDescription)")
+    }
+
+    func standardUserDriverShouldShowVersionHistory(for item: SUAppcastItem) -> Bool {
+        false
+    }
+
+    func standardUserDriverWillShowModalAlert() {
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+}
+
 /// Identity and age snapshot of a running process, lifted out of
 /// `NSRunningApplication` so duplicate-instance detection stays testable.
 struct AppInstanceDescriptor {
@@ -34,10 +79,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private var shortcutsWindow: NSWindow?
     private var noticesWindow: NSWindow?
     private let model = AppModel()
-    private let updaterController = SPUStandardUpdaterController(
+    private let updateAdapter = AppUpdateAdapter()
+    private lazy var updaterController = SPUStandardUpdaterController(
         startingUpdater: true,
-        updaterDelegate: nil,
-        userDriverDelegate: nil
+        updaterDelegate: updateAdapter,
+        userDriverDelegate: updateAdapter
     )
     private var keyMonitor: Any?
     private var launchedInBackground = false
@@ -94,6 +140,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         }
 
         installMainMenu()
+        _ = updaterController
         installKeyboardScaling()
         if !launchedInBackground {
             NSApp.activate(ignoringOtherApps: true)

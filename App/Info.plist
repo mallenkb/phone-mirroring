@@ -39,8 +39,14 @@
   <key>SUEnableInstallerLauncherService</key>
   <true/>
   <key>SUFeedURL</key>
-  <string>https://github.com/mallenkb/phone-mirroring/releases/latest/download/appcast.xml</string>
+  <string>https://phonerelay.mallenkb.com/downloads/appcast.xml</string>
   <key>SUPublicEDKey</key>
-  <string>$(SPARKLE_PUBLIC_ED_KEY)</string>
+  <string>BRG3UL9d/8qtx7RJdobbGi1q87hpbEflfn1izHj/qgc=</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUScheduledCheckInterval</key>
+  <integer>86400</integer>
+  <key>SUAutomaticallyUpdate</key>
+  <true/>
 </dict>
 </plist>

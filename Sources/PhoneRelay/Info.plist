@@ -13,9 +13,9 @@
   <key>CFBundleDisplayName</key>
   <string>PhoneRelay</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.2</string>
+  <string>0.1.4</string>
   <key>CFBundleVersion</key>
-  <string>3</string>
+  <string>5</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>PhoneRelay for Android connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
   <key>NSBonjourServices</key>
@@ -27,9 +27,15 @@
   <key>SUEnableInstallerLauncherService</key>
   <true/>
   <key>SUFeedURL</key>
-  <string>https://github.com/mallenkb/phone-mirroring/releases/latest/download/appcast.xml</string>
+  <string>https://phonerelay.mallenkb.com/downloads/appcast.xml</string>
   <key>SUPublicEDKey</key>
-  <string>REPLACE_WITH_SPARKLE_PUBLIC_ED_KEY</string>
+  <string>BRG3UL9d/8qtx7RJdobbGi1q87hpbEflfn1izHj/qgc=</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUScheduledCheckInterval</key>
+  <integer>86400</integer>
+  <key>SUAutomaticallyUpdate</key>
+  <true/>
   <!-- Keep the pre-macOS-26 ("Liquid Glass") control appearance: rounded
        segmented controls and no visible card behind grouped content. Building
        against the macOS 26+ SDK otherwise opts the app into the new design. -->
