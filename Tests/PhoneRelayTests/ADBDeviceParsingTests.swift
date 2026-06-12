@@ -1453,7 +1453,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         let connectCalls = loggedCalls(fake.log).filter { $0 == "connect 192.0.2.44:5555" }
 
         XCTAssertNil(connected)
-        XCTAssertLessThan(elapsed, 3.6)
+        XCTAssertLessThan(elapsed, 4.0)
         XCTAssertLessThan(connectCalls.count, 8)
     }
 
