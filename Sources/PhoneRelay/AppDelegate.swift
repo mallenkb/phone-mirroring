@@ -21,6 +21,9 @@ struct AppInstanceDescriptor {
 
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    private static let latestReleaseURL = URL(string: "https://github.com/mallenkb/phone-mirroring/releases/latest")!
+    private static let releaseWorkflowURL = URL(string: "https://github.com/mallenkb/phone-mirroring/actions/workflows/pages.yml")!
+
     public override init() {
         super.init()
     }
@@ -288,6 +291,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                 keyEquivalent: ""
             )
         )
+        appMenu.addItem(
+            NSMenuItem(
+                title: "Check for Updates...",
+                action: #selector(checkForUpdates(_:)),
+                keyEquivalent: ""
+            )
+        )
         appMenu.addItem(.separator())
         appMenu.addItem(
             NSMenuItem(
@@ -445,6 +455,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             NSMenuItem(
                 title: "Open Log File",
                 action: #selector(openLogFile(_:)),
+                keyEquivalent: ""
+            )
+        )
+        helpMenu.addItem(
+            NSMenuItem(
+                title: "Open Release Workflow",
+                action: #selector(openReleaseWorkflow(_:)),
                 keyEquivalent: ""
             )
         )
@@ -626,6 +643,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    @objc private func checkForUpdates(_ sender: Any?) {
+        NSWorkspace.shared.open(Self.latestReleaseURL)
+    }
+
     @objc private func showSettings(_ sender: Any?) {
         if let settingsWindow {
             settingsWindow.makeKeyAndOrderFront(nil)
@@ -655,6 +676,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
     @objc private func openLogFile(_ sender: Any?) {
         model.revealLogFile()
+    }
+
+    @objc private func openReleaseWorkflow(_ sender: Any?) {
+        NSWorkspace.shared.open(Self.releaseWorkflowURL)
     }
 
     @objc private func showThirdPartyNotices(_ sender: Any?) {
