@@ -5,6 +5,7 @@ import SwiftUI
 
 /// Main pre-connection screen. Renders the Figma design at a fixed surface
 /// size and scales it to fit the host window.
+@MainActor
 struct FigmaMirrorExperienceView: View {
     @EnvironmentObject private var model: AppModel
     private let phoneAspect: CGFloat = MirrorContentWindowController.defaultMirrorAspect
@@ -331,6 +332,7 @@ struct FigmaMirrorExperienceView: View {
 
 }
 
+@MainActor
 struct FigmaPhoneFrame<Content: View>: View {
     @ViewBuilder var content: Content
     private var cornerRadius: CGFloat {
