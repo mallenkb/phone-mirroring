@@ -106,7 +106,7 @@
 				AA00000000000000000C0001 /* Copy adb into Resources/bin */,
 				AA00000000000000000C0002 /* Copy scrcpy-server into Resources */,
 				AA00000000000000000C0007 /* Copy themed app icon into Resources */,
-				AA00000000000000000C0006 /* Sign adb with inherited sandbox */,
+				AA00000000000000000C0006 /* Sign helpers with inherited sandbox */,
 			);
 			buildRules = (
 			);
@@ -167,22 +167,23 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		AA00000000000000000C0006 /* Sign adb with inherited sandbox */ = {
+		AA00000000000000000C0006 /* Sign helpers with inherited sandbox */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputPaths = (
 				"$(TARGET_BUILD_DIR)/$(FULL_PRODUCT_NAME)/Contents/Resources/bin/adb",
+				"$(TARGET_BUILD_DIR)/$(FULL_PRODUCT_NAME)/Contents/Frameworks/Sparkle.framework",
 				"$(SRCROOT)/HelperInherit.entitlements",
 			);
-			name = "Sign adb with inherited sandbox";
+			name = "Sign helpers with inherited sandbox";
 			outputPaths = (
 				"$(DERIVED_FILE_DIR)/sign-adb-with-inherited-sandbox.stamp",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "ADB=\"$CODESIGNING_FOLDER_PATH/Contents/Resources/bin/adb\"\nif [ -f \"$ADB\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  codesign --force --options runtime --entitlements \"$SRCROOT/HelperInherit.entitlements\" --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$ADB\"\nfi\nif [ -n \"$SCRIPT_OUTPUT_FILE_0\" ]; then\n  touch \"$SCRIPT_OUTPUT_FILE_0\"\nfi\n";
+			shellScript = "ENTITLEMENTS=\"$SRCROOT/HelperInherit.entitlements\"\nsign_helper() {\n  local path=\"$1\"\n  if [ -e \"$path\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n    codesign --force --options runtime --entitlements \"$ENTITLEMENTS\" --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$path\"\n  fi\n}\n\nsign_bundle() {\n  local path=\"$1\"\n  if [ -e \"$path\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n    codesign --force --deep --options runtime --preserve-metadata=entitlements --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$path\"\n  fi\n}\n\nsign_helper \"$CODESIGNING_FOLDER_PATH/Contents/Resources/bin/adb\"\nSPARKLE_FRAMEWORK=\"$CODESIGNING_FOLDER_PATH/Contents/Frameworks/Sparkle.framework\"\nSPARKLE=\"$SPARKLE_FRAMEWORK/Versions/B\"\nsign_helper \"$SPARKLE/Autoupdate\"\nsign_helper \"$SPARKLE/Updater.app\"\nsign_helper \"$SPARKLE/XPCServices/Downloader.xpc\"\nsign_helper \"$SPARKLE/XPCServices/Installer.xpc\"\nsign_bundle \"$SPARKLE_FRAMEWORK\"\n\nif [ -n \"$SCRIPT_OUTPUT_FILE_0\" ]; then\n  touch \"$SCRIPT_OUTPUT_FILE_0\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

@@ -2,7 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- Bundled helper tools (adb) run inside the app's sandbox. -->
+  <!--
+    Bundled helper tools used by distribution archives. Xcode's Developer ID
+    validation requires every executable in the app payload to carry the app
+    sandbox entitlement; helper tools inherit the containing app's sandbox.
+  -->
   <key>com.apple.security.app-sandbox</key>
   <true/>
   <key>com.apple.security.inherit</key>

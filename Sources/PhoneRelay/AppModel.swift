@@ -494,6 +494,11 @@ final class AppModel: ObservableObject {
             clearExplicitDeviceSetupRequirement()
             select(record: mostRecentRecord)
         }
+        Logger.log(
+            "Launch state: pairedPhones=\(pairedPhones.count) "
+            + "explicitDeviceSetupRequired=\(explicitDeviceSetupRequired) "
+            + "startBackgroundServices=\(startBackgroundServices)"
+        )
 
         guard startBackgroundServices else { return }
 
@@ -929,6 +934,11 @@ final class AppModel: ObservableObject {
 
                 let phones = await Task.detached { adb.connectableMDNSTargets() }.value
                 guard let phone = Self.singleConnectableRecoveryCandidate(in: phones) else {
+                    Logger.log(
+                        "Recovered Wi-Fi reconnect attempt \(attempt + 1)/5: "
+                        + "no single connectable mdns candidate in "
+                        + "\(phones.map { "\($0.id)@\($0.address)" })"
+                    )
                     continue
                 }
 
