@@ -133,8 +133,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         super.init(window: window)
         window.delegate = self
         configure(window: window)
-        installContent()
         window.styleMask.remove(.titled)
+        window.setContentSize(initialSize)
+        installContent()
         window.contentAspectRatio = initialSize
     }
 
