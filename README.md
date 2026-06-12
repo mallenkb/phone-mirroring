@@ -71,7 +71,7 @@ Dev builds use `scripts/PhoneRelay.entitlements`; notarized release builds use `
 
 `.github/workflows/ci.yml` runs `swift build` and `swift test` on every push and pull request.
 
-`.github/workflows/auto-update-release.yml` builds the `PhoneRelay.dmg` asset used by the in-app updater and publishes it to GitHub Releases. Run it manually as **Auto Update** with a version such as `0.1.2`, or push a tag such as `v0.1.2`. For notarized releases, configure repository secrets for `DEVELOPER_ID_CERTIFICATE_BASE64`, `DEVELOPER_ID_CERTIFICATE_PASSWORD`, `DEVELOPER_ID`, `APPLE_ID`, `TEAM_ID`, and `APP_PASSWORD`; without those secrets the workflow still creates an ad-hoc signed DMG for testing.
+`.github/workflows/auto-update-release.yml` builds the `PhoneRelay.dmg` asset used by the in-app updater and publishes it to GitHub Releases. Run it manually as **Auto Update** with a version such as `0.1.2`, or push a tag such as `v0.1.2`. Public auto-update releases require repository secrets for `DEVELOPER_ID_CERTIFICATE_BASE64`, `DEVELOPER_ID_CERTIFICATE_PASSWORD`, `DEVELOPER_ID`, `APPLE_ID`, `TEAM_ID`, and `APP_PASSWORD`; the workflow fails before publishing if signing and notarization are not configured.
 
 ## Download site
 

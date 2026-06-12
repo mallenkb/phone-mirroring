@@ -74,8 +74,18 @@ jobs:
             echo "tag=$TAG"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Require signing and notarization secrets
+        if: ${{ env.HAS_NOTARY_CREDENTIALS != 'true' }}
+        run: |
+          cat <<'MESSAGE' >&2
+          Auto-update releases must be Developer ID signed and notarized.
+          Configure these repository secrets before releasing:
+          DEVELOPER_ID_CERTIFICATE_BASE64, DEVELOPER_ID_CERTIFICATE_PASSWORD,
+          DEVELOPER_ID, APPLE_ID, TEAM_ID, and APP_PASSWORD.
+          MESSAGE
+          exit 1
+
       - name: Import Developer ID certificate
-        if: ${{ env.HAS_DEVELOPER_ID_CERTIFICATE == 'true' }}
         env:
           DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 }}
           DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
@@ -103,11 +113,10 @@ jobs:
         env:
           APP_VERSION: ${{ steps.release.outputs.version }}
           BUILD_NUMBER: ${{ steps.release.outputs.build_number }}
-          SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 != '' && secrets.DEVELOPER_ID || '-' }}
+          SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID }}
         run: scripts/package_app.sh
 
       - name: Notarize app
-        if: ${{ env.HAS_NOTARY_CREDENTIALS == 'true' }}
         env:
           DEVELOPER_ID: ${{ secrets.DEVELOPER_ID }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
