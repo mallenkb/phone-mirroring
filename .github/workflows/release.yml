@@ -1,0 +1,325 @@
+name: Release
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths-ignore:
+      - "README.md"
+      - "RELEASE.md"
+      - "docs/**"
+      - "**/*.md"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the leading v"
+        required: true
+        type: string
+      build_number:
+        description: "Optional CFBundleVersion override"
+        required: false
+        type: string
+      prerelease:
+        description: "Publish as a prerelease"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
+env:
+  APP_NAME: PhoneRelay
+  APP_BUNDLE: dist/PhoneRelay.app
+  DMG_PATH: dist/PhoneRelay.dmg
+  PUBLIC_DOWNLOAD_BASE_URL: https://phonerelay.mallenkb.com/downloads/
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          if [ -d /Applications/Xcode_15.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          else
+            echo "Xcode 15.4 not present; using preinstalled default" >&2
+          fi
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+      - name: Package dry run
+        env:
+          SIGNING_IDENTITY: "-"
+        run: scripts/package_app.sh
+
+      - name: Verify dry-run bundle
+        run: |
+          set -euo pipefail
+          test -d "$APP_BUNDLE"
+          plutil -lint "$APP_BUNDLE/Contents/Info.plist"
+          codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+
+  publish:
+    name: Publish
+    needs: validate
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: macos-14
+    permissions:
+      contents: write
+    env:
+      DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 }}
+      DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+      DEVELOPER_ID: ${{ secrets.DEVELOPER_ID }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      TEAM_ID: ${{ secrets.TEAM_ID }}
+      APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+      SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
+      SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+      WEBSITE_REPO_TOKEN: ${{ secrets.WEBSITE_REPO_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode
+        run: |
+          if [ -d /Applications/Xcode_15.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          else
+            echo "Xcode 15.4 not present; using preinstalled default" >&2
+          fi
+
+      - name: Require release secrets
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in \
+            DEVELOPER_ID_CERTIFICATE_BASE64 \
+            DEVELOPER_ID_CERTIFICATE_PASSWORD \
+            DEVELOPER_ID \
+            APPLE_ID \
+            TEAM_ID \
+            APP_PASSWORD \
+            SPARKLE_PUBLIC_ED_KEY \
+            SPARKLE_PRIVATE_ED_KEY \
+            WEBSITE_REPO_TOKEN
+          do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf 'Release is missing required GitHub secrets:\n' >&2
+            printf '  - %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
+
+      - name: Resolve release metadata
+        id: release
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+
+          plist_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Sources/PhoneRelay/Info.plist)"
+          plist_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Sources/PhoneRelay/Info.plist)"
+
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${INPUT_VERSION:-}"
+          fi
+
+          if ! [[ "$version" =~ ^[0-9]+[.][0-9]+[.][0-9]+([-.][0-9A-Za-z]+)*$ ]]; then
+            echo "Release version must look like 0.1.4. Got: $version" >&2
+            exit 1
+          fi
+
+          if [ "$version" != "$plist_version" ]; then
+            echo "Tag/input version ($version) must match Sources/PhoneRelay/Info.plist ($plist_version)." >&2
+            exit 1
+          fi
+
+          tag="v$version"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ "$GITHUB_REF_NAME" != "$tag" ]; then
+            echo "Tag name ($GITHUB_REF_NAME) must match version ($tag)." >&2
+            exit 1
+          fi
+
+          build_number="${INPUT_BUILD_NUMBER:-$plist_build}"
+
+          {
+            echo "version=$version"
+            echo "build_number=$build_number"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Import Developer ID certificate
+        env:
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          certificate_path="$RUNNER_TEMP/developer-id.p12"
+          keychain_path="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="${KEYCHAIN_PASSWORD:-temporary-keychain-password}"
+
+          printf '%s' "$DEVELOPER_ID_CERTIFICATE_BASE64" | base64 --decode > "$certificate_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" \
+            -P "$DEVELOPER_ID_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$keychain_path"
+          security list-keychain -d user -s "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
+          security find-identity -v -p codesigning "$keychain_path"
+
+      - name: Build signed app bundle
+        env:
+          APP_VERSION: ${{ steps.release.outputs.version }}
+          BUILD_NUMBER: ${{ steps.release.outputs.build_number }}
+          SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID }}
+          SPARKLE_FEED_URL: ${{ env.PUBLIC_DOWNLOAD_BASE_URL }}appcast.xml
+          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
+        run: scripts/package_app.sh
+
+      - name: Verify packaged update settings
+        run: |
+          set -euo pipefail
+          info="$APP_BUNDLE/Contents/Info.plist"
+          actual_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info")"
+          actual_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info")"
+          actual_feed="$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$info")"
+          actual_key="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$info")"
+
+          test "$actual_version" = "${{ steps.release.outputs.version }}"
+          test "$actual_build" = "${{ steps.release.outputs.build_number }}"
+          test "$actual_feed" = "${PUBLIC_DOWNLOAD_BASE_URL}appcast.xml"
+          test "$actual_key" = "$SPARKLE_PUBLIC_ED_KEY"
+
+          codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+
+      - name: Notarize app
+        run: scripts/notarize.sh "$APP_BUNDLE"
+
+      - name: Create DMG
+        run: |
+          set -euo pipefail
+          dmg_root="dist/dmg-root"
+          rm -rf "$dmg_root"
+          rm -f "$DMG_PATH" "$DMG_PATH.sha256"
+          mkdir -p "$dmg_root"
+          cp -R "$APP_BUNDLE" "$dmg_root/PhoneRelay.app"
+          hdiutil create \
+            -volname "$APP_NAME" \
+            -srcfolder "$dmg_root" \
+            -ov \
+            -format UDZO \
+            "$DMG_PATH"
+
+      - name: Notarize DMG
+        run: |
+          set -euo pipefail
+          xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$TEAM_ID" \
+            --password "$APP_PASSWORD" \
+            --wait
+          xcrun stapler staple "$DMG_PATH"
+
+      - name: Checksum DMG
+        run: |
+          set -euo pipefail
+          shasum -a 256 "$DMG_PATH" | tee "$DMG_PATH.sha256"
+
+      - name: Generate Sparkle appcast
+        run: |
+          set -euo pipefail
+          sparkle_bin=".build/artifacts/sparkle/Sparkle/bin"
+          updates_dir="dist/sparkle-updates"
+          mkdir -p "$updates_dir"
+          cp "$DMG_PATH" "$updates_dir/PhoneRelay.dmg"
+
+          printf '%s' "$SPARKLE_PRIVATE_ED_KEY" | "$sparkle_bin/generate_appcast" \
+            --ed-key-file - \
+            --download-url-prefix "$PUBLIC_DOWNLOAD_BASE_URL" \
+            "$updates_dir"
+
+          cp "$updates_dir/appcast.xml" dist/appcast.xml
+          grep -q 'sparkle:edSignature' dist/appcast.xml
+          grep -q "${PUBLIC_DOWNLOAD_BASE_URL}PhoneRelay.dmg" dist/appcast.xml
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhoneRelay-${{ steps.release.outputs.tag }}
+          path: |
+            dist/PhoneRelay.dmg
+            dist/PhoneRelay.dmg.sha256
+            dist/appcast.xml
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          notes="Signed and notarized PhoneRelay $VERSION release for Sparkle auto-updates."
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/PhoneRelay.dmg dist/PhoneRelay.dmg.sha256 dist/appcast.xml --clobber
+          else
+            args=(
+              "$TAG"
+              dist/PhoneRelay.dmg
+              dist/PhoneRelay.dmg.sha256
+              dist/appcast.xml
+              --title "PhoneRelay $VERSION"
+              --notes "$notes"
+            )
+            if [ "${PRERELEASE:-false}" = "true" ]; then
+              args+=(--prerelease)
+            fi
+            gh release create "${args[@]}"
+          fi
+
+      - name: Sync public downloads
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_REPO_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh api repos/mallenkb/phonerelay-website/dispatches \
+            --method POST \
+            --field event_type=phonerelay-release \
+            --raw-field client_payload="{\"tag\":\"$TAG\"}"

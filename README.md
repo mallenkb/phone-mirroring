@@ -67,15 +67,15 @@ APPLE_ID="you@example.com" TEAM_ID="TEAMID" APP_PASSWORD="app-specific-pw" \
 
 Dev builds use `scripts/PhoneRelay.entitlements`; notarized release builds use `scripts/PhoneRelay.release.entitlements` (no hardened-runtime exceptions — `notarize.sh` fails if any leak in). A paid Apple Developer account is required. Keep the bundle identifier stable (`BUNDLE_ID=com.yourdomain.PhoneRelay scripts/build_and_run.sh` when rebranding), because changing it resets macOS privacy authorization for Notification Center and Local Network access.
 
-## Continuous integration
+## Release workflow
 
-`.github/workflows/ci.yml` runs `swift build` and `swift test` on every push and pull request.
+`.github/workflows/release.yml` is the only workflow in this repo. It runs `swift build`, `swift test`, and a package dry run on pull requests and pushes to `main`. When you push a version tag such as `v0.1.4`, it also builds the signed/notarized `PhoneRelay.dmg`, generates the signed Sparkle `appcast.xml`, publishes the GitHub Release, and triggers the public download mirror.
 
-`.github/workflows/auto-update-release.yml` builds the `PhoneRelay.dmg` asset used by Sparkle and publishes it to GitHub Releases with a signed `appcast.xml`. Run it manually as **Auto Update** with a version such as `0.1.2`, or push a tag such as `v0.1.2`. Public auto-update releases require repository secrets for `DEVELOPER_ID_CERTIFICATE_BASE64`, `DEVELOPER_ID_CERTIFICATE_PASSWORD`, `DEVELOPER_ID`, `APPLE_ID`, `TEAM_ID`, `APP_PASSWORD`, `SPARKLE_PUBLIC_ED_KEY`, and `SPARKLE_PRIVATE_ED_KEY`; the workflow fails before publishing if signing, notarization, and Sparkle update signing are not configured. Generate the Sparkle keys with `.build/artifacts/sparkle/Sparkle/bin/generate_keys` after running `swift package resolve`.
+Public releases require these repository secrets: `DEVELOPER_ID_CERTIFICATE_BASE64`, `DEVELOPER_ID_CERTIFICATE_PASSWORD`, `DEVELOPER_ID`, `APPLE_ID`, `TEAM_ID`, `APP_PASSWORD`, `SPARKLE_PUBLIC_ED_KEY`, `SPARKLE_PRIVATE_ED_KEY`, and `WEBSITE_REPO_TOKEN`. Generate Sparkle keys with `.build/artifacts/sparkle/Sparkle/bin/generate_keys` after running `swift package resolve`.
 
 ## Download site
 
-The static download page lives in `docs/` and is deployed by `.github/workflows/pages.yml` through GitHub Pages when Pages is enabled for the repository. During deploy, the workflow reads GitHub's latest release with `GITHUB_TOKEN`, writes `docs/release.json`, and publishes the site artifact. The page reads that metadata file and updates the visible version number, file size, published date, release link, and `.dmg` download link automatically. Publishing a new GitHub release with `PhoneRelay.dmg` and `appcast.xml` assets is enough to update the site link and Sparkle appcast. Private repositories require a GitHub plan that supports private Pages, or the repository must be made public.
+The production download mirror is updated by the release workflow through `WEBSITE_REPO_TOKEN` and the `mallenkb/phonerelay-website` repository dispatch. Sparkle reads the public appcast at `https://phonerelay.mallenkb.com/downloads/appcast.xml`; do not point Sparkle at private GitHub release asset URLs.
 
 To pair, enable Wireless debugging on the Android phone and scan the QR code shown by the app. USB debugging is also supported: connect the phone, authorize the Mac, then use the USB flow. When possible the app promotes the connection to Wi-Fi ADB on port `5555`; `scripts/verify_usb_wifi_handoff.sh` can validate that handoff.
 
