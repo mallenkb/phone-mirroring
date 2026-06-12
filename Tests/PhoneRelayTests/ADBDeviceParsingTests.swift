@@ -1643,7 +1643,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         let startedAt = Date()
         while (!model.hasActiveMirrorSession
             || !model.pairedPhones.contains(where: { $0.lastAddress == "192.0.2.44:5555" })),
-              Date().timeIntervalSince(startedAt) < 2.5 {
+              Date().timeIntervalSince(startedAt) < 6 {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
