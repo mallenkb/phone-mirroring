@@ -34,6 +34,7 @@ jobs:
     env:
       HAS_DEVELOPER_ID_CERTIFICATE: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 != '' }}
       HAS_NOTARY_CREDENTIALS: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 != '' && secrets.DEVELOPER_ID != '' && secrets.APPLE_ID != '' && secrets.TEAM_ID != '' && secrets.APP_PASSWORD != '' }}
+      HAS_SPARKLE_KEYS: ${{ secrets.SPARKLE_PUBLIC_ED_KEY != '' && secrets.SPARKLE_PRIVATE_ED_KEY != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -75,13 +76,14 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Require signing and notarization secrets
-        if: ${{ env.HAS_NOTARY_CREDENTIALS != 'true' }}
+        if: ${{ env.HAS_NOTARY_CREDENTIALS != 'true' || env.HAS_SPARKLE_KEYS != 'true' }}
         run: |
           cat <<'MESSAGE' >&2
-          Auto-update releases must be Developer ID signed and notarized.
+          Auto-update releases must be Developer ID signed, notarized, and Sparkle-signed.
           Configure these repository secrets before releasing:
           DEVELOPER_ID_CERTIFICATE_BASE64, DEVELOPER_ID_CERTIFICATE_PASSWORD,
-          DEVELOPER_ID, APPLE_ID, TEAM_ID, and APP_PASSWORD.
+          DEVELOPER_ID, APPLE_ID, TEAM_ID, APP_PASSWORD,
+          SPARKLE_PUBLIC_ED_KEY, and SPARKLE_PRIVATE_ED_KEY.
           MESSAGE
           exit 1
 
@@ -114,6 +116,7 @@ jobs:
           APP_VERSION: ${{ steps.release.outputs.version }}
           BUILD_NUMBER: ${{ steps.release.outputs.build_number }}
           SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
         run: scripts/package_app.sh
 
       - name: Notarize app
@@ -137,6 +140,22 @@ jobs:
             "dist/PhoneRelay.dmg"
           shasum -a 256 dist/PhoneRelay.dmg | tee dist/PhoneRelay.dmg.sha256
 
+      - name: Generate Sparkle appcast
+        env:
+          SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          SPARKLE_BIN=".build/artifacts/sparkle/Sparkle/bin"
+          UPDATES_DIR="dist/sparkle-updates"
+          mkdir -p "$UPDATES_DIR"
+          cp dist/PhoneRelay.dmg "$UPDATES_DIR/PhoneRelay.dmg"
+          printf '%s' "$SPARKLE_PRIVATE_ED_KEY" | "$SPARKLE_BIN/generate_appcast" \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/" \
+            "$UPDATES_DIR"
+          cp "$UPDATES_DIR/appcast.xml" dist/appcast.xml
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
@@ -144,6 +163,7 @@ jobs:
           path: |
             dist/PhoneRelay.dmg
             dist/PhoneRelay.dmg.sha256
+            dist/appcast.xml
           if-no-files-found: error
 
       - name: Publish GitHub release
@@ -155,15 +175,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          printf -v NOTES 'Auto-update release for PhoneRelay %s.\n\nThe in-app updater reads GitHub latest release and downloads the PhoneRelay.dmg asset.' "$VERSION"
+          printf -v NOTES 'Auto-update release for PhoneRelay %s.\n\nThe in-app updater uses Sparkle, reads appcast.xml, and downloads the PhoneRelay.dmg asset.' "$VERSION"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/PhoneRelay.dmg dist/PhoneRelay.dmg.sha256 --clobber
+            gh release upload "$TAG" dist/PhoneRelay.dmg dist/PhoneRelay.dmg.sha256 dist/appcast.xml --clobber
           else
             args=(
               "$TAG"
               dist/PhoneRelay.dmg
               dist/PhoneRelay.dmg.sha256
+              dist/appcast.xml
               --title "PhoneRelay $VERSION"
               --notes "$NOTES"
             )
@@ -172,3 +193,20 @@ jobs:
             fi
             gh release create "${args[@]}"
           fi
+
+      - name: Trigger website download sync
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_REPO_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "WEBSITE_REPO_TOKEN is required to update the website download mirror." >&2
+            exit 1
+          fi
+
+          gh api repos/mallenkb/phonerelay-website/dispatches \
+            --method POST \
+            --field event_type=phonerelay-release \
+            --raw-field client_payload="{\"tag\":\"$TAG\"}"
