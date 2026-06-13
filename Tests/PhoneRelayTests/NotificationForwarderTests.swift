@@ -68,8 +68,8 @@ final class NotificationForwarderTests: XCTestCase {
         ))
     }
 
-    func testNotificationForwardingDefaultsOnWhenUnset() {
-        XCTAssertTrue(AppModel.defaultNotificationForwardingEnabled(storedValue: nil))
+    func testNotificationForwardingDefaultsOffWhenUnset() {
+        XCTAssertFalse(AppModel.defaultNotificationForwardingEnabled(storedValue: nil))
     }
 
     @MainActor
@@ -122,7 +122,7 @@ final class NotificationForwarderTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 50_000_000)
 
         XCTAssertEqual(requestCount, 1)
-        XCTAssertTrue(openedSettings)
+        XCTAssertFalse(openedSettings)
         XCTAssertFalse(model.notificationForwardingEnabled)
         XCTAssertTrue(model.notificationForwardingPermissionDenied)
         XCTAssertFalse(defaults.bool(forKey: AppModel.notificationForwardingDefaultsKey))

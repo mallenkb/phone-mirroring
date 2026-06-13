@@ -12,7 +12,7 @@ Native SwiftUI macOS prototype for a local-first Android mirroring client.
 - Native in-process mirroring backed by the bundled `scrcpy-server` artifact
 - Adjustable mirroring quality (resolution / bitrate / frame-rate) in Settings
 - Drag-and-drop onto the mirror to install `.apk`s or push files to the phone
-- Screenshot, screen recording, and Android notification forwarding (on by default, auto-disabled if macOS notification permission is denied; toggle in Settings)
+- Screenshot, screen recording, and optional Android notification forwarding (off by default; enable it in Settings or onboarding)
 - Dismissible in-app error banner (with **Open Log**) so failures aren't silent
 - Keyboard-shortcuts reference under **Help ▸ Keyboard Shortcuts**
 

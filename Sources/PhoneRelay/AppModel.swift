@@ -30,8 +30,10 @@ final class AppModel: ObservableObject {
     nonisolated static let localNetworkPermissionReason =
         "Allow Local Network so PhoneRelay can find your phone on Wi-Fi for wireless pairing, USB-to-Wi-Fi handoff, and automatic reconnect."
     nonisolated static let notificationPermissionReason =
-        "Allow notifications so PhoneRelay can show all unread notifications from your device on this Mac."
+        "Turn on notifications if you want PhoneRelay to show unread notifications from your device on this Mac."
     nonisolated static let notificationForwardingDefaultsKey = "MirrorBehavior.notificationForwardingEnabled"
+    nonisolated static let privacyPolicyURL = URL(string: "https://mallenkb.github.io/phone-mirroring/privacy.html")!
+    nonisolated static let supportURL = URL(string: "https://mallenkb.github.io/phone-mirroring/support.html")!
     nonisolated static var canUseUserNotifications: Bool {
         Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app"
     }
@@ -41,7 +43,7 @@ final class AppModel: ObservableObject {
         URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!
 
     nonisolated static func defaultNotificationForwardingEnabled(storedValue: Any?) -> Bool {
-        (storedValue as? Bool) ?? true
+        (storedValue as? Bool) ?? false
     }
 
     nonisolated static func canCompleteFirstRunOnboarding(
@@ -83,8 +85,8 @@ final class AppModel: ObservableObject {
         }
     }
     /// Mirrors Android notifications into macOS Notification Center by polling
-    /// `dumpsys notification` over adb — no companion app on the phone. On by
-    /// default, but disabled automatically if macOS notification permission is
+    /// `dumpsys notification` over adb — no companion app on the phone. Off by
+    /// default, and disabled automatically if macOS notification permission is
     /// denied.
     @Published var notificationForwardingEnabled: Bool =
         AppModel.defaultNotificationForwardingEnabled(
@@ -605,7 +607,6 @@ final class AppModel: ObservableObject {
                     Logger.log("Notification authorization denied; disabling notification forwarding.")
                     self.notificationForwardingPermissionDenied = true
                     self.notificationPermissionGrantedForOnboarding = false
-                    self.notificationSettingsOpener()
                     if self.notificationForwardingEnabled {
                         self.notificationForwardingEnabled = false
                     } else {
@@ -3919,34 +3920,8 @@ final class AppModel: ObservableObject {
         let serial = selectedDevice.adbSerial
         presentCaptureCue(.screenshot)
         Task {
-            let result = await Task.detached { () -> Result<URL, ScreenshotError> in
-                guard let adbPath = Tooling.toolPath(named: "adb") else {
-                    return .failure(.adbMissing)
-                }
-                let process = Process()
-                let pipe = Pipe()
-                process.executableURL = URL(fileURLWithPath: adbPath)
-                process.arguments = Self.adbDeviceArguments(serial: serial)
-                    + ["exec-out", "screencap", "-p"]
-                process.standardOutput = pipe
-                process.standardError = Pipe()
-                do {
-                    try process.run()
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    process.waitUntilExit()
-                    guard !data.isEmpty else {
-                        return .failure(.emptyOutput)
-                    }
-                    let directory = try Self.mediaOutputDirectory()
-                    let url = directory.appendingPathComponent(Self.mediaFilename(
-                        kind: "Screenshot",
-                        extension: "png"
-                    ))
-                    try data.write(to: url)
-                    return .success(url)
-                } catch {
-                    return .failure(.runtime(error.localizedDescription))
-                }
+            let result = await Task.detached { () -> Result<URL, MediaCaptureService.ScreenshotError> in
+                MediaCaptureService.captureScreenshot(serial: serial)
             }.value
 
             switch result {
@@ -3957,17 +3932,11 @@ final class AppModel: ObservableObject {
                 self.reportError("Screenshot failed", "adb wasn’t found. Install Android platform-tools and try again.")
             case .failure(.emptyOutput):
                 self.reportError("Screenshot failed", "The phone returned an empty image. Make sure the screen is on and try again.")
-            case .failure(.runtime(let message)):
+            case .failure(.commandFailed(let message)):
                 Logger.log("Screenshot failed: \(message)")
                 self.reportError("Screenshot failed", Self.mirrorFailureMessage(for: NSError(domain: "screenshot", code: 0, userInfo: [NSLocalizedDescriptionKey: message])))
             }
         }
-    }
-
-    private enum ScreenshotError: Error {
-        case adbMissing
-        case emptyOutput
-        case runtime(String)
     }
 
     func toggleScreenRecording() {
@@ -4027,8 +3996,8 @@ final class AppModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             let result = await Task.detached { () -> Result<URL, RecordingError> in
                 do {
-                    let directory = try Self.mediaOutputDirectory()
-                    let url = directory.appendingPathComponent(Self.mediaFilename(
+                    let directory = try MediaCaptureService.outputDirectory()
+                    let url = directory.appendingPathComponent(MediaCaptureService.filename(
                         kind: "Screen-Recording",
                         extension: "mp4"
                     ))
@@ -4102,20 +4071,6 @@ final class AppModel: ObservableObject {
     nonisolated private static func adbDeviceArguments(serial: String?) -> [String] {
         guard let serial, !serial.isEmpty else { return [] }
         return ["-s", serial]
-    }
-
-    nonisolated private static func mediaOutputDirectory() throws -> URL {
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Desktop", isDirectory: true)
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
-    }
-
-    nonisolated private static func mediaFilename(kind: String, extension fileExtension: String) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        return "Android-Mirroring-\(kind)_\(formatter.string(from: Date())).\(fileExtension)"
     }
 
     nonisolated static func oneLine(_ text: String) -> String {

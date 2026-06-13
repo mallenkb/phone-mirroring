@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PhoneRelay Privacy Policy</title>
+  <meta name="description" content="Privacy policy for PhoneRelay, a local-first Android mirroring app for macOS.">
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8f6;
+      --surface: #ffffff;
+      --text: #1b2428;
+      --muted: #5f6c70;
+      --line: #dce5e5;
+      --accent: #0e7490;
+      --accent-dark: #155e75;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    a { color: var(--accent-dark); }
+
+    .wrap {
+      width: min(920px, calc(100% - 40px));
+      margin: 0 auto;
+    }
+
+    nav {
+      border-bottom: 1px solid var(--line);
+      background: rgba(247, 248, 246, 0.92);
+      position: sticky;
+      top: 0;
+    }
+
+    .nav-inner {
+      min-height: 62px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .brand {
+      font-weight: 700;
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 16px;
+      font-size: 14px;
+    }
+
+    .nav-links a {
+      color: var(--muted);
+      text-decoration: none;
+    }
+
+    header {
+      padding: 58px 0 34px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent-dark);
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(36px, 6vw, 50px);
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 720px;
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    main {
+      padding: 28px 0 54px;
+    }
+
+    section {
+      padding: 28px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    section:last-child { border-bottom: 0; }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 28px;
+      line-height: 1.22;
+      letter-spacing: 0;
+    }
+
+    p { margin: 0 0 14px; }
+
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .card {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .card strong {
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    .card p {
+      color: var(--muted);
+      margin: 0;
+    }
+
+    ul {
+      margin: 14px 0 0;
+      padding-left: 20px;
+      color: var(--muted);
+    }
+
+    li + li { margin-top: 8px; }
+
+    footer {
+      padding: 26px 0 38px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @media (max-width: 680px) {
+      .wrap { width: min(100% - 28px, 920px); }
+      .nav-inner { align-items: flex-start; flex-direction: column; padding: 14px 0; }
+      .card-grid { grid-template-columns: 1fr; }
+      header { padding-top: 42px; }
+      .lead { font-size: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="wrap nav-inner">
+      <a class="brand" href="index.html">PhoneRelay</a>
+      <div class="nav-links">
+        <a href="index.html">Download</a>
+        <a href="support.html">Support</a>
+        <a href="https://github.com/mallenkb/phone-mirroring">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <header>
+    <div class="wrap">
+      <p class="eyebrow">Privacy Policy</p>
+      <h1>PhoneRelay keeps mirroring local to your Mac and Android device.</h1>
+      <p class="lead">This policy explains what PhoneRelay accesses, what it stores, and what it does not collect. Last updated: June 13, 2026.</p>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section>
+      <h2>Data Collection</h2>
+      <p>PhoneRelay does not run an analytics service, advertising SDK, tracking SDK, or hosted user account system. The app does not sell personal information.</p>
+      <div class="card-grid">
+        <article class="card">
+          <strong>Screen mirroring</strong>
+          <p>Video frames are used locally to show your Android screen in the Mac app. They are not uploaded by PhoneRelay.</p>
+        </article>
+        <article class="card">
+          <strong>Notifications</strong>
+          <p>Notification forwarding is optional and off by default. If enabled, PhoneRelay reads Android notification text through adb and posts local macOS notifications.</p>
+        </article>
+        <article class="card">
+          <strong>Screenshots and recordings</strong>
+          <p>Captures are saved to your Mac's Downloads folder when you use those controls. PhoneRelay does not send those files to a server.</p>
+        </article>
+        <article class="card">
+          <strong>Device metadata</strong>
+          <p>The app may store local pairing details, device names, connection state, and preferences in macOS app storage so reconnects work.</p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Permissions</h2>
+      <ul>
+        <li><strong>Local Network:</strong> used to discover and reconnect to Android devices on Wi-Fi.</li>
+        <li><strong>Notifications:</strong> used only if you opt in to showing Android notifications on this Mac.</li>
+        <li><strong>USB:</strong> used for adb communication with connected Android devices.</li>
+        <li><strong>Downloads:</strong> used to save screenshots and screen recordings you create.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Support and Contact</h2>
+      <p>For privacy questions or support requests, use the support page or open an issue in the public GitHub repository.</p>
+      <p><a href="support.html">Open support page</a></p>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">PhoneRelay privacy policy for the macOS app.</div>
+  </footer>
+</body>
+</html>

@@ -33,6 +33,28 @@ jobs:
       - name: Test
         run: swift test
 
+      - name: Build App Store wrapper
+        run: |
+          xcodebuild \
+            -project App/PhoneRelay.xcodeproj \
+            -scheme PhoneRelayApp \
+            -configuration Release \
+            -derivedDataPath .build/XcodeDerivedData \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            DEVELOPMENT_TEAM= \
+            build
+
+      - name: Verify App Store wrapper entitlements
+        run: |
+          APP=".build/XcodeDerivedData/Build/Products/Release/PhoneRelay.app"
+          codesign -d --entitlements :- "$APP" > entitlements.plist 2>/dev/null
+          /usr/libexec/PlistBuddy -c "Print :com.apple.security.app-sandbox" entitlements.plist | grep -qx true
+          /usr/libexec/PlistBuddy -c "Print :com.apple.security.files.downloads.read-write" entitlements.plist | grep -qx true
+          codesign -d --entitlements :- "$APP/Contents/Resources/bin/adb" > adb-entitlements.plist 2>/dev/null
+          /usr/libexec/PlistBuddy -c "Print :com.apple.security.app-sandbox" adb-entitlements.plist | grep -qx true
+          /usr/libexec/PlistBuddy -c "Print :com.apple.security.inherit" adb-entitlements.plist | grep -qx true
+
       # Catches packaging regressions (missing scrcpy-server, renamed resource
       # bundle, broken codesign invocations) that swift test can't see.
       - name: Package app (release dry run)

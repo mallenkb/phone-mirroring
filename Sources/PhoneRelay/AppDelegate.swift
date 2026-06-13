@@ -444,6 +444,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                 keyEquivalent: ""
             )
         )
+        helpMenu.addItem(
+            NSMenuItem(
+                title: "Privacy Policy",
+                action: #selector(openPrivacyPolicy(_:)),
+                keyEquivalent: ""
+            )
+        )
+        helpMenu.addItem(
+            NSMenuItem(
+                title: "Support",
+                action: #selector(openSupport(_:)),
+                keyEquivalent: ""
+            )
+        )
         helpMenu.addItem(.separator())
         helpMenu.addItem(
             NSMenuItem(
@@ -647,6 +661,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
     @objc private func openLogFile(_ sender: Any?) {
         model.revealLogFile()
+    }
+
+    @objc private func openPrivacyPolicy(_ sender: Any?) {
+        NSWorkspace.shared.open(AppModel.privacyPolicyURL)
+    }
+
+    @objc private func openSupport(_ sender: Any?) {
+        NSWorkspace.shared.open(AppModel.supportURL)
     }
 
     @objc private func showThirdPartyNotices(_ sender: Any?) {
