@@ -63,6 +63,39 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertFalse(AppModel.adbConnectSucceeded("failed to connect to '192.0.2.57:5555': No route to host"))
     }
 
+    @MainActor
+    func testMirrorFailureMessageTreatsADBPushEOFAsDeviceOffline() {
+        let error = MirrorSession.SessionError.start("""
+        adb push failed: /Applications/PhoneRelay.app/Contents/Resources/scrcpy-server: 1 file pushed, 0 skipped.
+        adb: error: failed to read copy response: EOF
+        """)
+
+        XCTAssertEqual(
+            AppModel.mirrorFailureMessage(for: error),
+            "The phone went offline. Reconnect it (USB or Wi-Fi) and try again."
+        )
+    }
+
+    @MainActor
+    func testMirrorFailureMessageKeepsMissingServerArtifactAction() {
+        XCTAssertEqual(
+            AppModel.mirrorFailureMessage(for: ScrcpyServerHost.HostError.missingServerArtifact),
+            "The mirroring engine file is missing from the app. Reinstall PhoneRelay."
+        )
+    }
+
+    func testTransientMirrorLaunchFailuresKeepRetryingWithoutBadge() {
+        XCTAssertTrue(AppModel.shouldKeepRetryingMirrorLaunchFailure("The phone went offline. Reconnect it (USB or Wi-Fi) and try again."))
+        XCTAssertTrue(AppModel.shouldKeepRetryingMirrorLaunchFailure("Could not start mirror: adb reverse failed: adb: error: closed"))
+        XCTAssertTrue(AppModel.shouldKeepRetryingMirrorLaunchFailure("failed to connect to '192.168.68.57:5555': Connection refused"))
+        XCTAssertTrue(AppModel.shouldKeepRetryingMirrorLaunchFailure("The phone didn’t respond in time. Check the cable or Wi-Fi connection and try again."))
+    }
+
+    func testActionableMirrorLaunchFailuresStillSurface() {
+        XCTAssertFalse(AppModel.shouldKeepRetryingMirrorLaunchFailure("This Mac isn't authorized on the phone yet. Unlock the phone and tap Allow."))
+        XCTAssertFalse(AppModel.shouldKeepRetryingMirrorLaunchFailure("The mirroring engine file is missing from the app. Reinstall PhoneRelay."))
+    }
+
     func testRecordsByMostRecentIncludesUSBAndWireless() {
         let olderWireless = PairedPhoneRecord(
             id: "wifi-phone",
@@ -149,6 +182,33 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(
             AppModel.rememberedAuthorizedDevice(for: record, in: [usb]),
             usb
+        )
+    }
+
+    func testRememberedAuthorizedDevicePrefersWirelessModelMatchOverUSB() {
+        let record = PairedPhoneRecord(
+            id: "adb-RFCT10ZLTAJ",
+            displayName: "SM-S906B",
+            lastAddress: "Android-3.local:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let usb = AuthorizedADBDevice(
+            serial: "RFCT10ZLTAJ",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: true
+        )
+        let wireless = AuthorizedADBDevice(
+            serial: "192.168.68.57:5555",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: false
+        )
+
+        XCTAssertEqual(
+            AppModel.rememberedAuthorizedDevice(for: record, in: [usb, wireless]),
+            wireless
         )
     }
 
@@ -488,6 +548,29 @@ final class ADBDeviceParsingTests: XCTestCase {
         let selected = AppModel.liveSelectedOrRememberedDevice(
             selectedSerial: "RFCT10ZLTAJ",
             pairedPhones: [record],
+            authorizedDevices: [usbDevice, wirelessDevice]
+        )
+
+        XCTAssertEqual(selected, wirelessDevice)
+    }
+
+    func testLiveSelectedUSBPrefersAuthorizedWirelessTwinWithoutSavedRecord() {
+        let usbDevice = AuthorizedADBDevice(
+            serial: "RFCT10ZLTAJ",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: true
+        )
+        let wirelessDevice = AuthorizedADBDevice(
+            serial: "192.168.68.57:5555",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: false
+        )
+
+        let selected = AppModel.liveSelectedOrRememberedDevice(
+            selectedSerial: "RFCT10ZLTAJ",
+            pairedPhones: [],
             authorizedDevices: [usbDevice, wirelessDevice]
         )
 
@@ -1125,8 +1208,42 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
     }
 
-    func testFreshAuthorizedUSBCanAutoStartWithoutSavedDevice() {
+    func testAuthorizedUSBStartsImmediatelyEvenWhenWirelessIsAuthorized() {
+        let usbDevice = AuthorizedADBDevice(
+            serial: "RFCT10ZLTAJ",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: true
+        )
+        let wirelessDevice = AuthorizedADBDevice(
+            serial: "192.168.68.57:5555",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: false
+        )
+
         XCTAssertTrue(
+            AppModel.shouldPrioritizeUSBHandoff(
+                authorizedDevices: [usbDevice, wirelessDevice],
+                lastAttemptedSerial: nil,
+                preferUSBMirroring: false,
+                isMirroring: false,
+                isPairing: false
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldRunPresenceAutoConnect(
+                authorizedDevices: [usbDevice, wirelessDevice],
+                lastAttemptedSerial: nil,
+                preferUSBMirroring: false,
+                isMirroring: false,
+                isPairing: false
+            )
+        )
+    }
+
+    func testFreshAuthorizedUSBDoesNotAutoStartDuringExplicitSetup() {
+        XCTAssertFalse(
             AppModel.shouldAutoStartAuthorizedUSB(
                 hasSavedDevices: false,
                 explicitDeviceSetupRequired: true

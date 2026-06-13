@@ -51,8 +51,10 @@ final class MirrorSession {
     private var streamHeight: UInt32 = 0
     private var isStopping = false
     private var didStop = false
+    private var didNotifyReadyToDisplay = false
 
     var onSessionEnded: ((NSRect?) -> Void)?
+    var onReadyToDisplay: (() -> Void)?
 
     init(model: AppModel, serial: String?, launchFrame: NSRect? = nil) {
         self.model = model
@@ -139,13 +141,6 @@ final class MirrorSession {
             try stream.start()
             self.stream = stream
 
-            if let model {
-                let controller = MirrorContentWindowController(model: model, session: self, launchFrame: launchFrame)
-                controller.show()
-                windowController = controller
-                scheduleAutomaticScreenOffIfNeeded()
-            }
-
             let onExit: (Int32, String) -> Void = { [weak self] code, output in
                 Task { @MainActor in
                     Logger.log("scrcpy-server exited code=\(code) output=\(output.prefix(400))")
@@ -196,6 +191,7 @@ final class MirrorSession {
         let finalWindowFrame = windowController?.window?.frame
         self.serverHost = nil
         onSessionEnded = nil
+        onReadyToDisplay = nil
 
         clipboardBridge?.stop()
         clipboardBridge = nil
@@ -432,9 +428,22 @@ final class MirrorSession {
         streamWidth = header.width
         streamHeight = header.height
         Logger.log("MirrorSession header: device=\(header.deviceName) codec=\(String(format: "0x%08x", header.codecID)) size=\(header.width)x\(header.height)")
+        if windowController == nil, let model {
+            let controller = MirrorContentWindowController(model: model, session: self, launchFrame: launchFrame)
+            windowController = controller
+            scheduleAutomaticScreenOffIfNeeded()
+        }
         windowController?.renderView.setLoadingDeviceName(header.deviceName)
+        windowController?.show()
         windowController?.setStreamSize(width: header.width, height: header.height)
         controlChannel?.updateDeviceSize(width: header.width, height: header.height)
+        notifyReadyToDisplay()
+    }
+
+    private func notifyReadyToDisplay() {
+        guard !didNotifyReadyToDisplay else { return }
+        didNotifyReadyToDisplay = true
+        onReadyToDisplay?()
     }
 
     private func handleResize(width: UInt32, height: UInt32) {

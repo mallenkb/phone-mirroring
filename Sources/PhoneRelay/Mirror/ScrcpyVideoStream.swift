@@ -205,6 +205,7 @@ final class ScrcpyVideoStream {
                 handler(data)
             }
             if isComplete {
+                self.failStream(Self.streamEndedMessage)
                 return
             }
             self.readMore(on: connection, handler: handler)
@@ -365,6 +366,8 @@ final class ScrcpyVideoStream {
         }
         return UInt64(width) * UInt64(height) <= maxStreamPixels
     }
+
+    static let streamEndedMessage = "scrcpy stream ended"
 
     private func failStream(_ message: String) {
         videoBuffer.removeAll()

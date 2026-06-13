@@ -270,6 +270,18 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
+    func testMirrorLoadingTitleUsesFriendlyGenericPhoneName() {
+        XCTAssertEqual(AppModel.mirrorLoadingStatusText(name: "Android device"), "Connecting to your")
+        XCTAssertEqual(AppModel.mirrorLoadingDeviceTitle(name: "Android device"), "Android phone")
+        XCTAssertEqual(AppModel.mirrorLoadingDeviceTitle(name: "unknown"), "Android phone")
+    }
+
+    func testMirrorLoadingTitleKeepsResolvedDeviceName() {
+        XCTAssertEqual(AppModel.mirrorLoadingStatusText(name: "SM-S906B"), "Connecting to your")
+        XCTAssertEqual(AppModel.mirrorLoadingDeviceTitle(name: "SM-S906B"), "SM-S906B")
+        XCTAssertEqual(AppModel.mirrorLoadingDeviceTitle(name: "Work phone"), "Work phone")
+    }
+
     // MARK: - Unified auto-connecting indicator
 
     func testSavedPhonePresentWithoutReconnectWorkStaysOffline() {
@@ -305,13 +317,24 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
-    func testOnlineDeviceIsNotAutoConnecting() {
-        XCTAssertFalse(
+    func testOnlineDeviceStillShowsConnectingWhileConnectWorkIsActive() {
+        XCTAssertTrue(
             AppModel.shouldShowAutoConnecting(
                 hasSavedDevice: true,
                 isOnline: true,
                 isMirroring: false,
                 hasActiveReconnectWork: true
+            )
+        )
+    }
+
+    func testOnlineDeviceIsNotAutoConnectingWhenIdle() {
+        XCTAssertFalse(
+            AppModel.shouldShowAutoConnecting(
+                hasSavedDevice: true,
+                isOnline: true,
+                isMirroring: false,
+                hasActiveReconnectWork: false
             )
         )
     }
@@ -533,6 +556,27 @@ final class MirrorReconnectBackoffTests: XCTestCase {
             AppModel.shouldShowReconnectSurface(
                 isRecoveringConnection: false,
                 isAwaitingReconnect: true
+            )
+        )
+    }
+
+    func testMirrorLaunchKeepsConnectionWindowVisibleUntilReadyToDisplay() {
+        XCTAssertTrue(
+            AppModel.shouldKeepConnectionWindowVisibleDuringMirrorLaunch(
+                isRecoveringConnection: true,
+                isAwaitingReconnect: false
+            )
+        )
+        XCTAssertTrue(
+            AppModel.shouldKeepConnectionWindowVisibleDuringMirrorLaunch(
+                isRecoveringConnection: false,
+                isAwaitingReconnect: true
+            )
+        )
+        XCTAssertTrue(
+            AppModel.shouldKeepConnectionWindowVisibleDuringMirrorLaunch(
+                isRecoveringConnection: false,
+                isAwaitingReconnect: false
             )
         )
     }

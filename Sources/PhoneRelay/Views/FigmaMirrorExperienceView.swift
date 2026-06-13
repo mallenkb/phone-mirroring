@@ -26,15 +26,6 @@ struct FigmaMirrorExperienceView: View {
     private let accent = onboardingAccentCyan
     private let qrRefreshTimer = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
     private let errorPillDuration: UInt64 = 5_000_000_000
-    private var frameCornerRadius: CGFloat {
-        MirrorContentWindowController.onboardingCornerRadius()
-    }
-    private var shouldShowMirrorLoading: Bool {
-        AppModel.shouldShowReconnectSurface(
-            isRecoveringConnection: model.isRecoveringConnection,
-            isAwaitingReconnect: model.isAwaitingReconnect
-        )
-    }
 
     var body: some View {
         ZStack {
@@ -49,11 +40,7 @@ struct FigmaMirrorExperienceView: View {
             .frame(width: referenceWidth, height: referenceHeight)
             .fixedSize()
         .onAppear {
-            if shouldShowMirrorLoading {
-                model.stopQRCodePairingSession()
-            } else {
-                model.ensureQRCodePairingSession()
-            }
+            model.ensureQRCodePairingSession()
         }
         .onReceive(qrRefreshTimer) { _ in
             guard !isConnecting else { return }
@@ -67,24 +54,19 @@ struct FigmaMirrorExperienceView: View {
     @ViewBuilder
     private var designSurface: some View {
         FigmaPhoneFrame {
-            connectionContent
-        }
-    }
-
-    @ViewBuilder
-    private var connectionContent: some View {
-        if shouldShowMirrorLoading {
-            reconnectingContent
-        } else {
-            onboardingContent
+            if model.shouldShowReconnectLoadingSurface {
+                reconnectingContent
+            } else {
+                onboardingContent
+            }
         }
     }
 
     private var reconnectingContent: some View {
         MirrorLoadingSurface(
-            statusText: "Reconnecting to",
-            deviceName: model.mirrorWindowDeviceTitle,
-            cornerRadius: frameCornerRadius,
+            statusText: "Reconnecting to your",
+            deviceName: model.mirrorLoadingDeviceTitle,
+            cornerRadius: MirrorContentWindowController.onboardingCornerRadius(),
             repeatsProgress: true
         )
     }

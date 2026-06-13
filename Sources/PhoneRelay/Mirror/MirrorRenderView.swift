@@ -152,6 +152,11 @@ final class MirrorRenderView: NSView {
         loadingView.deviceName = deviceName
     }
 
+    func setLoadingText(statusText: String, deviceName: String) {
+        loadingView.statusText = statusText
+        loadingView.deviceName = deviceName
+    }
+
     var streamAspect: CGSize { aspect }
 
     func updateVideoLayerFrame() {

@@ -282,7 +282,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertFalse(source.contains("RadialGradient"))
     }
 
-    func testReconnectSurfaceUsesSanitizedDeviceTitle() throws {
+    func testConnectionSetupOnlyUsesLoadingSurfaceForReconnect() throws {
         let testURL = URL(fileURLWithPath: #filePath)
         let packageRoot = testURL
             .deletingLastPathComponent()
@@ -292,7 +292,11 @@ final class MirrorWindowChromeTests: XCTestCase {
             .appendingPathComponent("Sources/PhoneRelay/Views/FigmaMirrorExperienceView.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("deviceName: model.mirrorWindowDeviceTitle"))
+        XCTAssertTrue(source.contains("if model.shouldShowReconnectLoadingSurface"))
+        XCTAssertTrue(source.contains("MirrorLoadingSurface("))
+        XCTAssertTrue(source.contains("statusText: \"Reconnecting to your\""))
+        XCTAssertTrue(source.contains("deviceName: model.mirrorLoadingDeviceTitle"))
+        XCTAssertFalse(source.contains("shouldShowMirrorLoading"))
         XCTAssertFalse(source.contains("deviceName: model.selectedDevice.name"))
     }
 

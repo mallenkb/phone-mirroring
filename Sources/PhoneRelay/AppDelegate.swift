@@ -53,7 +53,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         let shouldShowFirstRunIntro = !UserDefaults.standard.bool(forKey: "hasSeenFirstTimeUserOnboarding")
             && model.pairedPhones.isEmpty
         let initialWindowSize = AppModel.onboardingWindowSize
-        let window = NSWindow(
+        let window = KeyableBorderlessWindow(
             contentRect: NSRect(origin: .zero, size: initialWindowSize),
             styleMask: [.borderless],
             backing: .buffered,
@@ -79,17 +79,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             model.setFirstRunOnboardingActive(true)
             showFirstRunWindow()
             window.orderOut(nil)
-        } else if launchedInBackground {
-            window.orderFront(nil)
         } else {
             window.makeKeyAndOrderFront(nil)
         }
 
         installMainMenu()
         installKeyboardScaling()
-        if !launchedInBackground {
-            NSApp.activate(ignoringOtherApps: true)
-        }
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: - Single-instance guard
@@ -183,7 +179,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                 Logger.log("Another PhoneRelay instance (pid \(blocker.pid)) is already running; terminating this duplicate copy.")
                 NSWorkspace.shared.runningApplications
                     .first { $0.processIdentifier == blocker.pid }?
-                    .activate(options: [])
+                    .activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
                 NSApp.terminate(nil)
                 return true
             }
@@ -550,11 +546,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         hosting.view.layoutSubtreeIfNeeded()
         window.setContentSize(hosting.view.fittingSize)
         centerOnActiveScreen(window)
-        if launchedInBackground {
-            window.orderFront(nil)
-        } else {
-            window.makeKeyAndOrderFront(nil)
-        }
+        window.makeKeyAndOrderFront(nil)
         recenterAfterLayout(window)
         firstRunWindow = window
     }

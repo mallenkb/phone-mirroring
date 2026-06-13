@@ -22,13 +22,14 @@ RESOURCE_BUNDLE="$ROOT_DIR/.build/debug/PhoneRelay_PhoneRelay.bundle"
 
 VERIFY=false
 LOGS=false
-FOREGROUND=false
+BACKGROUND=false
 
 for arg in "$@"; do
   case "$arg" in
     --verify) VERIFY=true ;;
     --logs) LOGS=true ;;
-    --foreground) FOREGROUND=true ;;
+    --foreground) BACKGROUND=false ;;
+    --background) BACKGROUND=true ;;
     *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -197,13 +198,13 @@ if command -v codesign >/dev/null 2>&1; then
   codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 fi
 
-# Launch in the background by default so scripted rebuild loops never steal
-# focus from whatever the user is doing; pass --foreground for the old
-# behavior. The flag tells the app to skip its own launch activation.
-if "$FOREGROUND"; then
-  /usr/bin/open -n "$APP_BUNDLE"
-else
+# Launch in the foreground by default so starting PhoneRelay always brings the
+# app forward. Pass --background only for scripted rebuild loops that should not
+# steal focus.
+if "$BACKGROUND"; then
   /usr/bin/open -n -g "$APP_BUNDLE" --args --launched-in-background
+else
+  /usr/bin/open -n "$APP_BUNDLE"
 fi
 
 if "$VERIFY"; then

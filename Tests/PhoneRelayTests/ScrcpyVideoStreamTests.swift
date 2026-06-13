@@ -72,4 +72,8 @@ final class ScrcpyVideoStreamTests: XCTestCase {
         XCTAssertFalse(ScrcpyVideoStream.isValidStreamSize(width: 20_000, height: 1080))
         XCTAssertFalse(ScrcpyVideoStream.isValidStreamSize(width: 16_384, height: 16_384))
     }
+
+    func testStreamEndedMessageMarksClosedSocketAsDisconnect() {
+        XCTAssertEqual(ScrcpyVideoStream.streamEndedMessage, "scrcpy stream ended")
+    }
 }

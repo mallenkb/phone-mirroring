@@ -611,7 +611,10 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
         renderView.translatesAutoresizingMaskIntoConstraints = false
         renderView.cornerRadius = Self.renderCornerRadius
-        renderView.setLoadingDeviceName(model.mirrorWindowDeviceTitle)
+        renderView.setLoadingText(
+            statusText: model.mirrorLoadingStatusText,
+            deviceName: model.mirrorLoadingDeviceTitle
+        )
         rootView.addSubview(renderView)
 
         chromeBar.configure(
@@ -690,7 +693,10 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         window?.title = deviceName
         toolbarWindow?.title = deviceName
         chromeBar.setDeviceName(deviceName)
-        renderView.setLoadingDeviceName(deviceName)
+        renderView.setLoadingText(
+            statusText: model.mirrorLoadingStatusText,
+            deviceName: model.mirrorLoadingDeviceTitle
+        )
     }
 
     // MARK: - Hover
