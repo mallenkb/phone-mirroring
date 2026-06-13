@@ -86,7 +86,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     }
 
     @MainActor
-    func testUnsavedLiveADBPresenceDoesNotCreateOnlineDevicePill() {
+    func testUnsavedAuthorizedUSBPresenceCreatesOnlineDevicePill() {
         let defaults = UserDefaults.standard
         let previousExplicitSetup = defaults.object(forKey: explicitDeviceSetupRequiredDefaultsKey)
         defer {
@@ -106,9 +106,10 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         """)
 
         XCTAssertTrue(model.pairedPhones.isEmpty)
-        XCTAssertEqual(model.selectedDevice, .demo)
-        XCTAssertFalse(model.isSelectedDeviceOnline)
-        XCTAssertEqual(model.connectionDeviceLabel, "Android Device")
+        XCTAssertEqual(model.selectedDevice.adbSerial, "RFCT10ZLTAJ")
+        XCTAssertEqual(model.selectedDevice.network, "USB debugging")
+        XCTAssertTrue(model.isSelectedDeviceOnline)
+        XCTAssertEqual(model.connectionStatusText, "Online")
     }
 
     func testClearAllDisconnectTargetsIncludeOnlyWirelessADBTransports() {

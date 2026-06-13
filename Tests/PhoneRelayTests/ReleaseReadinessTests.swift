@@ -70,10 +70,22 @@ final class ReleaseReadinessTests: XCTestCase {
     func testReviewURLsAreDeclaredForInAppAccess() throws {
         XCTAssertEqual(AppModel.privacyPolicyURL.scheme, "https")
         XCTAssertEqual(AppModel.supportURL.scheme, "https")
+        XCTAssertEqual(AppModel.releaseMetadataURL.scheme, "https")
+        XCTAssertEqual(AppModel.latestReleaseURL.scheme, "https")
         XCTAssertTrue(FileManager.default.fileExists(atPath: Self.repoRoot()
             .appendingPathComponent("docs/privacy.html").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: Self.repoRoot()
             .appendingPathComponent("docs/support.html").path))
+    }
+
+    func testReleaseVersionComparisonHandlesTagsAndPatchOrdering() {
+        XCTAssertTrue(AppModel.isReleaseVersionNewer("v0.1.2", than: "0.1.1"))
+        XCTAssertTrue(AppModel.isReleaseVersionNewer("v0.1.10", than: "0.1.9"))
+        XCTAssertTrue(AppModel.isReleaseVersionNewer("1.0", than: "0.9.9"))
+
+        XCTAssertFalse(AppModel.isReleaseVersionNewer("v0.1.1", than: "0.1.1"))
+        XCTAssertFalse(AppModel.isReleaseVersionNewer("v0.1.1", than: "0.1.2"))
+        XCTAssertFalse(AppModel.isReleaseVersionNewer("0.1", than: "0.1.0"))
     }
 
     private static func waitForCaptureURL(in model: AppModel) async throws -> URL {

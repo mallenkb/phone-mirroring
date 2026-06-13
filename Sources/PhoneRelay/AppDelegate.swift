@@ -30,6 +30,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private var settingsWindow: NSWindow?
     private var shortcutsWindow: NSWindow?
     private var noticesWindow: NSWindow?
+    private var updateCheckTask: Task<Void, Never>?
     private let model = AppModel()
     private var keyMonitor: Any?
     private var launchedInBackground = false
@@ -268,6 +269,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         if let keyMonitor {
             NSEvent.removeMonitor(keyMonitor)
         }
+        updateCheckTask?.cancel()
         model.shutdown()
     }
 
@@ -294,8 +296,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         )
         appMenu.addItem(
             NSMenuItem(
-                title: "Third-Party Notices...",
-                action: #selector(showThirdPartyNotices(_:)),
+                title: "Check for Updates...",
+                action: #selector(checkForUpdates(_:)),
                 keyEquivalent: ""
             )
         )
@@ -671,6 +673,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         NSWorkspace.shared.open(AppModel.supportURL)
     }
 
+    @objc private func checkForUpdates(_ sender: Any?) {
+        guard updateCheckTask == nil else { return }
+
+        updateCheckTask = Task { [weak self] in
+            await self?.runUpdateCheck()
+        }
+    }
+
     @objc private func showThirdPartyNotices(_ sender: Any?) {
         if let noticesWindow {
             noticesWindow.makeKeyAndOrderFront(nil)
@@ -811,6 +821,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             return model.hasActiveMirrorSession
         case #selector(revealLastCapture(_:))?:
             return model.lastCaptureURL != nil
+        case #selector(checkForUpdates(_:))?:
+            menuItem.title = updateCheckTask == nil ? "Check for Updates..." : "Checking for Updates..."
+            return updateCheckTask == nil
         default:
             return true
         }
@@ -848,6 +861,105 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
         guard !licenseText.isEmpty else { return noticeText }
         return "\(noticeText)\n\n---\n\n# Apache License 2.0 - scrcpy\n\n\(licenseText)"
+    }
+
+    private func runUpdateCheck() async {
+        defer { updateCheckTask = nil }
+
+        do {
+            let release = try await Self.fetchLatestRelease()
+            presentUpdateCheckResult(release)
+        } catch is CancellationError {
+            return
+        } catch {
+            presentUpdateCheckFailure(error)
+        }
+    }
+
+    private func presentUpdateCheckResult(_ release: ReleaseMetadata) {
+        let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+        let latestVersion = release.tagName
+
+        if AppModel.isReleaseVersionNewer(latestVersion, than: currentVersion) {
+            let alert = NSAlert()
+            alert.messageText = "A new version of PhoneRelay is available."
+            alert.informativeText = "Version \(latestVersion) is available. You have \(currentVersion)."
+            alert.addButton(withTitle: "Download Update")
+            alert.addButton(withTitle: "View Release")
+            alert.addButton(withTitle: "Later")
+
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                NSWorkspace.shared.open(release.primaryDownloadURL ?? release.htmlURL)
+            case .alertSecondButtonReturn:
+                NSWorkspace.shared.open(release.htmlURL)
+            default:
+                break
+            }
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "PhoneRelay is up to date."
+        alert.informativeText = "Version \(currentVersion) is the latest available release."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func presentUpdateCheckFailure(_ error: Error) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Unable to Check for Updates"
+        alert.informativeText = "PhoneRelay could not reach the update service. \(error.localizedDescription)"
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private nonisolated static func fetchLatestRelease() async throws -> ReleaseMetadata {
+        let (data, response) = try await URLSession.shared.data(from: AppModel.releaseMetadataURL)
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200..<300).contains(httpResponse.statusCode) {
+            throw UpdateCheckError.invalidStatusCode(httpResponse.statusCode)
+        }
+        return try JSONDecoder().decode(ReleaseMetadata.self, from: data)
+    }
+
+    private struct ReleaseMetadata: Decodable {
+        var tagName: String
+        var htmlURL: URL
+        var assets: [ReleaseAsset]
+
+        var primaryDownloadURL: URL? {
+            assets.first { $0.name == "PhoneRelay.dmg" }?.browserDownloadURL
+                ?? assets.first?.browserDownloadURL
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case tagName = "tag_name"
+            case htmlURL = "html_url"
+            case assets
+        }
+    }
+
+    private struct ReleaseAsset: Decodable {
+        var name: String
+        var browserDownloadURL: URL
+
+        private enum CodingKeys: String, CodingKey {
+            case name
+            case browserDownloadURL = "browser_download_url"
+        }
+    }
+
+    private enum UpdateCheckError: LocalizedError {
+        case invalidStatusCode(Int)
+
+        var errorDescription: String? {
+            switch self {
+            case let .invalidStatusCode(statusCode):
+                "The update service returned HTTP \(statusCode)."
+            }
+        }
     }
 
     private static func textResource(

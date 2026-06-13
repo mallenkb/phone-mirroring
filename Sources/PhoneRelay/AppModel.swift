@@ -34,6 +34,8 @@ final class AppModel: ObservableObject {
     nonisolated static let notificationForwardingDefaultsKey = "MirrorBehavior.notificationForwardingEnabled"
     nonisolated static let privacyPolicyURL = URL(string: "https://mallenkb.github.io/phone-mirroring/privacy.html")!
     nonisolated static let supportURL = URL(string: "https://mallenkb.github.io/phone-mirroring/support.html")!
+    nonisolated static let latestReleaseURL = URL(string: "https://github.com/mallenkb/phone-mirroring/releases/latest")!
+    nonisolated static let releaseMetadataURL = URL(string: "https://mallenkb.github.io/phone-mirroring/release.json")!
     nonisolated static var canUseUserNotifications: Bool {
         Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app"
     }
@@ -44,6 +46,32 @@ final class AppModel: ObservableObject {
 
     nonisolated static func defaultNotificationForwardingEnabled(storedValue: Any?) -> Bool {
         (storedValue as? Bool) ?? false
+    }
+
+    nonisolated static func isReleaseVersionNewer(_ latestVersion: String, than currentVersion: String) -> Bool {
+        let latestComponents = versionComponents(from: latestVersion)
+        let currentComponents = versionComponents(from: currentVersion)
+        let componentCount = max(latestComponents.count, currentComponents.count)
+
+        for index in 0..<componentCount {
+            let latest = index < latestComponents.count ? latestComponents[index] : 0
+            let current = index < currentComponents.count ? currentComponents[index] : 0
+            if latest != current {
+                return latest > current
+            }
+        }
+
+        return false
+    }
+
+    private nonisolated static func versionComponents(from version: String) -> [Int] {
+        version
+            .trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+            .components(separatedBy: CharacterSet.decimalDigits.inverted)
+            .compactMap { component in
+                guard !component.isEmpty else { return nil }
+                return Int(component)
+            }
     }
 
     nonisolated static func canCompleteFirstRunOnboarding(
