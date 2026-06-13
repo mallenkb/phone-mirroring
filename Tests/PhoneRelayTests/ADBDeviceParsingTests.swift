@@ -1242,8 +1242,8 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
     }
 
-    func testFreshAuthorizedUSBDoesNotAutoStartDuringExplicitSetup() {
-        XCTAssertFalse(
+    func testFreshAuthorizedUSBAutoStartsDuringExplicitSetup() {
+        XCTAssertTrue(
             AppModel.shouldAutoStartAuthorizedUSB(
                 hasSavedDevices: false,
                 explicitDeviceSetupRequired: true

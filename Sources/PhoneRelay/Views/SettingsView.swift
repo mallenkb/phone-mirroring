@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
@@ -7,6 +8,7 @@ struct SettingsView: View {
     private enum SettingsTab: String, CaseIterable, Identifiable {
         case devices = "Devices"
         case mirroring = "Mirroring"
+        case about = "About"
 
         var id: String { rawValue }
     }
@@ -41,7 +43,7 @@ struct SettingsView: View {
         .pickerStyle(.segmented)
         .controlSize(.large)
         .labelsHidden()
-        .frame(width: 320, alignment: .leading)
+        .frame(width: 450, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -52,6 +54,8 @@ struct SettingsView: View {
             devicesTab
         case .mirroring:
             mirroringTab
+        case .about:
+            aboutTab
         }
     }
 
@@ -81,6 +85,16 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 18) {
             mirrorQualitySection
         }
+    }
+
+    private var aboutTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            aboutIdentitySection
+            aboutPrivacySection
+            aboutSupportSection
+            aboutLegalSection
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var clearDevicesRow: some View {
@@ -195,6 +209,140 @@ struct SettingsView: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
+    }
+
+    private var aboutIdentitySection: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 48, height: 48)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("PhoneRelay")
+                    .font(.system(size: 18, weight: .semibold))
+                Text("Local-first Android mirroring for macOS.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 12) {
+                    labeledBadge("Version", bundleVersion)
+                    labeledBadge("Build", bundleBuild)
+                    labeledBadge("Bundle ID", bundleIdentifier)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+    }
+
+    private var aboutPrivacySection: some View {
+        aboutSection(
+            icon: "hand.raised",
+            title: "Privacy Policy",
+            subtitle: "Shown in-app so the policy remains readable without opening an external page."
+        ) {
+            aboutTextBlock(AboutContent.privacyPolicy)
+        }
+    }
+
+    private var aboutSupportSection: some View {
+        aboutSection(
+            icon: "questionmark.circle",
+            title: "Support",
+            subtitle: "The details below help diagnose setup, pairing, and mirroring issues."
+        ) {
+            aboutTextBlock(AboutContent.supportDetails)
+        }
+    }
+
+    private var aboutLegalSection: some View {
+        aboutSection(
+            icon: "doc.text",
+            title: "Legal",
+            subtitle: "PhoneRelay's app license and bundled open-source notices are shown locally."
+        ) {
+            aboutTextBlock(title: "Open Source License", AboutContent.projectLicense)
+            Divider()
+            aboutTextBlock(title: "Third-Party Notices", AboutContent.thirdPartyNotices)
+        }
+    }
+
+    private func aboutSection<Content: View>(
+        icon: String,
+        title: String,
+        subtitle: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            settingsLeadingIcon(icon, isActive: true)
+
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(subtitle)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    content()
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+    }
+
+    private func labeledBadge(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.uppercased())
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(maxWidth: 180, alignment: .leading)
+    }
+
+    private var bundleVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.1"
+    }
+
+    private var bundleBuild: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "2"
+    }
+
+    private var bundleIdentifier: String {
+        Bundle.main.bundleIdentifier ?? "com.mallenkb.PhoneRelay"
+    }
+
+    private func aboutTextBlock(title: String? = nil, _ body: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let title {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            Text(body)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func settingsLeadingIcon(_ icon: String, isActive: Bool = false) -> some View {

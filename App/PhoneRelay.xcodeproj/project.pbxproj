@@ -106,6 +106,7 @@
 				AA00000000000000000C0001 /* Copy adb into Resources/bin */,
 				AA00000000000000000C0002 /* Copy scrcpy-server into Resources */,
 				AA00000000000000000C0007 /* Copy themed app icon into Resources */,
+				AA00000000000000000C0008 /* Copy legal resources */,
 				AA00000000000000000C0006 /* Sign adb with inherited sandbox */,
 			);
 			buildRules = (
@@ -167,6 +168,24 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		AA00000000000000000C0008 /* Copy legal resources */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../THIRD_PARTY_NOTICES.md",
+				"$(SRCROOT)/../LICENSES/scrcpy-APACHE-2.0.txt",
+			);
+			name = "Copy legal resources";
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/THIRD_PARTY_NOTICES.md",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/LICENSES/scrcpy-APACHE-2.0.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nRESOURCES=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nmkdir -p \"$RESOURCES/LICENSES\"\ncp \"$SRCROOT/../THIRD_PARTY_NOTICES.md\" \"$RESOURCES/THIRD_PARTY_NOTICES.md\"\ncp \"$SRCROOT/../LICENSES/scrcpy-APACHE-2.0.txt\" \"$RESOURCES/LICENSES/scrcpy-APACHE-2.0.txt\"\n";
+		};
 		AA00000000000000000C0006 /* Sign adb with inherited sandbox */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;

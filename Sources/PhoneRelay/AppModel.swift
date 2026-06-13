@@ -1043,8 +1043,6 @@ final class AppModel: ObservableObject {
     private func mirrorAuthorizedDevicePreferringWireless(_ device: AuthorizedADBDevice) async {
         guard !isMirroring, !isPairing else { return }
         guard !isAutoMirrorHeldForOnboarding else { return }
-        guard !explicitDeviceSetupRequired else { return }
-
         if device.isUSB {
             startMirroringOverUSB(
                 device,
@@ -1057,6 +1055,7 @@ final class AppModel: ObservableObject {
             return
         }
 
+        guard !explicitDeviceSetupRequired else { return }
         select(device: device)
         touchPairedPhone(
             id: device.serial,
@@ -2115,12 +2114,17 @@ final class AppModel: ObservableObject {
     }
 
     func applyDevicePresence(_ output: String) {
+        let devices = Self.authorizedADBDevices(in: output)
+        if explicitDeviceSetupRequired,
+           let usbDevice = devices.first(where: \.isUSB) {
+            select(device: usbDevice)
+            return
+        }
         guard !explicitDeviceSetupRequired else {
             selectedDevice = .demo
             isSelectedDeviceOnline = false
             return
         }
-        let devices = Self.authorizedADBDevices(in: output)
         guard let serial = selectedDevice.adbSerial else {
             // Nothing selected yet (e.g. fresh onboarding). Adopt the first live
             // device so a working USB/wireless connection advances the UI out of
@@ -2243,7 +2247,7 @@ final class AppModel: ObservableObject {
         hasSavedDevices: Bool,
         explicitDeviceSetupRequired: Bool
     ) -> Bool {
-        !explicitDeviceSetupRequired
+        true
     }
 
     nonisolated static func shouldRunPresenceAutoConnect(

@@ -59,7 +59,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     }
 
     @MainActor
-    func testClearedDeviceStateIgnoresLiveADBPresence() {
+    func testClearedDeviceStateAdoptsAuthorizedUSBPresenceImmediately() {
         let defaults = UserDefaults.standard
         let previousExplicitSetup = defaults.object(forKey: explicitDeviceSetupRequiredDefaultsKey)
         defer {
@@ -79,9 +79,10 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         RFCT10ZLTAJ device usb:336592896X product:g0qxxx model:SM_S906B device:g0q transport_id:4
         """)
 
-        XCTAssertEqual(model.selectedDevice, .demo)
-        XCTAssertFalse(model.isSelectedDeviceOnline)
-        XCTAssertEqual(model.connectionDeviceLabel, "Android Device")
+        XCTAssertEqual(model.selectedDevice.adbSerial, "RFCT10ZLTAJ")
+        XCTAssertEqual(model.selectedDevice.network, "USB debugging")
+        XCTAssertTrue(model.isSelectedDeviceOnline)
+        XCTAssertEqual(model.connectionStatusText, "Online")
     }
 
     @MainActor
