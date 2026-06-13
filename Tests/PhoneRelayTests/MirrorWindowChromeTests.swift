@@ -40,6 +40,26 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(controller.renderView.acceptsFirstResponder)
     }
 
+    func testLandscapeModeADBCommandsLockDeviceToLandscape() {
+        XCTAssertEqual(
+            AppModel.orientationADBCommands(serial: "RFCT10ZLTAJ", landscape: true),
+            [
+                ["-s", "RFCT10ZLTAJ", "shell", "settings", "put", "system", "accelerometer_rotation", "0"],
+                ["-s", "RFCT10ZLTAJ", "shell", "settings", "put", "system", "user_rotation", "1"]
+            ]
+        )
+    }
+
+    func testPortraitModeADBCommandsRestoreAutoRotation() {
+        XCTAssertEqual(
+            AppModel.orientationADBCommands(serial: "RFCT10ZLTAJ", landscape: false),
+            [
+                ["-s", "RFCT10ZLTAJ", "shell", "settings", "put", "system", "user_rotation", "0"],
+                ["-s", "RFCT10ZLTAJ", "shell", "settings", "put", "system", "accelerometer_rotation", "1"]
+            ]
+        )
+    }
+
     @MainActor
     func testNativeMirrorTitleUsesConnectedDeviceName() throws {
         let model = AppModel(startBackgroundServices: false)

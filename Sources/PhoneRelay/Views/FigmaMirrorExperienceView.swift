@@ -107,46 +107,55 @@ struct FigmaMirrorExperienceView: View {
             // panel so it doesn't look like oversized padding when scaled down.
             let qrCodeSize = qrPanelSize * 0.88
 
-            VStack(spacing: 0) {
-                headerGroup(width: contentWidth, scale: scale)
+            ZStack {
+                VStack(spacing: 0) {
+                    headerGroup(width: contentWidth, scale: scale)
 
-                USBConnectButton(
-                    accent: accent,
-                    scale: scale,
-                    isConnecting: isUSBButtonBusy,
-                    disabled: isUSBButtonBusy,
-                    action: model.connectViaUSB
-                )
-                .frame(width: contentWidth)
-                .padding(.top, (usesCompactLayout ? 28 : 40) * scale)
+                    USBConnectButton(
+                        accent: accent,
+                        scale: scale,
+                        isConnecting: isUSBButtonBusy,
+                        disabled: isUSBButtonBusy,
+                        action: model.connectViaUSB
+                    )
+                    .frame(width: contentWidth)
+                    .padding(.top, (usesCompactLayout ? 28 : 40) * scale)
 
-                Text("or")
-                    .font(.system(size: 13 * scale, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.6))
-                    .padding(.vertical, (usesCompactLayout ? 18 : 26) * scale)
+                    Text("or")
+                        .font(.system(size: 13 * scale, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .padding(.vertical, (usesCompactLayout ? 18 : 26) * scale)
 
-                connectionInstruction(
-                    iconName: "qrcode.viewfinder",
-                    title: "Scan QR code",
-                    detail: "Enable Wireless debugging, tap Pair with QR code, then scan.",
-                    iconColor: .white,
-                    width: contentWidth,
-                    scale: scale,
-                    usesCompactTitleLayout: usesCompactLayout
-                )
+                    connectionInstruction(
+                        iconName: "qrcode.viewfinder",
+                        title: "Scan QR code",
+                        detail: "Enable Wireless debugging, tap Pair with QR code, then scan.",
+                        iconColor: .white,
+                        width: contentWidth,
+                        scale: scale,
+                        usesCompactTitleLayout: usesCompactLayout
+                    )
 
-                qrPairingPanel(panelSize: qrPanelSize, codeSize: qrCodeSize)
-                    .padding(.top, (usesCompactLayout ? 18 : 26) * scale)
-                    .frame(width: contentWidth, alignment: .center)
+                    qrPairingPanel(panelSize: qrPanelSize, codeSize: qrCodeSize)
+                        .padding(.top, (usesCompactLayout ? 18 : 26) * scale)
+                        .frame(width: contentWidth, alignment: .center)
 
-                if shouldShowDevicePill {
-                    devicePill(width: contentWidth, scale: scale)
-                        .padding(.top, (usesCompactLayout ? 22 : 32) * scale)
+                    if shouldShowDevicePill {
+                        devicePill(width: contentWidth, scale: scale)
+                            .padding(.top, (usesCompactLayout ? 22 : 32) * scale)
+                    }
+                }
+                .padding(.horizontal, usesCompactLayout ? 22 : 36)
+                .frame(width: contentWidth, alignment: .center)
+                .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+
+                if let error = model.activeError {
+                    connectionToast(error, width: contentWidth, scale: scale)
+                        .position(x: proxy.size.width / 2, y: proxy.size.height - 34 * scale)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
-            .padding(.horizontal, usesCompactLayout ? 22 : 36)
-            .frame(width: contentWidth, alignment: .center)
-            .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+            .animation(.easeOut(duration: 0.18), value: model.activeError?.id)
             .task(id: model.activeError?.id) {
                 guard let error = model.activeError else { return }
                 do {
@@ -189,22 +198,20 @@ struct FigmaMirrorExperienceView: View {
     }
 
     private func devicePill(width: CGFloat, scale: CGFloat) -> some View {
-        let error = model.activeError
         let online = model.isSelectedDeviceOnline
         let connecting = model.isActivelyConnecting
-        let statusText = error == nil ? model.connectionStatusText : "Connection failed"
-        let deviceLabel = error == nil ? model.connectionDeviceLabel : Self.shortFailureMessage(error?.message)
+        let statusText = model.connectionStatusText
+        let deviceLabel = model.connectionDeviceLabel
         let isActive = online || connecting
-        let isError = error != nil
-        let dotColor = isError ? Color(red: 1.0, green: 0.48, blue: 0.38) : (isActive ? accent : Color.white.opacity(0.42))
+        let dotColor = isActive ? accent : Color.white.opacity(0.42)
         let fontSize = 12 * scale
 
         return HStack(spacing: 8 * scale) {
-            StatusDot(color: dotColor, diameter: 7 * scale, pulses: connecting && !isError)
+            StatusDot(color: dotColor, diameter: 7 * scale, pulses: connecting)
 
             Text(statusText)
                 .font(.system(size: fontSize, weight: .semibold))
-                .foregroundStyle(.white.opacity(isActive || isError ? 0.92 : 0.82))
+                .foregroundStyle(.white.opacity(isActive ? 0.92 : 0.82))
                 .fixedSize()
 
             Text(deviceLabel)
@@ -227,19 +234,29 @@ struct FigmaMirrorExperienceView: View {
         .frame(maxWidth: width, alignment: .center)
     }
 
-    private static func shortFailureMessage(_ message: String?) -> String {
-        guard let message else { return "Try again" }
-        let lower = message.lowercased()
-        if lower.contains("offline") {
-            return "Phone offline"
+    private func connectionToast(_ error: AppModel.UserFacingError, width: CGFloat, scale: CGFloat) -> some View {
+        HStack(spacing: 8 * scale) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 13 * scale, weight: .semibold))
+                .foregroundStyle(Color(red: 1.0, green: 0.62, blue: 0.44))
+            Text(error.message)
+                .font(.system(size: 11.5 * scale, weight: .medium))
+                .foregroundStyle(.white.opacity(0.9))
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
         }
-        if lower.contains("unauthorized") || lower.contains("authorize") {
-            return "Authorize USB"
-        }
-        if lower.contains("wi-fi") || lower.contains("wifi") || lower.contains("network") {
-            return "Check Wi-Fi"
-        }
-        return "Try again"
+        .padding(.horizontal, 13 * scale)
+        .padding(.vertical, 9 * scale)
+        .frame(maxWidth: min(width, 330 * scale), alignment: .leading)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color(red: 0.08, green: 0.12, blue: 0.13).opacity(0.94))
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(Color.white.opacity(0.13), lineWidth: 1)
+                )
+        )
+        .shadow(color: .black.opacity(0.22), radius: 10 * scale, x: 0, y: 6 * scale)
     }
 
     private func connectionInstruction(

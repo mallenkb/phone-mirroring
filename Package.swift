@@ -57,7 +57,17 @@ let package = Package(
         .testTarget(
             name: "PhoneRelayTests",
             dependencies: ["PhoneRelay"],
-            path: "Tests/PhoneRelayTests"
+            path: "Tests/PhoneRelayTests",
+            linkerSettings: [
+                // Xcode 27 beta places binary package frameworks next to the
+                // test bundle in Products/Debug instead of PackageFrameworks.
+                // Give the test host a direct rpath back to that directory so
+                // `swift test` can load Sparkle before enumerating tests.
+                .unsafeFlags([
+                    "-Xlinker", "-rpath",
+                    "-Xlinker", "@loader_path/../../.."
+                ])
+            ]
         )
     ]
 )

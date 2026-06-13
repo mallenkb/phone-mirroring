@@ -89,7 +89,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private var launchedInBackground = false
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
-        if yieldToExistingInstanceIfNeeded() {
+        if takeOverFromOlderInstancesIfNeeded() {
             return
         }
         launchedInBackground = Self.isBackgroundLaunch(arguments: CommandLine.arguments)
@@ -149,10 +149,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
     // MARK: - Single-instance guard
 
-    /// How long a fresh launch waits for an older instance to exit before
-    /// concluding it is a duplicate. Sized for the restart-onboarding relaunch,
-    /// where the old process quits moments after the new one starts.
+    /// How long a fresh launch waits for older instances to honor the quit
+    /// request before force-terminating them. Sized for an instance mid-mirror:
+    /// its `applicationWillTerminate` has to stop scrcpy and the adb pollers.
     nonisolated static let duplicateInstanceExitGracePeriod: TimeInterval = 2.5
+
+    /// Hard cap on how long a launch blocks on stragglers after escalating to
+    /// force-terminate; past this the new instance proceeds regardless so a
+    /// wedged sibling can never brick every future launch.
+    nonisolated static let duplicateInstanceTakeoverTimeout: TimeInterval = 4.5
 
     /// Executables that count as "this app": the bundled binary and the bare
     /// SwiftPM debug binary.
@@ -196,13 +201,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         }
     }
 
-    /// The still-running older sibling this instance must defer to, or nil when
-    /// this instance is the rightful single copy.
-    nonisolated static func blockingDuplicateInstance(
+    /// Live same-app siblings that launched before this instance and must hand
+    /// over to it.
+    nonisolated static func staleSiblingInstances(
         candidates: [AppInstanceDescriptor],
         current: AppInstanceDescriptor
-    ) -> AppInstanceDescriptor? {
-        candidates.first { candidate in
+    ) -> [AppInstanceDescriptor] {
+        candidates.filter { candidate in
             candidate.pid != current.pid
                 && !candidate.isTerminated
                 && describesSamePhoneRelayApp(candidate, as: current)
@@ -210,20 +215,40 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         }
     }
 
+    /// A live same-app sibling that launched after this instance, if any. The
+    /// newest copy is the rightful survivor, so this instance defers to it.
+    nonisolated static func newerSiblingInstance(
+        candidates: [AppInstanceDescriptor],
+        current: AppInstanceDescriptor
+    ) -> AppInstanceDescriptor? {
+        candidates.first { candidate in
+            candidate.pid != current.pid
+                && !candidate.isTerminated
+                && describesSamePhoneRelayApp(candidate, as: current)
+                && instancePrecedes(current, candidate)
+        }
+    }
+
     /// PhoneRelay owns exclusive resources — the adb server, scrcpy sessions,
     /// and the connection window — so concurrent copies fight over the phone
     /// and flood the screen with duplicate "Connecting…" windows (e.g. from
-    /// `open -n`, or a dev build launched next to the installed app). The
-    /// newest instance yields: it waits briefly for older instances to exit
-    /// (covering the restart-onboarding relaunch handoff), then activates the
-    /// survivor and terminates itself.
-    private func yieldToExistingInstanceIfNeeded() -> Bool {
+    /// `open -n`, a dev build launched next to the installed app, or a stale
+    /// copy left running for days). The NEWEST instance wins: it asks older
+    /// siblings to quit — which also clears pre-guard builds, since they still
+    /// honor the quit Apple Event — force-terminates any that ignore it, and
+    /// only then shows UI. The previous policy (newest yields to oldest) let a
+    /// forgotten stale copy silently kill every up-to-date launch while its
+    /// own outdated window stayed on screen.
+    private func takeOverFromOlderInstancesIfNeeded() -> Bool {
         let current = Self.descriptor(for: .current)
-        let deadline = Date().addingTimeInterval(Self.duplicateInstanceExitGracePeriod)
+        let quitRequestDeadline = Date().addingTimeInterval(Self.duplicateInstanceExitGracePeriod)
+        let takeoverDeadline = Date().addingTimeInterval(Self.duplicateInstanceTakeoverTimeout)
+        var quitRequested = Set<Int32>()
+        var forceTerminated = Set<Int32>()
         while true {
             // NSWorkspace's list only refreshes when the run loop turns, which
             // it can't while this wait blocks — re-verify liveness via signal 0
-            // so an already-exited sibling never strands or kills this launch.
+            // so an already-exited sibling never stalls this launch.
             let candidates = NSWorkspace.shared.runningApplications.map { app in
                 var descriptor = Self.descriptor(for: app)
                 if !descriptor.isTerminated, !Self.isProcessAlive(descriptor.pid) {
@@ -231,16 +256,31 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                 }
                 return descriptor
             }
-            guard let blocker = Self.blockingDuplicateInstance(candidates: candidates, current: current) else {
-                return false
-            }
-            guard Date() < deadline else {
-                Logger.log("Another PhoneRelay instance (pid \(blocker.pid)) is already running; terminating this duplicate copy.")
-                NSWorkspace.shared.runningApplications
-                    .first { $0.processIdentifier == blocker.pid }?
-                    .activate(options: [])
+            if let newer = Self.newerSiblingInstance(candidates: candidates, current: current) {
+                Logger.log("A newer PhoneRelay instance (pid \(newer.pid)) is taking over; terminating this copy.")
                 NSApp.terminate(nil)
                 return true
+            }
+            let stale = Self.staleSiblingInstances(candidates: candidates, current: current)
+            if stale.isEmpty {
+                return false
+            }
+            guard Date() < takeoverDeadline else {
+                Logger.log("Older PhoneRelay instances \(stale.map(\.pid)) survived the takeover window; continuing launch anyway.")
+                return false
+            }
+            for sibling in stale {
+                guard let app = NSWorkspace.shared.runningApplications
+                    .first(where: { $0.processIdentifier == sibling.pid }) else { continue }
+                if Date() < quitRequestDeadline {
+                    if quitRequested.insert(sibling.pid).inserted {
+                        Logger.log("Taking over from older PhoneRelay instance (pid \(sibling.pid)); requesting it to quit.")
+                        _ = app.terminate()
+                    }
+                } else if forceTerminated.insert(sibling.pid).inserted {
+                    Logger.log("Older PhoneRelay instance (pid \(sibling.pid)) ignored the quit request; force-terminating it.")
+                    _ = app.forceTerminate()
+                }
             }
             Thread.sleep(forTimeInterval: 0.1)
         }
@@ -317,7 +357,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     ) async {
         guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
 
+        let userInfo = response.notification.request.content.userInfo
+        let package = userInfo[NotificationForwarder.UserInfoKey.sourcePackage] as? String
+        let serial = userInfo[NotificationForwarder.UserInfoKey.deviceSerial] as? String
+        let notificationKey = userInfo[NotificationForwarder.UserInfoKey.notificationKey] as? String
+        let title = userInfo[NotificationForwarder.UserInfoKey.notificationTitle] as? String
+        let text = userInfo[NotificationForwarder.UserInfoKey.notificationText] as? String
+
         await MainActor.run {
+            // Banners from builds that predate the launch metadata still focus
+            // the app instead of doing nothing.
+            if let package, !package.isEmpty {
+                self.model.openSourceAppFromForwardedNotification(
+                    package: package,
+                    serial: serial,
+                    notificationKey: notificationKey,
+                    title: title,
+                    text: text
+                )
+            }
             NSApp.activate(ignoringOtherApps: true)
         }
     }
@@ -444,6 +502,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                 title: "Turn Phone Screen Off or On",
                 action: #selector(togglePhoneScreen(_:)),
                 keyEquivalent: "l"
+            )
+        )
+        viewMenu.addItem(
+            NSMenuItem(
+                title: "Switch to Landscape",
+                action: #selector(toggleLandscapeMode(_:)),
+                keyEquivalent: "L"
             )
         )
         viewMenu.addItem(.separator())
@@ -849,6 +914,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         model.togglePhoneScreenPower()
     }
 
+    @objc private func toggleLandscapeMode(_ sender: Any?) {
+        model.toggleLandscapeMode()
+    }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(phoneVolumeUp(_:))?,
@@ -868,6 +937,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
              #selector(zoomOut(_:))?,
              #selector(centerMirror(_:))?:
             return model.hasActiveMirrorSession
+        case #selector(toggleLandscapeMode(_:))?:
+            menuItem.title = model.isLandscapeModeRequested ? "Switch to Portrait" : "Switch to Landscape"
+            return model.selectedDevice.adbSerial != nil
         case #selector(revealLastCapture(_:))?:
             return model.lastCaptureURL != nil
         default:

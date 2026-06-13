@@ -69,7 +69,19 @@ final class ScrcpyServerHost: @unchecked Sendable {
         let pushArgs = adbBaseArgs() + ["push", serverPath, Self.devicePath]
         let push = Tooling.runResult("adb", arguments: pushArgs, timeout: 30)
         if !push.succeeded {
-            throw HostError.adbCommandFailed(stage: "adb push", output: push.output)
+            // `adb push` can exit non-zero even though the transfer completed
+            // (e.g. the adb server restarted between invocations). Trust the
+            // transfer summary so a healthy push can't abort the launch — the
+            // misreported failure used to surface as a bogus "mirroring engine
+            // file is missing" error because the output contains the
+            // scrcpy-server path.
+            let transferCompleted = !push.timedOut && push.output.contains("file pushed")
+            if transferCompleted {
+                Logger.log("adb push exited \(push.exitCode) but transfer completed; continuing: \(push.output.trimmingCharacters(in: .whitespacesAndNewlines))")
+            } else {
+                let stage = push.timedOut ? "adb push (timed out)" : "adb push (exit \(push.exitCode))"
+                throw HostError.adbCommandFailed(stage: stage, output: push.output)
+            }
         }
 
         let scidHex = String(format: "%08x", options.scid)

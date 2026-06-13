@@ -20,6 +20,7 @@ struct KeyboardShortcutsView: View {
         ("Phone controls", [
             Shortcut(keys: "⌘H", action: "Home"),
             Shortcut(keys: "⌘L", action: "Turn phone screen on or off"),
+            Shortcut(keys: "⇧⌘L", action: "Switch between portrait and landscape"),
             Shortcut(keys: "⌘[", action: "Back"),
             Shortcut(keys: "⌘]", action: "Recent apps"),
             Shortcut(keys: "⇧⌘S", action: "Take a screenshot"),

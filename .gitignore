@@ -9,6 +9,8 @@ Package.resolved
 build/
 dist/
 scrcpy-source/
+# Stray packaged bundle at the repo root (Xcode once tried to git-add one)
+/PhoneRelay.app/
 
 # Local environment and credentials
 .env

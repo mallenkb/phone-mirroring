@@ -58,6 +58,56 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
+    func testLegacyExplicitSetupFlagDoesNotBlockCurrentApp() {
+        let defaults = UserDefaults.standard
+        let legacyDefaults = UserDefaults(suiteName: "org.example.PhoneRelay")!
+        let previousStandard = defaults.object(forKey: explicitDeviceSetupRequiredDefaultsKey)
+        let previousLegacy = legacyDefaults.object(forKey: explicitDeviceSetupRequiredDefaultsKey)
+        defer {
+            if let previousStandard {
+                defaults.set(previousStandard, forKey: explicitDeviceSetupRequiredDefaultsKey)
+            } else {
+                defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
+            }
+            if let previousLegacy {
+                legacyDefaults.set(previousLegacy, forKey: explicitDeviceSetupRequiredDefaultsKey)
+            } else {
+                legacyDefaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
+            }
+        }
+
+        defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
+        legacyDefaults.set(true, forKey: explicitDeviceSetupRequiredDefaultsKey)
+
+        XCTAssertFalse(AppModel.explicitDeviceSetupRequiredPreference())
+        XCTAssertNil(legacyDefaults.object(forKey: explicitDeviceSetupRequiredDefaultsKey))
+    }
+
+    func testCurrentExplicitSetupFlagStillBlocksCurrentApp() {
+        let defaults = UserDefaults.standard
+        let legacyDefaults = UserDefaults(suiteName: "org.example.PhoneRelay")!
+        let previousStandard = defaults.object(forKey: explicitDeviceSetupRequiredDefaultsKey)
+        let previousLegacy = legacyDefaults.object(forKey: explicitDeviceSetupRequiredDefaultsKey)
+        defer {
+            if let previousStandard {
+                defaults.set(previousStandard, forKey: explicitDeviceSetupRequiredDefaultsKey)
+            } else {
+                defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
+            }
+            if let previousLegacy {
+                legacyDefaults.set(previousLegacy, forKey: explicitDeviceSetupRequiredDefaultsKey)
+            } else {
+                legacyDefaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
+            }
+        }
+
+        defaults.set(true, forKey: explicitDeviceSetupRequiredDefaultsKey)
+        legacyDefaults.set(true, forKey: explicitDeviceSetupRequiredDefaultsKey)
+
+        XCTAssertTrue(AppModel.explicitDeviceSetupRequiredPreference())
+        XCTAssertTrue(legacyDefaults.bool(forKey: explicitDeviceSetupRequiredDefaultsKey))
+    }
+
     @MainActor
     func testClearedDeviceStateIgnoresLiveADBPresence() {
         let defaults = UserDefaults.standard

@@ -261,9 +261,15 @@ final class PairedPhoneStoreTests: XCTestCase {
     }
 
     func testDefaultCompatibilitySuitesIncludeHistoricalBundleDomains() {
-        XCTAssertTrue(PairedPhoneStore.compatibilitySuites.contains("com.mallenkb.PhoneRelay"))
-        XCTAssertTrue(PairedPhoneStore.compatibilitySuites.contains("com.mallenkb.PhoneRelay"))
         XCTAssertTrue(PairedPhoneStore.compatibilitySuites.contains("com.mallenkb.AndroidMirrorScrcpy"))
+        XCTAssertTrue(PairedPhoneStore.compatibilitySuites.contains("org.example.PhoneRelay"))
+    }
+
+    /// load()/clearAll() delete from the compatibility suites, so listing the
+    /// live bundle domain would let any test run or dev build wipe the
+    /// installed app's paired-phone records.
+    func testDefaultCompatibilitySuitesExcludeLiveBundleDomain() {
+        XCTAssertFalse(PairedPhoneStore.compatibilitySuites.contains("com.mallenkb.PhoneRelay"))
     }
 
     func testLoadMergesCurrentUSBRecordWithHistoricalWirelessRecord() {

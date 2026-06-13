@@ -4,9 +4,13 @@ import Foundation
 /// per-device record Bluetooth keeps between sessions.
 struct PairedPhoneStore {
     static let defaultsKey = "AndroidMirror.PairedPhones.v1"
+    /// Abandoned defaults domains from earlier bundle ids, drained once on
+    /// load. The live domain (com.mallenkb.PhoneRelay) must NEVER be listed
+    /// here: load()/clearAll() delete from these suites, so a test runner or
+    /// differently-identified dev build instantiating this store would wipe
+    /// the installed app's paired-phone records (seen 2026-06-13 — the app
+    /// forgot the phone and stopped auto-connecting whenever tests ran).
     static let compatibilitySuites = [
-        "com.mallenkb.PhoneRelay",
-        "com.mallenkb.PhoneRelay",
         "com.mallenkb.AndroidMirrorScrcpy",
         "org.example.PhoneRelay",
         "org.example.AndroidMirrorScrcpy",

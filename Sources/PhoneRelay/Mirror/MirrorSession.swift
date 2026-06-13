@@ -53,6 +53,9 @@ final class MirrorSession {
     private var didStop = false
 
     var onSessionEnded: ((NSRect?) -> Void)?
+    var currentWindowFrame: NSRect? {
+        windowController?.window?.frame
+    }
 
     init(model: AppModel, serial: String?, launchFrame: NSRect? = nil) {
         self.model = model

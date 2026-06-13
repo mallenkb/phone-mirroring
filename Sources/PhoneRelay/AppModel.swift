@@ -56,6 +56,7 @@ final class AppModel: ObservableObject {
     @Published var isMirroring = false
     @Published var isRecording = false
     @Published var isPairing = false
+    @Published private(set) var isLandscapeModeRequested = false
     @Published private(set) var isRecoveringConnection = false
     /// True whenever a connect target is physically present (USB or a remembered
     /// wireless phone advertising on the network) but we aren't online/mirroring
@@ -272,7 +273,13 @@ final class AppModel: ObservableObject {
     static func mirrorFailureMessage(for error: Error) -> String {
         let detail: String
         switch error {
-        case let hostError as ScrcpyServerHost.HostError: detail = hostError.description
+        case let hostError as ScrcpyServerHost.HostError:
+            switch hostError {
+            case .missingServerArtifact:
+                return "The mirroring engine file is missing from the app. Reinstall PhoneRelay."
+            case .missingAdb, .adbCommandFailed:
+                detail = hostError.description
+            }
         case let sessionError as MirrorSession.SessionError: detail = sessionError.description
         default: detail = error.localizedDescription
         }
@@ -280,8 +287,12 @@ final class AppModel: ObservableObject {
         if lowered.contains("adb is not on path") || lowered.contains("adb is missing") {
             return "adb wasn't found. Install Android platform-tools (e.g. `brew install android-platform-tools`) and try again."
         }
-        if lowered.contains("scrcpy-server") {
-            return "The mirroring engine file is missing from the app. Reinstall PhoneRelay."
+        if lowered.contains("failed to read copy response")
+            || lowered.contains("connect failed: closed")
+            || lowered.contains("adb: error: closed")
+            || lowered.contains("error: closed")
+            || lowered.contains("eof") {
+            return "The phone connection dropped while starting mirroring. Keep USB connected or wait for Wi-Fi to recover, then try again."
         }
         if lowered.contains("unauthorized") || lowered.contains("device unauthorized") {
             return "This Mac isn't authorized on the phone yet. Unlock the phone and tap “Allow” on the USB-debugging prompt."
@@ -347,6 +358,7 @@ final class AppModel: ObservableObject {
     private var qrPairingTask: Task<Void, Never>?
     private var usbConnectTask: Task<Void, Never>?
     private var usbWiFiHandoffTask: Task<Void, Never>?
+    private var usbWiFiTakeoverTask: Task<Void, Never>?
     private var wirelessStartTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var disconnectRecoveryTask: Task<Void, Never>?
@@ -379,6 +391,9 @@ final class AppModel: ObservableObject {
     nonisolated static let wirelessHandoffRoutePrimeTimeout: TimeInterval = 0.5
     nonisolated static let wirelessHandoffTCPIPTimeout: TimeInterval = 3
     nonisolated static let wirelessHandoffPreflightTimeoutNanoseconds: UInt64 = 1_200_000_000
+    nonisolated static let wirelessHandoffSilentRetryDelayNanoseconds: UInt64 = 1_500_000_000
+    nonisolated static let wirelessHandoffTakeoverAttempts = 12
+    nonisolated static let wirelessHandoffTakeoverMaxDuration: TimeInterval = 8
     nonisolated static let adbDeviceListTimeout: TimeInterval = 2
     /// How long after launch the status indicator keeps reading "Connecting"
     /// while we hunt for the last-known device. Sized to the 3–5s window the
@@ -388,6 +403,14 @@ final class AppModel: ObservableObject {
     nonisolated static func remainingWirelessHandoffBudget(startedAt: Date, now: Date = Date()) -> TimeInterval {
         max(0, wirelessHandoffMaxDuration - now.timeIntervalSince(startedAt))
     }
+
+    private struct USBWiFiHandoffCandidate {
+        var usbSerial: String
+        var address: String
+        var displayName: String
+    }
+
+    private var usbWiFiHandoffCandidate: USBWiFiHandoffCandidate?
 
     var hasActiveMirrorSession: Bool {
         mirrorSession != nil
@@ -684,6 +707,7 @@ final class AppModel: ObservableObject {
         qrPairingTask?.cancel()
         usbConnectTask?.cancel()
         usbWiFiHandoffTask?.cancel()
+        usbWiFiTakeoverTask?.cancel()
         wirelessStartTask?.cancel()
         reconnectTask?.cancel()
         disconnectRecoveryTask?.cancel()
@@ -704,6 +728,9 @@ final class AppModel: ObservableObject {
         usbConnectTask = nil
         usbWiFiHandoffTask?.cancel()
         usbWiFiHandoffTask = nil
+        usbWiFiTakeoverTask?.cancel()
+        usbWiFiTakeoverTask = nil
+        usbWiFiHandoffCandidate = nil
         wirelessStartTask?.cancel()
         wirelessStartTask = nil
         reconnectTask?.cancel()
@@ -729,6 +756,8 @@ final class AppModel: ObservableObject {
         wirelessStartTask = nil
         disconnectRecoveryTask?.cancel()
         disconnectRecoveryTask = nil
+        usbWiFiTakeoverTask?.cancel()
+        usbWiFiTakeoverTask = nil
         isRecoveringConnection = false
         isAwaitingReconnect = false
         isAutoConnecting = false
@@ -1352,6 +1381,8 @@ final class AppModel: ObservableObject {
         let hasActiveReconnectWork = !autoConnectTargetsInFlight.isEmpty
             || reconnectTask != nil
             || wirelessStartTask != nil
+            || usbWiFiHandoffTask != nil
+            || usbWiFiTakeoverTask != nil
             || mirrorLaunchTask != nil
         isAutoConnecting = Self.shouldShowAutoConnecting(
             hasSavedDevice: !pairedPhones.isEmpty,
@@ -1618,7 +1649,7 @@ final class AppModel: ObservableObject {
             states: [.mirroringReady, .companionConnected],
             adbSerial: phone.address
         )
-        startMirroring()
+        startMirroring(manual: true)
     }
 
     @discardableResult
@@ -1667,6 +1698,11 @@ final class AppModel: ObservableObject {
             }.value
 
             if Self.adbTCPIPSucceeded(tcpipOutput) {
+                rememberUSBWiFiHandoffCandidate(
+                    usbDevice: usbDevice,
+                    address: legacyAddress,
+                    displayName: selectedDisplayName(for: usbDevice.model)
+                )
                 let readiness = await Self.waitForADBWirelessTargetReadiness(
                     adb: adb,
                     address: legacyAddress,
@@ -1741,6 +1777,11 @@ final class AppModel: ObservableObject {
             tlsPortOutput: tlsPortOutput,
             tcpPortOutput: tcpPortOutput
         ) {
+            rememberUSBWiFiHandoffCandidate(
+                usbDevice: usbDevice,
+                address: tlsAddress,
+                displayName: selectedDisplayName(for: usbDevice.model)
+            )
             let readiness = await Self.waitForADBWirelessTargetReadiness(
                 adb: adb,
                 address: tlsAddress,
@@ -1800,6 +1841,11 @@ final class AppModel: ObservableObject {
             routeOutput,
             phones: discoveredWirelessPhones
         ) {
+            rememberUSBWiFiHandoffCandidate(
+                usbDevice: usbDevice,
+                address: wirelessPhone.address,
+                displayName: selectedDisplayName(for: usbDevice.model)
+            )
             let readiness = await Self.waitForADBWirelessTargetReadiness(
                 adb: adb,
                 address: wirelessPhone.address,
@@ -1862,22 +1908,39 @@ final class AppModel: ObservableObject {
         Logger.log("Wi-Fi connects failing with 'No route to host' — likely macOS Local Network permission. Open System Settings > Privacy & Security > Local Network and enable PhoneRelay if wireless handoff should be used. Suppressing on-screen failure state because USB mirroring remains available.")
     }
 
+    private func rememberUSBWiFiHandoffCandidate(
+        usbDevice: AuthorizedADBDevice,
+        address: String,
+        displayName: String
+    ) {
+        usbWiFiHandoffCandidate = USBWiFiHandoffCandidate(
+            usbSerial: usbDevice.serial,
+            address: address,
+            displayName: displayName
+        )
+    }
+
     private func finishWirelessHandoff(
         usbDevice: AuthorizedADBDevice,
         address: String,
         displayName: String,
         activatePreparedMirror: Bool = true
     ) {
-        cancelWirelessReconnectWork()
         touchPairedPhone(
             id: usbDevice.serial,
             displayName: displayName,
             address: address
         )
         guard activatePreparedMirror else {
-            Logger.log("Prepared Wi-Fi handoff address=\(address) while keeping current USB mirror active")
+            rememberUSBWiFiHandoffCandidate(
+                usbDevice: usbDevice,
+                address: address,
+                displayName: displayName
+            )
+            Logger.log("Prepared Wi-Fi handoff standby address=\(address) while keeping USB mirror active")
             return
         }
+        cancelWirelessReconnectWork()
         selectedDevice.adbSerial = address
         selectedDevice.name = displayName
         selectedDevice.network = "Wi-Fi debugging"
@@ -1890,6 +1953,9 @@ final class AppModel: ObservableObject {
         usbConnectTask?.cancel()
         usbWiFiHandoffTask?.cancel()
         usbWiFiHandoffTask = nil
+        usbWiFiTakeoverTask?.cancel()
+        usbWiFiTakeoverTask = nil
+        usbWiFiHandoffCandidate = nil
         cancelWirelessReconnectWork()
         let generation = mirrorStartGeneration
         isPairing = true
@@ -1957,14 +2023,36 @@ final class AppModel: ObservableObject {
         let generation = mirrorStartGeneration
         usbWiFiHandoffTask = Task { [weak self] in
             guard let self else { return }
-            let prepared = await self.prepareWirelessMirror(
-                from: usbDevice,
-                activatePreparedMirror: false
-            )
-            guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
-            self.usbWiFiHandoffTask = nil
-            if prepared {
-                Logger.log("USB-to-Wi-Fi handoff prepared for next reconnect")
+            while !Task.isCancelled {
+                guard self.mirrorStartGeneration == generation else { return }
+                guard self.isMirroring, self.selectedDevice.adbSerial == usbDevice.serial else {
+                    self.usbWiFiHandoffTask = nil
+                    return
+                }
+
+                let prepared = await self.prepareWirelessMirror(
+                    from: usbDevice,
+                    activatePreparedMirror: false
+                )
+                guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
+                if prepared {
+                    self.usbWiFiHandoffTask = nil
+                    return
+                }
+
+                // Once `adb tcpip 5555` has taken, a standby candidate is
+                // remembered even when the readiness probe failed (e.g. Local
+                // Network permission denied). Re-running prepare would restart
+                // adbd on the phone every pass and kill the live USB mirror,
+                // so stop here and let the unplug takeover retry readiness.
+                if self.usbWiFiHandoffCandidate != nil {
+                    Logger.log("USB-to-Wi-Fi handoff standby candidate saved; stopping background retries")
+                    self.usbWiFiHandoffTask = nil
+                    return
+                }
+
+                Logger.log("USB-to-Wi-Fi handoff target not discoverable yet; retrying silently")
+                try? await Task.sleep(nanoseconds: Self.wirelessHandoffSilentRetryDelayNanoseconds)
             }
         }
     }
@@ -3101,13 +3189,13 @@ final class AppModel: ObservableObject {
 
         let serial = selectedDevice.adbSerial
         if let serial, Self.isWirelessADBTarget(serial) {
-            startWirelessMirroring(savedTarget: serial)
+            startWirelessMirroring(savedTarget: serial, presentLaunchFailures: manual)
             return
         }
-        launchNativeMirror(serial: serial)
+        launchNativeMirror(serial: serial, presentLaunchFailures: manual)
     }
 
-    private func startWirelessMirroring(savedTarget: String) {
+    private func startWirelessMirroring(savedTarget: String, presentLaunchFailures: Bool) {
         guard !isPairing else { return }
         wirelessStartTask?.cancel()
 
@@ -3190,7 +3278,7 @@ final class AppModel: ObservableObject {
                 )
             }
             self.selectedDevice.adbSerial = target
-            self.launchNativeMirror(serial: target)
+            self.launchNativeMirror(serial: target, presentLaunchFailures: presentLaunchFailures)
         }
     }
 
@@ -3202,6 +3290,9 @@ final class AppModel: ObservableObject {
         usbConnectTask = nil
         usbWiFiHandoffTask?.cancel()
         usbWiFiHandoffTask = nil
+        usbWiFiTakeoverTask?.cancel()
+        usbWiFiTakeoverTask = nil
+        usbWiFiHandoffCandidate = nil
         wirelessStartTask?.cancel()
         wirelessStartTask = nil
         if reconnectTask != nil {
@@ -3226,9 +3317,60 @@ final class AppModel: ObservableObject {
         }
     }
 
+    nonisolated static func launchSourceAppArguments(serial: String, package: String) -> [String] {
+        [
+            "-s", serial,
+            "shell",
+            "monkey",
+            "-p", package,
+            "-c", "android.intent.category.LAUNCHER",
+            "1"
+        ]
+    }
+
+    /// Click-through for a forwarded banner: first try to tap the genuine
+    /// notification row in the phone's shade (fires its real `contentIntent`,
+    /// so the exact tweet/chat opens); if it is gone or the phone stays
+    /// locked, fall back to launching the source app.
+    func openSourceAppFromForwardedNotification(
+        package: String,
+        serial notificationSerial: String?,
+        notificationKey: String? = nil,
+        title: String? = nil,
+        text: String? = nil
+    ) {
+        let package = package.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !package.isEmpty else { return }
+
+        let serial = (notificationSerial?.isEmpty == false ? notificationSerial : nil)
+            ?? selectedDevice.adbSerial
+        guard let serial, !serial.isEmpty else {
+            reportError("Can’t open phone app", "Connect the phone before opening a forwarded notification.")
+            return
+        }
+
+        let args = Self.launchSourceAppArguments(serial: serial, package: package)
+        NotificationTapService.tapQueue.async {
+            if NotificationTapService.tapForwardedNotificationInShade(
+                serial: serial,
+                notificationKey: notificationKey,
+                title: title,
+                text: text
+            ) {
+                return
+            }
+
+            let result = Tooling.runResult("adb", arguments: args, timeout: 5)
+            if !result.succeeded {
+                Logger.log("Could not open notification source app package=\(package): \(result.output)")
+            }
+        }
+    }
+
     private func recoverMissingMirrorTransport() {
         guard isMirroring || mirrorSession != nil || mirrorLaunchTask != nil else { return }
         Logger.log("Selected mirror transport disappeared; switching to reconnecting screen")
+        let lostSerial = selectedDevice.adbSerial
         mirrorStartGeneration += 1
         mirrorLaunchTask?.cancel()
         mirrorLaunchTask = nil
@@ -3240,12 +3382,88 @@ final class AppModel: ObservableObject {
             isRecording = false
             stopScreenRecordingCleanup()
         }
+        if startUSBWiFiHandoffTakeoverIfAvailable(usbSerial: lostSerial, finalMirrorFrame: nil) {
+            return
+        }
         noteMirrorSessionEnded()
         startDisconnectRecoveryFallback()
         showConnectionWindow(startsQRCodePairing: false)
     }
 
-    private func launchNativeMirror(serial: String?) {
+    @discardableResult
+    private func startUSBWiFiHandoffTakeoverIfAvailable(
+        usbSerial: String?,
+        finalMirrorFrame: NSRect?
+    ) -> Bool {
+        guard let usbSerial,
+              let candidate = usbWiFiHandoffCandidate,
+              candidate.usbSerial == usbSerial
+        else { return false }
+
+        Logger.log("USB mirror ended; attempting prepared Wi-Fi handoff address=\(candidate.address)")
+        if let finalMirrorFrame {
+            lastMirrorWindowFrame = finalMirrorFrame
+            connectionWindow?.setFrame(finalMirrorFrame, display: false)
+        }
+        usbWiFiHandoffTask?.cancel()
+        usbWiFiHandoffTask = nil
+        usbWiFiTakeoverTask?.cancel()
+        stopQRCodePairingSession()
+        isRecoveringConnection = true
+        isAwaitingReconnect = true
+        isAutoConnecting = true
+        activeError = nil
+
+        let adb = self.adb
+        let generation = mirrorStartGeneration
+        usbWiFiTakeoverTask = Task { [weak self] in
+            let readiness = await Self.waitForADBWirelessTargetReadiness(
+                adb: adb,
+                address: candidate.address,
+                attempts: Self.wirelessHandoffTakeoverAttempts,
+                delayNanoseconds: Self.wirelessHandoffRetryDelayNanoseconds,
+                preflightLocalNetworkAccess: { address in
+                    await Self.preflightLocalNetworkAccess(
+                        address: address,
+                        timeoutNanoseconds: Self.wirelessHandoffPreflightTimeoutNanoseconds
+                    )
+                },
+                maximumDuration: Self.wirelessHandoffTakeoverMaxDuration,
+                connectTimeout: Self.wirelessHandoffConnectTimeout,
+                shellTimeout: Self.wirelessHandoffShellTimeout
+            )
+
+            guard let self, !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
+            self.usbWiFiTakeoverTask = nil
+            if readiness.isReady {
+                self.touchPairedPhone(
+                    id: candidate.usbSerial,
+                    displayName: candidate.displayName,
+                    address: candidate.address
+                )
+                self.selectedDevice.adbSerial = candidate.address
+                self.selectedDevice.name = candidate.displayName
+                self.selectedDevice.network = "Wi-Fi debugging"
+                self.isSelectedDeviceOnline = true
+                self.isRecoveringConnection = false
+                self.isAwaitingReconnect = false
+                self.isAutoConnecting = false
+                self.activeError = nil
+                self.launchNativeMirror(serial: candidate.address, presentLaunchFailures: false)
+            } else {
+                if readiness.sawNoRouteToHost {
+                    self.presentLocalNetworkPermissionHint()
+                }
+                Logger.log("Prepared Wi-Fi handoff address=\(candidate.address) was not ready after USB ended")
+                self.isAutoConnecting = false
+                self.startDisconnectRecoveryFallback()
+                self.showConnectionWindow(startsQRCodePairing: false)
+            }
+        }
+        return true
+    }
+
+    private func launchNativeMirror(serial: String?, presentLaunchFailures: Bool) {
         guard !isFirstRunOnboardingActive else {
             Logger.log("Skipping mirror launch while first-run onboarding is on screen")
             return
@@ -3260,6 +3478,7 @@ final class AppModel: ObservableObject {
         let session = MirrorSession(model: self, serial: serial, launchFrame: launchFrame)
         session.onSessionEnded = { [weak self, weak session] finalMirrorFrame in
             guard let self else { return }
+            let endedSerial = self.selectedDevice.adbSerial
             if self.mirrorSession === session {
                 self.mirrorSession = nil
             }
@@ -3268,11 +3487,17 @@ final class AppModel: ObservableObject {
                 self.isRecording = false
                 self.stopScreenRecordingCleanup()
             }
-            self.noteMirrorSessionEnded()
             if let finalMirrorFrame {
                 self.lastMirrorWindowFrame = finalMirrorFrame
                 self.connectionWindow?.setFrame(finalMirrorFrame, display: false)
             }
+            if self.startUSBWiFiHandoffTakeoverIfAvailable(
+                usbSerial: endedSerial,
+                finalMirrorFrame: finalMirrorFrame
+            ) {
+                return
+            }
+            self.noteMirrorSessionEnded()
             self.startDisconnectRecoveryFallback()
             self.showConnectionWindow(startsQRCodePairing: false)
         }
@@ -3301,7 +3526,17 @@ final class AppModel: ObservableObject {
                 self.isMirroring = false
                 self.mirrorLaunchTask = nil
                 Logger.log("Mirror launch failed: \(error)")
-                self.reportError("Couldn’t start mirroring", Self.mirrorFailureMessage(for: error))
+                if self.startUSBWiFiHandoffTakeoverIfAvailable(
+                    usbSerial: serial,
+                    finalMirrorFrame: nil
+                ) {
+                    return
+                }
+                if presentLaunchFailures {
+                    self.reportError("Couldn’t start mirroring", Self.mirrorFailureMessage(for: error))
+                } else {
+                    Logger.log("Suppressing background mirror launch failure toast")
+                }
                 self.showConnectionWindow()
             }
         }
@@ -3502,6 +3737,53 @@ final class AppModel: ObservableObject {
 
     func resizeMirror(scale: CGFloat) {
         mirrorSession?.scaleWindow(by: scale)
+    }
+
+    nonisolated static func orientationADBCommands(serial: String?, landscape: Bool) -> [[String]] {
+        var base: [String] = []
+        if let serial, !serial.isEmpty {
+            base = ["-s", serial]
+        }
+
+        if landscape {
+            return [
+                base + ["shell", "settings", "put", "system", "accelerometer_rotation", "0"],
+                base + ["shell", "settings", "put", "system", "user_rotation", "1"]
+            ]
+        }
+
+        return [
+            base + ["shell", "settings", "put", "system", "user_rotation", "0"],
+            base + ["shell", "settings", "put", "system", "accelerometer_rotation", "1"]
+        ]
+    }
+
+    func toggleLandscapeMode() {
+        let serial = selectedDevice.adbSerial
+        guard serial != nil else {
+            reportError("No connected phone", "Connect an Android phone before changing orientation.")
+            return
+        }
+
+        let nextValue = !isLandscapeModeRequested
+        isLandscapeModeRequested = nextValue
+        Task.detached(priority: .userInitiated) {
+            let commands = Self.orientationADBCommands(serial: serial, landscape: nextValue)
+            for arguments in commands {
+                let result = Tooling.runResult("adb", arguments: arguments, timeout: 3)
+                guard result.succeeded else {
+                    let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    await MainActor.run {
+                        self.isLandscapeModeRequested.toggle()
+                        self.reportError(
+                            "Orientation change failed",
+                            output.isEmpty ? "The phone did not accept the orientation command." : output
+                        )
+                    }
+                    return
+                }
+            }
+        }
     }
 
     func forwardKeyEventToMirrorSession(_ event: NSEvent) -> Bool {
@@ -3790,10 +4072,12 @@ final class AppModel: ObservableObject {
         if UserDefaults.standard.bool(forKey: explicitDeviceSetupRequiredDefaultsKey) {
             return true
         }
+
+        // Legacy bundle IDs are record-migration sources only. A stale explicit
+        // setup flag in an old suite should not make the current app ignore a
+        // live ADB device indefinitely.
         for suiteName in PairedPhoneStore.compatibilitySuites {
-            if UserDefaults(suiteName: suiteName)?.bool(forKey: explicitDeviceSetupRequiredDefaultsKey) == true {
-                return true
-            }
+            UserDefaults(suiteName: suiteName)?.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
         }
         return false
     }

@@ -5,7 +5,7 @@ APP="${1:-dist/PhoneRelay.app}"
 APP_NAME="${APP_NAME:-PhoneRelay}"
 PRODUCT_NAME="${PRODUCT_NAME:-PhoneRelay}"
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
-APP_VERSION="${APP_VERSION:-1.0.0}"
+APP_VERSION="${APP_VERSION:-1.0.1}"
 BUILD_NUMBER="${BUILD_NUMBER:-6}"
 # The source repo is private, so the feed lives on the public website mirror
 # (synced from each GitHub release by the phonerelay-website repo).

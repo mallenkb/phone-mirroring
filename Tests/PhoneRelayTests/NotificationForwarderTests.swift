@@ -279,7 +279,7 @@ final class NotificationForwarderTests: XCTestCase {
         XCTAssertNotNil(content.sound, "Forwarded notifications should pop up with sound")
     }
 
-    func testForwardedNotificationDoesNotCarryPhoneLaunchMetadata() {
+    func testForwardedNotificationCarriesLaunchMetadata() {
         let entry = NotificationForwarder.Entry(
             key: "0|com.whatsapp|-169|null|10279",
             pkg: "com.whatsapp",
@@ -290,7 +290,11 @@ final class NotificationForwarderTests: XCTestCase {
 
         let content = NotificationForwarder.notificationContent(for: entry, serial: "ABC123")
 
-        XCTAssertTrue(content.userInfo.isEmpty)
+        XCTAssertEqual(content.userInfo[NotificationForwarder.UserInfoKey.sourcePackage] as? String, "com.whatsapp")
+        XCTAssertEqual(content.userInfo[NotificationForwarder.UserInfoKey.deviceSerial] as? String, "ABC123")
+        XCTAssertEqual(content.userInfo[NotificationForwarder.UserInfoKey.notificationKey] as? String, "0|com.whatsapp|-169|null|10279")
+        XCTAssertEqual(content.userInfo[NotificationForwarder.UserInfoKey.notificationTitle] as? String, "Mom")
+        XCTAssertEqual(content.userInfo[NotificationForwarder.UserInfoKey.notificationText] as? String, "Dinner at 7?")
     }
 
     func testTitlelessNotificationFallsBackToAppNameWithSound() {
