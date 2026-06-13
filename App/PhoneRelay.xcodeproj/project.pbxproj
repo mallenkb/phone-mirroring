@@ -107,6 +107,7 @@
 				AA00000000000000000C0002 /* Copy scrcpy-server into Resources */,
 				AA00000000000000000C0007 /* Copy themed app icon into Resources */,
 				AA00000000000000000C0008 /* Copy legal resources */,
+				AA00000000000000000C0009 /* Generate adb dSYM */,
 				AA00000000000000000C0006 /* Sign adb with inherited sandbox */,
 			);
 			buildRules = (
@@ -168,6 +169,23 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		AA00000000000000000C0006 /* Sign adb with inherited sandbox */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(FULL_PRODUCT_NAME)/Contents/Resources/bin/adb",
+				"$(SRCROOT)/HelperInherit.entitlements",
+			);
+			name = "Sign adb with inherited sandbox";
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/sign-adb-with-inherited-sandbox.stamp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "ADB=\"$CODESIGNING_FOLDER_PATH/Contents/Resources/bin/adb\"\nif [ -f \"$ADB\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  codesign --force --options runtime --entitlements \"$SRCROOT/HelperInherit.entitlements\" --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$ADB\"\nfi\nif [ -n \"$SCRIPT_OUTPUT_FILE_0\" ]; then\n  touch \"$SCRIPT_OUTPUT_FILE_0\"\nfi\n";
+		};
 		AA00000000000000000C0008 /* Copy legal resources */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -186,22 +204,21 @@
 			shellPath = /bin/sh;
 			shellScript = "set -eu\nRESOURCES=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nmkdir -p \"$RESOURCES/LICENSES\"\ncp \"$SRCROOT/../THIRD_PARTY_NOTICES.md\" \"$RESOURCES/THIRD_PARTY_NOTICES.md\"\ncp \"$SRCROOT/../LICENSES/scrcpy-APACHE-2.0.txt\" \"$RESOURCES/LICENSES/scrcpy-APACHE-2.0.txt\"\n";
 		};
-		AA00000000000000000C0006 /* Sign adb with inherited sandbox */ = {
+		AA00000000000000000C0009 /* Generate adb dSYM */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputPaths = (
 				"$(TARGET_BUILD_DIR)/$(FULL_PRODUCT_NAME)/Contents/Resources/bin/adb",
-				"$(SRCROOT)/HelperInherit.entitlements",
 			);
-			name = "Sign adb with inherited sandbox";
+			name = "Generate adb dSYM";
 			outputPaths = (
-				"$(DERIVED_FILE_DIR)/sign-adb-with-inherited-sandbox.stamp",
+				"$(DWARF_DSYM_FOLDER_PATH)/adb.dSYM",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "ADB=\"$CODESIGNING_FOLDER_PATH/Contents/Resources/bin/adb\"\nif [ -f \"$ADB\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  codesign --force --options runtime --entitlements \"$SRCROOT/HelperInherit.entitlements\" --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$ADB\"\nfi\nif [ -n \"$SCRIPT_OUTPUT_FILE_0\" ]; then\n  touch \"$SCRIPT_OUTPUT_FILE_0\"\nfi\n";
+			shellScript = "set -eu\nADB=\"$TARGET_BUILD_DIR/$FULL_PRODUCT_NAME/Contents/Resources/bin/adb\"\nif [ -f \"$ADB\" ]; then\n  mkdir -p \"$DWARF_DSYM_FOLDER_PATH\"\n  dsymutil \"$ADB\" -o \"$DWARF_DSYM_FOLDER_PATH/adb.dSYM\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -255,21 +272,24 @@
 		AA00000000000000000E0021 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = PhoneRelay.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = 982T43ATCM;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Phone Relay";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INSTALL_PATH = "$(LOCAL_APPS_DIR)";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.1;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mallenkb.PhoneRelay;
 				PRODUCT_MODULE_NAME = PhoneRelayApp;
 				PRODUCT_NAME = PhoneRelay;
@@ -280,21 +300,24 @@
 		AA00000000000000000E0022 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = PhoneRelay.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = 982T43ATCM;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Phone Relay";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INSTALL_PATH = "$(LOCAL_APPS_DIR)";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.1;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mallenkb.PhoneRelay;
 				PRODUCT_MODULE_NAME = PhoneRelayApp;
 				PRODUCT_NAME = PhoneRelay;

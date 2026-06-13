@@ -2157,6 +2157,10 @@ final class AppModel: ObservableObject {
             // Nothing selected yet (e.g. fresh onboarding). Adopt the first live
             // device so a working USB/wireless connection advances the UI out of
             // first-run instead of leaving it pinned to the onboarding window.
+            if let liveDevice = devices.first {
+                select(device: liveDevice)
+                return
+            }
             selectedDevice = .demo
             isSelectedDeviceOnline = false
             return
