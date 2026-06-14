@@ -91,6 +91,44 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertTrue(project.contains("STRIP_INSTALLED_PRODUCT = NO;"))
     }
 
+    func testReleaseVersionMetadataStaysInSyncAcrossBuildEntrypoints() throws {
+        let project = try String(
+            contentsOf: Self.repoRoot()
+                .appendingPathComponent("App/PhoneRelay.xcodeproj/project.pbxproj"),
+            encoding: .utf8
+        )
+        let marketingVersion = try XCTUnwrap(Self.firstMatch(
+            pattern: #"MARKETING_VERSION = ([^;]+);"#,
+            in: project
+        ))
+        let buildNumber = try XCTUnwrap(Self.firstMatch(
+            pattern: #"CURRENT_PROJECT_VERSION = ([^;]+);"#,
+            in: project
+        ))
+
+        let swiftPMInfo = try Self.propertyList(at: Self.repoRoot()
+            .appendingPathComponent("Sources/PhoneRelay/Info.plist"))
+        XCTAssertEqual(swiftPMInfo["CFBundleShortVersionString"] as? String, marketingVersion)
+        XCTAssertEqual(swiftPMInfo["CFBundleVersion"] as? String, buildNumber)
+
+        for scriptName in ["scripts/build_and_run.sh", "scripts/package_app.sh"] {
+            let script = try String(
+                contentsOf: Self.repoRoot().appendingPathComponent(scriptName),
+                encoding: .utf8
+            )
+            XCTAssertEqual(
+                Self.shellDefault(named: "APP_VERSION", in: script),
+                marketingVersion,
+                "\(scriptName) should default to the Xcode marketing version"
+            )
+            XCTAssertEqual(
+                Self.shellDefault(named: "BUILD_NUMBER", in: script),
+                buildNumber,
+                "\(scriptName) should default to the Xcode build number"
+            )
+        }
+    }
+
     func testReleaseVersionComparisonHandlesTagsAndPatchOrdering() {
         XCTAssertTrue(AppModel.isReleaseVersionNewer("v0.1.2", than: "0.1.1"))
         XCTAssertTrue(AppModel.isReleaseVersionNewer("v0.1.10", than: "0.1.9"))
@@ -127,5 +165,20 @@ final class ReleaseReadinessTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+    }
+
+    private static func shellDefault(named name: String, in script: String) -> String? {
+        firstMatch(pattern: #"\#(name)="\$\{\#(name):-([^}]+)\}""#, in: script)
+    }
+
+    private static func firstMatch(pattern: String, in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, range: range),
+              match.numberOfRanges > 1,
+              let captureRange = Range(match.range(at: 1), in: text) else {
+            return nil
+        }
+        return String(text[captureRange])
     }
 }

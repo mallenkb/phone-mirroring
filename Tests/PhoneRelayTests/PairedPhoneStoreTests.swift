@@ -220,6 +220,22 @@ final class PairedPhoneStoreTests: XCTestCase {
         XCTAssertEqual(decoded, [record])
     }
 
+    func testDecodingLegacyRecordDefaultsAutoConnectToEnabled() throws {
+        let json = """
+        [{
+          "id": "phone-1",
+          "displayName": "Pixel",
+          "lastAddress": "198.51.100.5:5555",
+          "firstPaired": 1700000000,
+          "lastConnected": 1700000000
+        }]
+        """
+        let decoded = try JSONDecoder().decode([PairedPhoneRecord].self, from: Data(json.utf8))
+
+        XCTAssertEqual(decoded.count, 1)
+        XCTAssertFalse(decoded[0].autoConnectSuspended)
+    }
+
     func testLoadMigratesRecordFromCompatibilitySuite() {
         let primarySuite = "PhoneRelayTests.primary.\(UUID().uuidString)"
         let compatibilitySuite = "PhoneRelayTests.compat.\(UUID().uuidString)"

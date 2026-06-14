@@ -303,7 +303,12 @@ final class MirrorWindowChromeTests: XCTestCase {
     @MainActor
     func testFloatingToolbarWindowCanBecomeKeyWithoutBecomingMain() {
         let toolbar = MirrorToolbarWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 30),
+            contentRect: NSRect(
+                x: 0,
+                y: 0,
+                width: 320,
+                height: MirrorContentWindowController.toolbarBarHeight
+            ),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -785,7 +790,7 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testToolbarHorizontalPaddingStaysEightPoints() throws {
+    func testToolbarChromeSpacingKeepsPinnedActionIconsAndReadableTitle() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
@@ -795,15 +800,72 @@ final class MirrorWindowChromeTests: XCTestCase {
 
         window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: true, animate: false)
         controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
-        XCTAssertEqual(chromeBar.horizontalPaddingForTesting, 8, accuracy: 0.001)
-        XCTAssertEqual(chromeBar.trafficLightLeadingPaddingForTesting, 8, accuracy: 0.001)
-        XCTAssertEqual(chromeBar.trailingActionsPaddingForTesting, 8, accuracy: 0.001)
+        XCTAssertEqual(chromeBar.horizontalPaddingForTesting, 5, accuracy: 0.001)
+        XCTAssertEqual(chromeBar.trafficLightLeadingPaddingForTesting, 12, accuracy: 0.001)
+        XCTAssertEqual(chromeBar.titleLeadingAfterTrafficLightsForTesting, 12, accuracy: 0.001)
+        XCTAssertEqual(chromeBar.titleLineBreakModeForTesting, .byTruncatingTail)
+        XCTAssertEqual(chromeBar.titleMaximumNumberOfLinesForTesting, 1)
+        XCTAssertEqual(chromeBar.trailingActionsPaddingForTesting, 5, accuracy: 0.001)
+        XCTAssertEqual(chromeBar.trailingActionsSpacingForTesting, 0, accuracy: 0.001)
+        XCTAssertEqual(MirrorChromeOutlineButton.touchWidth, 34, accuracy: 0.001)
+        XCTAssertEqual(MirrorChromeOutlineButton.touchHeight, 30, accuracy: 0.001)
+        XCTAssertEqual(MirrorChromeOutlineButton.visualIconSize, 18, accuracy: 0.001)
+        XCTAssertEqual(MirrorChromeOutlineButton.symbolPointSize, 14, accuracy: 0.001)
+        XCTAssertEqual(chromeBar.recentAppsIconNameForTesting, "rectangle.stack.fill")
+        XCTAssertEqual(
+            chromeBar.rightActionHoverCornerRadiiForTesting,
+            [6, 6, 6],
+            "All right-side action hovers should use the same compact rounded rectangle treatment."
+        )
+        XCTAssertEqual(
+            chromeBar.rightActionHoverLeadingCornerRadiiForTesting.map { $0 ?? MirrorChromeOutlineButton.defaultHoverCornerRadius },
+            [6, 6, 6],
+            "Every action hover should use the standard icon hover radius on both sides."
+        )
+        XCTAssertEqual(
+            chromeBar.rightActionHoverHeightsForTesting,
+            [30, 30, 30],
+            "The hover background must stay at the fixed action-button height."
+        )
+        XCTAssertEqual(
+            chromeBar.rightActionHoverRoundedCornersForTesting,
+            [
+                [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner],
+                [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner],
+                [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner],
+            ]
+        )
+        XCTAssertEqual(
+            MirrorChromeOutlineButton.touchWidth + chromeBar.trailingActionsSpacingForTesting,
+            34,
+            accuracy: 0.001,
+            "The right-side icon center spacing must stay at the old 28pt button + 6pt gap distance."
+        )
 
         window.setFrame(NSRect(origin: window.frame.origin, size: window.maxSize), display: true, animate: false)
         controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
-        XCTAssertEqual(chromeBar.horizontalPaddingForTesting, 8, accuracy: 0.001)
-        XCTAssertEqual(chromeBar.trafficLightLeadingPaddingForTesting, 8, accuracy: 0.001)
-        XCTAssertEqual(chromeBar.trailingActionsPaddingForTesting, 8, accuracy: 0.001)
+        XCTAssertEqual(chromeBar.horizontalPaddingForTesting, 5, accuracy: 0.001)
+        XCTAssertEqual(chromeBar.trafficLightLeadingPaddingForTesting, 12, accuracy: 0.001)
+        XCTAssertEqual(chromeBar.titleLeadingAfterTrafficLightsForTesting, 12, accuracy: 0.001)
+        XCTAssertEqual(chromeBar.titleLineBreakModeForTesting, .byTruncatingTail)
+        XCTAssertEqual(chromeBar.titleMaximumNumberOfLinesForTesting, 1)
+        XCTAssertEqual(chromeBar.trailingActionsPaddingForTesting, 5, accuracy: 0.001)
+        XCTAssertEqual(chromeBar.trailingActionsSpacingForTesting, 0, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testTrafficLightDotsUseNativeSizeWithPaddedHoverGlyphs() {
+        XCTAssertEqual(MirrorTrafficLightButton.dotDiameter, 14.4, accuracy: 0.001)
+        XCTAssertEqual(MirrorTrafficLightButton.glyphCanvasDiameter, 12, accuracy: 0.001)
+        XCTAssertEqual(MirrorTrafficLightButton.glyphStrokeWidth, 2.55, accuracy: 0.001)
+        XCTAssertEqual(MirrorTrafficLightButton.glyphInset, 3.7, accuracy: 0.001)
+        XCTAssertEqual(MirrorTrafficLightButton.minimizeGlyphInset, 3.4, accuracy: 0.001)
+        XCTAssertEqual(MirrorTrafficLightButton.zoomGlyphInset, 3.35, accuracy: 0.001)
+        XCTAssertGreaterThan(
+            MirrorTrafficLightButton.zoomGlyphInset * 2,
+            6,
+            "Keep visible color padding around each hover glyph inside the traffic-light dot."
+        )
     }
 
     @MainActor
@@ -813,10 +875,16 @@ final class MirrorWindowChromeTests: XCTestCase {
         let controller = MirrorContentWindowController(model: model, session: session)
         controller.setStreamSize(width: 1080, height: 2340)
         let window = try XCTUnwrap(controller.window)
+        let chromeBar = controller.chromeBarForTesting
 
         window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: true, animate: false)
         controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
         XCTAssertEqual(controller.chromeHeightForTesting, MirrorContentWindowController.toolbarBarHeight, accuracy: 0.001)
+        XCTAssertEqual(
+            chromeBar.backgroundCornerRadiusForTesting,
+            MirrorContentWindowController.toolbarBarHeight / 2,
+            accuracy: 0.001
+        )
         XCTAssertEqual(controller.renderTopInsetForTesting, 0, accuracy: 0.001)
 
         window.setFrame(NSRect(origin: window.frame.origin, size: window.maxSize), display: true, animate: false)
@@ -947,6 +1015,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(controller.isChromeVisibleForTesting)
         XCTAssertFalse(controller.isChromeBarHiddenForTesting)
         XCTAssertTrue(controller.isToolbarWindowVisibleForTesting)
+        XCTAssertFalse(controller.toolbarIgnoresMouseEventsForTesting)
     }
 
     @MainActor
@@ -961,6 +1030,7 @@ final class MirrorWindowChromeTests: XCTestCase {
 
         XCTAssertFalse(controller.isChromeVisibleForTesting)
         XCTAssertTrue(controller.isChromeBarHiddenForTesting)
+        XCTAssertTrue(controller.toolbarIgnoresMouseEventsForTesting)
     }
 
     @MainActor
@@ -976,6 +1046,61 @@ final class MirrorWindowChromeTests: XCTestCase {
 
         XCTAssertFalse(controller.isChromeVisibleForTesting)
         XCTAssertTrue(controller.isChromeBarHiddenForTesting)
+        XCTAssertTrue(controller.toolbarIgnoresMouseEventsForTesting)
+    }
+
+    @MainActor
+    func testFloatingToolbarUsesShortStandardHideAnimation() {
+        XCTAssertEqual(MirrorContentWindowController.chromeHideDelay, 0.012, accuracy: 0.001)
+        XCTAssertEqual(MirrorContentWindowController.chromeHideAnimationDuration, 0.18, accuracy: 0.001)
+        XCTAssertEqual(MirrorContentWindowController.toolbarAnimationOffset, 6, accuracy: 0.001)
+        XCTAssertEqual(MirrorChromeBar.barRevealDuration, 0.28, accuracy: 0.001)
+        XCTAssertEqual(MirrorChromeBar.barHideDuration, 0.18, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testFloatingToolbarOrdersOutWhenAppResignsActive() {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+
+        controller.simulateRevealZoneHover(true)
+        XCTAssertTrue(controller.isChromeVisibleForTesting)
+
+        controller.simulateAppResignActiveForTesting()
+
+        XCTAssertFalse(controller.isChromeVisibleForTesting)
+        XCTAssertTrue(controller.toolbarIgnoresMouseEventsForTesting)
+        XCTAssertFalse(controller.toolbarIsVisibleForTesting)
+    }
+
+    @MainActor
+    func testFloatingToolbarOrdersOutBeforeMirrorMinimizes() {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+
+        controller.simulateRevealZoneHover(true)
+        XCTAssertTrue(controller.isChromeVisibleForTesting)
+        XCTAssertTrue(controller.toolbarIsVisibleForTesting)
+
+        controller.simulateWindowWillMiniaturizeForTesting()
+
+        XCTAssertFalse(controller.isChromeVisibleForTesting)
+        XCTAssertTrue(controller.toolbarIgnoresMouseEventsForTesting)
+        XCTAssertFalse(controller.toolbarIsVisibleForTesting)
+    }
+
+    @MainActor
+    func testMirrorDeminiaturizeLeavesToolbarHidden() throws {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+
+        controller.simulateWindowDidDeminiaturizeForTesting()
+
+        XCTAssertTrue(controller.toolbarIgnoresMouseEventsForTesting)
+        XCTAssertFalse(controller.isChromeVisibleForTesting)
     }
 
     @MainActor

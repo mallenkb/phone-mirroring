@@ -21,6 +21,22 @@ private final class OneShotCallback: @unchecked Sendable {
     }
 }
 
+enum MirrorScrollFeel: String, CaseIterable, Identifiable {
+    case direct
+    case balanced
+    case smooth
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .direct: return "Direct"
+        case .balanced: return "Balanced"
+        case .smooth: return "Smooth"
+        }
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     typealias NotificationAuthorizationRequester = (@escaping (Bool, Error?) -> Void) -> Void
@@ -31,12 +47,20 @@ final class AppModel: ObservableObject {
         "Allow Local Network so PhoneRelay can find your phone on Wi-Fi for wireless pairing, USB-to-Wi-Fi handoff, and automatic reconnect."
     nonisolated static let notificationPermissionReason =
         "Turn on notifications if you want PhoneRelay to show unread notifications from your device on this Mac."
+    nonisolated static let localNetworkRecommendedFix =
+        "Allow Local Network in macOS Settings, or connect the phone over USB."
     nonisolated static let notificationForwardingDefaultsKey = "MirrorBehavior.notificationForwardingEnabled"
     nonisolated static let privacyPolicyURL = URL(string: "https://mallenkb.github.io/phone-mirroring/privacy.html")!
     nonisolated static let supportURL = URL(string: "https://mallenkb.github.io/phone-mirroring/support.html")!
     nonisolated static let latestReleaseURL = URL(string: "https://github.com/mallenkb/phone-mirroring/releases/latest")!
     nonisolated static let releaseMetadataURL = URL(string: "https://mallenkb.github.io/phone-mirroring/release.json")!
     nonisolated static let mirrorScrollSpeedDefaultsKey = "MirrorBehavior.scrollSpeedPercent"
+    nonisolated static let mirrorScrollFeelDefaultsKey = "MirrorBehavior.scrollFeel"
+    nonisolated static let mirrorProfileDefaultsKey = "MirrorQuality.profile"
+    nonisolated static let screenshotFolderPathDefaultsKey = "Capture.screenshotFolderPath"
+    nonisolated static let screenshotFolderBookmarkDefaultsKey = "Capture.screenshotFolderBookmark"
+    nonisolated static let recordingFolderPathDefaultsKey = "Capture.recordingFolderPath"
+    nonisolated static let recordingFolderBookmarkDefaultsKey = "Capture.recordingFolderBookmark"
     nonisolated static var canUseUserNotifications: Bool {
         Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app"
     }
@@ -54,8 +78,45 @@ final class AppModel: ObservableObject {
         return min(100, max(10, value))
     }
 
+    nonisolated static func defaultMirrorScrollFeel(storedValue: Any?) -> MirrorScrollFeel {
+        guard let rawValue = storedValue as? String,
+              let feel = MirrorScrollFeel(rawValue: rawValue) else {
+            return .balanced
+        }
+        return feel
+    }
+
     nonisolated static func scaledMirrorScrollDelta(_ delta: CGFloat, speedPercent: Int) -> CGFloat {
         delta * CGFloat(defaultMirrorScrollSpeedPercent(storedValue: speedPercent)) / 100
+    }
+
+    nonisolated static func shapedMirrorScrollDelta(
+        _ delta: CGFloat,
+        speedPercent: Int,
+        feel: MirrorScrollFeel
+    ) -> CGFloat {
+        let scaled = scaledMirrorScrollDelta(delta, speedPercent: speedPercent)
+        guard scaled != 0 else { return 0 }
+        let magnitude = abs(scaled)
+        let sign: CGFloat = scaled < 0 ? -1 : 1
+        let shapedMagnitude: CGFloat
+        switch feel {
+        case .direct:
+            shapedMagnitude = magnitude
+        case .balanced:
+            shapedMagnitude = pow(magnitude, 0.92)
+        case .smooth:
+            shapedMagnitude = pow(magnitude, 0.84)
+        }
+        return sign * shapedMagnitude
+    }
+
+    nonisolated static func defaultMirrorProfile(storedValue: Any?) -> MirrorProfile {
+        guard let rawValue = storedValue as? String,
+              let profile = MirrorProfile(rawValue: rawValue) else {
+            return .recording
+        }
+        return profile
     }
 
     nonisolated static func isReleaseVersionNewer(_ latestVersion: String, than currentVersion: String) -> Bool {
@@ -130,6 +191,14 @@ final class AppModel: ObservableObject {
             UserDefaults.standard.set(mirrorScrollSpeedPercent, forKey: Self.mirrorScrollSpeedDefaultsKey)
         }
     }
+    @Published var mirrorScrollFeel: MirrorScrollFeel =
+        AppModel.defaultMirrorScrollFeel(
+            storedValue: UserDefaults.standard.object(forKey: AppModel.mirrorScrollFeelDefaultsKey)
+        ) {
+        didSet {
+            UserDefaults.standard.set(mirrorScrollFeel.rawValue, forKey: Self.mirrorScrollFeelDefaultsKey)
+        }
+    }
     /// Mirrors Android notifications into macOS Notification Center by polling
     /// `dumpsys notification` over adb — no companion app on the phone. Off by
     /// default, and disabled automatically if macOS notification permission is
@@ -148,8 +217,18 @@ final class AppModel: ObservableObject {
     }
     @Published private(set) var notificationForwardingPermissionDenied = false
     @Published private(set) var localNetworkPermissionGrantedForOnboarding = false
+    @Published private(set) var isAwaitingLocalNetworkSettingsReturn = false
     @Published private(set) var notificationPermissionGrantedForOnboarding = false
+    @Published private(set) var latestAuthorizedADBDevices: [AuthorizedADBDevice] = []
+    @Published private(set) var latestHasUnauthorizedUSBDevice = false
+    @Published private(set) var latestADBStatusText = "Not checked"
+    @Published private(set) var reconnectAttemptCount = 0
     @Published var captureCue: CaptureCue?
+    @Published private(set) var transferActivity: TransferActivity?
+    @Published private(set) var screenshotFolderPath: String? =
+        UserDefaults.standard.string(forKey: AppModel.screenshotFolderPathDefaultsKey)
+    @Published private(set) var recordingFolderPath: String? =
+        UserDefaults.standard.string(forKey: AppModel.recordingFolderPathDefaultsKey)
 
     // MARK: - Mirroring quality (applied to the next mirror session)
 
@@ -196,6 +275,14 @@ final class AppModel: ObservableObject {
             }
         }
     }
+    @Published var selectedMirrorProfile: MirrorProfile =
+        AppModel.defaultMirrorProfile(storedValue: UserDefaults.standard.object(forKey: AppModel.mirrorProfileDefaultsKey)) {
+        didSet {
+            guard oldValue != selectedMirrorProfile else { return }
+            UserDefaults.standard.set(selectedMirrorProfile.rawValue, forKey: Self.mirrorProfileDefaultsKey)
+            applyMirrorProfile(selectedMirrorProfile)
+        }
+    }
     /// Wi-Fi handoff is the default transport behavior; this remains only so
     /// older saved USB preferences do not silently disable handoff.
     var preferUSBMirroring: Bool { false }
@@ -237,12 +324,40 @@ final class AppModel: ObservableObject {
     /// Posts a transient macOS notification (best-effort; silently no-ops if the
     /// user hasn't granted notification permission).
     func notify(title: String, body: String) {
+        guard Self.canUseUserNotifications else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         )
+    }
+
+    enum TransferActivityPhase: Equatable {
+        case installing
+        case copying
+        case completed
+        case failed
+    }
+
+    struct TransferActivity: Equatable, Identifiable {
+        let id = UUID()
+        var phase: TransferActivityPhase
+        var title: String
+        var detail: String
+
+        var isInProgress: Bool {
+            phase == .installing || phase == .copying
+        }
+
+        var symbolName: String {
+            switch phase {
+            case .installing: return "square.and.arrow.down.fill"
+            case .copying: return "arrow.down.doc.fill"
+            case .completed: return "checkmark.circle.fill"
+            case .failed: return "exclamationmark.triangle.fill"
+            }
+        }
     }
 
     /// Handles files dropped onto the mirror: `.apk`s are installed, everything
@@ -262,8 +377,14 @@ final class AppModel: ObservableObject {
             var installed = 0
             var pushed = 0
             var failure: String?
-            for url in fileURLs where failure == nil {
+            for (index, url) in fileURLs.enumerated() where failure == nil {
                 let isAPK = url.pathExtension.lowercased() == "apk"
+                self?.transferActivity = Self.transferActivity(
+                    for: url,
+                    isAPK: isAPK,
+                    index: index,
+                    total: fileURLs.count
+                )
                 let args = Self.adbDeviceArguments(serial: serial) + (
                     isAPK
                         ? ["install", "-r", url.path]
@@ -283,20 +404,55 @@ final class AppModel: ObservableObject {
             }
             guard let self else { return }
             if let failure {
+                self.transferActivity = TransferActivity(
+                    phase: .failed,
+                    title: "Transfer failed",
+                    detail: failure
+                )
                 self.reportError("Transfer failed", "Couldn’t send a file to the phone: \(failure)")
             } else {
                 var parts: [String] = []
                 if installed > 0 { parts.append("Installed \(installed) app\(installed == 1 ? "" : "s")") }
                 if pushed > 0 { parts.append("Copied \(pushed) file\(pushed == 1 ? "" : "s") to Download") }
                 let summary = parts.joined(separator: " · ")
+                self.transferActivity = TransferActivity(
+                    phase: .completed,
+                    title: summary.isEmpty ? "Transfer complete" : summary,
+                    detail: ""
+                )
                 Logger.log("Dropped files: \(summary)")
                 self.notify(title: "Sent to phone", body: summary)
             }
         }
     }
 
+    private nonisolated static func transferActivity(
+        for url: URL,
+        isAPK: Bool,
+        index: Int,
+        total: Int
+    ) -> TransferActivity {
+        let fileName = url.lastPathComponent
+        let detail = total <= 1 ? fileName : "\(index + 1) of \(total) · \(fileName)"
+        return TransferActivity(
+            phase: isAPK ? .installing : .copying,
+            title: isAPK ? "Installing APK" : "Copying file",
+            detail: detail
+        )
+    }
+
     func dismissError() {
         activeError = nil
+    }
+
+    func applyMirrorProfile(_ profile: MirrorProfile) {
+        suppressMirrorSettingsRestart = true
+        mirrorMaxSize = profile.maxSize
+        mirrorBitRateMbps = profile.bitRateMbps
+        mirrorMaxFps = profile.maxFps
+        mirrorAudioEnabled = profile.audioEnabled
+        suppressMirrorSettingsRestart = false
+        scheduleMirrorSettingsRestart()
     }
 
     /// Reveals the most recently saved screenshot or recording in Finder.
@@ -304,6 +460,46 @@ final class AppModel: ObservableObject {
         guard let url = lastCaptureURL,
               FileManager.default.fileExists(atPath: url.path) else { return }
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    func chooseScreenshotFolder() {
+        chooseCaptureFolder(title: "Choose Screenshot Folder") { [weak self] url in
+            self?.setScreenshotFolder(url)
+        }
+    }
+
+    func chooseRecordingFolder() {
+        chooseCaptureFolder(title: "Choose Screen Recording Folder") { [weak self] url in
+            self?.setRecordingFolder(url)
+        }
+    }
+
+    func resetScreenshotFolder() {
+        clearCaptureFolder(pathKey: Self.screenshotFolderPathDefaultsKey, bookmarkKey: Self.screenshotFolderBookmarkDefaultsKey)
+        screenshotFolderPath = nil
+    }
+
+    func resetRecordingFolder() {
+        clearCaptureFolder(pathKey: Self.recordingFolderPathDefaultsKey, bookmarkKey: Self.recordingFolderBookmarkDefaultsKey)
+        recordingFolderPath = nil
+    }
+
+    func setScreenshotFolder(_ url: URL) {
+        storeCaptureFolder(url, pathKey: Self.screenshotFolderPathDefaultsKey, bookmarkKey: Self.screenshotFolderBookmarkDefaultsKey)
+        screenshotFolderPath = url.path
+    }
+
+    func setRecordingFolder(_ url: URL) {
+        storeCaptureFolder(url, pathKey: Self.recordingFolderPathDefaultsKey, bookmarkKey: Self.recordingFolderBookmarkDefaultsKey)
+        recordingFolderPath = url.path
+    }
+
+    func screenshotOutputDirectory() -> URL? {
+        captureFolder(pathKey: Self.screenshotFolderPathDefaultsKey, bookmarkKey: Self.screenshotFolderBookmarkDefaultsKey)
+    }
+
+    func recordingOutputDirectory() -> URL? {
+        captureFolder(pathKey: Self.recordingFolderPathDefaultsKey, bookmarkKey: Self.recordingFolderBookmarkDefaultsKey)
     }
 
     /// Reveals the rolling diagnostic log in Finder so the user can inspect or
@@ -314,6 +510,60 @@ final class AppModel: ObservableObject {
             FileManager.default.createFile(atPath: url.path, contents: nil)
         }
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    private func chooseCaptureFolder(title: String, onSelection: @escaping (URL) -> Void) {
+        let panel = NSOpenPanel()
+        panel.title = title
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Choose"
+        if panel.runModal() == .OK, let url = panel.url {
+            onSelection(url)
+        }
+    }
+
+    private func storeCaptureFolder(_ url: URL, pathKey: String, bookmarkKey: String) {
+        UserDefaults.standard.set(url.path, forKey: pathKey)
+        do {
+            let bookmark = try url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
+            UserDefaults.standard.set(bookmark, forKey: bookmarkKey)
+        } catch {
+            Logger.log("Could not store capture folder bookmark for \(url.path): \(error.localizedDescription)")
+            UserDefaults.standard.removeObject(forKey: bookmarkKey)
+        }
+    }
+
+    private func clearCaptureFolder(pathKey: String, bookmarkKey: String) {
+        UserDefaults.standard.removeObject(forKey: pathKey)
+        UserDefaults.standard.removeObject(forKey: bookmarkKey)
+    }
+
+    private func captureFolder(pathKey: String, bookmarkKey: String) -> URL? {
+        if let data = UserDefaults.standard.data(forKey: bookmarkKey) {
+            do {
+                var stale = false
+                let url = try URL(
+                    resolvingBookmarkData: data,
+                    options: [.withSecurityScope],
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &stale
+                )
+                if stale {
+                    storeCaptureFolder(url, pathKey: pathKey, bookmarkKey: bookmarkKey)
+                }
+                return url
+            } catch {
+                Logger.log("Could not resolve capture folder bookmark: \(error.localizedDescription)")
+            }
+        }
+
+        guard let path = UserDefaults.standard.string(forKey: pathKey), !path.isEmpty else {
+            return nil
+        }
+        return URL(fileURLWithPath: path, isDirectory: true)
     }
 
     /// Maps a thrown mirror/host error to a friendly, actionable sentence.
@@ -429,6 +679,9 @@ final class AppModel: ObservableObject {
     private var consecutiveQuickMirrorFailures = 0
     private var autoMirrorBackoffUntil: Date?
     private var mirrorStartGeneration = 0
+    private var autoConnectEligiblePairedPhones: [PairedPhoneRecord] {
+        pairedPhones.filter { !$0.autoConnectSuspended }
+    }
     /// True while a mirror session has ended but we're about to retry/reconnect
     /// (e.g. audio→video fallback, or within the backoff window). Keeps the app
     /// from terminating in the windowless gap between sessions.
@@ -528,6 +781,22 @@ final class AppModel: ObservableObject {
 
     var mirrorLoadingDeviceTitle: String {
         Self.mirrorLoadingDeviceTitle(name: selectedDevice.name)
+    }
+
+    var connectionHealthSnapshot: ConnectionHealthSnapshot {
+        Self.connectionHealthSnapshot(
+            selectedSerial: selectedDevice.adbSerial,
+            selectedNetwork: selectedDevice.network,
+            isSelectedDeviceOnline: isSelectedDeviceOnline,
+            isActivelyConnecting: isActivelyConnecting,
+            hasUnauthorizedUSBDevice: latestHasUnauthorizedUSBDevice,
+            authorizedDevices: latestAuthorizedADBDevices,
+            discoveredPhones: discoveredPhones,
+            localNetworkPermissionGranted: localNetworkPermissionGrantedForOnboarding,
+            adbStatusText: latestADBStatusText,
+            reconnectAttemptCount: reconnectAttemptCount,
+            activeErrorMessage: activeError?.message
+        )
     }
 
     /// Whether we're still inside the brief post-launch window during which the
@@ -710,6 +979,18 @@ final class AppModel: ObservableObject {
         notificationSettingsOpener()
     }
 
+    func openLocalNetworkSettings() {
+        isAwaitingLocalNetworkSettingsReturn = true
+        Self.openSystemLocalNetworkSettings()
+    }
+
+    func refreshLocalNetworkPermissionAfterSettingsReturn() {
+        guard isAwaitingLocalNetworkSettingsReturn else { return }
+        isAwaitingLocalNetworkSettingsReturn = false
+        requestLocalNetworkPermissionFromOnboarding()
+        scanADBDevices()
+    }
+
     func requestLocalNetworkPermissionFromOnboarding() {
         localNetworkPermissionPrompter { [weak self] granted in
             Task { @MainActor [weak self] in
@@ -721,6 +1002,10 @@ final class AppModel: ObservableObject {
     private nonisolated static func openSystemNotificationSettings() {
         let bundleIdentifier = Bundle.main.bundleIdentifier ?? "com.mallenkb.PhoneRelay"
         NSWorkspace.shared.open(notificationSettingsURL(bundleIdentifier: bundleIdentifier))
+    }
+
+    private nonisolated static func openSystemLocalNetworkSettings() {
+        NSWorkspace.shared.open(localNetworkSettingsURL)
     }
 
     nonisolated static func notificationSettingsURL(bundleIdentifier: String) -> URL {
@@ -746,7 +1031,6 @@ final class AppModel: ObservableObject {
             case .failed, .waiting:
                 once.run {
                     browser.cancel()
-                    NSWorkspace.shared.open(localNetworkSettingsURL)
                     completion(false)
                 }
             case .cancelled:
@@ -778,7 +1062,7 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
-        stopMirroring()
+        stopMirroring(suspendAutoConnect: false)
         discovery.stop()
         notificationForwarder.stop()
         stopQRCodePairingSession()
@@ -923,9 +1207,10 @@ final class AppModel: ObservableObject {
     /// seconds for a previously-paired phone to advertise its connect service.
     /// Bluetooth-style auto-reconnect.
     private func attemptAutoReconnect() {
-        guard !pairedPhones.isEmpty else {
+        let reconnectRecords = autoConnectEligiblePairedPhones
+        guard !reconnectRecords.isEmpty else {
             guard Self.shouldAttemptRecoveredWiFiReconnect(
-                hasSavedDevices: false,
+                hasSavedDevices: !pairedPhones.isEmpty,
                 explicitDeviceSetupRequired: explicitDeviceSetupRequired
             ) else { return }
             attemptRecoveredWiFiReconnect()
@@ -960,7 +1245,7 @@ final class AppModel: ObservableObject {
                     return
                 }
 
-                for record in Self.recordsByMostRecent(self.pairedPhones) {
+                for record in Self.recordsByMostRecent(self.autoConnectEligiblePairedPhones) {
                     if Self.isWirelessRecord(record) {
                         if let connectedAddress = await Self.connectToRememberedWireless(
                             adb: adb,
@@ -1138,7 +1423,8 @@ final class AppModel: ObservableObject {
             return
         }
 
-        let records = Self.recordsByMostRecent(pairedPhones)
+        let records = Self.recordsByMostRecent(autoConnectEligiblePairedPhones)
+        guard !records.isEmpty else { return }
         let livePhones = autoConnectablePhones(in: livePhones)
         let liveRememberedPhone = mostRecentPairedPhone(in: livePhones)
 
@@ -1259,6 +1545,54 @@ final class AppModel: ObservableObject {
         store.save(pairedPhones)
     }
 
+    private func setAutoConnectSuspendedForSelectedDevice(_ suspended: Bool) {
+        guard selectedDevice.adbSerial != nil || selectedDevice.id != MirrorDevice.demo.id else { return }
+        setAutoConnectSuspended(suspended) { [selectedDevice] record in
+            Self.recordMatchesSelectedDevice(record, selectedDevice: selectedDevice)
+        }
+    }
+
+    private func resumeAutoConnect(for record: PairedPhoneRecord) {
+        setAutoConnectSuspended(false) { candidate in
+            candidate.id == record.id
+                || candidate.lastAddress == record.lastAddress
+                || Self.recordMatchesSelectedADBSerial(candidate, selectedSerial: record.id)
+                || Self.recordMatchesSelectedADBSerial(candidate, selectedSerial: record.lastAddress)
+        }
+    }
+
+    private func setAutoConnectSuspended(
+        _ suspended: Bool,
+        where matches: (PairedPhoneRecord) -> Bool
+    ) {
+        var changed = false
+        pairedPhones = pairedPhones.map { record in
+            guard matches(record), record.autoConnectSuspended != suspended else { return record }
+            changed = true
+            var updated = record
+            updated.autoConnectSuspended = suspended
+            return updated
+        }
+        if changed {
+            store.save(pairedPhones)
+        }
+    }
+
+    nonisolated static func recordMatchesSelectedDevice(
+        _ record: PairedPhoneRecord,
+        selectedDevice: MirrorDevice
+    ) -> Bool {
+        if record.id == selectedDevice.id {
+            return true
+        }
+        if let serial = selectedDevice.adbSerial,
+           recordMatchesSelectedADBSerial(record, selectedSerial: serial) {
+            return true
+        }
+        return PairedPhoneStore.normalizedDeviceName(record.displayName)
+            == PairedPhoneStore.normalizedDeviceName(selectedDevice.name)
+    }
+
     private func selectedDisplayName(for fallback: String) -> String {
         Self.specificDeviceName(fallback) ?? Self.specificDeviceName(selectedDevice.name) ?? fallback
     }
@@ -1279,6 +1613,7 @@ final class AppModel: ObservableObject {
             }.value
             guard let self else { return }
             self.isScanning = false
+            self.recordADBHealth(output)
             self.applyADBOutput(output)
         }
     }
@@ -1298,6 +1633,7 @@ final class AppModel: ObservableObject {
                 }.value
                 guard let self else { return }
                 let authorized = Self.authorizedADBDevices(in: output)
+                self.recordADBHealth(output, authorizedDevices: authorized)
                 self.updateUSBAuthorizationHint(from: output, authorizedDevices: authorized)
 
                 if Self.shouldUSBInterruptReconnect(
@@ -1349,8 +1685,9 @@ final class AppModel: ObservableObject {
                 // a later reconnect can use it without making USB wait. Never
                 // fires mid-session, and never twice for the same plug-in.
                 if shouldPrioritizeUSBHandoff
+                    && (self.pairedPhones.isEmpty || !self.autoConnectEligiblePairedPhones.isEmpty)
                     && Self.shouldAutoStartAuthorizedUSB(
-                        hasSavedDevices: !self.pairedPhones.isEmpty,
+                        hasSavedDevices: !self.autoConnectEligiblePairedPhones.isEmpty,
                         explicitDeviceSetupRequired: self.explicitDeviceSetupRequired
                     ) {
                     if let usbDevice = Self.usbHandoffCandidate(
@@ -1382,7 +1719,7 @@ final class AppModel: ObservableObject {
                 ), let serial = self.selectedDevice.adbSerial,
                    let liveDevice = Self.liveSelectedOrRememberedDevice(
                     selectedSerial: serial,
-                    pairedPhones: self.pairedPhones,
+                    pairedPhones: self.autoConnectEligiblePairedPhones,
                     authorizedDevices: authorized
                    ) {
                     Logger.log("Online device is idle; auto-starting mirror serial=\(liveDevice.serial)")
@@ -1445,7 +1782,7 @@ final class AppModel: ObservableObject {
             || wirelessStartTask != nil
             || mirrorLaunchTask != nil
         isAutoConnecting = Self.shouldShowAutoConnecting(
-            hasSavedDevice: !pairedPhones.isEmpty,
+            hasSavedDevice: !autoConnectEligiblePairedPhones.isEmpty,
             isOnline: isSelectedDeviceOnline,
             isMirroring: isMirroring,
             hasActiveReconnectWork: hasActiveReconnectWork
@@ -2079,7 +2416,7 @@ final class AppModel: ObservableObject {
     }
 
     private func mostRecentPairedPhone(in phones: [DiscoveredPhone]) -> DiscoveredPhone? {
-        for record in Self.recordsByMostRecent(pairedPhones) where Self.isWirelessRecord(record) {
+        for record in Self.recordsByMostRecent(autoConnectEligiblePairedPhones) where Self.isWirelessRecord(record) {
             if let phone = Self.rememberedConnectablePhone(for: record, in: phones) {
                 return phone
             }
@@ -2136,6 +2473,7 @@ final class AppModel: ObservableObject {
     }
 
     private func applyADBOutput(_ output: String) {
+        recordADBHealth(output)
         guard let first = Self.authorizedADBDevices(in: output).first else {
             selectedDevice.states = [.wirelessDebuggingRequired, .usbAuthorizationRequired, .companionConnected]
             isSelectedDeviceOnline = false
@@ -2177,6 +2515,7 @@ final class AppModel: ObservableObject {
 
     func applyDevicePresence(_ output: String) {
         let devices = Self.authorizedADBDevices(in: output)
+        recordADBHealth(output, authorizedDevices: devices)
         if explicitDeviceSetupRequired,
            let usbDevice = devices.first(where: \.isUSB) {
             select(device: usbDevice)
@@ -2267,6 +2606,40 @@ final class AppModel: ObservableObject {
                 let lower = line.lowercased()
                 return lower.contains("unauthorized") && lower.contains("usb:")
             }
+    }
+
+    private func recordADBHealth(
+        _ output: String,
+        authorizedDevices: [AuthorizedADBDevice]? = nil
+    ) {
+        let devices = authorizedDevices ?? Self.authorizedADBDevices(in: output)
+        latestAuthorizedADBDevices = devices
+        latestHasUnauthorizedUSBDevice = Self.hasUnauthorizedUSBDevice(in: output)
+        latestADBStatusText = Self.adbStatusText(output: output, authorizedDevices: devices)
+    }
+
+    nonisolated static func adbStatusText(
+        output: String,
+        authorizedDevices: [AuthorizedADBDevice]
+    ) -> String {
+        if Tooling.toolPath(named: "adb") == nil {
+            return "adb missing"
+        }
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "No response"
+        }
+        let lower = trimmed.lowercased()
+        if lower.contains("error") || lower.contains("cannot connect") || lower.contains("failed") {
+            return "adb error"
+        }
+        if !authorizedDevices.isEmpty {
+            return "Running"
+        }
+        if hasUnauthorizedUSBDevice(in: output) {
+            return "Waiting for authorization"
+        }
+        return "Running, no device"
     }
 
     nonisolated static func singleConnectableRecoveryCandidate(
@@ -2588,10 +2961,7 @@ final class AppModel: ObservableObject {
         if let exact = authorizedDevices.first(where: { $0.serial == selectedSerial }) {
             if exact.isUSB {
                 for record in recordsByMostRecent(pairedPhones) where
-                    record.id == selectedSerial
-                        || record.lastAddress == selectedSerial
-                        || record.id.localizedCaseInsensitiveContains(selectedSerial)
-                        || selectedSerial.localizedCaseInsensitiveContains(record.id) {
+                    Self.recordMatchesSelectedADBSerial(record, selectedSerial: selectedSerial) {
                     if let wireless = rememberedAuthorizedDevice(for: record, in: authorizedDevices),
                        !wireless.isUSB {
                         return wireless
@@ -2617,6 +2987,20 @@ final class AppModel: ObservableObject {
         }
 
         return nil
+    }
+
+    nonisolated static func recordMatchesSelectedADBSerial(
+        _ record: PairedPhoneRecord,
+        selectedSerial: String
+    ) -> Bool {
+        record.id == selectedSerial
+            || record.lastAddress == selectedSerial
+            || normalizedADBSerial(record.id) == selectedSerial
+    }
+
+    private nonisolated static func normalizedADBSerial(_ identifier: String) -> String {
+        guard identifier.hasPrefix("adb-") else { return identifier }
+        return String(identifier.dropFirst(4))
     }
 
     nonisolated static func isWirelessRecord(_ record: PairedPhoneRecord) -> Bool {
@@ -3195,7 +3579,7 @@ final class AppModel: ObservableObject {
                     isLaunching: self.mirrorLaunchTask != nil
                   ) else { return }
             Logger.log("Restarting mirror to apply updated mirroring settings")
-            self.stopMirroring()
+            self.stopMirroring(suspendAutoConnect: false)
             self.startMirroring(manual: true)
         }
     }
@@ -3230,6 +3614,7 @@ final class AppModel: ObservableObject {
 
         if manual {
             // A deliberate retry clears backoff.
+            setAutoConnectSuspendedForSelectedDevice(false)
             consecutiveQuickMirrorFailures = 0
             autoMirrorBackoffUntil = nil
             suppressMirrorAudioForReconnect = false
@@ -3335,7 +3720,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func stopMirroring() {
+    func stopMirroring(suspendAutoConnect: Bool = true) {
+        if suspendAutoConnect {
+            setAutoConnectSuspendedForSelectedDevice(true)
+        }
         mirrorStartGeneration += 1
         mirrorLaunchTask?.cancel()
         mirrorLaunchTask = nil
@@ -3351,6 +3739,7 @@ final class AppModel: ObservableObject {
             reconnectTask?.cancel()
             reconnectTask = nil
             isPairing = false
+            reconnectAttemptCount = 0
         }
         mirrorSession?.onSessionEnded = nil
         mirrorSession?.stop()
@@ -3551,6 +3940,133 @@ final class AppModel: ObservableObject {
         mirrorWindowDeviceTitle(name: name)
     }
 
+    nonisolated static func connectionHealthSnapshot(
+        selectedSerial: String?,
+        selectedNetwork: String,
+        isSelectedDeviceOnline: Bool,
+        isActivelyConnecting: Bool,
+        hasUnauthorizedUSBDevice: Bool,
+        authorizedDevices: [AuthorizedADBDevice],
+        discoveredPhones: [DiscoveredPhone],
+        localNetworkPermissionGranted: Bool,
+        adbStatusText: String,
+        reconnectAttemptCount: Int,
+        activeErrorMessage: String?
+    ) -> ConnectionHealthSnapshot {
+        let hasAuthorizedUSB = authorizedDevices.contains(where: \.isUSB)
+        let hasWirelessDevice = authorizedDevices.contains { !$0.isUSB }
+        let hasWiFiReachability = hasWirelessDevice || discoveredPhones.contains { $0.kind == .connectable }
+        let selectedTransport = selectedTransportLabel(serial: selectedSerial, network: selectedNetwork)
+
+        let usbItem: ConnectionHealthSnapshot.Item
+        if hasUnauthorizedUSBDevice {
+            usbItem = .init(id: "usb", title: "USB authorization", value: "Action needed", level: .issue)
+        } else if hasAuthorizedUSB {
+            usbItem = .init(id: "usb", title: "USB authorization", value: "Authorized", level: .ok)
+        } else {
+            usbItem = .init(id: "usb", title: "USB authorization", value: "No USB device", level: .neutral)
+        }
+
+        let wifiItem = ConnectionHealthSnapshot.Item(
+            id: "wifi",
+            title: "Wi-Fi reachability",
+            value: hasWiFiReachability ? "Reachable" : "Not reachable",
+            level: hasWiFiReachability ? .ok : .warning
+        )
+        let permissionItem = ConnectionHealthSnapshot.Item(
+            id: "local-network",
+            title: "Local network",
+            value: localNetworkPermissionGranted ? "Allowed" : "Not confirmed",
+            level: localNetworkPermissionGranted ? .ok : .warning
+        )
+        let adbItem = ConnectionHealthSnapshot.Item(
+            id: "adb",
+            title: "adb status",
+            value: adbStatusText,
+            level: adbStatusText == "Running" || adbStatusText == "Running, no device" ? .ok : .issue
+        )
+        let transportItem = ConnectionHealthSnapshot.Item(
+            id: "transport",
+            title: "Selected transport",
+            value: selectedTransport,
+            level: selectedTransport == "None" ? .neutral : .ok
+        )
+        let attemptsItem = ConnectionHealthSnapshot.Item(
+            id: "attempts",
+            title: "Reconnect attempts",
+            value: reconnectAttemptCount == 0 ? "None" : "\(reconnectAttemptCount)",
+            level: reconnectAttemptCount == 0 ? .neutral : .warning
+        )
+
+        return ConnectionHealthSnapshot(
+            usbAuthorization: usbItem,
+            wifiReachability: wifiItem,
+            localNetworkPermission: permissionItem,
+            adbStatus: adbItem,
+            selectedTransport: transportItem,
+            reconnectAttempts: attemptsItem,
+            recommendedFix: nextRecommendedConnectionFix(
+                isSelectedDeviceOnline: isSelectedDeviceOnline,
+                isActivelyConnecting: isActivelyConnecting,
+                hasUnauthorizedUSBDevice: hasUnauthorizedUSBDevice,
+                hasAuthorizedUSB: hasAuthorizedUSB,
+                hasWiFiReachability: hasWiFiReachability,
+                localNetworkPermissionGranted: localNetworkPermissionGranted,
+                adbStatusText: adbStatusText,
+                activeErrorMessage: activeErrorMessage
+            )
+        )
+    }
+
+    nonisolated static func selectedTransportLabel(serial: String?, network: String) -> String {
+        guard let serial, !serial.isEmpty else { return "None" }
+        let lowerNetwork = network.lowercased()
+        if lowerNetwork.contains("usb") {
+            return "USB"
+        }
+        if lowerNetwork.contains("wi-fi") || lowerNetwork.contains("wifi") || lowerNetwork.contains("wireless") {
+            return "Wi-Fi"
+        }
+        return serial.contains(":") ? "Wi-Fi" : "USB"
+    }
+
+    nonisolated static func nextRecommendedConnectionFix(
+        isSelectedDeviceOnline: Bool,
+        isActivelyConnecting: Bool,
+        hasUnauthorizedUSBDevice: Bool,
+        hasAuthorizedUSB: Bool,
+        hasWiFiReachability: Bool,
+        localNetworkPermissionGranted: Bool,
+        adbStatusText: String,
+        activeErrorMessage: String?
+    ) -> String {
+        if let activeErrorMessage, !activeErrorMessage.isEmpty {
+            return activeErrorMessage
+        }
+        if adbStatusText == "adb missing" {
+            return "Install Android platform-tools or use the bundled app build with adb included."
+        }
+        if hasUnauthorizedUSBDevice {
+            return "Unlock the phone and tap Allow on the USB debugging prompt."
+        }
+        if !localNetworkPermissionGranted && !hasAuthorizedUSB {
+            return localNetworkRecommendedFix
+        }
+        if isActivelyConnecting {
+            return "Keep the phone awake and wait for the current reconnect attempt to finish."
+        }
+        if isSelectedDeviceOnline {
+            return "No action needed. The selected device is reachable."
+        }
+        if hasAuthorizedUSB {
+            return "Use Connect via USB to refresh the session and Wi-Fi handoff."
+        }
+        if !hasWiFiReachability {
+            return "Put the phone on the same Wi-Fi, enable Wireless debugging, or connect USB once."
+        }
+        return "Try reconnecting over Wi-Fi, or refresh the pairing with the QR code."
+    }
+
     private nonisolated static func shortDeviceIdentifier(_ value: String) -> String {
         if value.hasPrefix("adb-") {
             return String(value.dropFirst(4))
@@ -3681,6 +4197,7 @@ final class AppModel: ObservableObject {
 
     func connect(record: PairedPhoneRecord) {
         guard !isMirroring, !isPairing else { return }
+        resumeAutoConnect(for: record)
         if Self.isWirelessRecord(record) {
             // Wireless records get the full, restart-and-retry reconnect path so a
             // deliberate "Connect" recovers a sleeping phone instead of failing
@@ -3724,12 +4241,14 @@ final class AppModel: ObservableObject {
             return
         }
 
+        resumeAutoConnect(for: leadRecord)
         reconnectTask?.cancel()
         stopQRCodePairingSession()
         select(record: leadRecord)               // names the "Reconnecting to…" overlay
         isPairing = true
         isRecoveringConnection = true
         isAwaitingReconnect = true
+        reconnectAttemptCount = 0
 
         let adb = self.adb
         let generation = mirrorStartGeneration
@@ -3747,6 +4266,7 @@ final class AppModel: ObservableObject {
                 // Saved wireless routes, including the stable :5555 fallback.
                 for record in wirelessRecords {
                     if Task.isCancelled { return }
+                    self.reconnectAttemptCount += 1
                     if let connectedAddress = await Self.connectToRememberedWireless(
                         adb: adb,
                         savedAddress: record.lastAddress,
@@ -3769,6 +4289,7 @@ final class AppModel: ObservableObject {
                 for record in wirelessRecords {
                     if Task.isCancelled { return }
                     guard let phone = Self.rememberedConnectablePhone(for: record, in: livePhones) else { continue }
+                    self.reconnectAttemptCount += 1
                     if await Self.waitForADBWirelessTargetReady(
                         adb: adb,
                         address: phone.address,
@@ -3830,6 +4351,7 @@ final class AppModel: ObservableObject {
         guard !Task.isCancelled, mirrorStartGeneration == generation, !isMirroring else { return }
         reconnectTask = nil
         isPairing = false
+        reconnectAttemptCount = 0
         select(record: record)
         selectedDevice.adbSerial = address
         selectedDevice.name = deviceName
@@ -3993,10 +4515,17 @@ final class AppModel: ObservableObject {
 
     func takeScreenshot() {
         let serial = selectedDevice.adbSerial
+        let outputDirectory = screenshotOutputDirectory()
         presentCaptureCue(.screenshot)
         Task {
             let result = await Task.detached { () -> Result<URL, MediaCaptureService.ScreenshotError> in
-                MediaCaptureService.captureScreenshot(serial: serial)
+                let didAccess = outputDirectory?.startAccessingSecurityScopedResource() ?? false
+                defer {
+                    if didAccess {
+                        outputDirectory?.stopAccessingSecurityScopedResource()
+                    }
+                }
+                return MediaCaptureService.captureScreenshot(serial: serial, outputDirectory: outputDirectory)
             }.value
 
             switch result {
@@ -4061,6 +4590,7 @@ final class AppModel: ObservableObject {
         screenRecordingMonitorTask = nil
         let adb = self.adb
         let serial = selectedDevice.adbSerial
+        let outputDirectory = recordingOutputDirectory()
         Task { [weak self] in
             await Task.detached {
                 _ = adb.run(Self.adbDeviceArguments(serial: serial) + [
@@ -4070,8 +4600,14 @@ final class AppModel: ObservableObject {
             }.value
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             let result = await Task.detached { () -> Result<URL, RecordingError> in
+                let didAccess = outputDirectory?.startAccessingSecurityScopedResource() ?? false
+                defer {
+                    if didAccess {
+                        outputDirectory?.stopAccessingSecurityScopedResource()
+                    }
+                }
                 do {
-                    let directory = try MediaCaptureService.outputDirectory()
+                    let directory = try MediaCaptureService.outputDirectory(outputDirectory)
                     let url = directory.appendingPathComponent(MediaCaptureService.filename(
                         kind: "Screen-Recording",
                         extension: "mp4"

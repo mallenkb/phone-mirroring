@@ -367,14 +367,17 @@ final class MirrorSession {
         case .scroll:
             recordMirrorActivity()
             let scrollSpeedPercent = model?.mirrorScrollSpeedPercent ?? 35
+            let scrollFeel = model?.mirrorScrollFeel ?? .balanced
             controlChannel.sendScroll(normalized: event.normalized,
-                                      deltaX: AppModel.scaledMirrorScrollDelta(
+                                      deltaX: AppModel.shapedMirrorScrollDelta(
                                         event.scrollDX,
-                                        speedPercent: scrollSpeedPercent
+                                        speedPercent: scrollSpeedPercent,
+                                        feel: scrollFeel
                                       ),
-                                      deltaY: AppModel.scaledMirrorScrollDelta(
+                                      deltaY: AppModel.shapedMirrorScrollDelta(
                                         event.scrollDY,
-                                        speedPercent: scrollSpeedPercent
+                                        speedPercent: scrollSpeedPercent,
+                                        feel: scrollFeel
                                       ))
         }
     }

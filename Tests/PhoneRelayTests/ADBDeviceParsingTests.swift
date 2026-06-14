@@ -32,6 +32,53 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(devices.map(\.serial), ["TESTDEVICE003"])
     }
 
+    func testConnectionHealthRecommendsUSBAuthorizationBeforeWiFiFixes() {
+        let snapshot = AppModel.connectionHealthSnapshot(
+            selectedSerial: nil,
+            selectedNetwork: "Local WLAN",
+            isSelectedDeviceOnline: false,
+            isActivelyConnecting: false,
+            hasUnauthorizedUSBDevice: true,
+            authorizedDevices: [],
+            discoveredPhones: [],
+            localNetworkPermissionGranted: false,
+            adbStatusText: "Waiting for authorization",
+            reconnectAttemptCount: 0,
+            activeErrorMessage: nil
+        )
+
+        XCTAssertEqual(snapshot.usbAuthorization.value, "Action needed")
+        XCTAssertEqual(snapshot.recommendedFix, "Unlock the phone and tap Allow on the USB debugging prompt.")
+    }
+
+    func testConnectionHealthShowsOnlineWirelessTransport() {
+        let wireless = AuthorizedADBDevice(
+            serial: "192.0.2.22:5555",
+            product: "oriole",
+            model: "Pixel 6",
+            isUSB: false
+        )
+
+        let snapshot = AppModel.connectionHealthSnapshot(
+            selectedSerial: wireless.serial,
+            selectedNetwork: "Wireless debugging",
+            isSelectedDeviceOnline: true,
+            isActivelyConnecting: false,
+            hasUnauthorizedUSBDevice: false,
+            authorizedDevices: [wireless],
+            discoveredPhones: [],
+            localNetworkPermissionGranted: true,
+            adbStatusText: "Running",
+            reconnectAttemptCount: 2,
+            activeErrorMessage: nil
+        )
+
+        XCTAssertEqual(snapshot.wifiReachability.value, "Reachable")
+        XCTAssertEqual(snapshot.selectedTransport.value, "Wi-Fi")
+        XCTAssertEqual(snapshot.reconnectAttempts.value, "2")
+        XCTAssertEqual(snapshot.recommendedFix, "No action needed. The selected device is reachable.")
+    }
+
     func testAuthorizedADBDevicesIgnoresDaemonStartupNoiseAndHeader() {
         let output = """
         * daemon not running; starting now at tcp:5037

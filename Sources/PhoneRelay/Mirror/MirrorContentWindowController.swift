@@ -42,8 +42,8 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     static let minimumScreenHeightRatio: CGFloat = 0.45
     static let initialScreenHeightRatio: CGFloat = 0.60
     static let maximumScreenHeightRatio: CGFloat = 0.90
-    static let chromeHideDelay: TimeInterval = 0.030
-    static let chromeHideAnimationDuration: TimeInterval = 0.16
+    static let chromeHideDelay: TimeInterval = 0.012
+    static let chromeHideAnimationDuration: TimeInterval = 0.18
     static let renderCornerRadius: CGFloat = cornerRadius
 
     static func mirrorCornerRadius(
@@ -75,12 +75,13 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     /// The detached toolbar floats in its own window above the phone.
-    static let toolbarBarHeight: CGFloat = 30
+    static let toolbarBarHeight: CGFloat = 38
     /// Vertical gap between the top of the mirror window and the floating bar.
     static let toolbarGap: CGFloat = 6
     /// Extra slack added to the reveal zone above the window so the bar is easy
     /// to summon without pixel-perfect aim.
     static let toolbarRevealSlop: CGFloat = 6
+    static let toolbarAnimationOffset: CGFloat = 6
 
     private let model: AppModel
     private weak var session: MirrorSession?
@@ -95,6 +96,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private var renderTrailingConstraint: NSLayoutConstraint?
     private var renderBottomConstraint: NSLayoutConstraint?
     private var hideWorkItem: DispatchWorkItem?
+    private var toolbarAnimationGeneration = 0
     private var chromeVisible = false
     private var isDraggingChrome = false
     private var isPointerInTopZone = false
@@ -105,7 +107,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private var hasUserMovedWindow = false
     private var isApplyingProgrammaticFrame = false
     private var captureCueCancellable: AnyCancellable?
+    private var transferActivityCancellable: AnyCancellable?
     private var deviceTitleCancellable: AnyCancellable?
+    private var appActivationObservers: [NSObjectProtocol] = []
     private var activeCaptureCueView: MirrorCaptureCueView?
 
     init(model: AppModel, session: MirrorSession, launchFrame: NSRect? = nil) {
@@ -134,6 +138,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         window.delegate = self
         configure(window: window)
         installContent()
+        installAppActivationObservers()
         window.styleMask.remove(.titled)
         window.contentAspectRatio = initialSize
     }
@@ -629,8 +634,17 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
                 guard let cue else { return }
                 self?.showCaptureCue(cue)
             }
+        transferActivityCancellable = model.$transferActivity
+            .receive(on: RunLoop.main)
+            .sink { [weak self] activity in
+                guard let activity else {
+                    self?.hideActiveStatusCue()
+                    return
+                }
+                self?.showTransferActivity(activity)
+            }
         chromeBar.onClose = { NSApplication.shared.terminate(nil) }
-        chromeBar.onMinimize = { [weak self] in self?.window?.miniaturize(nil) }
+        chromeBar.onMinimize = { [weak self] in self?.miniaturizeFromChrome() }
         chromeBar.onZoom = { [weak self] in self?.toggleFullScreenFromChrome() }
         chromeBar.chromeHeight = Self.toolbarBarHeight
         chromeBar.setControlsVisible(false)
@@ -744,6 +758,49 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         }
     }
 
+    private func showTransferActivity(_ activity: AppModel.TransferActivity) {
+        activeCaptureCueView?.removeFromSuperview()
+
+        let cueView = MirrorCaptureCueView(activity: activity)
+        rootView.addSubview(cueView)
+        activeCaptureCueView = cueView
+
+        NSLayoutConstraint.activate([
+            cueView.centerXAnchor.constraint(equalTo: rootView.centerXAnchor),
+            cueView.topAnchor.constraint(equalTo: rootView.topAnchor, constant: 18),
+        ])
+
+        cueView.alphaValue = 0
+        cueView.layer?.transform = CATransform3DMakeScale(0.94, 0.94, 1)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            cueView.animator().alphaValue = 1
+            cueView.layer?.transform = CATransform3DIdentity
+        }
+
+        guard !activity.isInProgress else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self, weak cueView] in
+            guard let self, let cueView, self.activeCaptureCueView === cueView else { return }
+            self.hideActiveStatusCue()
+        }
+    }
+
+    private func hideActiveStatusCue() {
+        guard let cueView = activeCaptureCueView else { return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            cueView.animator().alphaValue = 0
+        } completionHandler: { [weak self, weak cueView] in
+            Task { @MainActor [weak self, weak cueView] in
+                guard let self, let cueView, self.activeCaptureCueView === cueView else { return }
+                cueView.removeFromSuperview()
+                self.activeCaptureCueView = nil
+            }
+        }
+    }
+
     private func handleRenderMouseMoved(_ event: NSEvent) {
         evaluateRevealZone()
     }
@@ -766,7 +823,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         toolbar.backgroundColor = .clear
         toolbar.hasShadow = true
         toolbar.level = .normal
-        toolbar.ignoresMouseEvents = false
+        toolbar.ignoresMouseEvents = true
         toolbar.contentView = chromeBar
         toolbar.alphaValue = 0
         parent.addChildWindow(toolbar, ordered: .above)
@@ -777,6 +834,10 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
     private func repositionToolbarWindow() {
         guard let window, let toolbar = toolbarWindow else { return }
+        toolbar.setFrame(toolbarVisibleFrame(for: window), display: true)
+    }
+
+    private func toolbarVisibleFrame(for window: NSWindow) -> NSRect {
         let frame = window.frame
         var originY = frame.maxY + Self.toolbarGap
         if let visible = window.screen?.visibleFrame,
@@ -785,10 +846,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             // bar against the very top of the phone rather than off-screen.
             originY = frame.maxY - Self.toolbarBarHeight
         }
-        toolbar.setFrame(
-            NSRect(x: frame.minX, y: originY, width: frame.width, height: Self.toolbarBarHeight),
-            display: true
-        )
+        return NSRect(x: frame.minX, y: originY, width: frame.width, height: Self.toolbarBarHeight)
     }
 
     private func startRevealMonitoring() {
@@ -816,7 +874,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     /// The reveal zone is the band directly **above** the mirror window (plus the
     /// floating bar's own frame) — never over the phone's own content.
     private func revealZoneContains(_ point: NSPoint) -> Bool {
-        guard let window, let toolbar = toolbarWindow else { return false }
+        guard let window else { return false }
         let frame = window.frame
         let zone = NSRect(
             x: frame.minX,
@@ -824,10 +882,14 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             width: frame.width,
             height: Self.toolbarGap + Self.toolbarBarHeight + Self.toolbarRevealSlop
         )
-        return zone.contains(point) || toolbar.frame.contains(point)
+        return zone.contains(point) || toolbarVisibleFrame(for: window).contains(point)
     }
 
     private func evaluateRevealZone() {
+        guard NSApp.isActive else {
+            hideChromeImmediately(orderOutToolbar: true)
+            return
+        }
         guard !isInFullscreen else {
             hideChromeImmediately()
             return
@@ -863,6 +925,14 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
     var isToolbarWindowVisibleForTesting: Bool {
         chromeVisible
+    }
+
+    var toolbarIgnoresMouseEventsForTesting: Bool {
+        toolbarWindow?.ignoresMouseEvents ?? false
+    }
+
+    var toolbarIsVisibleForTesting: Bool {
+        toolbarWindow?.isVisible ?? false
     }
 
     var toolbarWindowForTesting: NSWindow? {
@@ -906,6 +976,18 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         }
     }
 
+    func simulateAppResignActiveForTesting() {
+        hideChromeImmediately(orderOutToolbar: true)
+    }
+
+    func simulateWindowWillMiniaturizeForTesting() {
+        windowWillMiniaturize(Notification(name: NSWindow.willMiniaturizeNotification, object: window))
+    }
+
+    func simulateWindowDidDeminiaturizeForTesting() {
+        windowDidDeminiaturize(Notification(name: NSWindow.didDeminiaturizeNotification, object: window))
+    }
+
     private func scheduleHide() {
         guard !model.isRecording else {
             hideWorkItem?.cancel()
@@ -934,19 +1016,46 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         chromeVisible = visible
         guard let toolbar = toolbarWindow else { return }
 
+        // The bar floats in its own child window. Animating that window's
+        // *frame* every step is what made the reveal feel choppy — per-frame
+        // child-window repositioning never composites cleanly. So the window
+        // now stays pinned at its on-screen position and the slide rides the
+        // bar's layer instead: a GPU-composited transform that stays glassy and
+        // stays interruptible, so darting the pointer in and out reads as a
+        // single fluid motion rather than a snap. The fade is the window's
+        // alpha, which also carries the drop shadow so it dissolves in step.
+        let visibleFrame = window.map(toolbarVisibleFrame(for:)) ?? toolbar.frame
+        toolbar.setFrame(visibleFrame, display: false)
+
         if visible {
-            repositionToolbarWindow()
+            if toolbar.alphaValue <= 0.01 {
+                // Coming from fully hidden: jump (no animation) to the tucked
+                // pose so the spring below has somewhere to travel from rather
+                // than popping in at full size.
+                chromeBar.setBarRevealed(false, animated: false)
+            }
             chromeBar.setControlsVisible(true)
+            toolbar.ignoresMouseEvents = false
             toolbar.orderFront(nil)
+        } else {
+            toolbar.ignoresMouseEvents = true
         }
 
+        // Geometry springs; opacity eases. Kicking the spring off alongside the
+        // fade group (not inside it) keeps the two independent so the motion
+        // settles on its own natural clock while the bar is already solid.
+        chromeBar.setBarRevealed(visible, animated: true)
+
+        toolbarAnimationGeneration += 1
+        let animationGeneration = toolbarAnimationGeneration
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = visible ? MirrorChromeBar.barRevealDuration : MirrorChromeBar.barHideDuration
-            context.timingFunction = CAMediaTimingFunction(name: visible ? .easeOut : .easeInEaseOut)
+            context.duration = visible ? MirrorChromeBar.barRevealDuration : Self.chromeHideAnimationDuration
+            context.timingFunction = visible ? MirrorChromeBar.revealTiming : MirrorChromeBar.hideTiming
             toolbar.animator().alphaValue = visible ? 1 : 0
         }, completionHandler: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
+                guard self.toolbarAnimationGeneration == animationGeneration else { return }
                 if !self.chromeVisible {
                     self.chromeBar.setControlsVisible(false)
                 }
@@ -954,12 +1063,35 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         })
     }
 
-    private func hideChromeImmediately() {
+    private func hideChromeImmediately(orderOutToolbar: Bool = false) {
         hideWorkItem?.cancel()
         chromeVisible = false
         isPointerInTopZone = false
         toolbarWindow?.alphaValue = 0
+        toolbarWindow?.ignoresMouseEvents = true
+        if let window, let toolbarWindow {
+            toolbarWindow.setFrame(toolbarVisibleFrame(for: window), display: false)
+        }
+        // Snap the layer back to its tucked pose with no animation so the next
+        // reveal springs up cleanly from below.
+        chromeBar.setBarRevealed(false, animated: false)
+        if orderOutToolbar {
+            toolbarWindow?.orderOut(nil)
+        }
         chromeBar.setControlsVisible(false)
+    }
+
+    private func installAppActivationObservers() {
+        let center = NotificationCenter.default
+        appActivationObservers.append(center.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.hideChromeImmediately(orderOutToolbar: true)
+            }
+        })
     }
 
     private func toggleFullScreenFromChrome() {
@@ -968,6 +1100,12 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         captureNormalWindowFrameBeforeFullscreen(from: window)
         setFullscreenChromeSuppressed(true)
         window.toggleFullScreen(nil)
+    }
+
+    private func miniaturizeFromChrome() {
+        guard let window else { return }
+        prepareForMiniaturize()
+        window.miniaturize(nil)
     }
 
     private func captureNormalWindowFrameBeforeFullscreen(from window: NSWindow) {
@@ -1115,12 +1253,43 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     func windowWillClose(_ notification: Notification) {
         hideWorkItem?.cancel()
         stopRevealMonitoring()
+        for observer in appActivationObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        appActivationObservers.removeAll()
         if let window, let toolbar = toolbarWindow {
             window.removeChildWindow(toolbar)
             toolbar.orderOut(nil)
         }
         toolbarWindow = nil
         session?.stop()
+    }
+
+    func windowWillMiniaturize(_ notification: Notification) {
+        prepareForMiniaturize()
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        guard let window else { return }
+        if let toolbar = toolbarWindow {
+            window.addChildWindow(toolbar, ordered: .above)
+        }
+        repositionToolbarWindow()
+        startRevealMonitoring()
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(renderView)
+        renderView.updateVideoLayerFrame()
+        evaluateRevealZone()
+    }
+
+    private func prepareForMiniaturize() {
+        hideChromeImmediately(orderOutToolbar: true)
+        hideActiveStatusCue()
+        stopRevealMonitoring()
+        if let window, let toolbar = toolbarWindow {
+            window.removeChildWindow(toolbar)
+            toolbar.orderOut(nil)
+        }
     }
 
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
@@ -1160,6 +1329,15 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         repositionToolbarWindow()
     }
 
+    /// Tell AppKit to fill the whole screen during its own native zoom, so we
+    /// never have to `setFrame` the window ourselves. Doing that manually (in
+    /// `windowDidEnterFullScreen`) used to overwrite the window's remembered
+    /// pre-fullscreen frame, which is exactly why exit then needed a second,
+    /// visible restore animation — the part that looked like a hack.
+    func window(_ window: NSWindow, willUseFullScreenContentSize proposedSize: NSSize) -> NSSize {
+        window.screen?.frame.size ?? proposedSize
+    }
+
     func windowWillEnterFullScreen(_ notification: Notification) {
         if let window {
             captureNormalWindowFrameBeforeFullscreen(from: window)
@@ -1168,8 +1346,8 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     func windowDidEnterFullScreen(_ notification: Notification) {
-        guard let window, let screenFrame = window.screen?.frame else { return }
-        window.setFrame(screenFrame, display: true, animate: false)
+        // No manual setFrame — AppKit already sized us to the fullscreen space.
+        // Just relayout the content to whatever size it gave us.
         rootView.layoutSubtreeIfNeeded()
         renderView.updateVideoLayerFrame()
     }
@@ -1180,7 +1358,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
     func windowDidExitFullScreen(_ notification: Notification) {
         setFullscreenChromeSuppressed(false)
-        restoreNormalWindowFrameAfterFullscreenIfNeeded(animated: true)
+        // AppKit's native exit already animated back to the pre-fullscreen
+        // frame, so this is just an instant snap-correct for the rare case it
+        // lands a hair off. Animating it (as before) ran a second resize on top
+        // of the native one — that double-animation was the hacky exit.
+        restoreNormalWindowFrameAfterFullscreenIfNeeded(animated: false)
     }
 }
 
@@ -1251,7 +1433,27 @@ final class MirrorRootView: NSView {
 
 private final class MirrorCaptureCueView: NSView {
     init(cue: AppModel.CaptureCue) {
+        let tintColor: NSColor = cue.kind == .recordingStarted ? .systemRed : .white
         super.init(frame: .zero)
+        setup(title: cue.title, detail: nil, symbolName: cue.symbolName, tintColor: tintColor)
+    }
+
+    init(activity: AppModel.TransferActivity) {
+        let tintColor: NSColor = activity.phase == .failed ? .systemYellow : .white
+        super.init(frame: .zero)
+        setup(
+            title: activity.title,
+            detail: activity.detail.isEmpty ? nil : activity.detail,
+            symbolName: activity.symbolName,
+            tintColor: tintColor
+        )
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    private func setup(title: String, detail: String?, symbolName: String, tintColor: NSColor) {
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
         layer?.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
@@ -1263,17 +1465,33 @@ private final class MirrorCaptureCueView: NSView {
         layer?.shadowOffset = NSSize(width: 0, height: -3)
 
         let imageView = NSImageView()
-        imageView.image = NSImage(systemSymbolName: cue.symbolName, accessibilityDescription: nil)
+        imageView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
         imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
-        imageView.contentTintColor = cue.kind == .recordingStarted ? .systemRed : .white
+        imageView.contentTintColor = tintColor
         imageView.translatesAutoresizingMaskIntoConstraints = false
 
-        let label = NSTextField(labelWithString: cue.title)
-        label.font = .systemFont(ofSize: 13, weight: .semibold)
-        label.textColor = .white
-        label.lineBreakMode = .byTruncatingTail
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = .white
+        titleLabel.lineBreakMode = .byTruncatingTail
 
-        let stack = NSStackView(views: [imageView, label])
+        let textViews: [NSView]
+        if let detail {
+            let detailLabel = NSTextField(labelWithString: detail)
+            detailLabel.font = .systemFont(ofSize: 11, weight: .regular)
+            detailLabel.textColor = NSColor.white.withAlphaComponent(0.72)
+            detailLabel.lineBreakMode = .byTruncatingMiddle
+
+            let textStack = NSStackView(views: [titleLabel, detailLabel])
+            textStack.orientation = .vertical
+            textStack.alignment = .leading
+            textStack.spacing = 1
+            textViews = [textStack]
+        } else {
+            textViews = [titleLabel]
+        }
+
+        let stack = NSStackView(views: [imageView] + textViews)
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 8
@@ -1287,13 +1505,9 @@ private final class MirrorCaptureCueView: NSView {
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             stack.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
-            widthAnchor.constraint(lessThanOrEqualToConstant: 240),
+            widthAnchor.constraint(lessThanOrEqualToConstant: 300),
         ])
     }
-
-    required init?(coder: NSCoder) { nil }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 // MARK: - Chrome bar
@@ -1305,21 +1519,24 @@ private final class MirrorCaptureCueView: NSView {
 final class MirrorChromeBar: NSView {
     /// How small the bar shrinks when hidden. A more pronounced ratio makes
     /// the growing effect actually read on screen.
-    static let barHiddenScale: CGFloat = 0.9
-    /// Reveal is slightly longer than hide so the bar "lands" into place;
-    /// hide is a hair quicker so the chrome doesn't overstay its welcome.
-    /// Both stay short (≈200–300ms) so the motion feels responsive, not sluggish.
-    static let barRevealDuration: CFTimeInterval = 0.30
-    static let barHideDuration: CFTimeInterval = 0.20
-
-    /// `cubic-bezier(0.16, 1, 0.3, 1)` — "ease-out-expo", the velvet curve
-    /// many Apple-style sheet/popover entrances use. Front-loaded velocity
-    /// that decelerates into a soft stop, so the bar feels like it gently
-    /// lands into position.
+    static let barHiddenScale: CGFloat = 0.96
+    static let barRevealDuration: CFTimeInterval = 0.28
+    static let barHideDuration: CFTimeInterval = 0.18
+    /// The opacity fade rides these curves; the *motion* (slide + grow) rides a
+    /// spring (below). Apple eases opacity but springs geometry — so do we.
+    /// `revealTiming` is an ease-out-expo so the bar is fully solid well before
+    /// the spring finishes its last bit of settle.
     static let revealTiming = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
-    /// `cubic-bezier(0.5, 0, 0.75, 0)` — gentle ease-in that accelerates as
-    /// it disappears, so the exit feels graceful rather than abrupt.
-    static let hideTiming = CAMediaTimingFunction(controlPoints: 0.5, 0, 0.75, 0)
+    static let hideTiming = CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1)
+    /// Reveal/hide geometry springs rather than eases — the momentum-and-settle
+    /// is what reads as Apple-grade rather than "a thing that fades in". Damping
+    /// stays high so a *toolbar* feels composed (presence, no bouncy wobble);
+    /// `response` is the perceptual duration, mirroring SwiftUI's
+    /// `.spring(response:dampingFraction:)`.
+    static let revealSpringResponse: CFTimeInterval = 0.42
+    static let revealSpringDamping: CGFloat = 0.86
+    static let hideSpringResponse: CFTimeInterval = 0.30
+    static let hideSpringDamping: CGFloat = 1.0
 
     private let backgroundView = NSView()
     private let dragArea = MirrorWindowDragArea()
@@ -1340,9 +1557,20 @@ final class MirrorChromeBar: NSView {
     private var trackingArea: NSTrackingArea?
     private var trafficLightsLeadingConstraint: NSLayoutConstraint?
     private var rightStackTrailingConstraint: NSLayoutConstraint?
-    private static let horizontalPadding: CGFloat = 8
+    private var titleLeadingAfterTrafficLightsConstraint: NSLayoutConstraint?
+    private static let leadingPadding: CGFloat = 12
+    private static let titleLeadingAfterTrafficLights: CGFloat = 12
+    private static let trailingPadding: CGFloat = 5
     /// Corner radius of the detached floating bar.
-    private static let barCornerRadius: CGFloat = 9
+    private static var barCornerRadius: CGFloat {
+        MirrorContentWindowController.toolbarBarHeight / 2
+    }
+    static var controlHoverCornerRadius: CGFloat {
+        // 18pt — the trailing action's hover sits one point inside the bar's own
+        // rounded corner (bar radius is 19), so the pill cap reads as concentric
+        // with the glass edge instead of a smaller rounded square floating in it.
+        barCornerRadius - 1
+    }
 
     private let titleLabel = MirrorChromeTitleLabel(labelWithString: "")
     private let homeBtn = MirrorChromeOutlineButton(
@@ -1350,7 +1578,7 @@ final class MirrorChromeBar: NSView {
         accessibilityDescription: "Home"
     )
     private let recentAppsBtn = MirrorChromeOutlineButton(
-        symbol: "rectangle.stack",
+        symbol: "rectangle.stack.fill",
         accessibilityDescription: "Recent apps"
     )
     private let screenshotBtn = MirrorChromeOutlineButton(
@@ -1428,7 +1656,7 @@ final class MirrorChromeBar: NSView {
 
         // Right-side capture actions live at the trailing edge.
         rightStack.orientation = .horizontal
-        rightStack.spacing = 6
+        rightStack.spacing = 0
         rightStack.alignment = .centerY
         rightStack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(rightStack)
@@ -1448,7 +1676,7 @@ final class MirrorChromeBar: NSView {
         addSubview(trafficLights)
         let trafficLightsLeadingConstraint = trafficLights.leadingAnchor.constraint(
             equalTo: leadingAnchor,
-            constant: Self.horizontalPadding
+            constant: Self.leadingPadding
         )
         self.trafficLightsLeadingConstraint = trafficLightsLeadingConstraint
 
@@ -1459,15 +1687,21 @@ final class MirrorChromeBar: NSView {
         titleLabel.textColor = NSColor.labelColor
         titleLabel.alignment = .left
         titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleLabel)
 
         let rightStackTrailingConstraint = rightStack.trailingAnchor.constraint(
             equalTo: trailingAnchor,
-            constant: -Self.horizontalPadding
+            constant: -Self.trailingPadding
         )
         self.rightStackTrailingConstraint = rightStackTrailingConstraint
+        let titleLeadingAfterTrafficLightsConstraint = dragArea.leadingAnchor.constraint(
+            equalTo: trafficLights.trailingAnchor,
+            constant: Self.titleLeadingAfterTrafficLights
+        )
+        self.titleLeadingAfterTrafficLightsConstraint = titleLeadingAfterTrafficLightsConstraint
 
         NSLayoutConstraint.activate([
             backgroundView.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -1481,7 +1715,7 @@ final class MirrorChromeBar: NSView {
             trafficLightsLeadingConstraint,
             trafficLights.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            dragArea.leadingAnchor.constraint(equalTo: trafficLights.trailingAnchor, constant: 10),
+            titleLeadingAfterTrafficLightsConstraint,
             dragArea.trailingAnchor.constraint(equalTo: rightStack.leadingAnchor, constant: -8),
             dragArea.topAnchor.constraint(equalTo: topAnchor),
             dragArea.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -1500,6 +1734,60 @@ final class MirrorChromeBar: NSView {
         homeBtn.isHidden = !visible
     }
 
+    /// Springs the whole bar — background *and* controls, moved as one layer —
+    /// between its tucked pose and its resting pose. Using a spring rather than
+    /// a bezier is the difference between "premium" and "fine": it carries a
+    /// little momentum and settles like glass. The fade itself stays on the host
+    /// window's alpha (which also carries the drop shadow, so the two dissolve in
+    /// step). Reading the *in-flight* presentation value as the spring's start
+    /// lets a fast hover-in/out reverse mid-motion without snapping.
+    func setBarRevealed(_ revealed: Bool, animated: Bool) {
+        guard let layer else { return }
+        let target = revealed ? CATransform3DIdentity : hiddenBarTransform()
+        guard animated else {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer.transform = target
+            CATransaction.commit()
+            return
+        }
+        let response = revealed ? Self.revealSpringResponse : Self.hideSpringResponse
+        let damping = revealed ? Self.revealSpringDamping : Self.hideSpringDamping
+        let omega = (2 * CGFloat.pi) / CGFloat(response)
+        let spring = CASpringAnimation(keyPath: "transform")
+        spring.mass = 1
+        spring.stiffness = omega * omega          // k = ω₀²·m
+        spring.damping = 2 * damping * omega       // c = 2ζ·ω₀·m
+        spring.fromValue = NSValue(caTransform3D: layer.presentation()?.transform ?? layer.transform)
+        spring.toValue = NSValue(caTransform3D: target)
+        spring.duration = spring.settlingDuration
+        spring.isRemovedOnCompletion = true
+        layer.transform = target
+        layer.add(spring, forKey: "barRevealSpring")
+    }
+
+    /// The tucked pose the bar springs out of: a hair smaller and nudged down.
+    /// The shrink is taken about the bar's own centre via the matrix (rather
+    /// than moving the layer's anchor point), so the content-view layer never
+    /// jumps when the pose is applied.
+    private func hiddenBarTransform() -> CATransform3D {
+        let bounds = layer?.bounds ?? self.bounds
+        let cx = bounds.midX
+        let cy = bounds.midY
+        let s = Self.barHiddenScale
+        let centeredScale = CATransform3DConcat(
+            CATransform3DConcat(
+                CATransform3DMakeTranslation(-cx, -cy, 0),
+                CATransform3DMakeScale(s, s, 1)
+            ),
+            CATransform3DMakeTranslation(cx, cy, 0)
+        )
+        return CATransform3DConcat(
+            centeredScale,
+            CATransform3DMakeTranslation(0, -MirrorContentWindowController.toolbarAnimationOffset, 0)
+        )
+    }
+
     func setTrailingActionsVisible(_ visible: Bool) {
         recentAppsBtn.isHidden = !visible
         screenshotBtn.isHidden = !visible
@@ -1511,7 +1799,15 @@ final class MirrorChromeBar: NSView {
     }
 
     var horizontalPaddingForTesting: CGFloat {
-        Self.horizontalPadding
+        Self.trailingPadding
+    }
+
+    var backgroundCornerRadiusForTesting: CGFloat {
+        backgroundView.layer?.cornerRadius ?? 0
+    }
+
+    var controlHoverCornerRadiusForTesting: CGFloat {
+        Self.controlHoverCornerRadius
     }
 
     var trafficLightLeadingPaddingForTesting: CGFloat {
@@ -1520,6 +1816,58 @@ final class MirrorChromeBar: NSView {
 
     var trailingActionsPaddingForTesting: CGFloat {
         abs(rightStackTrailingConstraint?.constant ?? 0)
+    }
+
+    var trailingActionsSpacingForTesting: CGFloat {
+        rightStack.spacing
+    }
+
+    var recentAppsIconNameForTesting: String? {
+        recentAppsBtn.iconNameForTesting
+    }
+
+    var rightActionHoverCornerRadiiForTesting: [CGFloat] {
+        [
+            screenshotBtn.hoverCornerRadiusForTesting,
+            homeBtn.hoverCornerRadiusForTesting,
+            recentAppsBtn.hoverCornerRadiusForTesting,
+        ]
+    }
+
+    var rightActionHoverLeadingCornerRadiiForTesting: [CGFloat?] {
+        [
+            screenshotBtn.hoverLeadingCornerRadiusForTesting,
+            homeBtn.hoverLeadingCornerRadiusForTesting,
+            recentAppsBtn.hoverLeadingCornerRadiusForTesting,
+        ]
+    }
+
+    var rightActionHoverRoundedCornersForTesting: [CACornerMask] {
+        [
+            screenshotBtn.hoverRoundedCornersForTesting,
+            homeBtn.hoverRoundedCornersForTesting,
+            recentAppsBtn.hoverRoundedCornersForTesting,
+        ]
+    }
+
+    var rightActionHoverHeightsForTesting: [CGFloat] {
+        [
+            screenshotBtn.hoverHeightForTesting,
+            homeBtn.hoverHeightForTesting,
+            recentAppsBtn.hoverHeightForTesting,
+        ]
+    }
+
+    var titleLeadingAfterTrafficLightsForTesting: CGFloat {
+        titleLeadingAfterTrafficLightsConstraint?.constant ?? 0
+    }
+
+    var titleLineBreakModeForTesting: NSLineBreakMode {
+        titleLabel.lineBreakMode
+    }
+
+    var titleMaximumNumberOfLinesForTesting: Int {
+        titleLabel.maximumNumberOfLines
     }
 
     override func updateTrackingAreas() {
@@ -1588,7 +1936,7 @@ final class MirrorChromeBar: NSView {
 /// macOS-style traffic-light cluster (close / minimize / zoom) for the detached
 /// floating toolbar. Because the bar is a separate window, the native window
 /// buttons can't live here, so these are custom dots wired to window actions.
-/// The glyphs (✕ − ⤢) appear only while the cluster is hovered, matching macOS.
+/// The glyphs appear only while the cluster is hovered, matching macOS.
 final class MirrorTrafficLights: NSView {
     private let closeButton = MirrorTrafficLightButton(kind: .close)
     private let minimizeButton = MirrorTrafficLightButton(kind: .minimize)
@@ -1651,31 +1999,38 @@ final class MirrorTrafficLights: NSView {
 final class MirrorTrafficLightButton: NSView {
     enum Kind { case close, minimize, zoom }
 
+    static let dotDiameter: CGFloat = 14.4
+    static let glyphCanvasDiameter: CGFloat = 12
+    static let glyphStrokeWidth: CGFloat = 2.55
+    static let glyphInset: CGFloat = 3.7
+    static let minimizeGlyphInset: CGFloat = 3.4
+    static let zoomGlyphInset: CGFloat = 3.35
+
     private let kind: Kind
-    private let glyph = NSImageView()
+    private let glyph: MirrorTrafficLightGlyphView
     var action: (() -> Void)?
 
     init(kind: Kind) {
         self.kind = kind
+        self.glyph = MirrorTrafficLightGlyphView(kind: kind)
         super.init(frame: .zero)
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
-        layer?.cornerRadius = 6
+        layer?.cornerRadius = Self.dotDiameter / 2
         layer?.borderWidth = 0.5
         layer?.borderColor = NSColor.black.withAlphaComponent(0.12).cgColor
         layer?.backgroundColor = fillColor.cgColor
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 12),
-            heightAnchor.constraint(equalToConstant: 12),
+            widthAnchor.constraint(equalToConstant: Self.dotDiameter),
+            heightAnchor.constraint(equalToConstant: Self.dotDiameter),
         ])
 
-        glyph.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
-        glyph.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 7, weight: .heavy)
-        glyph.contentTintColor = NSColor.black.withAlphaComponent(0.55)
         glyph.isHidden = true
         glyph.translatesAutoresizingMaskIntoConstraints = false
         addSubview(glyph)
         NSLayoutConstraint.activate([
+            glyph.widthAnchor.constraint(equalToConstant: Self.glyphCanvasDiameter),
+            glyph.heightAnchor.constraint(equalToConstant: Self.glyphCanvasDiameter),
             glyph.centerXAnchor.constraint(equalTo: centerXAnchor),
             glyph.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
@@ -1697,14 +2052,6 @@ final class MirrorTrafficLightButton: NSView {
         }
     }
 
-    private var symbolName: String {
-        switch kind {
-        case .close: return "xmark"
-        case .minimize: return "minus"
-        case .zoom: return "arrow.up.left.and.arrow.down.right"
-        }
-    }
-
     override func mouseDown(with event: NSEvent) {
         layer?.backgroundColor = (fillColor.blended(withFraction: 0.25, of: .black) ?? fillColor).cgColor
     }
@@ -1713,6 +2060,83 @@ final class MirrorTrafficLightButton: NSView {
         layer?.backgroundColor = fillColor.cgColor
         let point = convert(event.locationInWindow, from: nil)
         if bounds.contains(point) { action?() }
+    }
+}
+
+private final class MirrorTrafficLightGlyphView: NSView {
+    private let kind: MirrorTrafficLightButton.Kind
+
+    init(kind: MirrorTrafficLightButton.Kind) {
+        self.kind = kind
+        super.init(frame: .zero)
+        wantsLayer = false
+    }
+    required init?(coder: NSCoder) { nil }
+
+    override var isFlipped: Bool { false }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let rect = bounds.insetBy(
+            dx: glyphInset,
+            dy: glyphInset
+        )
+        glyphColor.setStroke()
+        switch kind {
+        case .close:
+            strokePath { path in
+                path.move(to: NSPoint(x: rect.minX, y: rect.minY))
+                path.line(to: NSPoint(x: rect.maxX, y: rect.maxY))
+                path.move(to: NSPoint(x: rect.minX, y: rect.maxY))
+                path.line(to: NSPoint(x: rect.maxX, y: rect.minY))
+            }
+        case .minimize:
+            strokePath { path in
+                path.move(to: NSPoint(x: rect.minX, y: rect.midY))
+                path.line(to: NSPoint(x: rect.maxX, y: rect.midY))
+            }
+        case .zoom:
+            strokeZoomGlyph(in: rect)
+        }
+    }
+
+    private var glyphInset: CGFloat {
+        switch kind {
+        case .close: return MirrorTrafficLightButton.glyphInset
+        case .minimize: return MirrorTrafficLightButton.minimizeGlyphInset
+        case .zoom: return MirrorTrafficLightButton.zoomGlyphInset
+        }
+    }
+
+    private var glyphColor: NSColor {
+        switch kind {
+        case .close: return NSColor(red: 0.47, green: 0.13, blue: 0.14, alpha: 0.9)
+        case .minimize: return NSColor(red: 0.47, green: 0.32, blue: 0.02, alpha: 0.9)
+        case .zoom: return NSColor(red: 0.05, green: 0.43, blue: 0.12, alpha: 0.9)
+        }
+    }
+
+    private func strokePath(_ build: (NSBezierPath) -> Void) {
+        let path = NSBezierPath()
+        path.lineWidth = MirrorTrafficLightButton.glyphStrokeWidth
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        build(path)
+        path.stroke()
+    }
+
+    private func strokeZoomGlyph(in rect: NSRect) {
+        strokePath { path in
+            let notch: CGFloat = 1.8
+            path.move(to: NSPoint(x: rect.minX, y: rect.midY - notch / 2))
+            path.line(to: NSPoint(x: rect.minX, y: rect.minY))
+            path.line(to: NSPoint(x: rect.midX - notch / 2, y: rect.minY))
+
+            path.move(to: NSPoint(x: rect.maxX, y: rect.midY + notch / 2))
+            path.line(to: NSPoint(x: rect.maxX, y: rect.maxY))
+            path.line(to: NSPoint(x: rect.midX + notch / 2, y: rect.maxY))
+        }
     }
 }
 
@@ -1734,8 +2158,18 @@ final class MirrorChromeOutlineButton: NSView {
         case resource(String)
     }
 
+    static let touchWidth: CGFloat = 34
+    static let touchHeight: CGFloat = 30
+    static let visualIconSize: CGFloat = 18
+    static let symbolPointSize: CGFloat = 14
+    static let defaultHoverCornerRadius: CGFloat = 6
+
     private let imageView = NSImageView()
+    private let hoverBackgroundLayer = CAShapeLayer()
     private var iconSource: IconSource
+    private let hoverCornerRadius: CGFloat
+    private let hoverLeadingCornerRadius: CGFloat?
+    private let hoverRoundedCorners: CACornerMask
     private var lastActionTime: TimeInterval = 0
     var action: (() -> Void)?
     var minimumActionInterval: TimeInterval = 0
@@ -1746,14 +2180,66 @@ final class MirrorChromeOutlineButton: NSView {
         didSet { applyTint() }
     }
 
-    init(symbol: String, accessibilityDescription: String? = nil) {
+    var iconNameForTesting: String? {
+        switch iconSource {
+        case .system(let symbol): return symbol
+        case .resource(let name): return name
+        }
+    }
+
+    var hoverCornerRadiusForTesting: CGFloat {
+        hoverCornerRadius
+    }
+
+    var hoverLeadingCornerRadiusForTesting: CGFloat? {
+        hoverLeadingCornerRadius
+    }
+
+    var hoverRoundedCornersForTesting: CACornerMask {
+        hoverRoundedCorners
+    }
+
+    var hoverHeightForTesting: CGFloat {
+        layoutSubtreeIfNeeded()
+        return hoverBackgroundLayer.frame.height
+    }
+
+    init(
+        symbol: String,
+        accessibilityDescription: String? = nil,
+        hoverCornerRadius: CGFloat = MirrorChromeOutlineButton.defaultHoverCornerRadius,
+        hoverLeadingCornerRadius: CGFloat? = nil,
+        hoverRoundedCorners: CACornerMask = [
+            .layerMinXMinYCorner,
+            .layerMaxXMinYCorner,
+            .layerMinXMaxYCorner,
+            .layerMaxXMaxYCorner,
+        ]
+    ) {
         iconSource = .system(symbol)
+        self.hoverCornerRadius = hoverCornerRadius
+        self.hoverLeadingCornerRadius = hoverLeadingCornerRadius
+        self.hoverRoundedCorners = hoverRoundedCorners
         super.init(frame: .zero)
         setup(accessibilityDescription: accessibilityDescription)
     }
 
-    init(resource: String, accessibilityDescription: String? = nil) {
+    init(
+        resource: String,
+        accessibilityDescription: String? = nil,
+        hoverCornerRadius: CGFloat = MirrorChromeOutlineButton.defaultHoverCornerRadius,
+        hoverLeadingCornerRadius: CGFloat? = nil,
+        hoverRoundedCorners: CACornerMask = [
+            .layerMinXMinYCorner,
+            .layerMaxXMinYCorner,
+            .layerMinXMaxYCorner,
+            .layerMaxXMaxYCorner,
+        ]
+    ) {
         iconSource = .resource(resource)
+        self.hoverCornerRadius = hoverCornerRadius
+        self.hoverLeadingCornerRadius = hoverLeadingCornerRadius
+        self.hoverRoundedCorners = hoverRoundedCorners
         super.init(frame: .zero)
         setup(accessibilityDescription: accessibilityDescription)
     }
@@ -1762,14 +2248,15 @@ final class MirrorChromeOutlineButton: NSView {
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 28),
-            heightAnchor.constraint(equalToConstant: 22),
+            widthAnchor.constraint(equalToConstant: Self.touchWidth),
+            heightAnchor.constraint(equalToConstant: Self.touchHeight),
         ])
-        layer?.cornerRadius = 6
         layer?.setValue("continuous", forKey: "cornerCurve")
+        hoverBackgroundLayer.fillColor = nil
+        layer?.addSublayer(hoverBackgroundLayer)
 
         imageView.image = Self.image(for: iconSource, accessibilityDescription: accessibilityDescription)
-        imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+        imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: Self.symbolPointSize, weight: .regular)
         imageView.imageScaling = .scaleProportionallyUpOrDown
         imageView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(imageView)
@@ -1777,8 +2264,8 @@ final class MirrorChromeOutlineButton: NSView {
         NSLayoutConstraint.activate([
             imageView.centerXAnchor.constraint(equalTo: centerXAnchor),
             imageView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            imageView.widthAnchor.constraint(equalToConstant: 18),
-            imageView.heightAnchor.constraint(equalToConstant: 18),
+            imageView.widthAnchor.constraint(equalToConstant: Self.visualIconSize),
+            imageView.heightAnchor.constraint(equalToConstant: Self.visualIconSize),
         ])
     }
     required init?(coder: NSCoder) { nil }
@@ -1788,7 +2275,18 @@ final class MirrorChromeOutlineButton: NSView {
 
     override func layout() {
         super.layout()
-        let iconSize = min(18, max(14, 14 * chromeScale))
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let hoverRect = bounds
+        hoverBackgroundLayer.frame = hoverRect
+        hoverBackgroundLayer.path = Self.hoverPath(
+            in: CGRect(origin: .zero, size: hoverRect.size),
+            radius: hoverCornerRadius,
+            leadingRadius: hoverLeadingCornerRadius,
+            roundedCorners: hoverRoundedCorners
+        )
+        CATransaction.commit()
+        let iconSize = min(Self.visualIconSize, max(Self.symbolPointSize, Self.symbolPointSize * chromeScale))
         imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: iconSize, weight: .regular)
     }
 
@@ -1831,6 +2329,76 @@ final class MirrorChromeOutlineButton: NSView {
             : NSColor.white.withAlphaComponent(0.72)
     }
 
+    private static func hoverPath(
+        in rect: CGRect,
+        radius requestedRadius: CGFloat,
+        leadingRadius requestedLeadingRadius: CGFloat?,
+        roundedCorners: CACornerMask
+    ) -> CGPath {
+        // Each corner is limited by the vertical edge it shares (height / 2).
+        // Horizontally, the trailing and leading radii share the top/bottom
+        // edges, so it's their *sum* that must fit the width — not each one
+        // capped at width / 2. Clamping each to width / 2 would pin an 18pt cap
+        // down to 17 on a 34pt-wide button even though 18 + 6 easily fits.
+        var radius = min(requestedRadius, rect.height / 2)
+        var leadingRadius = min(requestedLeadingRadius ?? radius, rect.height / 2)
+        let radiiSum = radius + leadingRadius
+        if radiiSum > rect.width {
+            let widthScale = rect.width / radiiSum
+            radius *= widthScale
+            leadingRadius *= widthScale
+        }
+        let minXMinY = roundedCorners.contains(.layerMinXMinYCorner)
+        let maxXMinY = roundedCorners.contains(.layerMaxXMinYCorner)
+        let maxXMaxY = roundedCorners.contains(.layerMaxXMaxYCorner)
+        let minXMaxY = roundedCorners.contains(.layerMinXMaxYCorner)
+        let path = CGMutablePath()
+
+        path.move(to: CGPoint(x: rect.minX + (minXMinY ? leadingRadius : 0), y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - (maxXMinY ? radius : 0), y: rect.minY))
+        if maxXMinY {
+            path.addQuadCurve(
+                to: CGPoint(x: rect.maxX, y: rect.minY + radius),
+                control: CGPoint(x: rect.maxX, y: rect.minY)
+            )
+        } else {
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        }
+
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - (maxXMaxY ? radius : 0)))
+        if maxXMaxY {
+            path.addQuadCurve(
+                to: CGPoint(x: rect.maxX - radius, y: rect.maxY),
+                control: CGPoint(x: rect.maxX, y: rect.maxY)
+            )
+        } else {
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        }
+
+        path.addLine(to: CGPoint(x: rect.minX + (minXMaxY ? leadingRadius : 0), y: rect.maxY))
+        if minXMaxY {
+            path.addQuadCurve(
+                to: CGPoint(x: rect.minX, y: rect.maxY - leadingRadius),
+                control: CGPoint(x: rect.minX, y: rect.maxY)
+            )
+        } else {
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        }
+
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + (minXMinY ? leadingRadius : 0)))
+        if minXMinY {
+            path.addQuadCurve(
+                to: CGPoint(x: rect.minX + leadingRadius, y: rect.minY),
+                control: CGPoint(x: rect.minX, y: rect.minY)
+            )
+        } else {
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
+        }
+
+        path.closeSubpath()
+        return path
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea(_:))
@@ -1842,16 +2410,16 @@ final class MirrorChromeOutlineButton: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        hoverBackgroundLayer.fillColor = NSColor.white.withAlphaComponent(0.12).cgColor
     }
     override func mouseExited(with event: NSEvent) {
-        layer?.backgroundColor = nil
+        hoverBackgroundLayer.fillColor = nil
     }
     override func mouseDown(with event: NSEvent) {
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.22).cgColor
+        hoverBackgroundLayer.fillColor = NSColor.white.withAlphaComponent(0.22).cgColor
     }
     override func mouseUp(with event: NSEvent) {
-        layer?.backgroundColor = nil
+        hoverBackgroundLayer.fillColor = nil
         let p = convert(event.locationInWindow, from: nil)
         guard bounds.contains(p) else { return }
         let now = ProcessInfo.processInfo.systemUptime

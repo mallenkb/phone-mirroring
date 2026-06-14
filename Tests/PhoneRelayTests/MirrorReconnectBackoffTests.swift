@@ -4,6 +4,23 @@ import XCTest
 final class MirrorReconnectBackoffTests: XCTestCase {
     private let explicitDeviceSetupRequiredDefaultsKey = "MirrorBehavior.explicitDeviceSetupRequired"
 
+    private func withoutExplicitDeviceSetupRequired(_ body: () -> Void) {
+        let defaults = [UserDefaults.standard]
+            + PairedPhoneStore.compatibilitySuites.compactMap { UserDefaults(suiteName: $0) }
+        let previousValues = defaults.map { $0.object(forKey: explicitDeviceSetupRequiredDefaultsKey) }
+        defer {
+            for (defaults, previousValue) in zip(defaults, previousValues) {
+                if let previousValue {
+                    defaults.set(previousValue, forKey: explicitDeviceSetupRequiredDefaultsKey)
+                } else {
+                    defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
+                }
+            }
+        }
+        defaults.forEach { $0.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey) }
+        body()
+    }
+
     @MainActor
     func testClearAllDevicesResetsSelectedDeviceAndRequiresExplicitSetup() {
         let defaults = UserDefaults.standard
@@ -164,6 +181,54 @@ final class MirrorReconnectBackoffTests: XCTestCase {
 
     func testManualReconnectWindowFailsFast() {
         XCTAssertEqual(AppModel.manualReconnectWindow, 10)
+    }
+
+    @MainActor
+    func testManualDisconnectSuspendsAutoConnectForSelectedPhone() {
+        withoutExplicitDeviceSetupRequired {
+            let record = PairedPhoneRecord(
+                id: "adb-RFCT10ZLTAJ",
+                displayName: "SM S906B",
+                lastAddress: "192.168.68.57:5555",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 200)
+            )
+            let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+            model.selectedDevice = MirrorDevice(
+                id: record.id,
+                name: record.displayName,
+                model: "SM S906B",
+                battery: 50,
+                isCharging: false,
+                network: "Wireless debugging",
+                lastSeen: record.lastConnected,
+                states: [.mirroringReady, .companionConnected],
+                adbSerial: record.lastAddress
+            )
+
+            model.stopMirroring()
+
+            XCTAssertEqual(model.pairedPhones.first?.autoConnectSuspended, true)
+        }
+    }
+
+    @MainActor
+    func testManualConnectResumesAutoConnectForSelectedPhone() {
+        withoutExplicitDeviceSetupRequired {
+            let record = PairedPhoneRecord(
+                id: "RFCT10ZLTAJ",
+                displayName: "SM S906B",
+                lastAddress: "RFCT10ZLTAJ",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 200),
+                autoConnectSuspended: true
+            )
+            let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+
+            model.connect(record: record)
+
+            XCTAssertEqual(model.pairedPhones.first?.autoConnectSuspended, false)
+        }
     }
 
     func testSavedDeviceShowsConnectingDuringReconnectAttempt() {
@@ -607,6 +672,37 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 authorizedDevices: [usb, wireless]
             ),
             wireless
+        )
+    }
+
+    func testLiveSelectedDeviceDoesNotUseSubstringMatchedRecordFromDifferentPhone() {
+        let unrelatedRecord = PairedPhoneRecord(
+            id: "adb-XRFCT10ZLTAJY",
+            displayName: "Other Phone",
+            lastAddress: "192.168.68.53:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let selectedUSB = AuthorizedADBDevice(
+            serial: "RFCT10ZLTAJ",
+            product: "g0qxxx",
+            model: "SM S906B",
+            isUSB: true
+        )
+        let unrelatedWireless = AuthorizedADBDevice(
+            serial: "192.168.68.53:5555",
+            product: "oriole",
+            model: "Other Phone",
+            isUSB: false
+        )
+
+        XCTAssertEqual(
+            AppModel.liveSelectedOrRememberedDevice(
+                selectedSerial: "RFCT10ZLTAJ",
+                pairedPhones: [unrelatedRecord],
+                authorizedDevices: [selectedUSB, unrelatedWireless]
+            ),
+            selectedUSB
         )
     }
 
