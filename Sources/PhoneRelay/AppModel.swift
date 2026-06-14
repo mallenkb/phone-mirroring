@@ -2588,10 +2588,7 @@ final class AppModel: ObservableObject {
         if let exact = authorizedDevices.first(where: { $0.serial == selectedSerial }) {
             if exact.isUSB {
                 for record in recordsByMostRecent(pairedPhones) where
-                    record.id == selectedSerial
-                        || record.lastAddress == selectedSerial
-                        || record.id.localizedCaseInsensitiveContains(selectedSerial)
-                        || selectedSerial.localizedCaseInsensitiveContains(record.id) {
+                    Self.recordMatchesSelectedADBSerial(record, selectedSerial: selectedSerial) {
                     if let wireless = rememberedAuthorizedDevice(for: record, in: authorizedDevices),
                        !wireless.isUSB {
                         return wireless
@@ -2617,6 +2614,20 @@ final class AppModel: ObservableObject {
         }
 
         return nil
+    }
+
+    nonisolated static func recordMatchesSelectedADBSerial(
+        _ record: PairedPhoneRecord,
+        selectedSerial: String
+    ) -> Bool {
+        record.id == selectedSerial
+            || record.lastAddress == selectedSerial
+            || normalizedADBSerial(record.id) == selectedSerial
+    }
+
+    private nonisolated static func normalizedADBSerial(_ identifier: String) -> String {
+        guard identifier.hasPrefix("adb-") else { return identifier }
+        return String(identifier.dropFirst(4))
     }
 
     nonisolated static func isWirelessRecord(_ record: PairedPhoneRecord) -> Bool {

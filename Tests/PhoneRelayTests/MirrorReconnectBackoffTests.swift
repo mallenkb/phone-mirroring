@@ -610,6 +610,37 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
+    func testLiveSelectedDeviceDoesNotUseSubstringMatchedRecordFromDifferentPhone() {
+        let unrelatedRecord = PairedPhoneRecord(
+            id: "adb-XRFCT10ZLTAJY",
+            displayName: "Other Phone",
+            lastAddress: "192.168.68.53:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let selectedUSB = AuthorizedADBDevice(
+            serial: "RFCT10ZLTAJ",
+            product: "g0qxxx",
+            model: "SM S906B",
+            isUSB: true
+        )
+        let unrelatedWireless = AuthorizedADBDevice(
+            serial: "192.168.68.53:5555",
+            product: "oriole",
+            model: "Other Phone",
+            isUSB: false
+        )
+
+        XCTAssertEqual(
+            AppModel.liveSelectedOrRememberedDevice(
+                selectedSerial: "RFCT10ZLTAJ",
+                pairedPhones: [unrelatedRecord],
+                authorizedDevices: [selectedUSB, unrelatedWireless]
+            ),
+            selectedUSB
+        )
+    }
+
     func testAwaitingReconnectShowsReconnectSurface() {
         XCTAssertTrue(
             AppModel.shouldShowReconnectSurface(

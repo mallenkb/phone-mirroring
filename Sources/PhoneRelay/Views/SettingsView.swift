@@ -321,11 +321,11 @@ struct SettingsView: View {
     }
 
     private var bundleVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.1"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.2"
     }
 
     private var bundleBuild: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "2"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "8"
     }
 
     private var bundleIdentifier: String {

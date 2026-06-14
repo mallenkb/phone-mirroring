@@ -7,7 +7,8 @@ PRODUCT_NAME="PhoneRelay"
 # Network and Notification authorization are keyed to the app identity, so the
 # old placeholder id caused duplicate privacy entries and blocked Wi-Fi handoff.
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
-APP_VERSION="${APP_VERSION:-0.1.1}"
+APP_VERSION="${APP_VERSION:-1.0.2}"
+BUILD_NUMBER="${BUILD_NUMBER:-8}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
@@ -145,7 +146,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key>
   <string>$APP_VERSION</string>
   <key>CFBundleVersion</key>
-  <string>$APP_VERSION</string>
+  <string>$BUILD_NUMBER</string>
   <key>CFBundleIconName</key>
   <string>AppIcon</string>
   <key>CFBundleName</key>
