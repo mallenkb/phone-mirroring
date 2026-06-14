@@ -10,7 +10,7 @@ enum MediaCaptureService {
     static let outputFolderName = "Downloads"
     private static let screenshotTimeout: TimeInterval = 10
 
-    static func captureScreenshot(serial: String?) -> Result<URL, ScreenshotError> {
+    static func captureScreenshot(serial: String?, outputDirectory customOutputDirectory: URL? = nil) -> Result<URL, ScreenshotError> {
         let result = Tooling.runDataResult(
             "adb",
             arguments: adbDeviceArguments(serial: serial) + ["exec-out", "screencap", "-p"],
@@ -31,7 +31,7 @@ enum MediaCaptureService {
         }
 
         do {
-            let directory = try outputDirectory()
+            let directory = try outputDirectory(customOutputDirectory)
             let url = directory.appendingPathComponent(filename(
                 kind: "Screenshot",
                 extension: "png"
@@ -43,8 +43,8 @@ enum MediaCaptureService {
         }
     }
 
-    static func outputDirectory(fileManager: FileManager = .default) throws -> URL {
-        let url = fileManager.homeDirectoryForCurrentUser
+    static func outputDirectory(_ customDirectory: URL? = nil, fileManager: FileManager = .default) throws -> URL {
+        let url = customDirectory ?? fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent(outputFolderName, isDirectory: true)
         try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
         return url

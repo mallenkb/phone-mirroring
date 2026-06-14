@@ -70,10 +70,10 @@
         "icon-studio-idiom" : "unspecified",
         "icon-studio-localization" : "unspecified",
         "value" : {
-          "origin.x" : 32,
-          "origin.y" : 224,
-          "size.height" : 576,
-          "size.width" : 960
+          "origin.x" : 0,
+          "origin.y" : 205,
+          "size.height" : 614,
+          "size.width" : 1024
         }
       },
       {
@@ -81,10 +81,10 @@
         "icon-studio-idiom" : "unspecified",
         "icon-studio-localization" : "unspecified",
         "value" : {
-          "origin.x" : 32,
-          "origin.y" : 224,
-          "size.height" : 576,
-          "size.width" : 960
+          "origin.x" : 0,
+          "origin.y" : 205,
+          "size.height" : 614,
+          "size.width" : 1024
         }
       },
       {
@@ -92,10 +92,10 @@
         "icon-studio-idiom" : "unspecified",
         "icon-studio-localization" : "unspecified",
         "value" : {
-          "origin.x" : 32,
-          "origin.y" : 224,
-          "size.height" : 576,
-          "size.width" : 960
+          "origin.x" : 0,
+          "origin.y" : 205,
+          "size.height" : 614,
+          "size.width" : 1024
         }
       },
       {
@@ -103,10 +103,10 @@
         "icon-studio-idiom" : "unspecified",
         "icon-studio-localization" : "unspecified",
         "value" : {
-          "origin.x" : 32,
-          "origin.y" : 224,
-          "size.height" : 576,
-          "size.width" : 960
+          "origin.x" : 0,
+          "origin.y" : 205,
+          "size.height" : 614,
+          "size.width" : 1024
         }
       },
       {
@@ -114,10 +114,10 @@
         "icon-studio-idiom" : "iOS",
         "icon-studio-localization" : "unspecified",
         "value" : {
-          "origin.x" : 32,
-          "origin.y" : 224,
-          "size.height" : 576,
-          "size.width" : 960
+          "origin.x" : 0,
+          "origin.y" : 205,
+          "size.height" : 614,
+          "size.width" : 1024
         }
       },
       {
@@ -125,10 +125,10 @@
         "icon-studio-idiom" : "iOS",
         "icon-studio-localization" : "unspecified",
         "value" : {
-          "origin.x" : 32,
-          "origin.y" : 224,
-          "size.height" : 576,
-          "size.width" : 960
+          "origin.x" : 0,
+          "origin.y" : 205,
+          "size.height" : 614,
+          "size.width" : 1024
         }
       },
       {
@@ -136,10 +136,10 @@
         "icon-studio-idiom" : "iOS",
         "icon-studio-localization" : "unspecified",
         "value" : {
-          "origin.x" : 32,
-          "origin.y" : 224,
-          "size.height" : 576,
-          "size.width" : 960
+          "origin.x" : 0,
+          "origin.y" : 205,
+          "size.height" : 614,
+          "size.width" : 1024
         }
       },
       {
@@ -147,10 +147,10 @@
         "icon-studio-idiom" : "iOS",
         "icon-studio-localization" : "unspecified",
         "value" : {
-          "origin.x" : 32,
-          "origin.y" : 224,
-          "size.height" : 576,
-          "size.width" : 960
+          "origin.x" : 0,
+          "origin.y" : 205,
+          "size.height" : 614,
+          "size.width" : 1024
         }
       },
       {
@@ -158,10 +158,10 @@
         "icon-studio-idiom" : "macOS",
         "icon-studio-localization" : "unspecified",
         "value" : {
-          "origin.x" : 32,
-          "origin.y" : 224,
-          "size.height" : 576,
-          "size.width" : 960
+          "origin.x" : 0,
+          "origin.y" : 205,
+          "size.height" : 614,
+          "size.width" : 1024
         }
       },
       {
@@ -169,10 +169,10 @@
         "icon-studio-idiom" : "macOS",
         "icon-studio-localization" : "unspecified",
         "value" : {
-          "origin.x" : 32,
-          "origin.y" : 224,
-          "size.height" : 576,
-          "size.width" : 960
+          "origin.x" : 0,
+          "origin.y" : 205,
+          "size.height" : 614,
+          "size.width" : 1024
         }
       },
       {
@@ -180,10 +180,10 @@
         "icon-studio-idiom" : "macOS",
         "icon-studio-localization" : "unspecified",
         "value" : {
-          "origin.x" : 32,
-          "origin.y" : 224,
-          "size.height" : 576,
-          "size.width" : 960
+          "origin.x" : 0,
+          "origin.y" : 205,
+          "size.height" : 614,
+          "size.width" : 1024
         }
       },
       {
@@ -191,10 +191,10 @@
         "icon-studio-idiom" : "macOS",
         "icon-studio-localization" : "unspecified",
         "value" : {
-          "origin.x" : 32,
-          "origin.y" : 224,
-          "size.height" : 576,
-          "size.width" : 960
+          "origin.x" : 0,
+          "origin.y" : 205,
+          "size.height" : 614,
+          "size.width" : 1024
         }
       },
       {

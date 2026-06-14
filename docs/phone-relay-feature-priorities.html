@@ -1,0 +1,1072 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PhoneRelay Feature Priorities</title>
+  <meta name="description" content="A focused product memo for PhoneRelay feature priorities, roadmap, tradeoffs, and success criteria.">
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8f6;
+      --surface: #ffffff;
+      --surface-2: #eef5f6;
+      --text: #1b2428;
+      --muted: #5f6c70;
+      --line: #dce5e5;
+      --accent: #0e7490;
+      --accent-dark: #155e75;
+      --green: #0f766e;
+      --amber: #b45309;
+      --red: #b91c1c;
+      --blue-soft: #e6f4f8;
+      --green-soft: #e7f6f2;
+      --amber-soft: #fff5df;
+      --red-soft: #fff1f1;
+      --shadow: 0 16px 36px rgba(26, 42, 48, 0.08);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 16px;
+      line-height: 1.58;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    .wrap {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+    }
+
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      border-bottom: 1px solid rgba(220, 229, 229, 0.92);
+      background: rgba(247, 248, 246, 0.92);
+      backdrop-filter: blur(14px);
+    }
+
+    .nav-inner {
+      min-height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text);
+      font-weight: 750;
+      text-decoration: none;
+    }
+
+    .brand-mark {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      color: #ffffff;
+      background: var(--accent);
+      font-size: 15px;
+      font-weight: 800;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      color: var(--muted);
+      font-size: 14px;
+      white-space: nowrap;
+    }
+
+    .nav-links a {
+      text-decoration: none;
+    }
+
+    .nav-links a:hover {
+      color: var(--text);
+    }
+
+    header {
+      padding: 58px 0 42px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(300px, 0.72fr);
+      gap: 42px;
+      align-items: start;
+    }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--accent-dark);
+      font-size: 13px;
+      font-weight: 750;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 780px;
+      margin: 0;
+      font-size: clamp(36px, 5.4vw, 52px);
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 760px;
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .hero-note {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+
+    .hero-note h2 {
+      margin: 0 0 8px;
+      font-size: 21px;
+    }
+
+    .hero-note p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .hero-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 5px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fbfdfd;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    main {
+      padding: 18px 0 56px;
+    }
+
+    section {
+      padding: 34px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    section:last-child {
+      border-bottom: 0;
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(0, 0.72fr) minmax(280px, 1fr);
+      gap: 32px;
+      align-items: start;
+      margin-bottom: 18px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: clamp(26px, 4vw, 33px);
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0;
+      font-size: 19px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0;
+    }
+
+    .section-copy {
+      color: var(--muted);
+    }
+
+    .grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .grid.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .grid.three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 18px;
+    }
+
+    .card p {
+      margin-top: 8px;
+      color: var(--muted);
+    }
+
+    .label {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      margin-bottom: 10px;
+      color: var(--accent-dark);
+      font-size: 12px;
+      font-weight: 780;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .priority-list {
+      display: grid;
+      gap: 12px;
+      counter-reset: priority;
+    }
+
+    .priority-item {
+      display: grid;
+      grid-template-columns: 56px minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: start;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .rank {
+      width: 42px;
+      height: 42px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: var(--blue-soft);
+      color: var(--accent-dark);
+      font-weight: 800;
+      font-size: 17px;
+    }
+
+    .priority-title {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+
+    .priority-item p {
+      color: var(--muted);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 760;
+      white-space: nowrap;
+    }
+
+    .pill.p0 {
+      color: #075985;
+      background: #e0f2fe;
+    }
+
+    .pill.p1 {
+      color: #065f46;
+      background: var(--green-soft);
+    }
+
+    .pill.p2 {
+      color: #92400e;
+      background: var(--amber-soft);
+    }
+
+    .pill.no {
+      color: #991b1b;
+      background: var(--red-soft);
+    }
+
+    .score {
+      min-width: 112px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+    }
+
+    .score strong {
+      display: block;
+      color: var(--text);
+      font-size: 22px;
+      line-height: 1;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    table {
+      width: 100%;
+      min-width: 860px;
+      border-collapse: collapse;
+      font-size: 15px;
+    }
+
+    th,
+    td {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      background: #fbfcfc;
+      font-size: 12px;
+      font-weight: 780;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    td strong {
+      color: var(--text);
+    }
+
+    td {
+      color: var(--muted);
+    }
+
+    .roadmap {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .phase {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 18px;
+    }
+
+    .phase ol {
+      margin: 14px 0 0;
+      padding-left: 20px;
+      color: var(--muted);
+    }
+
+    .phase li + li {
+      margin-top: 8px;
+    }
+
+    .visual {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 18px;
+    }
+
+    .matrix {
+      display: grid;
+      grid-template-columns: 110px repeat(3, minmax(0, 1fr));
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--surface);
+    }
+
+    .matrix > div {
+      min-height: 72px;
+      padding: 12px;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .matrix > div:nth-child(4n) {
+      border-right: 0;
+    }
+
+    .matrix > div:nth-last-child(-n + 4) {
+      border-bottom: 0;
+    }
+
+    .axis {
+      background: #fbfcfc;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 780;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .matrix-card {
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 720;
+    }
+
+    .matrix-card span {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .checklist {
+      display: grid;
+      gap: 10px;
+      margin-top: 2px;
+    }
+
+    .check {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .check-mark {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: #ffffff;
+      background: var(--green);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .check strong {
+      display: block;
+      margin-bottom: 3px;
+    }
+
+    .check p {
+      color: var(--muted);
+    }
+
+    .callout {
+      border-left: 4px solid var(--accent);
+      border-radius: 8px;
+      background: var(--blue-soft);
+      padding: 16px 18px;
+    }
+
+    .callout strong {
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    .callout p {
+      color: #3d5962;
+    }
+
+    footer {
+      padding: 30px 0 42px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @media (max-width: 880px) {
+      .hero,
+      .section-head,
+      .grid.two,
+      .grid.three,
+      .roadmap {
+        grid-template-columns: 1fr;
+      }
+
+      .priority-item {
+        grid-template-columns: 48px minmax(0, 1fr);
+      }
+
+      .score {
+        grid-column: 2;
+        text-align: left;
+      }
+
+      .matrix {
+        grid-template-columns: 1fr;
+      }
+
+      .matrix > div,
+      .matrix > div:nth-child(4n),
+      .matrix > div:nth-last-child(-n + 4) {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .matrix > div:last-child {
+        border-bottom: 0;
+      }
+    }
+
+    @media (max-width: 680px) {
+      .wrap {
+        width: min(100% - 28px, 1120px);
+      }
+
+      .nav-inner {
+        min-height: auto;
+        padding: 14px 0;
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .nav-links {
+        width: 100%;
+        overflow-x: auto;
+        padding-bottom: 2px;
+      }
+
+      header {
+        padding: 42px 0 32px;
+      }
+
+      .lead {
+        font-size: 16px;
+      }
+
+      section {
+        padding: 28px 0;
+      }
+
+      .priority-item {
+        grid-template-columns: 1fr;
+      }
+
+      .rank {
+        width: 38px;
+        height: 38px;
+      }
+
+      .score {
+        grid-column: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="wrap nav-inner">
+      <a class="brand" href="#top" aria-label="PhoneRelay feature priorities">
+        <span class="brand-mark">P</span>
+        <span>PhoneRelay Priorities</span>
+      </a>
+      <div class="nav-links" aria-label="Page navigation">
+        <a href="#focus">Focus</a>
+        <a href="#ranking">Ranking</a>
+        <a href="#roadmap">Roadmap</a>
+        <a href="#avoid">Avoid</a>
+      </div>
+    </div>
+  </nav>
+
+  <header id="top">
+    <div class="wrap hero">
+      <div>
+        <p class="eyebrow">Product Memo</p>
+        <h1>Build PhoneRelay around Android control, capture, and reliable local workflows.</h1>
+        <p class="lead">PhoneRelay should not become a general phone companion app. Its strongest lane is narrower and more defensible: mirror an Android device on Mac, control it cleanly, install builds, capture proof, and keep the connection trustworthy.</p>
+        <div class="hero-tags" aria-label="Product focus tags">
+          <span class="tag">Local-first</span>
+          <span class="tag">No account</span>
+          <span class="tag">No cloud relay</span>
+          <span class="tag">Mac-native</span>
+          <span class="tag">Android workflow tool</span>
+        </div>
+      </div>
+      <aside class="hero-note" aria-labelledby="positioning-title">
+        <h2 id="positioning-title">Recommended positioning</h2>
+        <p><strong>Mirror, control, install, screenshot, and record your Android phone from your Mac.</strong></p>
+        <p style="margin-top: 12px;">Support it with the trust line: <strong>No account. No cloud relay. Your Android screen stays between your phone and Mac.</strong></p>
+      </aside>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section id="focus">
+      <div class="section-head">
+        <h2>The product focus</h2>
+        <p class="section-copy">The most important decision is what PhoneRelay refuses to be. Do not compete as a messages, calls, contacts, and full companion suite. Compete as the most practical Mac tool for controlling and capturing Android locally.</p>
+      </div>
+      <div class="grid three">
+        <article class="card">
+          <span class="label"><span class="dot"></span>Primary user</span>
+          <h3>People who need to operate an Android phone from a Mac</h3>
+          <p>Developers, QA testers, support teams, product managers, demo creators, and power users who need the phone visible, controllable, and recordable.</p>
+        </article>
+        <article class="card">
+          <span class="label"><span class="dot"></span>Primary job</span>
+          <h3>Turn the phone into a reliable Mac workflow surface</h3>
+          <p>The product should make it easy to connect, mirror, control, install, capture, and troubleshoot without making users think about adb.</p>
+        </article>
+        <article class="card">
+          <span class="label"><span class="dot"></span>Main promise</span>
+          <h3>Fast local control without a cloud account</h3>
+          <p>The trust story is not secondary. It is the reason PhoneRelay can feel cleaner than broad device-management products.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="ranking">
+      <div class="section-head">
+        <h2>Ranked feature priorities</h2>
+        <p class="section-copy">The ranking below weighs product fit, user value, implementation leverage, and how clearly each feature supports the focused PhoneRelay direction.</p>
+      </div>
+
+      <div class="priority-list" aria-label="Ranked feature priorities">
+        <article class="priority-item">
+          <div class="rank">1</div>
+          <div>
+            <div class="priority-title">
+              <h3>Connection Health Panel</h3>
+              <span class="pill p0">P0</span>
+            </div>
+            <p>Show USB authorization, Wi-Fi reachability, local network permission, adb status, selected transport, reconnect attempts, and the next recommended fix. This reduces support burden and makes reliability visible.</p>
+          </div>
+          <div class="score"><strong>10/10</strong>Impact</div>
+        </article>
+
+        <article class="priority-item">
+          <div class="rank">2</div>
+          <div>
+            <div class="priority-title">
+              <h3>Mirror Profiles</h3>
+              <span class="pill p0">P0</span>
+            </div>
+            <p>Add presets for Low Latency, High Quality, Recording, and Battery Friendly. You already have resolution, bitrate, and frame-rate settings; profiles turn technical controls into user intent.</p>
+          </div>
+          <div class="score"><strong>9/10</strong>Impact</div>
+        </article>
+
+        <article class="priority-item">
+          <div class="rank">3</div>
+          <div>
+            <div class="priority-title">
+              <h3>Demo Mode</h3>
+              <span class="pill p0">P0</span>
+            </div>
+            <p>One command prepares a clean phone demo: stable quality profile, hidden toolbar, optional touch indicators, muted notification forwarding, centered window, and recording-ready state.</p>
+          </div>
+          <div class="score"><strong>9/10</strong>Impact</div>
+        </article>
+
+        <article class="priority-item">
+          <div class="rank">4</div>
+          <div>
+            <div class="priority-title">
+              <h3>APK Install Workflow</h3>
+              <span class="pill p0">P0</span>
+            </div>
+            <p>Make drag-and-drop APK install explicit with status, progress language, success state, recent installs, and clear failure messages. This is highly aligned with developer and tester use.</p>
+          </div>
+          <div class="score"><strong>8.5/10</strong>Impact</div>
+        </article>
+
+        <article class="priority-item">
+          <div class="rank">5</div>
+          <div>
+            <div class="priority-title">
+              <h3>Bug Capture Mode</h3>
+              <span class="pill p1">P1</span>
+            </div>
+            <p>Record the screen and attach basic context: device model, Android version, resolution, connection type, timestamp, and saved file location. This gives QA and support users a reason to choose PhoneRelay repeatedly.</p>
+          </div>
+          <div class="score"><strong>8/10</strong>Impact</div>
+        </article>
+
+        <article class="priority-item">
+          <div class="rank">6</div>
+          <div>
+            <div class="priority-title">
+              <h3>Common Folder Pull</h3>
+              <span class="pill p1">P1</span>
+            </div>
+            <p>Add focused file import for DCIM, Screenshots, Downloads, and app export folders. Keep it lightweight; do not build a full file manager unless users prove they need it.</p>
+          </div>
+          <div class="score"><strong>7.5/10</strong>Impact</div>
+        </article>
+
+        <article class="priority-item">
+          <div class="rank">7</div>
+          <div>
+            <div class="priority-title">
+              <h3>Capture Library</h3>
+              <span class="pill p1">P1</span>
+            </div>
+            <p>Show recent screenshots and recordings created by PhoneRelay with reveal-in-Finder, rename, copy path, and delete actions. This makes capture feel like a complete workflow.</p>
+          </div>
+          <div class="score"><strong>7/10</strong>Impact</div>
+        </article>
+
+        <article class="priority-item">
+          <div class="rank">8</div>
+          <div>
+            <div class="priority-title">
+              <h3>Presentation Controls</h3>
+              <span class="pill p1">P1</span>
+            </div>
+            <p>Add polished controls for always-on-top, scale presets, rotate, center, hide phone screen, and keyboard shortcut hints. These help demos and daily operation without changing the product category.</p>
+          </div>
+          <div class="score"><strong>7/10</strong>Impact</div>
+        </article>
+
+        <article class="priority-item">
+          <div class="rank">9</div>
+          <div>
+            <div class="priority-title">
+              <h3>Local Trust Center</h3>
+              <span class="pill p1">P1</span>
+            </div>
+            <p>Bring privacy, permissions, local storage, scrcpy notices, and “what never leaves your Mac” into the app. This reinforces the core trust claim at the moment users grant permissions.</p>
+          </div>
+          <div class="score"><strong>6.5/10</strong>Impact</div>
+        </article>
+
+        <article class="priority-item">
+          <div class="rank">10</div>
+          <div>
+            <div class="priority-title">
+              <h3>Clipboard Sync Status</h3>
+              <span class="pill p2">P2</span>
+            </div>
+            <p>Show whether clipboard sync is active, last direction, and size limitations. Keep this small; it is useful, but not as central as connection, install, capture, and recording.</p>
+          </div>
+          <div class="score"><strong>5.5/10</strong>Impact</div>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Priority table</h2>
+        <p class="section-copy">Use this as the working product roadmap. The “why now” column explains why each item deserves its place instead of being a generic nice-to-have.</p>
+      </div>
+      <div class="table-wrap" role="region" aria-label="Feature priority table" tabindex="0">
+        <table>
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Feature</th>
+              <th>Priority</th>
+              <th>Primary user value</th>
+              <th>Why now</th>
+              <th>Success criteria</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>1</strong></td>
+              <td><strong>Connection Health Panel</strong></td>
+              <td>P0</td>
+              <td>Users know why a phone is not connecting and what to do next.</td>
+              <td>Mirroring tools live or die on setup reliability.</td>
+              <td>Most common connection failures produce a clear state and next action.</td>
+            </tr>
+            <tr>
+              <td><strong>2</strong></td>
+              <td><strong>Mirror Profiles</strong></td>
+              <td>P0</td>
+              <td>Users choose an outcome instead of tuning bitrate and frame rate manually.</td>
+              <td>The underlying settings already exist, so this is high leverage.</td>
+              <td>Users can switch profiles and understand the tradeoff immediately.</td>
+            </tr>
+            <tr>
+              <td><strong>3</strong></td>
+              <td><strong>Demo Mode</strong></td>
+              <td>P0</td>
+              <td>Users can quickly prepare the phone mirror for a polished demo or video.</td>
+              <td>It creates a differentiated workflow around existing capture features.</td>
+              <td>One command sets up a clean, centered, recording-ready mirror.</td>
+            </tr>
+            <tr>
+              <td><strong>4</strong></td>
+              <td><strong>APK Install Workflow</strong></td>
+              <td>P0</td>
+              <td>Developers and testers install builds without terminal commands.</td>
+              <td>Drag-and-drop already exists but needs a visible workflow.</td>
+              <td>APK installs show progress, result, and useful failure messages.</td>
+            </tr>
+            <tr>
+              <td><strong>5</strong></td>
+              <td><strong>Bug Capture Mode</strong></td>
+              <td>P1</td>
+              <td>QA and support users create useful reproduction evidence quickly.</td>
+              <td>It turns recording into a complete work artifact.</td>
+              <td>A capture includes video plus device and session context.</td>
+            </tr>
+            <tr>
+              <td><strong>6</strong></td>
+              <td><strong>Common Folder Pull</strong></td>
+              <td>P1</td>
+              <td>Users can quickly retrieve screenshots, photos, downloads, and exports.</td>
+              <td>It solves a practical adjacent job without becoming a full companion app.</td>
+              <td>Common folders are reachable with clear import actions.</td>
+            </tr>
+            <tr>
+              <td><strong>7</strong></td>
+              <td><strong>Capture Library</strong></td>
+              <td>P1</td>
+              <td>Users can find, rename, reveal, or delete captures created by PhoneRelay.</td>
+              <td>Capture workflows need a finish, not just a save event.</td>
+              <td>Recent captures are visible and manageable in the app.</td>
+            </tr>
+            <tr>
+              <td><strong>8</strong></td>
+              <td><strong>Presentation Controls</strong></td>
+              <td>P1</td>
+              <td>Users can make the mirror behave well during demos, reviews, and testing.</td>
+              <td>It improves perceived polish without adding unrelated scope.</td>
+              <td>Common window and display controls are reachable without hunting.</td>
+            </tr>
+            <tr>
+              <td><strong>9</strong></td>
+              <td><strong>Local Trust Center</strong></td>
+              <td>P1</td>
+              <td>Users understand permissions, privacy, and local storage before trusting the app.</td>
+              <td>Trust is part of the product, especially for screen mirroring.</td>
+              <td>The app plainly explains account, cloud, network, notification, and capture behavior.</td>
+            </tr>
+            <tr>
+              <td><strong>10</strong></td>
+              <td><strong>Clipboard Sync Status</strong></td>
+              <td>P2</td>
+              <td>Users can see whether clipboard sync is active and what happened last.</td>
+              <td>Useful polish, but not central enough to come before capture and reliability.</td>
+              <td>Status is visible without creating a full clipboard manager.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Feature fit matrix</h2>
+        <p class="section-copy">The best features sit at the intersection of strong product fit and high workflow value. That is where PhoneRelay can feel focused instead of like a broad phone suite.</p>
+      </div>
+      <div class="matrix" aria-label="Feature fit matrix">
+        <div class="axis">Fit / Value</div>
+        <div class="axis">High value</div>
+        <div class="axis">Medium value</div>
+        <div class="axis">Low value</div>
+
+        <div class="axis">Strong fit</div>
+        <div class="matrix-card">Connection Health, Demo Mode, Mirror Profiles<span>Build these first.</span></div>
+        <div class="matrix-card">Presentation Controls, Capture Library<span>Good second wave.</span></div>
+        <div class="matrix-card">Clipboard Status<span>Useful polish.</span></div>
+
+        <div class="axis">Medium fit</div>
+        <div class="matrix-card">Common Folder Pull<span>Keep scoped to imports.</span></div>
+        <div class="matrix-card">App Launch Shortcuts<span>Useful if simple.</span></div>
+        <div class="matrix-card">Media Remote<span>Likely not worth focus.</span></div>
+
+        <div class="axis">Weak fit</div>
+        <div class="matrix-card">SMS, Calls, Contacts<span>Companion-app scope.</span></div>
+        <div class="matrix-card">Webcam, Microphone<span>Separate product complexity.</span></div>
+        <div class="matrix-card">iPhone Transfer<span>Different product.</span></div>
+      </div>
+    </section>
+
+    <section id="roadmap">
+      <div class="section-head">
+        <h2>Suggested roadmap</h2>
+        <p class="section-copy">This sequence keeps momentum practical. It starts with reliability and existing-feature packaging, then expands into workflow features that make PhoneRelay more valuable without changing its identity.</p>
+      </div>
+      <div class="roadmap">
+        <article class="phase">
+          <span class="label"><span class="dot"></span>Phase 1</span>
+          <h3>Make the core feel reliable</h3>
+          <ol>
+            <li>Connection Health Panel</li>
+            <li>Mirror Profiles</li>
+            <li>Clearer onboarding copy and local trust language</li>
+            <li>Better failure states for adb, Wi-Fi, and permissions</li>
+          </ol>
+        </article>
+        <article class="phase">
+          <span class="label"><span class="dot"></span>Phase 2</span>
+          <h3>Turn capture into a workflow</h3>
+          <ol>
+            <li>Demo Mode</li>
+            <li>Bug Capture Mode</li>
+            <li>Capture Library</li>
+            <li>Presentation Controls</li>
+          </ol>
+        </article>
+        <article class="phase">
+          <span class="label"><span class="dot"></span>Phase 3</span>
+          <h3>Add focused utility around Android work</h3>
+          <ol>
+            <li>APK Install Workflow</li>
+            <li>Common Folder Pull</li>
+            <li>Optional app launch shortcuts</li>
+            <li>Small clipboard sync status panel</li>
+          </ol>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>How to decide what ships</h2>
+        <p class="section-copy">Use these principles when a feature is tempting but could pull PhoneRelay away from its focused direction.</p>
+      </div>
+      <div class="checklist">
+        <article class="check">
+          <div class="check-mark">✓</div>
+          <div>
+            <strong>Does it help users operate Android from Mac?</strong>
+            <p>If the feature does not improve mirroring, control, install, capture, recording, or troubleshooting, it is probably out of scope.</p>
+          </div>
+        </article>
+        <article class="check">
+          <div class="check-mark">✓</div>
+          <div>
+            <strong>Does it reduce setup uncertainty?</strong>
+            <p>Reliability and diagnosability are product features. A clear fix beats a hidden technical capability.</p>
+          </div>
+        </article>
+        <article class="check">
+          <div class="check-mark">✓</div>
+          <div>
+            <strong>Does it turn an existing capability into a workflow?</strong>
+            <p>Profiles, demo mode, bug capture, install status, and capture history all make current capabilities easier to use.</p>
+          </div>
+        </article>
+        <article class="check">
+          <div class="check-mark">✓</div>
+          <div>
+            <strong>Does it preserve the local-first trust story?</strong>
+            <p>A feature that requires accounts, cloud relay, or broad personal data access should clear a very high bar.</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="avoid">
+      <div class="section-head">
+        <h2>Features to avoid for now</h2>
+        <p class="section-copy">These ideas may sound useful, but they move PhoneRelay toward a companion app. That makes the product harder to explain, harder to build, and harder to trust.</p>
+      </div>
+      <div class="grid two">
+        <article class="card">
+          <span class="label"><span class="dot"></span>Do not prioritize</span>
+          <h3>SMS, calls, and contacts</h3>
+          <p>These features imply a personal communication hub. They bring permission complexity, edge cases, and support expectations that do not match the focused screen-control product.</p>
+        </article>
+        <article class="card">
+          <span class="label"><span class="dot"></span>Do not prioritize</span>
+          <h3>Virtual webcam and microphone</h3>
+          <p>These are interesting, but they introduce separate OS-level complexity and privacy expectations. They are not needed to win the mirroring and capture lane.</p>
+        </article>
+        <article class="card">
+          <span class="label"><span class="dot"></span>Do not prioritize</span>
+          <h3>Full Android file manager</h3>
+          <p>Focused folder import is enough at first. A full file manager creates a new product surface and competes with tools that specialize in transfer.</p>
+        </article>
+        <article class="card">
+          <span class="label"><span class="dot"></span>Do not prioritize</span>
+          <h3>Broad device companion dashboard</h3>
+          <p>A phone status dashboard pushes the product toward general companion behavior. Keep the main UI centered on connection, mirror, control, install, and capture.</p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Recommended next actions</h2>
+        <p class="section-copy">The next step should create visible product clarity without needing a large technical rewrite.</p>
+      </div>
+      <div class="grid two">
+        <article class="card">
+          <span class="label"><span class="dot"></span>Product copy</span>
+          <h3>Update website and onboarding language</h3>
+          <p>Use “Mirror, control, install, screenshot, and record your Android phone from your Mac” as the plain-language promise. Use the local-first trust line near setup and privacy sections.</p>
+        </article>
+        <article class="card">
+          <span class="label"><span class="dot"></span>Implementation</span>
+          <h3>Start with Connection Health and Mirror Profiles</h3>
+          <p>These two features strengthen the core product immediately. They also create a better foundation for Demo Mode and Bug Capture Mode.</p>
+        </article>
+      </div>
+      <div class="callout" style="margin-top: 16px;">
+        <strong>Bottom line</strong>
+        <p>PhoneRelay should win by being the cleanest local Android control and capture tool for Mac. Build reliability, workflow packaging, and capture depth before adding any broad phone-companion features.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">PhoneRelay feature priority memo. Focus: local Android mirroring, control, install, screenshot, and recording workflows for Mac.</div>
+  </footer>
+</body>
+</html>

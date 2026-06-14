@@ -7,6 +7,7 @@ struct SettingsView: View {
 
     private enum SettingsTab: String, CaseIterable, Identifiable {
         case devices = "Devices"
+        case health = "Health"
         case mirroring = "Mirroring"
         case about = "About"
 
@@ -52,6 +53,8 @@ struct SettingsView: View {
         switch selectedTab {
         case .devices:
             devicesTab
+        case .health:
+            healthTab
         case .mirroring:
             mirroringTab
         case .about:
@@ -84,7 +87,15 @@ struct SettingsView: View {
     private var mirroringTab: some View {
         VStack(alignment: .leading, spacing: 18) {
             mirrorQualitySection
+            captureFoldersSection
         }
+    }
+
+    private var healthTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            connectionHealthSection
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var aboutTab: some View {
@@ -112,6 +123,113 @@ struct SettingsView: View {
         }
     }
 
+    private var connectionHealthSection: some View {
+        let snapshot = model.connectionHealthSnapshot
+        let items = [
+            snapshot.usbAuthorization,
+            snapshot.wifiReachability,
+            snapshot.localNetworkPermission,
+            snapshot.adbStatus,
+            snapshot.selectedTransport,
+            snapshot.reconnectAttempts
+        ]
+
+        return HStack(alignment: .top, spacing: 14) {
+            settingsLeadingIcon("waveform.path.ecg", isActive: true)
+
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Connection health")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text("Live diagnostics for USB, Wi-Fi, local network permission, adb, transport selection, and reconnect activity.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                LazyVGrid(
+                    columns: [
+                        GridItem(.adaptive(minimum: 190, maximum: 260), spacing: 10, alignment: .top)
+                    ],
+                    alignment: .leading,
+                    spacing: 10
+                ) {
+                    ForEach(items) { item in
+                        connectionHealthMetric(item)
+                    }
+                }
+
+                Divider()
+
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "wrench.and.screwdriver")
+                        .font(.system(size: 16, weight: .regular))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 24, alignment: .top)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Next recommended fix")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(snapshot.recommendedFix)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+    }
+
+    private func connectionHealthMetric(_ item: ConnectionHealthSnapshot.Item) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Circle()
+                .fill(connectionHealthColor(item.level))
+                .frame(width: 8, height: 8)
+                .padding(.top, 5)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(item.value)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: .textBackgroundColor).opacity(0.55))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.secondary.opacity(0.16), lineWidth: 1)
+        )
+    }
+
+    private func connectionHealthColor(_ level: ConnectionHealthSnapshot.Level) -> Color {
+        switch level {
+        case .ok:
+            return .green
+        case .warning:
+            return .orange
+        case .issue:
+            return .red
+        case .neutral:
+            return .secondary
+        }
+    }
+
     private var mirrorQualitySection: some View {
         VStack(alignment: .leading, spacing: 22) {
             HStack(alignment: .top, spacing: 14) {
@@ -125,6 +243,8 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+
+                    mirrorProfilePicker
 
                     HStack(alignment: .top, spacing: 16) {
                         qualityPicker(
@@ -240,6 +360,81 @@ struct SettingsView: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
+    }
+
+    private var captureFoldersSection: some View {
+        HStack(alignment: .top, spacing: 14) {
+            settingsLeadingIcon("folder", isActive: true)
+
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Capture folders")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text("Choose where PhoneRelay saves screenshots and screen recordings. Defaults to Downloads.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                captureFolderRow(
+                    title: "Screenshots",
+                    path: model.screenshotFolderPath,
+                    chooseAction: model.chooseScreenshotFolder,
+                    resetAction: model.resetScreenshotFolder
+                )
+
+                Divider()
+
+                captureFolderRow(
+                    title: "Screen recordings",
+                    path: model.recordingFolderPath,
+                    chooseAction: model.chooseRecordingFolder,
+                    resetAction: model.resetRecordingFolder
+                )
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+    }
+
+    private func captureFolderRow(
+        title: String,
+        path: String?,
+        chooseAction: @escaping () -> Void,
+        resetAction: @escaping () -> Void
+    ) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(pathDisplay(path))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button("Choose…", action: chooseAction)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+            Button("Reset", action: resetAction)
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .disabled(path == nil)
+        }
+    }
+
+    private func pathDisplay(_ path: String?) -> String {
+        guard let path, !path.isEmpty else {
+            return "~/\(MediaCaptureService.outputFolderName)"
+        }
+        return (path as NSString).abbreviatingWithTildeInPath
     }
 
     private var aboutPrivacySection: some View {
@@ -392,6 +587,77 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var mirrorProfilePicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("Mirror profiles".uppercased())
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                Text("Presets apply resolution, bitrate, frame rate, and audio together.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            LazyVGrid(
+                columns: [
+                    GridItem(.adaptive(minimum: 156, maximum: 220), spacing: 10, alignment: .top)
+                ],
+                alignment: .leading,
+                spacing: 10
+            ) {
+                ForEach(MirrorProfile.allCases) { profile in
+                    mirrorProfileCard(profile)
+                }
+            }
+        }
+    }
+
+    private func mirrorProfileCard(_ profile: MirrorProfile) -> some View {
+        let isSelected = model.selectedMirrorProfile == profile
+        return Button {
+            model.selectedMirrorProfile = profile
+        } label: {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .center, spacing: 6) {
+                    Text(profile.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+
+                Text(profile.summary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(profile.detail)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.9)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, minHeight: 104, alignment: .topLeading)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isSelected ? Color.accentColor.opacity(0.12) : Color(nsColor: .textBackgroundColor).opacity(0.55))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(isSelected ? Color.accentColor.opacity(0.85) : Color.secondary.opacity(0.18), lineWidth: isSelected ? 1.25 : 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private func qualityPicker(

@@ -37,6 +37,11 @@ final class AppModel: ObservableObject {
     nonisolated static let latestReleaseURL = URL(string: "https://github.com/mallenkb/phone-mirroring/releases/latest")!
     nonisolated static let releaseMetadataURL = URL(string: "https://mallenkb.github.io/phone-mirroring/release.json")!
     nonisolated static let mirrorScrollSpeedDefaultsKey = "MirrorBehavior.scrollSpeedPercent"
+    nonisolated static let mirrorProfileDefaultsKey = "MirrorQuality.profile"
+    nonisolated static let screenshotFolderPathDefaultsKey = "Capture.screenshotFolderPath"
+    nonisolated static let screenshotFolderBookmarkDefaultsKey = "Capture.screenshotFolderBookmark"
+    nonisolated static let recordingFolderPathDefaultsKey = "Capture.recordingFolderPath"
+    nonisolated static let recordingFolderBookmarkDefaultsKey = "Capture.recordingFolderBookmark"
     nonisolated static var canUseUserNotifications: Bool {
         Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app"
     }
@@ -56,6 +61,14 @@ final class AppModel: ObservableObject {
 
     nonisolated static func scaledMirrorScrollDelta(_ delta: CGFloat, speedPercent: Int) -> CGFloat {
         delta * CGFloat(defaultMirrorScrollSpeedPercent(storedValue: speedPercent)) / 100
+    }
+
+    nonisolated static func defaultMirrorProfile(storedValue: Any?) -> MirrorProfile {
+        guard let rawValue = storedValue as? String,
+              let profile = MirrorProfile(rawValue: rawValue) else {
+            return .recording
+        }
+        return profile
     }
 
     nonisolated static func isReleaseVersionNewer(_ latestVersion: String, than currentVersion: String) -> Bool {
@@ -149,7 +162,15 @@ final class AppModel: ObservableObject {
     @Published private(set) var notificationForwardingPermissionDenied = false
     @Published private(set) var localNetworkPermissionGrantedForOnboarding = false
     @Published private(set) var notificationPermissionGrantedForOnboarding = false
+    @Published private(set) var latestAuthorizedADBDevices: [AuthorizedADBDevice] = []
+    @Published private(set) var latestHasUnauthorizedUSBDevice = false
+    @Published private(set) var latestADBStatusText = "Not checked"
+    @Published private(set) var reconnectAttemptCount = 0
     @Published var captureCue: CaptureCue?
+    @Published private(set) var screenshotFolderPath: String? =
+        UserDefaults.standard.string(forKey: AppModel.screenshotFolderPathDefaultsKey)
+    @Published private(set) var recordingFolderPath: String? =
+        UserDefaults.standard.string(forKey: AppModel.recordingFolderPathDefaultsKey)
 
     // MARK: - Mirroring quality (applied to the next mirror session)
 
@@ -194,6 +215,14 @@ final class AppModel: ObservableObject {
             if !suppressMirrorSettingsRestart {
                 scheduleMirrorSettingsRestart()
             }
+        }
+    }
+    @Published var selectedMirrorProfile: MirrorProfile =
+        AppModel.defaultMirrorProfile(storedValue: UserDefaults.standard.object(forKey: AppModel.mirrorProfileDefaultsKey)) {
+        didSet {
+            guard oldValue != selectedMirrorProfile else { return }
+            UserDefaults.standard.set(selectedMirrorProfile.rawValue, forKey: Self.mirrorProfileDefaultsKey)
+            applyMirrorProfile(selectedMirrorProfile)
         }
     }
     /// Wi-Fi handoff is the default transport behavior; this remains only so
@@ -299,11 +328,61 @@ final class AppModel: ObservableObject {
         activeError = nil
     }
 
+    func applyMirrorProfile(_ profile: MirrorProfile) {
+        suppressMirrorSettingsRestart = true
+        mirrorMaxSize = profile.maxSize
+        mirrorBitRateMbps = profile.bitRateMbps
+        mirrorMaxFps = profile.maxFps
+        mirrorAudioEnabled = profile.audioEnabled
+        suppressMirrorSettingsRestart = false
+        scheduleMirrorSettingsRestart()
+    }
+
     /// Reveals the most recently saved screenshot or recording in Finder.
     func revealLastCapture() {
         guard let url = lastCaptureURL,
               FileManager.default.fileExists(atPath: url.path) else { return }
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    func chooseScreenshotFolder() {
+        chooseCaptureFolder(title: "Choose Screenshot Folder") { [weak self] url in
+            self?.setScreenshotFolder(url)
+        }
+    }
+
+    func chooseRecordingFolder() {
+        chooseCaptureFolder(title: "Choose Screen Recording Folder") { [weak self] url in
+            self?.setRecordingFolder(url)
+        }
+    }
+
+    func resetScreenshotFolder() {
+        clearCaptureFolder(pathKey: Self.screenshotFolderPathDefaultsKey, bookmarkKey: Self.screenshotFolderBookmarkDefaultsKey)
+        screenshotFolderPath = nil
+    }
+
+    func resetRecordingFolder() {
+        clearCaptureFolder(pathKey: Self.recordingFolderPathDefaultsKey, bookmarkKey: Self.recordingFolderBookmarkDefaultsKey)
+        recordingFolderPath = nil
+    }
+
+    func setScreenshotFolder(_ url: URL) {
+        storeCaptureFolder(url, pathKey: Self.screenshotFolderPathDefaultsKey, bookmarkKey: Self.screenshotFolderBookmarkDefaultsKey)
+        screenshotFolderPath = url.path
+    }
+
+    func setRecordingFolder(_ url: URL) {
+        storeCaptureFolder(url, pathKey: Self.recordingFolderPathDefaultsKey, bookmarkKey: Self.recordingFolderBookmarkDefaultsKey)
+        recordingFolderPath = url.path
+    }
+
+    func screenshotOutputDirectory() -> URL? {
+        captureFolder(pathKey: Self.screenshotFolderPathDefaultsKey, bookmarkKey: Self.screenshotFolderBookmarkDefaultsKey)
+    }
+
+    func recordingOutputDirectory() -> URL? {
+        captureFolder(pathKey: Self.recordingFolderPathDefaultsKey, bookmarkKey: Self.recordingFolderBookmarkDefaultsKey)
     }
 
     /// Reveals the rolling diagnostic log in Finder so the user can inspect or
@@ -314,6 +393,60 @@ final class AppModel: ObservableObject {
             FileManager.default.createFile(atPath: url.path, contents: nil)
         }
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    private func chooseCaptureFolder(title: String, onSelection: @escaping (URL) -> Void) {
+        let panel = NSOpenPanel()
+        panel.title = title
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Choose"
+        if panel.runModal() == .OK, let url = panel.url {
+            onSelection(url)
+        }
+    }
+
+    private func storeCaptureFolder(_ url: URL, pathKey: String, bookmarkKey: String) {
+        UserDefaults.standard.set(url.path, forKey: pathKey)
+        do {
+            let bookmark = try url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
+            UserDefaults.standard.set(bookmark, forKey: bookmarkKey)
+        } catch {
+            Logger.log("Could not store capture folder bookmark for \(url.path): \(error.localizedDescription)")
+            UserDefaults.standard.removeObject(forKey: bookmarkKey)
+        }
+    }
+
+    private func clearCaptureFolder(pathKey: String, bookmarkKey: String) {
+        UserDefaults.standard.removeObject(forKey: pathKey)
+        UserDefaults.standard.removeObject(forKey: bookmarkKey)
+    }
+
+    private func captureFolder(pathKey: String, bookmarkKey: String) -> URL? {
+        if let data = UserDefaults.standard.data(forKey: bookmarkKey) {
+            do {
+                var stale = false
+                let url = try URL(
+                    resolvingBookmarkData: data,
+                    options: [.withSecurityScope],
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &stale
+                )
+                if stale {
+                    storeCaptureFolder(url, pathKey: pathKey, bookmarkKey: bookmarkKey)
+                }
+                return url
+            } catch {
+                Logger.log("Could not resolve capture folder bookmark: \(error.localizedDescription)")
+            }
+        }
+
+        guard let path = UserDefaults.standard.string(forKey: pathKey), !path.isEmpty else {
+            return nil
+        }
+        return URL(fileURLWithPath: path, isDirectory: true)
     }
 
     /// Maps a thrown mirror/host error to a friendly, actionable sentence.
@@ -528,6 +661,22 @@ final class AppModel: ObservableObject {
 
     var mirrorLoadingDeviceTitle: String {
         Self.mirrorLoadingDeviceTitle(name: selectedDevice.name)
+    }
+
+    var connectionHealthSnapshot: ConnectionHealthSnapshot {
+        Self.connectionHealthSnapshot(
+            selectedSerial: selectedDevice.adbSerial,
+            selectedNetwork: selectedDevice.network,
+            isSelectedDeviceOnline: isSelectedDeviceOnline,
+            isActivelyConnecting: isActivelyConnecting,
+            hasUnauthorizedUSBDevice: latestHasUnauthorizedUSBDevice,
+            authorizedDevices: latestAuthorizedADBDevices,
+            discoveredPhones: discoveredPhones,
+            localNetworkPermissionGranted: localNetworkPermissionGrantedForOnboarding,
+            adbStatusText: latestADBStatusText,
+            reconnectAttemptCount: reconnectAttemptCount,
+            activeErrorMessage: activeError?.message
+        )
     }
 
     /// Whether we're still inside the brief post-launch window during which the
@@ -1279,6 +1428,7 @@ final class AppModel: ObservableObject {
             }.value
             guard let self else { return }
             self.isScanning = false
+            self.recordADBHealth(output)
             self.applyADBOutput(output)
         }
     }
@@ -1298,6 +1448,7 @@ final class AppModel: ObservableObject {
                 }.value
                 guard let self else { return }
                 let authorized = Self.authorizedADBDevices(in: output)
+                self.recordADBHealth(output, authorizedDevices: authorized)
                 self.updateUSBAuthorizationHint(from: output, authorizedDevices: authorized)
 
                 if Self.shouldUSBInterruptReconnect(
@@ -2136,6 +2287,7 @@ final class AppModel: ObservableObject {
     }
 
     private func applyADBOutput(_ output: String) {
+        recordADBHealth(output)
         guard let first = Self.authorizedADBDevices(in: output).first else {
             selectedDevice.states = [.wirelessDebuggingRequired, .usbAuthorizationRequired, .companionConnected]
             isSelectedDeviceOnline = false
@@ -2177,6 +2329,7 @@ final class AppModel: ObservableObject {
 
     func applyDevicePresence(_ output: String) {
         let devices = Self.authorizedADBDevices(in: output)
+        recordADBHealth(output, authorizedDevices: devices)
         if explicitDeviceSetupRequired,
            let usbDevice = devices.first(where: \.isUSB) {
             select(device: usbDevice)
@@ -2267,6 +2420,40 @@ final class AppModel: ObservableObject {
                 let lower = line.lowercased()
                 return lower.contains("unauthorized") && lower.contains("usb:")
             }
+    }
+
+    private func recordADBHealth(
+        _ output: String,
+        authorizedDevices: [AuthorizedADBDevice]? = nil
+    ) {
+        let devices = authorizedDevices ?? Self.authorizedADBDevices(in: output)
+        latestAuthorizedADBDevices = devices
+        latestHasUnauthorizedUSBDevice = Self.hasUnauthorizedUSBDevice(in: output)
+        latestADBStatusText = Self.adbStatusText(output: output, authorizedDevices: devices)
+    }
+
+    nonisolated static func adbStatusText(
+        output: String,
+        authorizedDevices: [AuthorizedADBDevice]
+    ) -> String {
+        if Tooling.toolPath(named: "adb") == nil {
+            return "adb missing"
+        }
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "No response"
+        }
+        let lower = trimmed.lowercased()
+        if lower.contains("error") || lower.contains("cannot connect") || lower.contains("failed") {
+            return "adb error"
+        }
+        if !authorizedDevices.isEmpty {
+            return "Running"
+        }
+        if hasUnauthorizedUSBDevice(in: output) {
+            return "Waiting for authorization"
+        }
+        return "Running, no device"
     }
 
     nonisolated static func singleConnectableRecoveryCandidate(
@@ -3362,6 +3549,7 @@ final class AppModel: ObservableObject {
             reconnectTask?.cancel()
             reconnectTask = nil
             isPairing = false
+            reconnectAttemptCount = 0
         }
         mirrorSession?.onSessionEnded = nil
         mirrorSession?.stop()
@@ -3562,6 +3750,133 @@ final class AppModel: ObservableObject {
         mirrorWindowDeviceTitle(name: name)
     }
 
+    nonisolated static func connectionHealthSnapshot(
+        selectedSerial: String?,
+        selectedNetwork: String,
+        isSelectedDeviceOnline: Bool,
+        isActivelyConnecting: Bool,
+        hasUnauthorizedUSBDevice: Bool,
+        authorizedDevices: [AuthorizedADBDevice],
+        discoveredPhones: [DiscoveredPhone],
+        localNetworkPermissionGranted: Bool,
+        adbStatusText: String,
+        reconnectAttemptCount: Int,
+        activeErrorMessage: String?
+    ) -> ConnectionHealthSnapshot {
+        let hasAuthorizedUSB = authorizedDevices.contains(where: \.isUSB)
+        let hasWirelessDevice = authorizedDevices.contains { !$0.isUSB }
+        let hasWiFiReachability = hasWirelessDevice || discoveredPhones.contains { $0.kind == .connectable }
+        let selectedTransport = selectedTransportLabel(serial: selectedSerial, network: selectedNetwork)
+
+        let usbItem: ConnectionHealthSnapshot.Item
+        if hasUnauthorizedUSBDevice {
+            usbItem = .init(id: "usb", title: "USB authorization", value: "Action needed", level: .issue)
+        } else if hasAuthorizedUSB {
+            usbItem = .init(id: "usb", title: "USB authorization", value: "Authorized", level: .ok)
+        } else {
+            usbItem = .init(id: "usb", title: "USB authorization", value: "No USB device", level: .neutral)
+        }
+
+        let wifiItem = ConnectionHealthSnapshot.Item(
+            id: "wifi",
+            title: "Wi-Fi reachability",
+            value: hasWiFiReachability ? "Reachable" : "Not reachable",
+            level: hasWiFiReachability ? .ok : .warning
+        )
+        let permissionItem = ConnectionHealthSnapshot.Item(
+            id: "local-network",
+            title: "Local network",
+            value: localNetworkPermissionGranted ? "Allowed" : "Not confirmed",
+            level: localNetworkPermissionGranted ? .ok : .warning
+        )
+        let adbItem = ConnectionHealthSnapshot.Item(
+            id: "adb",
+            title: "adb status",
+            value: adbStatusText,
+            level: adbStatusText == "Running" || adbStatusText == "Running, no device" ? .ok : .issue
+        )
+        let transportItem = ConnectionHealthSnapshot.Item(
+            id: "transport",
+            title: "Selected transport",
+            value: selectedTransport,
+            level: selectedTransport == "None" ? .neutral : .ok
+        )
+        let attemptsItem = ConnectionHealthSnapshot.Item(
+            id: "attempts",
+            title: "Reconnect attempts",
+            value: reconnectAttemptCount == 0 ? "None" : "\(reconnectAttemptCount)",
+            level: reconnectAttemptCount == 0 ? .neutral : .warning
+        )
+
+        return ConnectionHealthSnapshot(
+            usbAuthorization: usbItem,
+            wifiReachability: wifiItem,
+            localNetworkPermission: permissionItem,
+            adbStatus: adbItem,
+            selectedTransport: transportItem,
+            reconnectAttempts: attemptsItem,
+            recommendedFix: nextRecommendedConnectionFix(
+                isSelectedDeviceOnline: isSelectedDeviceOnline,
+                isActivelyConnecting: isActivelyConnecting,
+                hasUnauthorizedUSBDevice: hasUnauthorizedUSBDevice,
+                hasAuthorizedUSB: hasAuthorizedUSB,
+                hasWiFiReachability: hasWiFiReachability,
+                localNetworkPermissionGranted: localNetworkPermissionGranted,
+                adbStatusText: adbStatusText,
+                activeErrorMessage: activeErrorMessage
+            )
+        )
+    }
+
+    nonisolated static func selectedTransportLabel(serial: String?, network: String) -> String {
+        guard let serial, !serial.isEmpty else { return "None" }
+        let lowerNetwork = network.lowercased()
+        if lowerNetwork.contains("usb") {
+            return "USB"
+        }
+        if lowerNetwork.contains("wi-fi") || lowerNetwork.contains("wifi") || lowerNetwork.contains("wireless") {
+            return "Wi-Fi"
+        }
+        return serial.contains(":") ? "Wi-Fi" : "USB"
+    }
+
+    nonisolated static func nextRecommendedConnectionFix(
+        isSelectedDeviceOnline: Bool,
+        isActivelyConnecting: Bool,
+        hasUnauthorizedUSBDevice: Bool,
+        hasAuthorizedUSB: Bool,
+        hasWiFiReachability: Bool,
+        localNetworkPermissionGranted: Bool,
+        adbStatusText: String,
+        activeErrorMessage: String?
+    ) -> String {
+        if let activeErrorMessage, !activeErrorMessage.isEmpty {
+            return activeErrorMessage
+        }
+        if adbStatusText == "adb missing" {
+            return "Install Android platform-tools or use the bundled app build with adb included."
+        }
+        if hasUnauthorizedUSBDevice {
+            return "Unlock the phone and tap Allow on the USB debugging prompt."
+        }
+        if !localNetworkPermissionGranted && !hasAuthorizedUSB {
+            return "Allow Local Network in macOS Settings, or connect the phone over USB."
+        }
+        if isActivelyConnecting {
+            return "Keep the phone awake and wait for the current reconnect attempt to finish."
+        }
+        if isSelectedDeviceOnline {
+            return "No action needed. The selected device is reachable."
+        }
+        if hasAuthorizedUSB {
+            return "Use Connect via USB to refresh the session and Wi-Fi handoff."
+        }
+        if !hasWiFiReachability {
+            return "Put the phone on the same Wi-Fi, enable Wireless debugging, or connect USB once."
+        }
+        return "Try reconnecting over Wi-Fi, or refresh the pairing with the QR code."
+    }
+
     private nonisolated static func shortDeviceIdentifier(_ value: String) -> String {
         if value.hasPrefix("adb-") {
             return String(value.dropFirst(4))
@@ -3741,6 +4056,7 @@ final class AppModel: ObservableObject {
         isPairing = true
         isRecoveringConnection = true
         isAwaitingReconnect = true
+        reconnectAttemptCount = 0
 
         let adb = self.adb
         let generation = mirrorStartGeneration
@@ -3758,6 +4074,7 @@ final class AppModel: ObservableObject {
                 // Saved wireless routes, including the stable :5555 fallback.
                 for record in wirelessRecords {
                     if Task.isCancelled { return }
+                    self.reconnectAttemptCount += 1
                     if let connectedAddress = await Self.connectToRememberedWireless(
                         adb: adb,
                         savedAddress: record.lastAddress,
@@ -3780,6 +4097,7 @@ final class AppModel: ObservableObject {
                 for record in wirelessRecords {
                     if Task.isCancelled { return }
                     guard let phone = Self.rememberedConnectablePhone(for: record, in: livePhones) else { continue }
+                    self.reconnectAttemptCount += 1
                     if await Self.waitForADBWirelessTargetReady(
                         adb: adb,
                         address: phone.address,
@@ -3841,6 +4159,7 @@ final class AppModel: ObservableObject {
         guard !Task.isCancelled, mirrorStartGeneration == generation, !isMirroring else { return }
         reconnectTask = nil
         isPairing = false
+        reconnectAttemptCount = 0
         select(record: record)
         selectedDevice.adbSerial = address
         selectedDevice.name = deviceName
@@ -4004,10 +4323,17 @@ final class AppModel: ObservableObject {
 
     func takeScreenshot() {
         let serial = selectedDevice.adbSerial
+        let outputDirectory = screenshotOutputDirectory()
         presentCaptureCue(.screenshot)
         Task {
             let result = await Task.detached { () -> Result<URL, MediaCaptureService.ScreenshotError> in
-                MediaCaptureService.captureScreenshot(serial: serial)
+                let didAccess = outputDirectory?.startAccessingSecurityScopedResource() ?? false
+                defer {
+                    if didAccess {
+                        outputDirectory?.stopAccessingSecurityScopedResource()
+                    }
+                }
+                return MediaCaptureService.captureScreenshot(serial: serial, outputDirectory: outputDirectory)
             }.value
 
             switch result {
@@ -4072,6 +4398,7 @@ final class AppModel: ObservableObject {
         screenRecordingMonitorTask = nil
         let adb = self.adb
         let serial = selectedDevice.adbSerial
+        let outputDirectory = recordingOutputDirectory()
         Task { [weak self] in
             await Task.detached {
                 _ = adb.run(Self.adbDeviceArguments(serial: serial) + [
@@ -4081,8 +4408,14 @@ final class AppModel: ObservableObject {
             }.value
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             let result = await Task.detached { () -> Result<URL, RecordingError> in
+                let didAccess = outputDirectory?.startAccessingSecurityScopedResource() ?? false
+                defer {
+                    if didAccess {
+                        outputDirectory?.stopAccessingSecurityScopedResource()
+                    }
+                }
                 do {
-                    let directory = try MediaCaptureService.outputDirectory()
+                    let directory = try MediaCaptureService.outputDirectory(outputDirectory)
                     let url = directory.appendingPathComponent(MediaCaptureService.filename(
                         kind: "Screen-Recording",
                         extension: "mp4"
