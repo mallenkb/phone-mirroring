@@ -814,13 +814,18 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertEqual(chromeBar.recentAppsIconNameForTesting, "rectangle.stack.fill")
         XCTAssertEqual(
             chromeBar.rightActionHoverCornerRadiiForTesting,
-            [6, 6, 18],
-            "The rightmost hover should nest one point inside the bar's 19pt corner."
+            [6, 6, 6],
+            "All right-side action hovers should use the same compact rounded rectangle treatment."
         )
         XCTAssertEqual(
             chromeBar.rightActionHoverLeadingCornerRadiiForTesting.map { $0 ?? MirrorChromeOutlineButton.defaultHoverCornerRadius },
             [6, 6, 6],
-            "Keep the leading side of every action hover aligned to the standard icon hover radius."
+            "Every action hover should use the standard icon hover radius on both sides."
+        )
+        XCTAssertEqual(
+            chromeBar.rightActionHoverHeightsForTesting,
+            [30, 30, 30],
+            "The hover background must stay at the fixed action-button height."
         )
         XCTAssertEqual(
             chromeBar.rightActionHoverRoundedCornersForTesting,
@@ -1067,6 +1072,35 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertFalse(controller.isChromeVisibleForTesting)
         XCTAssertTrue(controller.toolbarIgnoresMouseEventsForTesting)
         XCTAssertFalse(controller.toolbarIsVisibleForTesting)
+    }
+
+    @MainActor
+    func testFloatingToolbarOrdersOutBeforeMirrorMinimizes() {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+
+        controller.simulateRevealZoneHover(true)
+        XCTAssertTrue(controller.isChromeVisibleForTesting)
+        XCTAssertTrue(controller.toolbarIsVisibleForTesting)
+
+        controller.simulateWindowWillMiniaturizeForTesting()
+
+        XCTAssertFalse(controller.isChromeVisibleForTesting)
+        XCTAssertTrue(controller.toolbarIgnoresMouseEventsForTesting)
+        XCTAssertFalse(controller.toolbarIsVisibleForTesting)
+    }
+
+    @MainActor
+    func testMirrorDeminiaturizeLeavesToolbarHidden() throws {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+
+        controller.simulateWindowDidDeminiaturizeForTesting()
+
+        XCTAssertTrue(controller.toolbarIgnoresMouseEventsForTesting)
+        XCTAssertFalse(controller.isChromeVisibleForTesting)
     }
 
     @MainActor

@@ -149,7 +149,8 @@ struct PairedPhoneStore {
                 existing: [older.lastAddress]
             ),
             firstPaired: min(existing.firstPaired, incoming.firstPaired),
-            lastConnected: max(existing.lastConnected, incoming.lastConnected)
+            lastConnected: max(existing.lastConnected, incoming.lastConnected),
+            autoConnectSuspended: latest.autoConnectSuspended
         )
     }
 
@@ -222,7 +223,7 @@ struct PairedPhoneStore {
         return trimmed
     }
 
-    private static func normalizedDeviceName(_ name: String) -> String {
+    static func normalizedDeviceName(_ name: String) -> String {
         sanitizedDisplayName(name)
             .replacingOccurrences(of: "_", with: " ")
             .split(whereSeparator: \.isWhitespace)

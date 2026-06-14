@@ -74,7 +74,7 @@ final class CaptureFolderTests: XCTestCase {
     func testSettingsViewExposesSeparateCaptureFolderControls() throws {
         let source = try String(contentsOfFile: "Sources/PhoneRelay/Views/SettingsView.swift", encoding: .utf8)
 
-        XCTAssertTrue(source.contains("Capture folders"))
+        XCTAssertTrue(source.contains("Saved files"))
         XCTAssertTrue(source.contains("model.screenshotFolderPath"))
         XCTAssertTrue(source.contains("model.recordingFolderPath"))
         XCTAssertTrue(source.contains("model.chooseScreenshotFolder"))

@@ -94,6 +94,7 @@ struct WindowRegistrationView: NSViewRepresentable {
         private weak var parentWindow: NSWindow?
         private var toolbarWindow: NSWindow?
         private var revealMonitors: [Any] = []
+        private var windowObservers: [NSObjectProtocol] = []
         private var hideWorkItem: DispatchWorkItem?
         private var chromeVisible = false
         private var isDraggingChrome = false
@@ -132,6 +133,7 @@ struct WindowRegistrationView: NSViewRepresentable {
                 parentWindow?.removeChildWindow(toolbarWindow)
                 toolbarWindow.close()
             }
+            removeWindowObservers()
             stopRevealMonitoring()
             hideWorkItem?.cancel()
             hideWorkItem = nil
@@ -155,7 +157,10 @@ struct WindowRegistrationView: NSViewRepresentable {
                 onScreenshot: { model.takeScreenshot() }
             )
             chromeBar.onClose = { NSApplication.shared.terminate(nil) }
-            chromeBar.onMinimize = { [weak parent] in parent?.miniaturize(nil) }
+            chromeBar.onMinimize = { [weak self, weak parent] in
+                self?.windowWillMiniaturize()
+                parent?.miniaturize(nil)
+            }
             chromeBar.onZoom = { [weak parent] in parent?.zoom(nil) }
             chromeBar.onDragMouseDown = { [weak self] event in
                 self?.dragWindowFromChrome(with: event)
@@ -189,10 +194,41 @@ struct WindowRegistrationView: NSViewRepresentable {
             toolbar.alphaValue = 0
             parent.addChildWindow(toolbar, ordered: .above)
             toolbarWindow = toolbar
+            installWindowObservers(for: parent)
             repositionToolbarWindow()
             if !isMirroring {
                 startRevealMonitoring()
             }
+        }
+
+        private func installWindowObservers(for parent: NSWindow) {
+            removeWindowObservers()
+            let center = NotificationCenter.default
+            windowObservers.append(center.addObserver(
+                forName: NSWindow.willMiniaturizeNotification,
+                object: parent,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.windowWillMiniaturize()
+                }
+            })
+            windowObservers.append(center.addObserver(
+                forName: NSWindow.didDeminiaturizeNotification,
+                object: parent,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.windowDidDeminiaturize()
+                }
+            })
+        }
+
+        private func removeWindowObservers() {
+            for observer in windowObservers {
+                NotificationCenter.default.removeObserver(observer)
+            }
+            windowObservers.removeAll()
         }
 
         private func repositionToolbarWindow() {
@@ -307,7 +343,10 @@ struct WindowRegistrationView: NSViewRepresentable {
             if visible {
                 repositionToolbarWindow()
                 setOnboardingChromeControlsVisible(true)
+                toolbarWindow.ignoresMouseEvents = false
                 toolbarWindow.orderFront(nil)
+            } else {
+                toolbarWindow.ignoresMouseEvents = true
             }
 
             NSAnimationContext.runAnimationGroup { context in
@@ -329,7 +368,28 @@ struct WindowRegistrationView: NSViewRepresentable {
             chromeVisible = false
             isPointerInTopZone = false
             toolbarWindow?.alphaValue = 0
+            toolbarWindow?.ignoresMouseEvents = true
             setOnboardingChromeControlsVisible(false)
+        }
+
+        private func windowWillMiniaturize() {
+            hideChromeImmediately()
+            stopRevealMonitoring()
+            if let parentWindow, let toolbarWindow {
+                parentWindow.removeChildWindow(toolbarWindow)
+                toolbarWindow.orderOut(nil)
+            }
+        }
+
+        private func windowDidDeminiaturize() {
+            guard let parentWindow, let toolbarWindow else { return }
+            parentWindow.addChildWindow(toolbarWindow, ordered: .above)
+            repositionToolbarWindow()
+            toolbarWindow.ignoresMouseEvents = true
+            if !isMirroring {
+                startRevealMonitoring()
+            }
+            parentWindow.makeKeyAndOrderFront(nil)
         }
 
         private func setOnboardingChromeControlsVisible(_ visible: Bool) {

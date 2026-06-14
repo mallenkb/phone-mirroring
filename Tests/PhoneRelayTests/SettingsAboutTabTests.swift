@@ -22,6 +22,37 @@ final class SettingsAboutTabTests: XCTestCase {
         XCTAssertTrue(source.contains("Build"))
     }
 
+    func testConnectionHealthLocalNetworkRecommendationHasSettingsAction() throws {
+        let settingsSource = try String(
+            contentsOf: Self.repoRoot()
+                .appendingPathComponent("Sources/PhoneRelay/Views/SettingsView.swift"),
+            encoding: .utf8
+        )
+        let modelSource = try String(
+            contentsOf: Self.repoRoot()
+                .appendingPathComponent("Sources/PhoneRelay/AppModel.swift"),
+            encoding: .utf8
+        )
+        let appDelegateSource = try String(
+            contentsOf: Self.repoRoot()
+                .appendingPathComponent("Sources/PhoneRelay/AppDelegate.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(settingsSource.contains("snapshot.recommendedFix == AppModel.localNetworkRecommendedFix"))
+        XCTAssertTrue(settingsSource.contains("Button(\"Open Local Network\")"))
+        XCTAssertTrue(settingsSource.contains("model.openLocalNetworkSettings()"))
+        XCTAssertTrue(settingsSource.contains(".buttonStyle(.bordered)"))
+        XCTAssertFalse(settingsSource.contains(".buttonStyle(.borderedProminent)"))
+        XCTAssertTrue(modelSource.contains("Privacy_LocalNetwork"))
+        XCTAssertTrue(modelSource.contains("isAwaitingLocalNetworkSettingsReturn = true"))
+        XCTAssertTrue(modelSource.contains("refreshLocalNetworkPermissionAfterSettingsReturn()"))
+        XCTAssertTrue(modelSource.contains("scanADBDevices()"))
+        XCTAssertFalse(modelSource.contains("NSWorkspace.shared.open(localNetworkSettingsURL)\n                    completion(false)"))
+        XCTAssertTrue(appDelegateSource.contains("applicationDidBecomeActive"))
+        XCTAssertTrue(appDelegateSource.contains("model.refreshLocalNetworkPermissionAfterSettingsReturn()"))
+    }
+
     func testAboutDocumentsProvideLocalPolicyAndLicenseDetails() throws {
         let content = try String(
             contentsOf: Self.repoRoot()

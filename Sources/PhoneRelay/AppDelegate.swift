@@ -213,6 +213,39 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         false
     }
 
+    public func applicationDidBecomeActive(_ notification: Notification) {
+        model.refreshLocalNetworkPermissionAfterSettingsReturn()
+    }
+
+    public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Behave like a normal app on every Dock-icon click — whether our window
+        // is minimized, hidden behind another app, or simply not key.
+        //
+        // The previous `guard !flag else { return true }` bailed out whenever
+        // *any* window still counted as visible. With the connection window
+        // lingering, `hasVisibleWindows` was true even while the mirror sat
+        // minimized — so the Dock click restored nothing (felt dead) and a
+        // backgrounded app never came forward. We now always restore + raise +
+        // activate the frontmost window the user thinks of as "the app",
+        // skipping the floating chrome toolbar child (which can't be main).
+        func isPrimary(_ candidate: NSWindow) -> Bool {
+            candidate.canBecomeMain && !(candidate is MirrorToolbarWindow)
+        }
+
+        let primaries = sender.windows.filter(isPrimary)
+        let target = primaries.first(where: { $0.isMiniaturized })
+            ?? sender.orderedWindows.first(where: { isPrimary($0) && $0.isVisible })
+            ?? primaries.first
+        guard let target else { return true }
+
+        if target.isMiniaturized {
+            target.deminiaturize(nil)
+        }
+        target.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        return false
+    }
+
     /// Debug runs (Xcode / `swift run`) execute the bare binary, so the Dock
     /// shows the generic executable icon. Use the installed app's icon
     /// verbatim — macOS renders it from the compiled Icon Composer asset for

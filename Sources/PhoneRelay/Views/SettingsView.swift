@@ -7,8 +7,9 @@ struct SettingsView: View {
 
     private enum SettingsTab: String, CaseIterable, Identifiable {
         case devices = "Devices"
-        case health = "Health"
         case mirroring = "Mirroring"
+        case sharing = "Sharing"
+        case connection = "Connection"
         case about = "About"
 
         var id: String { rawValue }
@@ -19,33 +20,38 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 0) {
             tabPicker
+                .padding(.horizontal, 24)
+                .padding(.top, 24)
+                .padding(.bottom, 16)
 
+            // The ScrollView spans the full width so its scroll indicator sits
+            // flush against the window's right edge (the native macOS position).
+            // The 24pt inset lives on the *content* instead, so the cards stay
+            // padded while the bar stays at the edge.
             ScrollView {
                 tabContent
-                    .padding(.bottom, 4)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 2)
+                    .padding(.bottom, 24)
             }
 
             if selectedTab == .devices {
+                Divider()
                 clearDevicesRow
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 14)
             }
         }
-        .padding(24)
         .frame(width: 660, height: 600)
     }
 
     private var tabPicker: some View {
-        Picker("Mirroring settings section", selection: $selectedTab) {
-            ForEach(SettingsTab.allCases) { tab in
-                Text(tab.rawValue).tag(tab)
-            }
-        }
-        .pickerStyle(.segmented)
-        .controlSize(.large)
-        .labelsHidden()
-        .frame(width: 450, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        CapsuleSegmentedControl(
+            segments: SettingsTab.allCases.map { (value: $0, label: $0.rawValue) },
+            selection: $selectedTab
+        )
     }
 
     @ViewBuilder
@@ -53,69 +59,48 @@ struct SettingsView: View {
         switch selectedTab {
         case .devices:
             devicesTab
-        case .health:
-            healthTab
         case .mirroring:
             mirroringTab
+        case .sharing:
+            sharingTab
+        case .connection:
+            connectionTab
         case .about:
             aboutTab
         }
     }
 
+    // MARK: - Devices
+
+    @ViewBuilder
     private var devicesTab: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            if records.isEmpty {
-                emptyState
-            } else {
-                LazyVStack(spacing: 8) {
-                    ForEach(records) { record in
-                        PairedPhoneRow(
-                            record: record,
-                            isOnline: isOnline(record),
-                            isActive: isActive(record),
-                            onConnect: { model.connect(record: record) },
-                            onDisconnect: { model.stopMirroring() },
-                            onForget: { model.forgetPairedPhone(id: record.id) }
-                        )
-                    }
+        if records.isEmpty {
+            SettingsGroup { emptyState }
+        } else {
+            SettingsGroup(footnote: "Online phones reconnect automatically when this Mac is nearby.") {
+                ForEach(Array(records.enumerated()), id: \.element.id) { index, record in
+                    if index > 0 { rowDivider }
+                    PairedPhoneRow(
+                        record: record,
+                        isOnline: isOnline(record),
+                        isActive: isActive(record),
+                        onConnect: { model.connect(record: record) },
+                        onDisconnect: { model.stopMirroring() },
+                        onForget: { model.forgetPairedPhone(id: record.id) }
+                    )
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .top)
-    }
-
-    private var mirroringTab: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            mirrorQualitySection
-            captureFoldersSection
-        }
-    }
-
-    private var healthTab: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            connectionHealthSection
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-
-    private var aboutTab: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            aboutIdentitySection
-            aboutPrivacySection
-            aboutSupportSection
-            aboutLegalSection
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var clearDevicesRow: some View {
         HStack(alignment: .center, spacing: 16) {
-            Text("Clearing devices removes saved reconnect history. You will need to pair or connect again from scratch.")
+            Text("Forgetting phones clears their reconnect history — you'll connect from scratch next time.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
-            Button("Clear All Devices", role: .destructive) {
+            Button("Forget All Phones", role: .destructive) {
                 model.forgetAllPairedPhones()
             }
             .buttonStyle(DestructiveSettingsButtonStyle())
@@ -123,7 +108,168 @@ struct SettingsView: View {
         }
     }
 
-    private var connectionHealthSection: some View {
+    // MARK: - Mirroring
+
+    private var mirroringTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            qualityGroup
+
+            SettingsGroup(title: "Display & sound") {
+                toggleRow(
+                    icon: "speaker.wave.2",
+                    isOn: $model.mirrorAudioEnabled,
+                    title: "Play phone audio on this Mac",
+                    subtitle: model.mirrorAudioEnabled
+                        ? "Your phone's sound comes out of this Mac while mirroring. Changing this restarts the mirror."
+                        : "Your phone keeps its own sound. Changing this restarts the mirror."
+                )
+                rowDivider
+                toggleRow(
+                    icon: "display",
+                    isOn: $model.mirrorScreenOffAfterThirtySecondsEnabled,
+                    title: "Turn the phone screen off after 30 seconds",
+                    subtitle: "Mirroring keeps working here while the phone's own display goes dark. Press ⌘L to do it now."
+                )
+            }
+
+            SettingsGroup(
+                title: "Scrolling",
+                footnote: "Applies to mouse wheel and trackpad scrolling inside the mirrored phone window."
+            ) {
+                scrollingPickerRow(
+                    icon: "scroll",
+                    title: "Scroll speed",
+                    subtitle: "Controls how far the phone moves for each wheel or trackpad gesture."
+                ) {
+                    mirrorScrollSpeedPicker
+                }
+
+                rowDivider
+
+                scrollingPickerRow(
+                    icon: "waveform.path",
+                    title: "Scroll feel",
+                    subtitle: "Softens larger deltas for less jumpy motion while keeping input responsive."
+                ) {
+                    mirrorScrollFeelPicker
+                }
+            }
+        }
+    }
+
+    private var qualityGroup: some View {
+        SettingsGroup(
+            title: "Quality",
+            footnote: "Lower the resolution or bitrate for smoother mirroring on slow connections. Active mirrors restart to apply changes."
+        ) {
+            VStack(alignment: .leading, spacing: 16) {
+                mirrorProfilePicker
+
+                Divider()
+
+                HStack(alignment: .top, spacing: 16) {
+                    qualityPicker(
+                        "Resolution", suffix: "px",
+                        selection: $model.mirrorMaxSize,
+                        options: [1080, 1280, 1600, 1920, 2560]
+                    )
+                    qualityPicker(
+                        "Bitrate", suffix: "Mbps",
+                        selection: $model.mirrorBitRateMbps,
+                        options: [2, 4, 8, 16, 24]
+                    )
+                    frameRatePicker
+                    Spacer(minLength: 0)
+                }
+            }
+            .padding(14)
+        }
+    }
+
+    // MARK: - Sharing
+
+    private var sharingTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            SettingsGroup(title: "Between your phone and Mac") {
+                toggleRow(
+                    icon: "doc.on.clipboard",
+                    isOn: $model.clipboardSyncEnabled,
+                    title: "Share clipboard",
+                    subtitle: "Copy on one device and paste on the other. Paste to the phone with ⌘V."
+                )
+                rowDivider
+                toggleRow(
+                    icon: "keyboard",
+                    isOn: $model.keyboardInputEnabled,
+                    title: "Type with your Mac keyboard",
+                    subtitle: "Sends typing and supported shortcuts to the phone while the mirror is focused."
+                )
+                rowDivider
+                toggleRow(
+                    icon: "tray.and.arrow.down",
+                    isOn: $model.dragAndDropFileTransferEnabled,
+                    title: "Drag files onto the mirror",
+                    subtitle: "Drop a file on the mirror to copy it to the phone's Downloads. APKs install automatically."
+                )
+            }
+
+            SettingsGroup(title: "Notifications") {
+                toggleRow(
+                    icon: "bell.badge",
+                    isOn: $model.notificationForwardingEnabled,
+                    title: "Show phone notifications on this Mac",
+                    subtitle: AppModel.notificationPermissionReason,
+                    detail: model.notificationForwardingPermissionDenied
+                        ? "macOS is blocking notifications for PhoneRelay. Turn it on in System Settings, then switch this on again."
+                        : "Group summaries and ongoing items (music, navigation) are skipped. macOS asks permission the first time."
+                )
+
+                if model.notificationForwardingPermissionDenied {
+                    rowDivider
+                    HStack {
+                        Spacer()
+                        Button("Open Notification Settings") {
+                            model.openNotificationSettings()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                }
+            }
+
+            SettingsGroup(
+                title: "Saved files",
+                footnote: "Where PhoneRelay saves screenshots and screen recordings. Defaults to Downloads."
+            ) {
+                captureFolderRow(
+                    title: "Screenshots",
+                    path: model.screenshotFolderPath,
+                    chooseAction: model.chooseScreenshotFolder,
+                    resetAction: model.resetScreenshotFolder
+                )
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+
+                rowDivider
+
+                captureFolderRow(
+                    title: "Screen recordings",
+                    path: model.recordingFolderPath,
+                    chooseAction: model.chooseRecordingFolder,
+                    resetAction: model.resetRecordingFolder
+                )
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+            }
+        }
+    }
+
+    // MARK: - Connection
+
+    private var connectionTab: some View {
         let snapshot = model.connectionHealthSnapshot
         let items = [
             snapshot.usbAuthorization,
@@ -134,22 +280,15 @@ struct SettingsView: View {
             snapshot.reconnectAttempts
         ]
 
-        return HStack(alignment: .top, spacing: 14) {
-            settingsLeadingIcon("waveform.path.ecg", isActive: true)
-
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Connection health")
-                        .font(.system(size: 14, weight: .semibold))
-                    Text("Live diagnostics for USB, Wi-Fi, local network permission, adb, transport selection, and reconnect activity.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
+        return SettingsGroup(
+            title: "Connection health",
+            footnote: "Live status for USB, Wi-Fi, local network permission, adb, transport, and reconnect activity."
+        ) {
+            VStack(alignment: .leading, spacing: 14) {
                 LazyVGrid(
                     columns: [
-                        GridItem(.adaptive(minimum: 190, maximum: 260), spacing: 10, alignment: .top)
+                        GridItem(.flexible(), spacing: 10, alignment: .top),
+                        GridItem(.flexible(), spacing: 10, alignment: .top)
                     ],
                     alignment: .leading,
                     spacing: 10
@@ -161,11 +300,11 @@ struct SettingsView: View {
 
                 Divider()
 
-                HStack(alignment: .top, spacing: 10) {
+                HStack(alignment: .center, spacing: 12) {
                     Image(systemName: "wrench.and.screwdriver")
-                        .font(.system(size: 16, weight: .regular))
+                        .font(.system(size: 15, weight: .regular))
                         .foregroundStyle(Color.accentColor)
-                        .frame(width: 24, alignment: .top)
+                        .frame(width: 22, alignment: .center)
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Next recommended fix")
@@ -175,15 +314,19 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if snapshot.recommendedFix == AppModel.localNetworkRecommendedFix {
+                        Button("Open Local Network") {
+                            model.openLocalNetworkSettings()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
     }
 
     private func connectionHealthMetric(_ item: ConnectionHealthSnapshot.Item) -> some View {
@@ -230,175 +373,74 @@ struct SettingsView: View {
         }
     }
 
-    private var mirrorQualitySection: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            HStack(alignment: .top, spacing: 14) {
-                settingsLeadingIcon("slider.horizontal.3", isActive: true)
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Mirroring quality")
-                            .font(.system(size: 14, weight: .semibold))
-                        Text("Lower the resolution or bitrate for smoother mirroring on slow links. Active mirrors restart automatically to apply changes.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+    // MARK: - About
 
-                    mirrorProfilePicker
+    private var aboutTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            aboutIdentityGroup
 
-                    HStack(alignment: .top, spacing: 16) {
-                        qualityPicker(
-                            "Resolution", suffix: "px",
-                            selection: $model.mirrorMaxSize,
-                            options: [1080, 1280, 1600, 1920, 2560]
-                        )
-                        qualityPicker(
-                            "Bitrate", suffix: "Mbps",
-                            selection: $model.mirrorBitRateMbps,
-                            options: [2, 4, 8, 16, 24]
-                        )
-                        frameRatePicker
-                        Spacer(minLength: 0)
-                    }
-                }
+            SettingsGroup(title: "Privacy Policy") {
+                aboutBlock(
+                    note: "Shown in-app so the policy stays readable without opening a browser.",
+                    body: AboutContent.privacyPolicy
+                )
             }
 
-            settingsScrollSpeedRow
+            SettingsGroup(title: "Support") {
+                aboutBlock(
+                    note: "These details help diagnose setup, pairing, and mirroring issues.",
+                    body: AboutContent.supportDetails
+                )
+            }
 
-            settingsToggleRow(
-                icon: "display",
-                isOn: $model.mirrorScreenOffAfterThirtySecondsEnabled,
-                title: "Turn phone screen off after 30 seconds",
-                subtitle: "Keeps mirroring active on this Mac while the phone’s physical display goes dark. Use ⌘L to do this manually.",
-                detail: nil
-            )
-
-            settingsToggleRow(
-                icon: "speaker.wave.2",
-                isOn: $model.mirrorAudioEnabled,
-                title: "Route phone audio to this Mac",
-                subtitle: model.mirrorAudioEnabled
-                    ? "On by default. Phone audio plays through this Mac while mirroring; changing this restarts the mirror."
-                    : "Audio forwarding is off. Phone audio stays on the phone; changing this restarts the mirror.",
-                detail: nil
-            )
-
-            settingsToggleRow(
-                icon: "doc.on.clipboard",
-                isOn: $model.clipboardSyncEnabled,
-                title: "Sync clipboard with phone",
-                subtitle: "Keeps Mac and Android clipboards in sync and enables paste-to-phone with ⌘V.",
-                detail: nil
-            )
-
-            settingsToggleRow(
-                icon: "keyboard",
-                isOn: $model.keyboardInputEnabled,
-                title: "Forward keyboard input",
-                subtitle: "Sends typing and supported shortcuts to the mirrored phone while the mirror is focused.",
-                detail: nil
-            )
-
-            settingsToggleRow(
-                icon: "tray.and.arrow.down",
-                isOn: $model.dragAndDropFileTransferEnabled,
-                title: "Allow drag-and-drop file transfer",
-                subtitle: "Installs dropped APKs or copies files to the phone’s Download folder.",
-                detail: nil
-            )
-
-            settingsToggleRow(
-                icon: "bell.badge",
-                isOn: $model.notificationForwardingEnabled,
-                title: "Forward phone notifications to this Mac",
-                subtitle: AppModel.notificationPermissionReason,
-                detail: model.notificationForwardingPermissionDenied
-                    ? "macOS is blocking notifications for PhoneRelay. Enable this app in System Settings, then turn this switch on again."
-                    : "Group summaries and ongoing items (music, navigation) are skipped. macOS will ask for notification permission the first time."
-            )
-
-            if model.notificationForwardingPermissionDenied {
-                Button("Open macOS Notification Settings") {
-                    model.openNotificationSettings()
+            SettingsGroup(title: "Legal") {
+                VStack(alignment: .leading, spacing: 12) {
+                    aboutTextBlock(title: "Open Source License", AboutContent.projectLicense)
+                    Divider()
+                    aboutTextBlock(title: "Third-Party Notices", AboutContent.thirdPartyNotices)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-                .padding(.leading, 42)
+                .padding(14)
             }
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
     }
 
-    private var aboutIdentitySection: some View {
-        HStack(alignment: .top, spacing: 14) {
-            Image(nsImage: NSApp.applicationIconImage)
-                .resizable()
-                .scaledToFit()
-                .frame(width: 48, height: 48)
-                .accessibilityHidden(true)
+    private var aboutIdentityGroup: some View {
+        SettingsGroup {
+            HStack(alignment: .center, spacing: 14) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 52, height: 52)
+                    .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("PhoneRelay")
-                    .font(.system(size: 18, weight: .semibold))
-                Text("Local-first Android mirroring for macOS.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 12) {
-                    labeledBadge("Version", bundleVersion)
-                    labeledBadge("Build", bundleBuild)
-                    labeledBadge("Bundle ID", bundleIdentifier)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-    }
-
-    private var captureFoldersSection: some View {
-        HStack(alignment: .top, spacing: 14) {
-            settingsLeadingIcon("folder", isActive: true)
-
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Capture folders")
-                        .font(.system(size: 14, weight: .semibold))
-                    Text("Choose where PhoneRelay saves screenshots and screen recordings. Defaults to Downloads.")
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("PhoneRelay")
+                        .font(.system(size: 18, weight: .semibold))
+                    Text("Local-first Android mirroring for macOS.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 12) {
+                        labeledBadge("Version", bundleVersion)
+                        labeledBadge("Build", bundleBuild)
+                        labeledBadge("Bundle ID", bundleIdentifier)
+                    }
+                    .padding(.top, 2)
                 }
-
-                captureFolderRow(
-                    title: "Screenshots",
-                    path: model.screenshotFolderPath,
-                    chooseAction: model.chooseScreenshotFolder,
-                    resetAction: model.resetScreenshotFolder
-                )
-
-                Divider()
-
-                captureFolderRow(
-                    title: "Screen recordings",
-                    path: model.recordingFolderPath,
-                    chooseAction: model.chooseRecordingFolder,
-                    resetAction: model.resetRecordingFolder
-                )
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+        }
+    }
+
+    private func aboutBlock(note: String, body: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(note)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            aboutTextBlock(body)
         }
         .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
     }
 
     private func captureFolderRow(
@@ -435,70 +477,6 @@ struct SettingsView: View {
             return "~/\(MediaCaptureService.outputFolderName)"
         }
         return (path as NSString).abbreviatingWithTildeInPath
-    }
-
-    private var aboutPrivacySection: some View {
-        aboutSection(
-            icon: "hand.raised",
-            title: "Privacy Policy",
-            subtitle: "Shown in-app so the policy remains readable without opening an external page."
-        ) {
-            aboutTextBlock(AboutContent.privacyPolicy)
-        }
-    }
-
-    private var aboutSupportSection: some View {
-        aboutSection(
-            icon: "questionmark.circle",
-            title: "Support",
-            subtitle: "The details below help diagnose setup, pairing, and mirroring issues."
-        ) {
-            aboutTextBlock(AboutContent.supportDetails)
-        }
-    }
-
-    private var aboutLegalSection: some View {
-        aboutSection(
-            icon: "doc.text",
-            title: "Legal",
-            subtitle: "PhoneRelay's app license and bundled open-source notices are shown locally."
-        ) {
-            aboutTextBlock(title: "Open Source License", AboutContent.projectLicense)
-            Divider()
-            aboutTextBlock(title: "Third-Party Notices", AboutContent.thirdPartyNotices)
-        }
-    }
-
-    private func aboutSection<Content: View>(
-        icon: String,
-        title: String,
-        subtitle: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            settingsLeadingIcon(icon, isActive: true)
-
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .font(.system(size: 14, weight: .semibold))
-                    Text(subtitle)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                VStack(alignment: .leading, spacing: 12) {
-                    content()
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
     }
 
     private func labeledBadge(_ label: String, _ value: String) -> some View {
@@ -542,52 +520,59 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func settingsLeadingIcon(_ icon: String, isActive: Bool = false) -> some View {
+    // MARK: - Shared rows
+
+    private func rowIcon(_ icon: String, active: Bool) -> some View {
         Image(systemName: icon)
-            .font(.system(size: 18, weight: .regular))
-            .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
-            .frame(width: 28, height: 28, alignment: .top)
+            .font(.system(size: 16, weight: .regular))
+            .foregroundStyle(active ? Color.accentColor : Color.secondary)
+            .frame(width: 26, alignment: .center)
     }
-    private func settingsToggleRow(
+
+    private func toggleRow(
         icon: String,
         isOn: Binding<Bool>,
         title: String,
         subtitle: String,
-        detail: String?
+        detail: String? = nil
     ) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            Image(systemName: icon)
-                .font(.system(size: 18, weight: .regular))
-                .foregroundStyle(isOn.wrappedValue ? Color.accentColor : Color.secondary)
-                .frame(width: 28, height: 28, alignment: .top)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 14) {
+                rowIcon(icon, active: isOn.wrappedValue)
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .top, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(title)
-                            .font(.system(size: 13, weight: .semibold))
-                        Text(subtitle)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    Spacer(minLength: 24)
-
-                    Toggle(title, isOn: isOn)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                }
-
-                if let detail {
-                    Text(detail)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(subtitle)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                Spacer(minLength: 16)
+
+                Toggle(title, isOn: isOn)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+
+            if let detail {
+                Text(detail)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 40)
             }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
     }
+
+    private var rowDivider: some View {
+        Divider()
+    }
+
+    // MARK: - Quality controls
 
     private var mirrorProfilePicker: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -701,25 +686,6 @@ struct SettingsView: View {
         .frame(width: 140, alignment: .leading)
     }
 
-    private var settingsScrollSpeedRow: some View {
-        HStack(alignment: .top, spacing: 14) {
-            settingsLeadingIcon("scroll", isActive: true)
-
-            VStack(alignment: .leading, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Mirror scroll speed")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text("Applies only to mouse wheel and trackpad scrolling inside the mirrored phone window.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                mirrorScrollSpeedPicker
-            }
-        }
-    }
-
     private var mirrorScrollSpeedPicker: some View {
         Picker("", selection: $model.mirrorScrollSpeedPercent) {
             Text("Slow").tag(10)
@@ -728,7 +694,48 @@ struct SettingsView: View {
         }
         .labelsHidden()
         .pickerStyle(.segmented)
-        .frame(width: 260, alignment: .leading)
+        .fixedSize()
+    }
+
+    private var mirrorScrollFeelPicker: some View {
+        Picker("", selection: $model.mirrorScrollFeel) {
+            ForEach(MirrorScrollFeel.allCases) { feel in
+                Text(feel.title).tag(feel)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .fixedSize()
+    }
+
+    private func scrollingPickerRow<Control: View>(
+        icon: String,
+        title: String,
+        subtitle: String,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            rowIcon(icon, active: true)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(subtitle)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // The flexible label column above pushes the control to the trailing
+            // edge; each control sizes to its own content, so every scrolling
+            // row's segmented control shares the same right edge — flush with the
+            // card's padding — instead of floating mid-row at different widths.
+            control()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
     }
 
     private var emptyState: some View {
@@ -736,14 +743,17 @@ struct SettingsView: View {
             Image(systemName: "iphone.slash")
                 .font(.system(size: 28, weight: .regular))
                 .foregroundStyle(.secondary)
-            Text("No remembered devices")
+            Text("No remembered phones")
                 .font(.headline)
-            Text("Devices will appear here after you connect or pair them.")
+            Text("Phones appear here after you connect or pair them.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity, minHeight: 220)
+        .frame(maxWidth: .infinity, minHeight: 200)
+        .padding(.vertical, 12)
     }
+
+    // MARK: - Device state
 
     private func isOnline(_ record: PairedPhoneRecord) -> Bool {
         if model.isSelectedDeviceOnline,
@@ -771,6 +781,103 @@ struct SettingsView: View {
                 record.displayName.localizedCaseInsensitiveCompare(selected.name) == .orderedSame
                 && record.displayName.localizedCaseInsensitiveCompare("Android device") != .orderedSame
             )
+    }
+}
+
+// MARK: - Settings group container
+
+/// The macOS System Settings look: an optional section title, a rounded card
+/// holding rows separated by hairline dividers, and an optional footnote below.
+/// Replaces the card styling that used to be copy-pasted into every section.
+private struct SettingsGroup<Content: View>: View {
+    var title: String? = nil
+    var footnote: String? = nil
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if let title {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 4)
+            }
+
+            VStack(spacing: 0) {
+                content()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+            )
+
+            if let footnote {
+                Text(footnote)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 4)
+            }
+        }
+    }
+}
+
+/// Modern macOS capsule segmented control: a recessed track holding a single
+/// elevated pill that springs between segments. Unlike the stock `.segmented`
+/// `Picker`, there are **no separators between items** — matching the design
+/// spec. The pill slides via `matchedGeometryEffect`, and the spring keeps it
+/// consistent with the app's premium motion.
+private struct CapsuleSegmentedControl<Value: Hashable>: View {
+    let segments: [(value: Value, label: String)]
+    @Binding var selection: Value
+    @Environment(\.colorScheme) private var scheme
+    @Namespace private var namespace
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(segments, id: \.value) { segment in
+                segmentButton(value: segment.value, label: segment.label)
+            }
+        }
+        // Scope the spring to THIS control's subtree. Using `withAnimation` at
+        // the tap site instead would animate everything bound to the selection —
+        // including the tab-content swap — and animating the About tab's
+        // selectable text blocks inside the ScrollView hangs the app. Here only
+        // the pill's matchedGeometryEffect rides the spring; the content swaps
+        // instantly.
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: selection)
+        .padding(3)
+        .background(
+            Capsule(style: .continuous)
+                .fill(scheme == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.06))
+        )
+    }
+
+    private func segmentButton(value: Value, label: String) -> some View {
+        let isSelected = value == selection
+        return Button {
+            guard value != selection else { return }
+            selection = value
+        } label: {
+            Text(label)
+                .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                .frame(maxWidth: .infinity, minHeight: 24)
+                .contentShape(Capsule())
+                .background {
+                    if isSelected {
+                        Capsule(style: .continuous)
+                            .fill(scheme == .dark ? Color.white.opacity(0.16) : Color.white)
+                            .shadow(color: .black.opacity(scheme == .dark ? 0.32 : 0.12), radius: 2, y: 1)
+                            .matchedGeometryEffect(id: "segmentPill", in: namespace)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     }
 }
 
@@ -816,7 +923,7 @@ private struct PairedPhoneRow: View {
                     .lineLimit(1)
 
                 HStack(spacing: 10) {
-                    labeledValue("Port ID", record.lastAddress)
+                    labeledValue("Address", record.lastAddress)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -825,10 +932,6 @@ private struct PairedPhoneRow: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
     }
 
     private var phoneIconName: String {
@@ -863,9 +966,9 @@ private struct PairedPhoneRow: View {
     private var rightColumn: some View {
         HStack(alignment: .center, spacing: 18) {
             VStack(alignment: .trailing, spacing: 2) {
-                Text("Last connected")
+                Text(statusLabel)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(statusColor)
                 Text(record.lastConnected.formatted(date: .abbreviated, time: .shortened))
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
@@ -877,6 +980,18 @@ private struct PairedPhoneRow: View {
             actionButton
                 .frame(width: 96, alignment: .trailing)
         }
+    }
+
+    private var statusLabel: String {
+        if isActive { return "Connected" }
+        if isOnline { return "Online" }
+        return "Last seen"
+    }
+
+    private var statusColor: Color {
+        if isActive { return .green }
+        if isOnline { return .accentColor }
+        return .secondary
     }
 
     private func labeledValue(_ label: String, _ value: String) -> some View {

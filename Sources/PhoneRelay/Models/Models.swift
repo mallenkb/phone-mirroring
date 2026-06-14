@@ -191,4 +191,40 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
     var lastAddress: String
     var firstPaired: Date
     var lastConnected: Date
+    var autoConnectSuspended: Bool
+
+    init(
+        id: String,
+        displayName: String,
+        lastAddress: String,
+        firstPaired: Date,
+        lastConnected: Date,
+        autoConnectSuspended: Bool = false
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.lastAddress = lastAddress
+        self.firstPaired = firstPaired
+        self.lastConnected = lastConnected
+        self.autoConnectSuspended = autoConnectSuspended
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case displayName
+        case lastAddress
+        case firstPaired
+        case lastConnected
+        case autoConnectSuspended
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        lastAddress = try container.decode(String.self, forKey: .lastAddress)
+        firstPaired = try container.decode(Date.self, forKey: .firstPaired)
+        lastConnected = try container.decode(Date.self, forKey: .lastConnected)
+        autoConnectSuspended = try container.decodeIfPresent(Bool.self, forKey: .autoConnectSuspended) ?? false
+    }
 }

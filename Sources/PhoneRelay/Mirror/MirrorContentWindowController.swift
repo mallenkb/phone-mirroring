@@ -107,6 +107,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private var hasUserMovedWindow = false
     private var isApplyingProgrammaticFrame = false
     private var captureCueCancellable: AnyCancellable?
+    private var transferActivityCancellable: AnyCancellable?
     private var deviceTitleCancellable: AnyCancellable?
     private var appActivationObservers: [NSObjectProtocol] = []
     private var activeCaptureCueView: MirrorCaptureCueView?
@@ -633,8 +634,17 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
                 guard let cue else { return }
                 self?.showCaptureCue(cue)
             }
+        transferActivityCancellable = model.$transferActivity
+            .receive(on: RunLoop.main)
+            .sink { [weak self] activity in
+                guard let activity else {
+                    self?.hideActiveStatusCue()
+                    return
+                }
+                self?.showTransferActivity(activity)
+            }
         chromeBar.onClose = { NSApplication.shared.terminate(nil) }
-        chromeBar.onMinimize = { [weak self] in self?.window?.miniaturize(nil) }
+        chromeBar.onMinimize = { [weak self] in self?.miniaturizeFromChrome() }
         chromeBar.onZoom = { [weak self] in self?.toggleFullScreenFromChrome() }
         chromeBar.chromeHeight = Self.toolbarBarHeight
         chromeBar.setControlsVisible(false)
@@ -744,6 +754,49 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
                     cueView.removeFromSuperview()
                     self.activeCaptureCueView = nil
                 }
+            }
+        }
+    }
+
+    private func showTransferActivity(_ activity: AppModel.TransferActivity) {
+        activeCaptureCueView?.removeFromSuperview()
+
+        let cueView = MirrorCaptureCueView(activity: activity)
+        rootView.addSubview(cueView)
+        activeCaptureCueView = cueView
+
+        NSLayoutConstraint.activate([
+            cueView.centerXAnchor.constraint(equalTo: rootView.centerXAnchor),
+            cueView.topAnchor.constraint(equalTo: rootView.topAnchor, constant: 18),
+        ])
+
+        cueView.alphaValue = 0
+        cueView.layer?.transform = CATransform3DMakeScale(0.94, 0.94, 1)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            cueView.animator().alphaValue = 1
+            cueView.layer?.transform = CATransform3DIdentity
+        }
+
+        guard !activity.isInProgress else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self, weak cueView] in
+            guard let self, let cueView, self.activeCaptureCueView === cueView else { return }
+            self.hideActiveStatusCue()
+        }
+    }
+
+    private func hideActiveStatusCue() {
+        guard let cueView = activeCaptureCueView else { return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            cueView.animator().alphaValue = 0
+        } completionHandler: { [weak self, weak cueView] in
+            Task { @MainActor [weak self, weak cueView] in
+                guard let self, let cueView, self.activeCaptureCueView === cueView else { return }
+                cueView.removeFromSuperview()
+                self.activeCaptureCueView = nil
             }
         }
     }
@@ -927,6 +980,14 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         hideChromeImmediately(orderOutToolbar: true)
     }
 
+    func simulateWindowWillMiniaturizeForTesting() {
+        windowWillMiniaturize(Notification(name: NSWindow.willMiniaturizeNotification, object: window))
+    }
+
+    func simulateWindowDidDeminiaturizeForTesting() {
+        windowDidDeminiaturize(Notification(name: NSWindow.didDeminiaturizeNotification, object: window))
+    }
+
     private func scheduleHide() {
         guard !model.isRecording else {
             hideWorkItem?.cancel()
@@ -1039,6 +1100,12 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         captureNormalWindowFrameBeforeFullscreen(from: window)
         setFullscreenChromeSuppressed(true)
         window.toggleFullScreen(nil)
+    }
+
+    private func miniaturizeFromChrome() {
+        guard let window else { return }
+        prepareForMiniaturize()
+        window.miniaturize(nil)
     }
 
     private func captureNormalWindowFrameBeforeFullscreen(from window: NSWindow) {
@@ -1198,6 +1265,33 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         session?.stop()
     }
 
+    func windowWillMiniaturize(_ notification: Notification) {
+        prepareForMiniaturize()
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        guard let window else { return }
+        if let toolbar = toolbarWindow {
+            window.addChildWindow(toolbar, ordered: .above)
+        }
+        repositionToolbarWindow()
+        startRevealMonitoring()
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(renderView)
+        renderView.updateVideoLayerFrame()
+        evaluateRevealZone()
+    }
+
+    private func prepareForMiniaturize() {
+        hideChromeImmediately(orderOutToolbar: true)
+        hideActiveStatusCue()
+        stopRevealMonitoring()
+        if let window, let toolbar = toolbarWindow {
+            window.removeChildWindow(toolbar)
+            toolbar.orderOut(nil)
+        }
+    }
+
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
         guard !isInFullscreen else { return frameSize }
         guard let mirrorAspect, mirrorAspect > 0, frameSize.width > 0 else {
@@ -1235,6 +1329,15 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         repositionToolbarWindow()
     }
 
+    /// Tell AppKit to fill the whole screen during its own native zoom, so we
+    /// never have to `setFrame` the window ourselves. Doing that manually (in
+    /// `windowDidEnterFullScreen`) used to overwrite the window's remembered
+    /// pre-fullscreen frame, which is exactly why exit then needed a second,
+    /// visible restore animation — the part that looked like a hack.
+    func window(_ window: NSWindow, willUseFullScreenContentSize proposedSize: NSSize) -> NSSize {
+        window.screen?.frame.size ?? proposedSize
+    }
+
     func windowWillEnterFullScreen(_ notification: Notification) {
         if let window {
             captureNormalWindowFrameBeforeFullscreen(from: window)
@@ -1243,8 +1346,8 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     func windowDidEnterFullScreen(_ notification: Notification) {
-        guard let window, let screenFrame = window.screen?.frame else { return }
-        window.setFrame(screenFrame, display: true, animate: false)
+        // No manual setFrame — AppKit already sized us to the fullscreen space.
+        // Just relayout the content to whatever size it gave us.
         rootView.layoutSubtreeIfNeeded()
         renderView.updateVideoLayerFrame()
     }
@@ -1255,7 +1358,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
     func windowDidExitFullScreen(_ notification: Notification) {
         setFullscreenChromeSuppressed(false)
-        restoreNormalWindowFrameAfterFullscreenIfNeeded(animated: true)
+        // AppKit's native exit already animated back to the pre-fullscreen
+        // frame, so this is just an instant snap-correct for the rare case it
+        // lands a hair off. Animating it (as before) ran a second resize on top
+        // of the native one — that double-animation was the hacky exit.
+        restoreNormalWindowFrameAfterFullscreenIfNeeded(animated: false)
     }
 }
 
@@ -1326,7 +1433,27 @@ final class MirrorRootView: NSView {
 
 private final class MirrorCaptureCueView: NSView {
     init(cue: AppModel.CaptureCue) {
+        let tintColor: NSColor = cue.kind == .recordingStarted ? .systemRed : .white
         super.init(frame: .zero)
+        setup(title: cue.title, detail: nil, symbolName: cue.symbolName, tintColor: tintColor)
+    }
+
+    init(activity: AppModel.TransferActivity) {
+        let tintColor: NSColor = activity.phase == .failed ? .systemYellow : .white
+        super.init(frame: .zero)
+        setup(
+            title: activity.title,
+            detail: activity.detail.isEmpty ? nil : activity.detail,
+            symbolName: activity.symbolName,
+            tintColor: tintColor
+        )
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    private func setup(title: String, detail: String?, symbolName: String, tintColor: NSColor) {
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
         layer?.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
@@ -1338,17 +1465,33 @@ private final class MirrorCaptureCueView: NSView {
         layer?.shadowOffset = NSSize(width: 0, height: -3)
 
         let imageView = NSImageView()
-        imageView.image = NSImage(systemSymbolName: cue.symbolName, accessibilityDescription: nil)
+        imageView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
         imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
-        imageView.contentTintColor = cue.kind == .recordingStarted ? .systemRed : .white
+        imageView.contentTintColor = tintColor
         imageView.translatesAutoresizingMaskIntoConstraints = false
 
-        let label = NSTextField(labelWithString: cue.title)
-        label.font = .systemFont(ofSize: 13, weight: .semibold)
-        label.textColor = .white
-        label.lineBreakMode = .byTruncatingTail
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = .white
+        titleLabel.lineBreakMode = .byTruncatingTail
 
-        let stack = NSStackView(views: [imageView, label])
+        let textViews: [NSView]
+        if let detail {
+            let detailLabel = NSTextField(labelWithString: detail)
+            detailLabel.font = .systemFont(ofSize: 11, weight: .regular)
+            detailLabel.textColor = NSColor.white.withAlphaComponent(0.72)
+            detailLabel.lineBreakMode = .byTruncatingMiddle
+
+            let textStack = NSStackView(views: [titleLabel, detailLabel])
+            textStack.orientation = .vertical
+            textStack.alignment = .leading
+            textStack.spacing = 1
+            textViews = [textStack]
+        } else {
+            textViews = [titleLabel]
+        }
+
+        let stack = NSStackView(views: [imageView] + textViews)
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 8
@@ -1362,13 +1505,9 @@ private final class MirrorCaptureCueView: NSView {
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             stack.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
-            widthAnchor.constraint(lessThanOrEqualToConstant: 240),
+            widthAnchor.constraint(lessThanOrEqualToConstant: 300),
         ])
     }
-
-    required init?(coder: NSCoder) { nil }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 // MARK: - Chrome bar
@@ -1440,9 +1579,7 @@ final class MirrorChromeBar: NSView {
     )
     private let recentAppsBtn = MirrorChromeOutlineButton(
         symbol: "rectangle.stack.fill",
-        accessibilityDescription: "Recent apps",
-        hoverCornerRadius: MirrorChromeBar.controlHoverCornerRadius,
-        hoverLeadingCornerRadius: MirrorChromeOutlineButton.defaultHoverCornerRadius
+        accessibilityDescription: "Recent apps"
     )
     private let screenshotBtn = MirrorChromeOutlineButton(
         resource: "chrome-screenshot",
@@ -1710,6 +1847,14 @@ final class MirrorChromeBar: NSView {
             screenshotBtn.hoverRoundedCornersForTesting,
             homeBtn.hoverRoundedCornersForTesting,
             recentAppsBtn.hoverRoundedCornersForTesting,
+        ]
+    }
+
+    var rightActionHoverHeightsForTesting: [CGFloat] {
+        [
+            screenshotBtn.hoverHeightForTesting,
+            homeBtn.hoverHeightForTesting,
+            recentAppsBtn.hoverHeightForTesting,
         ]
     }
 
@@ -2054,6 +2199,11 @@ final class MirrorChromeOutlineButton: NSView {
         hoverRoundedCorners
     }
 
+    var hoverHeightForTesting: CGFloat {
+        layoutSubtreeIfNeeded()
+        return hoverBackgroundLayer.frame.height
+    }
+
     init(
         symbol: String,
         accessibilityDescription: String? = nil,
@@ -2127,19 +2277,7 @@ final class MirrorChromeOutlineButton: NSView {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        // Let the hover pill grow as tall as its corner radius needs: a radius
-        // larger than half the icon's touch target (e.g. the 18pt trailing cap
-        // on a 30pt-tall button) then renders as a clean pill cap instead of
-        // clamping to a smaller rounded square. It stays centered on the icon
-        // and still fits inside the bar.
-        let neededHeight = max(hoverCornerRadius, hoverLeadingCornerRadius ?? 0) * 2
-        let hoverHeight = max(bounds.height, neededHeight)
-        let hoverRect = CGRect(
-            x: bounds.minX,
-            y: bounds.midY - hoverHeight / 2,
-            width: bounds.width,
-            height: hoverHeight
-        )
+        let hoverRect = bounds
         hoverBackgroundLayer.frame = hoverRect
         hoverBackgroundLayer.path = Self.hoverPath(
             in: CGRect(origin: .zero, size: hoverRect.size),
