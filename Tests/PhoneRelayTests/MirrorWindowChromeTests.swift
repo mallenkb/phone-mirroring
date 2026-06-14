@@ -177,6 +177,64 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
+    func testVolumeKeysDoNotForwardWhenMirrorIsNotKeyboardTarget() throws {
+        let up = try XCTUnwrap(Self.mediaKeyEvent(keyType: 0))
+        let functionUp = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: 0x6F
+        ))
+
+        XCTAssertFalse(AppModel.shouldForwardKeyEventToMirrorSession(
+            up,
+            keyboardInputEnabled: true,
+            hasMirrorSession: true,
+            appIsActive: true,
+            mirrorAcceptsKeyboardInput: false
+        ))
+        XCTAssertFalse(AppModel.shouldForwardKeyEventToMirrorSession(
+            functionUp,
+            keyboardInputEnabled: true,
+            hasMirrorSession: true,
+            appIsActive: false,
+            mirrorAcceptsKeyboardInput: true
+        ))
+        XCTAssertTrue(AppModel.shouldForwardKeyEventToMirrorSession(
+            up,
+            keyboardInputEnabled: true,
+            hasMirrorSession: true,
+            appIsActive: true,
+            mirrorAcceptsKeyboardInput: true
+        ))
+        XCTAssertFalse(AppModel.shouldConsumeForwardedKeyEvent(up))
+    }
+
+    @MainActor
+    func testForwardedNonVolumeMirrorKeysAreConsumed() throws {
+        let escape = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "\u{1b}",
+            charactersIgnoringModifiers: "\u{1b}",
+            isARepeat: false,
+            keyCode: 0x35
+        ))
+
+        XCTAssertTrue(AppModel.shouldConsumeForwardedKeyEvent(escape))
+    }
+
+    @MainActor
     func testNonMediaSystemEventsAreIgnoredByAndroidKeyMapping() throws {
         let event = try XCTUnwrap(NSEvent.otherEvent(
             with: .systemDefined,

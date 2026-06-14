@@ -334,6 +334,10 @@ final class MirrorSession {
         windowController?.centerWindow()
     }
 
+    var acceptsKeyboardInput: Bool {
+        windowController?.acceptsKeyboardInput == true
+    }
+
     func turnDeviceScreenOff() {
         setDeviceScreenPower(.off)
     }
@@ -383,7 +387,7 @@ final class MirrorSession {
     }
 
     func forwardKeyEvent(_ event: NSEvent) {
-        guard let controlChannel else { return }
+        guard let controlChannel, acceptsKeyboardInput, NSApp.isActive else { return }
         if event.type == .keyDown || event.type == .keyUp || event.type == .systemDefined {
             recordMirrorActivity()
         }
@@ -593,6 +597,15 @@ final class MirrorSession {
         case 0x7C: return .dpadRight
         case 0x53: return .home     // Keypad 1 — placeholder; user-configurable later
         default: return nil
+        }
+    }
+
+    static func isVolumeKeyEvent(_ event: NSEvent) -> Bool {
+        switch androidKey(for: event) {
+        case .volumeUp, .volumeDown, .volumeMute:
+            return true
+        default:
+            return false
         }
     }
 

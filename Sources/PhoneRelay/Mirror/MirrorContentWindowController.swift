@@ -83,6 +83,10 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     static let toolbarRevealSlop: CGFloat = 6
     static let toolbarAnimationOffset: CGFloat = 6
 
+    var acceptsKeyboardInput: Bool {
+        window?.isKeyWindow == true
+    }
+
     private let model: AppModel
     private weak var session: MirrorSession?
 
@@ -695,6 +699,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         }
         renderView.onKeyEvent = { [weak self] event in
             guard self?.model.keyboardInputEnabled ?? true else { return }
+            guard !MirrorSession.isVolumeKeyEvent(event) else { return }
             self?.session?.forwardKeyEvent(event)
         }
         renderView.onDropFiles = { [weak self] urls in

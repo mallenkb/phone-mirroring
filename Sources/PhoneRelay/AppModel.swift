@@ -4180,15 +4180,40 @@ final class AppModel: ObservableObject {
     }
 
     func forwardKeyEventToMirrorSession(_ event: NSEvent) -> Bool {
-        guard keyboardInputEnabled,
-              mirrorSession != nil,
-              MirrorSession.isMirrorCommandShortcut(event)
-                || MirrorSession.androidKey(for: event) != nil
-                || MirrorSession.androidCommandShortcutKey(for: event) != nil else {
+        guard Self.shouldForwardKeyEventToMirrorSession(
+            event,
+            keyboardInputEnabled: keyboardInputEnabled,
+            hasMirrorSession: mirrorSession != nil,
+            appIsActive: NSApp.isActive,
+            mirrorAcceptsKeyboardInput: mirrorSession?.acceptsKeyboardInput == true
+        ) else {
             return false
         }
         mirrorSession?.forwardKeyEvent(event)
         return true
+    }
+
+    static func shouldForwardKeyEventToMirrorSession(
+        _ event: NSEvent,
+        keyboardInputEnabled: Bool,
+        hasMirrorSession: Bool,
+        appIsActive: Bool,
+        mirrorAcceptsKeyboardInput: Bool
+    ) -> Bool {
+        guard keyboardInputEnabled,
+              hasMirrorSession,
+              appIsActive,
+              mirrorAcceptsKeyboardInput else {
+            return false
+        }
+
+        return MirrorSession.isMirrorCommandShortcut(event)
+            || MirrorSession.androidKey(for: event) != nil
+            || MirrorSession.androidCommandShortcutKey(for: event) != nil
+    }
+
+    static func shouldConsumeForwardedKeyEvent(_ event: NSEvent) -> Bool {
+        !MirrorSession.isVolumeKeyEvent(event)
     }
 
     func centerMirrorWindow() {
