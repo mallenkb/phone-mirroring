@@ -426,6 +426,83 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Handles image paste from the Mac clipboard by transferring the image as a
+    /// file. Android cannot accept reliable image clipboard data over scrcpy's
+    /// text clipboard channel, so this lands in shared Pictures storage instead.
+    func handleClipboardImagePaste(_ pngData: Data) {
+        guard !pngData.isEmpty else { return }
+        guard dragAndDropFileTransferEnabled else {
+            reportError("File transfer disabled", "Turn on drag-and-drop file transfer in Settings to send clipboard images to the phone.")
+            return
+        }
+        guard let serial = selectedDevice.adbSerial else {
+            reportError("Can’t send image", "Connect a device before pasting an image into the mirror.")
+            return
+        }
+
+        let fileName = MediaCaptureService.filename(kind: "Clipboard", extension: "png")
+        let remoteDirectory = "/sdcard/Pictures/PhoneRelay/"
+        let remotePath = remoteDirectory + fileName
+
+        transferActivity = TransferActivity(
+            phase: .copying,
+            title: "Copying clipboard image",
+            detail: fileName
+        )
+
+        Task { [weak self] in
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("PhoneRelay-Clipboard-\(UUID().uuidString)")
+                .appendingPathExtension("png")
+            do {
+                try pngData.write(to: tempURL, options: .atomic)
+            } catch {
+                guard let self else { return }
+                let message = error.localizedDescription
+                self.transferActivity = TransferActivity(
+                    phase: .failed,
+                    title: "Transfer failed",
+                    detail: message
+                )
+                self.reportError("Transfer failed", "Couldn’t prepare the clipboard image: \(message)")
+                return
+            }
+            defer { try? FileManager.default.removeItem(at: tempURL) }
+
+            let pushArgs = Self.adbDeviceArguments(serial: serial) + ["push", tempURL.path, remotePath]
+            let scanArgs = Self.adbDeviceArguments(serial: serial) + [
+                "shell", "am", "broadcast",
+                "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                "-d", "file://\(remotePath)"
+            ]
+            let push = await Task.detached {
+                Tooling.runResult("adb", arguments: pushArgs, timeout: 300)
+            }.value
+
+            guard let self else { return }
+            guard push.succeeded else {
+                let failure = Self.oneLine(push.output)
+                self.transferActivity = TransferActivity(
+                    phase: .failed,
+                    title: "Transfer failed",
+                    detail: failure
+                )
+                self.reportError("Transfer failed", "Couldn’t send the clipboard image to the phone: \(failure)")
+                return
+            }
+
+            _ = await Task.detached {
+                Tooling.runResult("adb", arguments: scanArgs, timeout: 30)
+            }.value
+            self.transferActivity = TransferActivity(
+                phase: .completed,
+                title: "Copied clipboard image to Photos",
+                detail: fileName
+            )
+            self.notify(title: "Sent to phone", body: "Copied clipboard image to Photos")
+        }
+    }
+
     private nonisolated static func transferActivity(
         for url: URL,
         isAPK: Bool,

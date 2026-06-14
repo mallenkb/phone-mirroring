@@ -44,6 +44,48 @@ final class DropTransferStatusTests: XCTestCase {
         XCTAssertEqual(loggedCalls(fake.log), ["-s TESTSERIAL install -r \(apk.path)"])
     }
 
+    @MainActor
+    func testClipboardImagePastePushesImageAndScansMedia() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.selectedDevice = MirrorDevice(
+            id: "adb-test",
+            name: "Test Phone",
+            model: "Test Phone",
+            battery: 80,
+            isCharging: false,
+            network: "USB debugging",
+            lastSeen: .now,
+            states: [.mirroringReady],
+            adbSerial: "TESTSERIAL"
+        )
+
+        model.handleClipboardImagePaste(Data("png".utf8))
+
+        let copying = try await waitForTransferActivity(in: model) { activity in
+            activity?.phase == .copying
+        }
+        XCTAssertEqual(copying.title, "Copying clipboard image")
+
+        let completed = try await waitForTransferActivity(in: model) { activity in
+            activity?.phase == .completed
+        }
+        XCTAssertEqual(completed.title, "Copied clipboard image to Photos")
+
+        let calls = loggedCalls(fake.log)
+        XCTAssertEqual(calls.count, 2)
+        XCTAssertTrue(calls[0].hasPrefix("-s TESTSERIAL push "))
+        XCTAssertTrue(calls[0].contains(" /sdcard/Pictures/PhoneRelay/Android-Mirroring-Clipboard_"))
+        XCTAssertTrue(calls[0].hasSuffix(".png"))
+        XCTAssertTrue(calls[1].contains("-s TESTSERIAL shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures/PhoneRelay/"))
+    }
+
     private func waitForTransferActivity(
         in model: AppModel,
         matching predicate: @MainActor (AppModel.TransferActivity?) -> Bool,

@@ -16,15 +16,21 @@ import Foundation
 final class ClipboardBridge {
     private weak var channel: ScrcpyControlChannel?
     private let pasteboard: NSPasteboard
+    private let onImagePaste: (Data) -> Void
     private var pollTask: Task<Void, Never>?
     private var lastChangeCount: Int
     private var lastText: String?
 
     private static let pollInterval: UInt64 = 500_000_000 // 0.5s in ns
 
-    init(channel: ScrcpyControlChannel, pasteboard: NSPasteboard = .general) {
+    init(
+        channel: ScrcpyControlChannel,
+        pasteboard: NSPasteboard = .general,
+        onImagePaste: @escaping (Data) -> Void = { _ in }
+    ) {
         self.channel = channel
         self.pasteboard = pasteboard
+        self.onImagePaste = onImagePaste
         self.lastChangeCount = pasteboard.changeCount
     }
 
@@ -54,10 +60,17 @@ final class ClipboardBridge {
     /// device to paste it into the focused field. Records the text so the poller
     /// does not redundantly resend it.
     func pasteToDevice() {
-        guard let text = pasteboard.string(forType: .string), !text.isEmpty else { return }
-        lastText = text
-        lastChangeCount = pasteboard.changeCount
-        channel?.sendSetClipboard(text, paste: true)
+        if let text = pasteboard.string(forType: .string), !text.isEmpty {
+            lastText = text
+            lastChangeCount = pasteboard.changeCount
+            channel?.sendSetClipboard(text, paste: true)
+            return
+        }
+
+        if let pngData = Self.pngData(from: pasteboard) {
+            lastChangeCount = pasteboard.changeCount
+            onImagePaste(pngData)
+        }
     }
 
     /// Phone → Mac. Called (hopped to the main actor) by the control channel.
@@ -81,5 +94,18 @@ final class ClipboardBridge {
               text != lastText else { return }
         lastText = text
         channel?.sendSetClipboard(text)
+    }
+
+    static func pngData(from pasteboard: NSPasteboard) -> Data? {
+        if let data = pasteboard.data(forType: .png), !data.isEmpty {
+            return data
+        }
+        guard let tiff = pasteboard.data(forType: .tiff),
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]),
+              !png.isEmpty else {
+            return nil
+        }
+        return png
     }
 }

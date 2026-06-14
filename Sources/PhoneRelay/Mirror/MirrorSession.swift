@@ -43,6 +43,7 @@ final class MirrorSession {
     private var decoder = H264VideoToolboxDecoder()
     private(set) var controlChannel: ScrcpyControlChannel?
     private var clipboardBridge: ClipboardBridge?
+    private var screenshotClipboardWatcher: AndroidScreenshotClipboardWatcher?
     private var windowController: MirrorContentWindowController?
     private var screenOffTask: Task<Void, Never>?
     private var screenOffDeadline: Date?
@@ -195,6 +196,8 @@ final class MirrorSession {
 
         clipboardBridge?.stop()
         clipboardBridge = nil
+        screenshotClipboardWatcher?.stop()
+        screenshotClipboardWatcher = nil
         screenOffTask?.cancel()
         screenOffTask = nil
         screenOffDeadline = nil
@@ -484,6 +487,7 @@ final class MirrorSession {
         controlChannel = channel
 
         setClipboardSyncEnabled(model?.clipboardSyncEnabled ?? true)
+        startScreenshotClipboardWatcherIfNeeded()
     }
 
     func setClipboardSyncEnabled(_ enabled: Bool) {
@@ -495,13 +499,22 @@ final class MirrorSession {
 
         if enabled {
             guard clipboardBridge == nil else { return }
-            let bridge = ClipboardBridge(channel: controlChannel)
+            let bridge = ClipboardBridge(channel: controlChannel) { [weak self] pngData in
+                self?.model?.handleClipboardImagePaste(pngData)
+            }
             bridge.start()
             clipboardBridge = bridge
         } else {
             clipboardBridge?.stop()
             clipboardBridge = nil
         }
+    }
+
+    private func startScreenshotClipboardWatcherIfNeeded() {
+        guard screenshotClipboardWatcher == nil else { return }
+        let watcher = AndroidScreenshotClipboardWatcher(serial: serial)
+        watcher.start()
+        screenshotClipboardWatcher = watcher
     }
 
     private func scheduleAutomaticScreenOffIfNeeded() {
@@ -602,7 +615,7 @@ final class MirrorSession {
               let key = event.charactersIgnoringModifiers?.lowercased() else {
             return false
         }
-        return key == "l"
+        return key == "l" || key == "v"
     }
 
     static func androidCommandShortcutKey(for event: NSEvent) -> ScrcpyControlChannel.AndroidKey? {

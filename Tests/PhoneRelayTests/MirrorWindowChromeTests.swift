@@ -391,6 +391,24 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
+    func testMirrorSessionTreatsCommandVAsMirrorCommandShortcut() throws {
+        let commandV = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .command,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "v",
+            charactersIgnoringModifiers: "v",
+            isARepeat: false,
+            keyCode: 9
+        ))
+
+        XCTAssertTrue(MirrorSession.isMirrorCommandShortcut(commandV))
+    }
+
+    @MainActor
     func testMirrorSessionDoesNotTreatControlAAsSelectAllShortcut() throws {
         let controlA = try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown,
