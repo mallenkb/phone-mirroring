@@ -260,9 +260,13 @@ final class PairedPhoneStoreTests: XCTestCase {
         )
     }
 
-    func testDefaultCompatibilitySuitesIncludeHistoricalBundleDomains() {
-        XCTAssertTrue(PairedPhoneStore.compatibilitySuites.contains("com.mallenkb.PhoneRelay"))
-        XCTAssertTrue(PairedPhoneStore.compatibilitySuites.contains("com.mallenkb.PhoneRelay"))
+    func testDefaultCompatibilitySuitesExcludeCurrentBundleDomain() {
+        XCTAssertFalse(PairedPhoneStore.compatibilitySuites.contains("com.mallenkb.PhoneRelay"))
+        XCTAssertEqual(
+            PairedPhoneStore.compatibilitySuites.count,
+            Set(PairedPhoneStore.compatibilitySuites).count,
+            "Compatibility suites should be unique so migration does not read or clear a domain twice."
+        )
         XCTAssertTrue(PairedPhoneStore.compatibilitySuites.contains("com.mallenkb.AndroidMirrorScrcpy"))
     }
 

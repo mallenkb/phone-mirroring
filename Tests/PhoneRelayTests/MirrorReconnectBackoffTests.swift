@@ -536,6 +536,32 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
+    func testLiveRememberedMDNSTargetBypassesPresenceThrottle() {
+        let now = Date(timeIntervalSince1970: 200)
+
+        XCTAssertFalse(
+            AppModel.shouldDelayRememberedAutoConnect(
+                lastAttemptAt: Date(timeIntervalSince1970: 199),
+                now: now,
+                throttle: 3,
+                hasLiveRememberedPhone: true
+            )
+        )
+    }
+
+    func testPresenceThrottleStillDelaysWhenOnlyStaleSavedAddressIsAvailable() {
+        let now = Date(timeIntervalSince1970: 200)
+
+        XCTAssertTrue(
+            AppModel.shouldDelayRememberedAutoConnect(
+                lastAttemptAt: Date(timeIntervalSince1970: 199),
+                now: now,
+                throttle: 3,
+                hasLiveRememberedPhone: false
+            )
+        )
+    }
+
     func testOnlineUSBDeviceCanRetryHandoffWhenItIsIdle() {
         XCTAssertTrue(
             AppModel.shouldAutoStartOnlineSelectedDevice(
@@ -550,6 +576,37 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 isAwaitingReconnect: false,
                 selectedSerial: "RFCT10ZLTAJ"
             )
+        )
+    }
+
+    func testLiveSelectedDevicePrefersRememberedWirelessTransportOverStaleUSBSerial() {
+        let record = PairedPhoneRecord(
+            id: "adb-RFCT10ZLTAJ",
+            displayName: "SM S906B",
+            lastAddress: "192.168.68.52:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let usb = AuthorizedADBDevice(
+            serial: "RFCT10ZLTAJ",
+            product: "",
+            model: "SM S906B",
+            isUSB: true
+        )
+        let wireless = AuthorizedADBDevice(
+            serial: "192.168.68.52:5555",
+            product: "g0qxxx",
+            model: "SM S906B",
+            isUSB: false
+        )
+
+        XCTAssertEqual(
+            AppModel.liveSelectedOrRememberedDevice(
+                selectedSerial: "RFCT10ZLTAJ",
+                pairedPhones: [record],
+                authorizedDevices: [usb, wireless]
+            ),
+            wireless
         )
     }
 

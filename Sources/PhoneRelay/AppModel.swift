@@ -36,6 +36,7 @@ final class AppModel: ObservableObject {
     nonisolated static let supportURL = URL(string: "https://mallenkb.github.io/phone-mirroring/support.html")!
     nonisolated static let latestReleaseURL = URL(string: "https://github.com/mallenkb/phone-mirroring/releases/latest")!
     nonisolated static let releaseMetadataURL = URL(string: "https://mallenkb.github.io/phone-mirroring/release.json")!
+    nonisolated static let mirrorScrollSpeedDefaultsKey = "MirrorBehavior.scrollSpeedPercent"
     nonisolated static var canUseUserNotifications: Bool {
         Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app"
     }
@@ -46,6 +47,15 @@ final class AppModel: ObservableObject {
 
     nonisolated static func defaultNotificationForwardingEnabled(storedValue: Any?) -> Bool {
         (storedValue as? Bool) ?? false
+    }
+
+    nonisolated static func defaultMirrorScrollSpeedPercent(storedValue: Any?) -> Int {
+        let value = (storedValue as? Int) ?? 20
+        return min(100, max(10, value))
+    }
+
+    nonisolated static func scaledMirrorScrollDelta(_ delta: CGFloat, speedPercent: Int) -> CGFloat {
+        delta * CGFloat(defaultMirrorScrollSpeedPercent(storedValue: speedPercent)) / 100
     }
 
     nonisolated static func isReleaseVersionNewer(_ latestVersion: String, than currentVersion: String) -> Bool {
@@ -110,6 +120,14 @@ final class AppModel: ObservableObject {
         (UserDefaults.standard.object(forKey: "MirrorBehavior.dragAndDropFileTransferEnabled") as? Bool) ?? true {
         didSet {
             UserDefaults.standard.set(dragAndDropFileTransferEnabled, forKey: "MirrorBehavior.dragAndDropFileTransferEnabled")
+        }
+    }
+    @Published var mirrorScrollSpeedPercent: Int =
+        AppModel.defaultMirrorScrollSpeedPercent(
+            storedValue: UserDefaults.standard.object(forKey: AppModel.mirrorScrollSpeedDefaultsKey)
+        ) {
+        didSet {
+            UserDefaults.standard.set(mirrorScrollSpeedPercent, forKey: Self.mirrorScrollSpeedDefaultsKey)
         }
     }
     /// Mirrors Android notifications into macOS Notification Center by polling
@@ -1120,13 +1138,18 @@ final class AppModel: ObservableObject {
             return
         }
 
-        if let lastPresenceAutoConnectAttemptAt,
-           Date().timeIntervalSince(lastPresenceAutoConnectAttemptAt) < 3 {
-            return
-        }
-
         let records = Self.recordsByMostRecent(pairedPhones)
         let livePhones = autoConnectablePhones(in: livePhones)
+        let liveRememberedPhone = mostRecentPairedPhone(in: livePhones)
+
+        if Self.shouldDelayRememberedAutoConnect(
+            lastAttemptAt: lastPresenceAutoConnectAttemptAt,
+            now: Date(),
+            throttle: Self.presenceAutoConnectThrottle,
+            hasLiveRememberedPhone: liveRememberedPhone != nil
+        ) {
+            return
+        }
 
         for record in records {
             if let device = Self.rememberedAuthorizedDevice(for: record, in: authorizedDevices) {
@@ -1138,7 +1161,7 @@ final class AppModel: ObservableObject {
             }
         }
 
-        if let phone = mostRecentPairedPhone(in: livePhones) {
+        if let phone = liveRememberedPhone {
             lastPresenceAutoConnectAttemptAt = Date()
             stopQRCodePairingSession()
             connectAndMirror(phone: phone)
@@ -1498,6 +1521,7 @@ final class AppModel: ObservableObject {
     /// Keep failed background reconnects quiet briefly so stale Bonjour/adb
     /// entries do not pin the UI in "Connecting" forever.
     nonisolated static let autoConnectFailureCooldown: TimeInterval = 20
+    nonisolated static let presenceAutoConnectThrottle: TimeInterval = 3
 
     nonisolated static func isAutoConnectFailureCoolingDown(
         failedAt: Date,
@@ -1505,6 +1529,16 @@ final class AppModel: ObservableObject {
         cooldown: TimeInterval = autoConnectFailureCooldown
     ) -> Bool {
         now.timeIntervalSince(failedAt) < cooldown
+    }
+
+    nonisolated static func shouldDelayRememberedAutoConnect(
+        lastAttemptAt: Date?,
+        now: Date = Date(),
+        throttle: TimeInterval = presenceAutoConnectThrottle,
+        hasLiveRememberedPhone: Bool
+    ) -> Bool {
+        guard !hasLiveRememberedPhone, let lastAttemptAt else { return false }
+        return now.timeIntervalSince(lastAttemptAt) < throttle
     }
 
     nonisolated static func shouldDisableManualUSBConnectButton(
@@ -2554,7 +2588,10 @@ final class AppModel: ObservableObject {
         if let exact = authorizedDevices.first(where: { $0.serial == selectedSerial }) {
             if exact.isUSB {
                 for record in recordsByMostRecent(pairedPhones) where
-                    record.id == selectedSerial || record.lastAddress == selectedSerial {
+                    record.id == selectedSerial
+                        || record.lastAddress == selectedSerial
+                        || record.id.localizedCaseInsensitiveContains(selectedSerial)
+                        || selectedSerial.localizedCaseInsensitiveContains(record.id) {
                     if let wireless = rememberedAuthorizedDevice(for: record, in: authorizedDevices),
                        !wireless.isUSB {
                         return wireless
@@ -2563,7 +2600,9 @@ final class AppModel: ObservableObject {
                 if let wireless = authorizedDevices.first(where: { device in
                     !device.isUSB
                         && device.model.localizedCaseInsensitiveCompare(exact.model) == .orderedSame
-                        && device.product.localizedCaseInsensitiveCompare(exact.product) == .orderedSame
+                        && (exact.product.isEmpty
+                            || device.product.isEmpty
+                            || device.product.localizedCaseInsensitiveCompare(exact.product) == .orderedSame)
                 }) {
                     return wireless
                 }

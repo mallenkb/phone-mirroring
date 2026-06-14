@@ -104,6 +104,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         arguments.contains("--launched-in-background")
     }
 
+    public func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
+        true
+    }
+
     nonisolated static func describesSamePhoneRelayApp(
         _ candidate: AppInstanceDescriptor,
         as current: AppInstanceDescriptor

@@ -78,6 +78,19 @@ final class ReleaseReadinessTests: XCTestCase {
             .appendingPathComponent("docs/support.html").path))
     }
 
+    func testXcodeProjectGeneratesDSYMsForDebuggableAppBuilds() throws {
+        let project = try String(
+            contentsOf: Self.repoRoot()
+                .appendingPathComponent("App/PhoneRelay.xcodeproj/project.pbxproj"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(project.contains("DEBUG_INFORMATION_FORMAT = \"dwarf-with-dsym\";"))
+        XCTAssertFalse(project.contains("DEBUG_INFORMATION_FORMAT = dwarf;"))
+        XCTAssertTrue(project.contains("GCC_GENERATE_DEBUGGING_SYMBOLS = YES;"))
+        XCTAssertTrue(project.contains("STRIP_INSTALLED_PRODUCT = NO;"))
+    }
+
     func testReleaseVersionComparisonHandlesTagsAndPatchOrdering() {
         XCTAssertTrue(AppModel.isReleaseVersionNewer("v0.1.2", than: "0.1.1"))
         XCTAssertTrue(AppModel.isReleaseVersionNewer("v0.1.10", than: "0.1.9"))

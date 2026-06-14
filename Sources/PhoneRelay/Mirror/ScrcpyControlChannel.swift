@@ -121,8 +121,8 @@ final class ScrcpyControlChannel {
         guard deviceWidth > 0, deviceHeight > 0 else { return }
         let x = Int32(min(1.0, max(0.0, normalized.x)) * Double(deviceWidth))
         let y = Int32(min(1.0, max(0.0, normalized.y)) * Double(deviceHeight))
-        let hScrollClamped = Float(max(-1, min(1, deltaX / 16)))
-        let vScrollClamped = Float(max(-1, min(1, deltaY / 16)))
+        let hScrollClamped = Float(max(-1, min(1, deltaX / 64)))
+        let vScrollClamped = Float(max(-1, min(1, deltaY / 64)))
         let hFixed = Int16(clamping: Int(hScrollClamped * 32767))
         let vFixed = Int16(clamping: Int(vScrollClamped * 32767))
 

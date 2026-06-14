@@ -301,6 +301,19 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
+    func testFloatingToolbarWindowCanBecomeKeyWithoutBecomingMain() {
+        let toolbar = MirrorToolbarWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 30),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+
+        XCTAssertTrue(toolbar.canBecomeKey)
+        XCTAssertFalse(toolbar.canBecomeMain)
+    }
+
+    @MainActor
     func testMirrorRenderViewLetsCommandShortcutsReachAppMenu() throws {
         let renderView = MirrorRenderView()
         var forwardedEvents = 0

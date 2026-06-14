@@ -1196,10 +1196,10 @@ private final class MirrorContentWindow: NSWindow {
 }
 
 /// Borderless child window that hosts the floating toolbar above the mirror.
-/// It never becomes key so clicking its buttons doesn't steal focus from the
-/// mirror, and it carries its own drop shadow as a detached bar.
+/// It may become key because AppKit can key child windows during ordering, but
+/// it never becomes main so the mirror window remains the primary document.
 final class MirrorToolbarWindow: NSWindow {
-    override var canBecomeKey: Bool { false }
+    override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 }
 

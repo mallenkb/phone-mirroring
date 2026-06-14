@@ -366,9 +366,16 @@ final class MirrorSession {
             break // not a touch event on Android; ignore
         case .scroll:
             recordMirrorActivity()
+            let scrollSpeedPercent = model?.mirrorScrollSpeedPercent ?? 35
             controlChannel.sendScroll(normalized: event.normalized,
-                                      deltaX: event.scrollDX,
-                                      deltaY: event.scrollDY)
+                                      deltaX: AppModel.scaledMirrorScrollDelta(
+                                        event.scrollDX,
+                                        speedPercent: scrollSpeedPercent
+                                      ),
+                                      deltaY: AppModel.scaledMirrorScrollDelta(
+                                        event.scrollDY,
+                                        speedPercent: scrollSpeedPercent
+                                      ))
         }
     }
 

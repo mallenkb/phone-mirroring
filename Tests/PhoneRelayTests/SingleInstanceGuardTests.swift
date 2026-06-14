@@ -5,6 +5,13 @@ import XCTest
 /// the newest copy yields) and the connection-window presentation policy
 /// (automatic reconnect cycles must not steal focus from other apps).
 final class SingleInstanceGuardTests: XCTestCase {
+    @MainActor
+    func testAppDelegateExplicitlySupportsSecureRestorableState() {
+        let delegate = AppDelegate()
+
+        XCTAssertTrue(delegate.applicationSupportsSecureRestorableState(NSApp))
+    }
+
     private func instance(
         pid: Int32,
         bundleID: String? = "com.mallenkb.PhoneRelay",

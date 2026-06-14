@@ -5,8 +5,6 @@ import Foundation
 struct PairedPhoneStore {
     static let defaultsKey = "AndroidMirror.PairedPhones.v1"
     static let compatibilitySuites = [
-        "com.mallenkb.PhoneRelay",
-        "com.mallenkb.PhoneRelay",
         "com.mallenkb.AndroidMirrorScrcpy",
         "org.example.PhoneRelay",
         "org.example.AndroidMirrorScrcpy",

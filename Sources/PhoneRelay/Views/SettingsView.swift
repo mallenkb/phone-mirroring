@@ -143,6 +143,8 @@ struct SettingsView: View {
                 }
             }
 
+            settingsScrollSpeedRow
+
             settingsToggleRow(
                 icon: "display",
                 isOn: $model.mirrorScreenOffAfterThirtySecondsEnabled,
@@ -431,6 +433,36 @@ struct SettingsView: View {
             .frame(width: 116, alignment: .leading)
         }
         .frame(width: 140, alignment: .leading)
+    }
+
+    private var settingsScrollSpeedRow: some View {
+        HStack(alignment: .top, spacing: 14) {
+            settingsLeadingIcon("scroll", isActive: true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Mirror scroll speed")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Applies only to mouse wheel and trackpad scrolling inside the mirrored phone window.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                mirrorScrollSpeedPicker
+            }
+        }
+    }
+
+    private var mirrorScrollSpeedPicker: some View {
+        Picker("", selection: $model.mirrorScrollSpeedPercent) {
+            Text("Slow").tag(10)
+            Text("Normal").tag(20)
+            Text("Fast").tag(35)
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .frame(width: 260, alignment: .leading)
     }
 
     private var emptyState: some View {
