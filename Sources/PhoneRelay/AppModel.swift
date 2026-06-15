@@ -712,6 +712,16 @@ final class AppModel: ObservableObject {
     @Published private(set) var isAwaitingReconnect = false
     /// A session that dies sooner than this counts as a "quick" failure.
     static let quickMirrorFailureThreshold: TimeInterval = 12
+
+    /// Whether a mirror session lived long enough to count as a genuinely stable
+    /// connection (rather than a load-then-bail). Used to decide when a later
+    /// drop should read "Reconnecting" vs the still-establishing "Connecting".
+    nonisolated static func isStableMirrorSession(
+        lived: TimeInterval,
+        threshold: TimeInterval = quickMirrorFailureThreshold
+    ) -> Bool {
+        lived >= threshold
+    }
     nonisolated static let disconnectRecoveryGracePeriod: TimeInterval = 5
     nonisolated static let wirelessHandoffReadinessAttempts = 8
     nonisolated static let wirelessHandoffMaxDuration: TimeInterval = 3
@@ -724,9 +734,10 @@ final class AppModel: ObservableObject {
     nonisolated static let wirelessHandoffPreflightTimeoutNanoseconds: UInt64 = 300_000_000
     nonisolated static let adbDeviceListTimeout: TimeInterval = 2
     /// How long after launch the status indicator keeps reading "Connecting"
-    /// while we hunt for the last-known device. Sized to the 3–5s window the
-    /// reconnect attempts run in.
-    nonisolated static let launchReconnectWindow: TimeInterval = 5
+    /// while we hunt for the last-known device. Sized to cover the aggressive
+    /// auto-connect probe window so the indicator never lapses to "Offline"
+    /// before discovery finishes.
+    nonisolated static let launchReconnectWindow: TimeInterval = 6
 
     nonisolated static func remainingWirelessHandoffBudget(startedAt: Date, now: Date = Date()) -> TimeInterval {
         max(0, wirelessHandoffMaxDuration - now.timeIntervalSince(startedAt))
@@ -1299,9 +1310,12 @@ final class AppModel: ObservableObject {
         isAutoConnecting = true
         let adb = self.adb
         Task { [weak self] in
-            for attempt in 0..<6 {
+            // Probe ~2.5× more often than a 1s loop so a plugged-in or awake
+            // phone (USB or Wi-Fi) is found within a beat of launch. The window
+            // still spans ~5s (12 × ~0.4s) and is covered by launchReconnectWindow.
+            for attempt in 0..<12 {
                 if attempt > 0 {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    try? await Task.sleep(nanoseconds: 400_000_000)
                 }
                 guard let self else { return }
                 guard !self.explicitDeviceSetupRequired else { return }
@@ -3942,7 +3956,10 @@ final class AppModel: ObservableObject {
         }
         session.onReadyToDisplay = { [weak self, weak session] in
             guard let self, let session, self.mirrorSession === session else { return }
-            self.hasCompletedSuccessfulMirrorConnection = true
+            // Don't mark the connection "completed" on the first frame alone: a
+            // load-then-bail (e.g. the S906B crash) reaches one frame then dies,
+            // and that must not flip later attempts to "Reconnecting". The flag
+            // is set in noteMirrorSessionEnded only once a session proves stable.
             self.stopDisconnectRecovery()
             self.activeError = nil
             self.hideConnectionWindowForNativeMirror()
@@ -4048,8 +4065,12 @@ final class AppModel: ObservableObject {
     /// arm a growing reconnect backoff.
     private func noteMirrorSessionEnded() {
         let lived = lastMirrorStartAt.map { Date().timeIntervalSince($0) } ?? .greatestFiniteMagnitude
-        guard lived < Self.quickMirrorFailureThreshold else {
-            // Stable session — reset the reconnect backoff.
+        guard !Self.isStableMirrorSession(lived: lived) else {
+            // Stable session — reset the reconnect backoff, and remember that a
+            // real connection was achieved so a *subsequent* drop reads
+            // "Reconnecting" (set here, before startDisconnectRecoveryFallback,
+            // so the recovery surface shows the right word).
+            hasCompletedSuccessfulMirrorConnection = true
             consecutiveQuickMirrorFailures = 0
             autoMirrorBackoffUntil = nil
             return

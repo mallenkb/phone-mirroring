@@ -886,8 +886,23 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         XCTAssertFalse(AppModel.hasUnauthorizedUSBDevice(in: output))
     }
 
-    func testLaunchReconnectWindowMatchesThreeToFiveSecondTarget() {
-        XCTAssertGreaterThanOrEqual(AppModel.launchReconnectWindow, 3)
-        XCTAssertLessThanOrEqual(AppModel.launchReconnectWindow, 5)
+    func testLaunchReconnectWindowCoversAggressiveDiscoveryProbe() {
+        // The auto-connect loop probes ~12 × 0.4s ≈ 5s; the indicator window
+        // must cover it so "Connecting" never lapses to "Offline" mid-discovery.
+        XCTAssertGreaterThanOrEqual(AppModel.launchReconnectWindow, 5)
+        XCTAssertLessThanOrEqual(AppModel.launchReconnectWindow, 8)
+    }
+
+    func testQuickFailureIsNotAStableConnection() {
+        // A load-then-bail (e.g. the S906B crash) lives well under the threshold,
+        // so it must not count as a completed connection — later attempts keep
+        // reading "Connecting", never "Reconnecting".
+        XCTAssertFalse(AppModel.isStableMirrorSession(lived: 0.5))
+        XCTAssertFalse(AppModel.isStableMirrorSession(lived: 11.9))
+    }
+
+    func testSessionPastThresholdCountsAsStableConnection() {
+        XCTAssertTrue(AppModel.isStableMirrorSession(lived: AppModel.quickMirrorFailureThreshold))
+        XCTAssertTrue(AppModel.isStableMirrorSession(lived: 60))
     }
 }
