@@ -748,6 +748,61 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
+    func testFirstLaunchRecoveryUsesConnectingCopyUntilFirstSuccessfulMirror() {
+        XCTAssertEqual(
+            AppModel.connectionLoadingStatusText(
+                hasCompletedSuccessfulMirrorConnection: false,
+                isRecoveringConnection: true,
+                isAwaitingReconnect: true
+            ),
+            "Connecting to your"
+        )
+
+        XCTAssertEqual(
+            AppModel.connectionLoadingStatusText(
+                hasCompletedSuccessfulMirrorConnection: true,
+                isRecoveringConnection: true,
+                isAwaitingReconnect: false
+            ),
+            "Reconnecting to your"
+        )
+    }
+
+    func testDeviceWatcherPollsAggressivelyWhileFindingSavedDevice() {
+        XCTAssertEqual(
+            AppModel.deviceWatcherPollInterval(
+                isPairing: false,
+                isMirroring: false,
+                hasAuthorizedDevices: false,
+                hasSavedDevices: true,
+                isActivelyConnecting: true
+            ),
+            500_000_000
+        )
+
+        XCTAssertEqual(
+            AppModel.deviceWatcherPollInterval(
+                isPairing: false,
+                isMirroring: false,
+                hasAuthorizedDevices: true,
+                hasSavedDevices: true,
+                isActivelyConnecting: true
+            ),
+            500_000_000
+        )
+
+        XCTAssertEqual(
+            AppModel.deviceWatcherPollInterval(
+                isPairing: false,
+                isMirroring: true,
+                hasAuthorizedDevices: true,
+                hasSavedDevices: true,
+                isActivelyConnecting: false
+            ),
+            2_000_000_000
+        )
+    }
+
     func testMirrorLaunchKeepsConnectionWindowVisibleUntilReadyToDisplay() {
         XCTAssertTrue(
             AppModel.shouldKeepConnectionWindowVisibleDuringMirrorLaunch(

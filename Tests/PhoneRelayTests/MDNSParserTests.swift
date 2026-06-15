@@ -2,6 +2,10 @@ import XCTest
 @testable import PhoneRelay
 
 final class MDNSParserTests: XCTestCase {
+    func testDiscoveryPollsEverySecondForFastWiFiStartup() {
+        XCTAssertEqual(DiscoveryService.pollIntervalNanoseconds, 1_000_000_000)
+    }
+
     @MainActor
     func testDiscoveryPollingDoesNotBlockMainActor() async {
         let pollStarted = LockedFlag()

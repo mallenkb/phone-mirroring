@@ -54,17 +54,17 @@ struct FigmaMirrorExperienceView: View {
     @ViewBuilder
     private var designSurface: some View {
         FigmaPhoneFrame {
-            if model.shouldShowReconnectLoadingSurface {
-                reconnectingContent
+            if model.shouldShowConnectionLoadingSurface {
+                connectionLoadingContent
             } else {
                 onboardingContent
             }
         }
     }
 
-    private var reconnectingContent: some View {
+    private var connectionLoadingContent: some View {
         MirrorLoadingSurface(
-            statusText: "Reconnecting to your",
+            statusText: model.connectionLoadingStatusText,
             deviceName: model.mirrorLoadingDeviceTitle,
             cornerRadius: MirrorContentWindowController.onboardingCornerRadius(),
             repeatsProgress: true

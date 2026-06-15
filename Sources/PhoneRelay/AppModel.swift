@@ -682,6 +682,7 @@ final class AppModel: ObservableObject {
     /// so opening the app reads as "finding your last device" rather than
     /// "Offline" while the first reconnect attempts run.
     private var launchReconnectDeadline: Date?
+    private var hasCompletedSuccessfulMirrorConnection = false
     private var deviceWatcherTask: Task<Void, Never>?
     private var qrPairingTask: Task<Void, Never>?
     private var usbConnectTask: Task<Void, Never>?
@@ -775,6 +776,18 @@ final class AppModel: ObservableObject {
             isOnline: isSelectedDeviceOnline,
             hasSavedDevice: !pairedPhones.isEmpty,
             isActivelyConnecting: isActivelyConnecting
+        )
+    }
+
+    var shouldShowConnectionLoadingSurface: Bool {
+        isActivelyConnecting && !isMirroring
+    }
+
+    var connectionLoadingStatusText: String {
+        Self.connectionLoadingStatusText(
+            hasCompletedSuccessfulMirrorConnection: hasCompletedSuccessfulMirrorConnection,
+            isRecoveringConnection: isRecoveringConnection,
+            isAwaitingReconnect: isAwaitingReconnect
         )
     }
 
@@ -1764,7 +1777,13 @@ final class AppModel: ObservableObject {
                         self.lastUSBHandoffSerial = usbDevice.serial
                         await self.mirrorAuthorizedDevicePreferringWireless(usbDevice)
                         self.refreshAutoConnectingState(authorized: authorized)
-                        let interval: UInt64 = self.isMirroring ? 2_000_000_000 : 1_500_000_000
+                        let interval = Self.deviceWatcherPollInterval(
+                            isPairing: self.isPairing,
+                            isMirroring: self.isMirroring,
+                            hasAuthorizedDevices: !authorized.isEmpty,
+                            hasSavedDevices: !self.pairedPhones.isEmpty,
+                            isActivelyConnecting: self.isActivelyConnecting
+                        )
                         try? await Task.sleep(nanoseconds: interval)
                         continue
                     } else if authorized.first(where: \.isUSB) == nil {
@@ -1796,7 +1815,13 @@ final class AppModel: ObservableObject {
                     }
                     await self.mirrorAuthorizedDevicePreferringWireless(liveDevice)
                     self.refreshAutoConnectingState(authorized: authorized)
-                    let interval: UInt64 = self.isMirroring ? 2_000_000_000 : 1_500_000_000
+                    let interval = Self.deviceWatcherPollInterval(
+                        isPairing: self.isPairing,
+                        isMirroring: self.isMirroring,
+                        hasAuthorizedDevices: !authorized.isEmpty,
+                        hasSavedDevices: !self.pairedPhones.isEmpty,
+                        isActivelyConnecting: self.isActivelyConnecting
+                    )
                     try? await Task.sleep(nanoseconds: interval)
                     continue
                 }
@@ -1815,20 +1840,13 @@ final class AppModel: ObservableObject {
                 }
                 self.refreshAutoConnectingState(authorized: authorized)
 
-                let interval: UInt64
-                if self.isPairing {
-                    interval = 1_000_000_000          // mid-handoff: stay responsive
-                } else if self.isMirroring {
-                    interval = 2_000_000_000          // only watching for a disconnect
-                } else if authorized.isEmpty {
-                    // Nothing plugged in. If a saved phone could reconnect, keep
-                    // watching closely so it's caught fast; otherwise ease off.
-                    interval = self.pairedPhones.isEmpty
-                        ? 3_000_000_000
-                        : 1_200_000_000
-                } else {
-                    interval = 1_500_000_000          // connected but idle
-                }
+                let interval = Self.deviceWatcherPollInterval(
+                    isPairing: self.isPairing,
+                    isMirroring: self.isMirroring,
+                    hasAuthorizedDevices: !authorized.isEmpty,
+                    hasSavedDevices: !self.pairedPhones.isEmpty,
+                    isActivelyConnecting: self.isActivelyConnecting
+                )
                 try? await Task.sleep(nanoseconds: interval)
             }
         }
@@ -1915,11 +1933,45 @@ final class AppModel: ObservableObject {
         isRecoveringConnection || isAwaitingReconnect
     }
 
+    nonisolated static func connectionLoadingStatusText(
+        hasCompletedSuccessfulMirrorConnection: Bool,
+        isRecoveringConnection: Bool,
+        isAwaitingReconnect: Bool
+    ) -> String {
+        if hasCompletedSuccessfulMirrorConnection
+            && (isRecoveringConnection || isAwaitingReconnect) {
+            return "Reconnecting to your"
+        }
+        return "Connecting to your"
+    }
+
     nonisolated static func shouldKeepConnectionWindowVisibleDuringMirrorLaunch(
         isRecoveringConnection: Bool,
         isAwaitingReconnect: Bool
     ) -> Bool {
         true
+    }
+
+    nonisolated static func deviceWatcherPollInterval(
+        isPairing: Bool,
+        isMirroring: Bool,
+        hasAuthorizedDevices: Bool,
+        hasSavedDevices: Bool,
+        isActivelyConnecting: Bool
+    ) -> UInt64 {
+        if isActivelyConnecting && !isMirroring {
+            return 500_000_000
+        }
+        if isPairing {
+            return 750_000_000
+        }
+        if isMirroring {
+            return 2_000_000_000
+        }
+        if !hasAuthorizedDevices {
+            return hasSavedDevices ? 500_000_000 : 2_000_000_000
+        }
+        return 1_000_000_000
     }
 
     /// Keep failed background reconnects quiet briefly so stale Bonjour/adb
@@ -3890,6 +3942,7 @@ final class AppModel: ObservableObject {
         }
         session.onReadyToDisplay = { [weak self, weak session] in
             guard let self, let session, self.mirrorSession === session else { return }
+            self.hasCompletedSuccessfulMirrorConnection = true
             self.stopDisconnectRecovery()
             self.activeError = nil
             self.hideConnectionWindowForNativeMirror()
