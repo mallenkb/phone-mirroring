@@ -2,6 +2,25 @@ import XCTest
 @testable import PhoneRelay
 
 final class SettingsAboutTabTests: XCTestCase {
+    func testKeyboardShortcutsCatalogDocumentsPhoneEditingAndNavigationKeys() {
+        let shortcuts = KeyboardShortcutsCatalog.groups
+            .flatMap(\.items)
+            .reduce(into: [String: String]()) { result, item in
+                result[item.keys] = item.action
+            }
+
+        XCTAssertEqual(shortcuts["⌘A"], "Select all")
+        XCTAssertEqual(shortcuts["⌘C"], "Copy (syncs to Mac)")
+        XCTAssertEqual(shortcuts["⌘V"], "Paste from Mac")
+        XCTAssertEqual(shortcuts["Return / Enter"], "Submit or add a line, depending on the app")
+        XCTAssertEqual(shortcuts["⌘Return"], "Send in apps that use Ctrl+Enter")
+        XCTAssertEqual(shortcuts["Tab"], "Move focus on the phone")
+        XCTAssertEqual(shortcuts["Delete"], "Delete backward")
+        XCTAssertEqual(shortcuts["Forward Delete"], "Delete forward")
+        XCTAssertEqual(shortcuts["Arrow keys"], "Move the cursor or selection")
+        XCTAssertEqual(shortcuts["Esc"], "Back")
+    }
+
     func testSettingsViewDeclaresAboutTabWithReviewAndLegalLinks() throws {
         let source = try String(
             contentsOf: Self.repoRoot()

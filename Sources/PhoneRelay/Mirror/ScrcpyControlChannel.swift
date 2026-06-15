@@ -46,7 +46,10 @@ final class ScrcpyControlChannel {
         case home = 3
         case back = 4
         case a = 29
+        case c = 31
+        case v = 50
         case x = 52
+        case z = 54
         case tab = 61
         case enter = 66
         case delete = 67
@@ -58,6 +61,7 @@ final class ScrcpyControlChannel {
         case dpadLeft = 21
         case dpadRight = 22
         case forwardDelete = 112
+        case ctrlLeft = 113
     }
 
     static let pointerIDMouse: UInt64 = 0xFFFF_FFFF_FFFF_FFFF
@@ -143,6 +147,13 @@ final class ScrcpyControlChannel {
         if action == .down {
             sendKeycode(action: .up, keycode: key.rawValue, metastate: metastate)
         }
+    }
+
+    func sendControlKeyEvent(_ key: AndroidKey) {
+        sendKeycode(action: .down, keycode: AndroidKey.ctrlLeft.rawValue, metastate: Self.metaCtrlOn)
+        sendKeycode(action: .down, keycode: key.rawValue, metastate: Self.metaCtrlOn)
+        sendKeycode(action: .up, keycode: key.rawValue, metastate: Self.metaCtrlOn)
+        sendKeycode(action: .up, keycode: AndroidKey.ctrlLeft.rawValue, metastate: 0)
     }
 
     func sendDisplayPowerMode(_ mode: DisplayPowerMode) {
@@ -234,7 +245,7 @@ final class ScrcpyControlChannel {
         buf.append(MessageType.injectKeycode.rawValue)
         buf.append(action.rawValue)
         Self.appendUInt32BE(&buf, UInt32(bitPattern: key.rawValue))
-        Self.appendUInt32BE(&buf, 1) // repeat
+        Self.appendUInt32BE(&buf, 0) // repeat
         Self.appendUInt32BE(&buf, metastate)
         return buf
     }

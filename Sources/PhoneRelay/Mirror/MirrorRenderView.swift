@@ -239,10 +239,12 @@ final class MirrorRenderView: NSView {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) {
             // ⌘V pastes the Mac clipboard into the phone; ⌘L toggles the phone
-            // display; editing shortcuts map to Android Ctrl equivalents; let every other
-            // command shortcut (⌘Q, app menu, etc.) bubble up untouched.
+            // display; editing shortcuts map to Android Ctrl equivalents; let
+            // every other command shortcut (⌘Q, app menu, etc.) bubble up.
             if flags == .command,
-               ["a", "l", "v", "x"].contains(event.charactersIgnoringModifiers?.lowercased()) {
+               (["a", "c", "l", "v", "x", "z"].contains(event.charactersIgnoringModifiers?.lowercased())
+                || event.keyCode == 0x24
+                || event.keyCode == 0x4C) {
                 onKeyEvent?(event)
                 return true
             }

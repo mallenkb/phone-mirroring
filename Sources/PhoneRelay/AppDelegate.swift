@@ -43,6 +43,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
         if AppModel.canUseUserNotifications {
             UNUserNotificationCenter.current().delegate = self
+            registerForwardedNotificationCategories()
+            // Vision's text models load lazily and the first request costs a few
+            // seconds; warm them up off the launch path so the first banner
+            // click/reply stays snappy.
+            DispatchQueue.global(qos: .utility).async {
+                NotificationTapService.warmUpTextRecognition()
+            }
         } else {
             Logger.log("Skipping notification delegate registration because this process is not running from an app bundle.")
             applyDockIconForUnbundledRun()
@@ -283,6 +290,37 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         NSApp.applicationIconImage = icon
     }
 
+    /// Registers the two banner categories: every forwarded notification offers
+    /// "Open" (tap-through to the phone), and message-style ones additionally
+    /// offer an inline "Reply" text field.
+    private func registerForwardedNotificationCategories() {
+        let openAction = UNNotificationAction(
+            identifier: NotificationForwarder.Action.open,
+            title: "Open",
+            options: [.foreground]
+        )
+        let replyAction = UNTextInputNotificationAction(
+            identifier: NotificationForwarder.Action.reply,
+            title: "Reply",
+            options: [],
+            textInputButtonTitle: "Send",
+            textInputPlaceholder: "Reply"
+        )
+        let standard = UNNotificationCategory(
+            identifier: NotificationForwarder.Category.standard,
+            actions: [openAction],
+            intentIdentifiers: [],
+            options: []
+        )
+        let message = UNNotificationCategory(
+            identifier: NotificationForwarder.Category.message,
+            actions: [replyAction, openAction],
+            intentIdentifiers: [],
+            options: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([standard, message])
+    }
+
     public nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
@@ -294,11 +332,68 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
-
-        await MainActor.run {
-            NSApp.activate(ignoringOtherApps: true)
+        let userInfo = response.notification.request.content.userInfo
+        guard let package = userInfo[NotificationForwarder.UserInfoKey.sourcePackage] as? String else {
+            // Not one of our forwarded notifications — just bring the app forward.
+            await MainActor.run { NSApp.activate(ignoringOtherApps: true) }
+            return
         }
+        let serial = userInfo[NotificationForwarder.UserInfoKey.deviceSerial] as? String
+        let notificationKey = userInfo[NotificationForwarder.UserInfoKey.notificationKey] as? String
+        let title = userInfo[NotificationForwarder.UserInfoKey.notificationTitle] as? String
+        let text = userInfo[NotificationForwarder.UserInfoKey.notificationText] as? String
+
+        if response.actionIdentifier == NotificationForwarder.Action.reply,
+           let textResponse = response as? UNTextInputNotificationResponse {
+            let reply = textResponse.userText
+            await MainActor.run {
+                self.model.replyToForwardedNotification(
+                    package: package,
+                    serial: serial,
+                    notificationKey: notificationKey,
+                    title: title,
+                    text: text,
+                    reply: reply
+                )
+            }
+            return
+        }
+
+        switch response.actionIdentifier {
+        case UNNotificationDefaultActionIdentifier, NotificationForwarder.Action.open:
+            await MainActor.run {
+                self.model.openSourceAppFromForwardedNotification(
+                    package: package,
+                    serial: serial,
+                    notificationKey: notificationKey,
+                    title: title,
+                    text: text
+                )
+                self.raisePrimaryWindow()
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        default:
+            break
+        }
+    }
+
+    /// Brings the window the user thinks of as "the app" (the mirror, or the
+    /// connection window) to the front, deminiaturizing it if needed. Shared
+    /// shape with `applicationShouldHandleReopen`; skips the floating toolbar
+    /// child, which can't be main.
+    private func raisePrimaryWindow() {
+        func isPrimary(_ candidate: NSWindow) -> Bool {
+            candidate.canBecomeMain && !(candidate is MirrorToolbarWindow)
+        }
+        let primaries = NSApp.windows.filter(isPrimary)
+        let target = primaries.first(where: { $0.isMiniaturized })
+            ?? NSApp.orderedWindows.first(where: { isPrimary($0) && $0.isVisible })
+            ?? primaries.first
+        guard let target else { return }
+        if target.isMiniaturized {
+            target.deminiaturize(nil)
+        }
+        target.makeKeyAndOrderFront(nil)
     }
 
     public func applicationWillTerminate(_ notification: Notification) {

@@ -107,7 +107,7 @@ final class MirrorWindowChromeTests: XCTestCase {
             metastate: ScrcpyControlChannel.metaCtrlOn
         )
 
-        XCTAssertEqual(Array(message), [0, 0, 0, 0, 0, 29, 0, 0, 0, 1, 0, 0, 16, 0])
+        XCTAssertEqual(Array(message), [0, 0, 0, 0, 0, 29, 0, 0, 0, 0, 0, 0, 16, 0])
     }
 
     func testScrcpyKeycodeMessageEncodesControlXForCut() {
@@ -117,7 +117,33 @@ final class MirrorWindowChromeTests: XCTestCase {
             metastate: ScrcpyControlChannel.metaCtrlOn
         )
 
-        XCTAssertEqual(Array(message), [0, 0, 0, 0, 0, 52, 0, 0, 0, 1, 0, 0, 16, 0])
+        XCTAssertEqual(Array(message), [0, 0, 0, 0, 0, 52, 0, 0, 0, 0, 0, 0, 16, 0])
+    }
+
+    func testScrcpyKeycodeMessageEncodesControlVForPaste() {
+        let message = ScrcpyControlChannel.keycodeMessage(
+            action: .down,
+            key: .v,
+            metastate: ScrcpyControlChannel.metaCtrlOn
+        )
+
+        XCTAssertEqual(Array(message), [0, 0, 0, 0, 0, 50, 0, 0, 0, 0, 0, 0, 16, 0])
+    }
+
+    func testScrcpyKeycodeMessageEncodesPhysicalControlModifier() {
+        let down = ScrcpyControlChannel.keycodeMessage(
+            action: .down,
+            key: .ctrlLeft,
+            metastate: ScrcpyControlChannel.metaCtrlOn
+        )
+        let up = ScrcpyControlChannel.keycodeMessage(
+            action: .up,
+            key: .ctrlLeft,
+            metastate: 0
+        )
+
+        XCTAssertEqual(Array(down), [0, 0, 0, 0, 0, 113, 0, 0, 0, 0, 0, 0, 16, 0])
+        XCTAssertEqual(Array(up), [0, 1, 0, 0, 0, 113, 0, 0, 0, 0, 0, 0, 0, 0])
     }
 
     @MainActor
@@ -446,6 +472,53 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(renderView.performKeyEquivalent(with: commandX))
         XCTAssertEqual(forwardedEvents, 1)
         XCTAssertEqual(MirrorSession.androidCommandShortcutKey(for: commandX), .x)
+    }
+
+    @MainActor
+    func testMirrorRenderViewForwardsCommandVPasteToPhone() throws {
+        let renderView = MirrorRenderView()
+        var forwardedEvents = 0
+        renderView.onKeyEvent = { _ in forwardedEvents += 1 }
+
+        let commandV = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .command,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "v",
+            charactersIgnoringModifiers: "v",
+            isARepeat: false,
+            keyCode: 9
+        ))
+
+        XCTAssertTrue(renderView.performKeyEquivalent(with: commandV))
+        XCTAssertEqual(forwardedEvents, 1)
+    }
+
+    @MainActor
+    func testMirrorRenderViewForwardsCommandEnterToPhone() throws {
+        let renderView = MirrorRenderView()
+        var forwardedEvents = 0
+        renderView.onKeyEvent = { _ in forwardedEvents += 1 }
+
+        let commandEnter = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .command,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "\r",
+            charactersIgnoringModifiers: "\r",
+            isARepeat: false,
+            keyCode: 0x24
+        ))
+
+        XCTAssertTrue(renderView.performKeyEquivalent(with: commandEnter))
+        XCTAssertEqual(forwardedEvents, 1)
+        XCTAssertTrue(MirrorSession.isEnterKey(commandEnter))
     }
 
     @MainActor
@@ -858,12 +931,12 @@ final class MirrorWindowChromeTests: XCTestCase {
 
         window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: true, animate: false)
         controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
-        XCTAssertEqual(chromeBar.horizontalPaddingForTesting, 5, accuracy: 0.001)
+        XCTAssertEqual(chromeBar.horizontalPaddingForTesting, 4, accuracy: 0.001)
         XCTAssertEqual(chromeBar.trafficLightLeadingPaddingForTesting, 12, accuracy: 0.001)
         XCTAssertEqual(chromeBar.titleLeadingAfterTrafficLightsForTesting, 12, accuracy: 0.001)
         XCTAssertEqual(chromeBar.titleLineBreakModeForTesting, .byTruncatingTail)
         XCTAssertEqual(chromeBar.titleMaximumNumberOfLinesForTesting, 1)
-        XCTAssertEqual(chromeBar.trailingActionsPaddingForTesting, 5, accuracy: 0.001)
+        XCTAssertEqual(chromeBar.trailingActionsPaddingForTesting, 4, accuracy: 0.001)
         XCTAssertEqual(chromeBar.trailingActionsSpacingForTesting, 0, accuracy: 0.001)
         XCTAssertEqual(MirrorChromeOutlineButton.touchWidth, 34, accuracy: 0.001)
         XCTAssertEqual(MirrorChromeOutlineButton.touchHeight, 30, accuracy: 0.001)
@@ -872,13 +945,13 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertEqual(chromeBar.recentAppsIconNameForTesting, "rectangle.stack.fill")
         XCTAssertEqual(
             chromeBar.rightActionHoverCornerRadiiForTesting,
-            [6, 6, 6],
-            "All right-side action hovers should use the same compact rounded rectangle treatment."
+            [6, 6, 18],
+            "The rightmost action hover should use a full trailing pill cap."
         )
         XCTAssertEqual(
             chromeBar.rightActionHoverLeadingCornerRadiiForTesting.map { $0 ?? MirrorChromeOutlineButton.defaultHoverCornerRadius },
             [6, 6, 6],
-            "Every action hover should use the standard icon hover radius on both sides."
+            "The action hovers should keep the standard compact leading radius between adjacent controls."
         )
         XCTAssertEqual(
             chromeBar.rightActionHoverHeightsForTesting,
@@ -902,12 +975,12 @@ final class MirrorWindowChromeTests: XCTestCase {
 
         window.setFrame(NSRect(origin: window.frame.origin, size: window.maxSize), display: true, animate: false)
         controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
-        XCTAssertEqual(chromeBar.horizontalPaddingForTesting, 5, accuracy: 0.001)
+        XCTAssertEqual(chromeBar.horizontalPaddingForTesting, 4, accuracy: 0.001)
         XCTAssertEqual(chromeBar.trafficLightLeadingPaddingForTesting, 12, accuracy: 0.001)
         XCTAssertEqual(chromeBar.titleLeadingAfterTrafficLightsForTesting, 12, accuracy: 0.001)
         XCTAssertEqual(chromeBar.titleLineBreakModeForTesting, .byTruncatingTail)
         XCTAssertEqual(chromeBar.titleMaximumNumberOfLinesForTesting, 1)
-        XCTAssertEqual(chromeBar.trailingActionsPaddingForTesting, 5, accuracy: 0.001)
+        XCTAssertEqual(chromeBar.trailingActionsPaddingForTesting, 4, accuracy: 0.001)
         XCTAssertEqual(chromeBar.trailingActionsSpacingForTesting, 0, accuracy: 0.001)
     }
 
@@ -924,6 +997,23 @@ final class MirrorWindowChromeTests: XCTestCase {
             6,
             "Keep visible color padding around each hover glyph inside the traffic-light dot."
         )
+    }
+
+    @MainActor
+    func testTrafficLightHoverGlyphDoesNotStealButtonHitTesting() {
+        let button = MirrorTrafficLightButton(kind: .close)
+        button.frame = NSRect(
+            x: 0,
+            y: 0,
+            width: MirrorTrafficLightButton.dotDiameter,
+            height: MirrorTrafficLightButton.dotDiameter
+        )
+        button.layoutSubtreeIfNeeded()
+        button.setSymbolVisible(true)
+
+        let hitView = button.hitTest(NSPoint(x: button.bounds.midX, y: button.bounds.midY))
+
+        XCTAssertTrue(hitView === button, "The decorative hover glyph must not intercept close/minimize/zoom clicks.")
     }
 
     @MainActor

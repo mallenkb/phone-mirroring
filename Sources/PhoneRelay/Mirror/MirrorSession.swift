@@ -399,6 +399,13 @@ final class MirrorSession {
             return
         }
 
+        if event.type == .keyDown,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           Self.isEnterKey(event) {
+            controlChannel.sendControlKeyEvent(.enter)
+            return
+        }
+
         // ⌘V: push the current Mac clipboard and ask the phone to paste it into
         // the focused field. Handled before key mapping so it can't be typed.
         if event.type == .keyDown,
@@ -406,11 +413,12 @@ final class MirrorSession {
            event.charactersIgnoringModifiers?.lowercased() == "v" {
             guard model?.clipboardSyncEnabled ?? true else { return }
             clipboardBridge?.pasteToDevice()
+            controlChannel.sendControlKeyEvent(.v)
             return
         }
 
         if let shortcutKey = Self.androidCommandShortcutKey(for: event) {
-            controlChannel.sendKeyEvent(shortcutKey, metastate: ScrcpyControlChannel.metaCtrlOn)
+            controlChannel.sendControlKeyEvent(shortcutKey)
             return
         }
 
@@ -600,6 +608,10 @@ final class MirrorSession {
         }
     }
 
+    static func isEnterKey(_ event: NSEvent) -> Bool {
+        event.keyCode == 0x24 || event.keyCode == 0x4C
+    }
+
     static func isVolumeKeyEvent(_ event: NSEvent) -> Bool {
         switch androidKey(for: event) {
         case .volumeUp, .volumeDown, .volumeMute:
@@ -627,7 +639,9 @@ final class MirrorSession {
 
         switch key {
         case "a": return .a
+        case "c": return .c
         case "x": return .x
+        case "z": return .z
         default: return nil
         }
     }

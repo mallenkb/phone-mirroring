@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Intents
 import UserNotifications
 
 /// Forwards Android notifications into the macOS Notification Center without any
@@ -17,6 +18,29 @@ import UserNotifications
 /// re-read from the model every cycle).
 @MainActor
 final class NotificationForwarder {
+    /// Keys stashed in a banner's `userInfo` so the click/reply handler can act
+    /// on the originating notification (open it, or reply to it) on the phone.
+    enum UserInfoKey {
+        static let sourcePackage = "phoneRelay.sourcePackage"
+        static let deviceSerial = "phoneRelay.deviceSerial"
+        static let notificationKey = "phoneRelay.notificationKey"
+        static let notificationTitle = "phoneRelay.notificationTitle"
+        static let notificationText = "phoneRelay.notificationText"
+    }
+
+    /// `UNNotificationCategory` identifiers chosen per entry: message-style
+    /// notifications get the inline Reply action, everything else just Open.
+    enum Category {
+        static let standard = "phoneRelay.standard"
+        static let message = "phoneRelay.message"
+    }
+
+    /// `UNNotificationAction` identifiers wired to the categories above.
+    enum Action {
+        static let open = "phoneRelay.open"
+        static let reply = "phoneRelay.reply"
+    }
+
     /// One active Android notification, distilled from the dumpsys text dump.
     struct Entry: Equatable {
         /// Stable StatusBarNotification key, e.g. `0|com.foo|7|tag|10337`.
@@ -25,6 +49,10 @@ final class NotificationForwarder {
         var title: String
         var text: String
         var flags: Int
+        /// `Notification.category`, e.g. `msg` for a chat message.
+        var category: String = ""
+        /// `android.template`, e.g. `android.app.Notification$MessagingStyle`.
+        var template: String = ""
 
         /// Identity used for "have I already shown this?". Includes title/text so
         /// a re-posted notification with new content (same key, new message) is
@@ -48,6 +76,7 @@ final class NotificationForwarder {
     private var baselineSerial: String?
     private var hasBaseline = false
     private var iconAttachmentCache: [String: URL] = [:]
+    private var sourceIconCache: [String: URL] = [:]
 
     /// Cadence while a device is connected. `dumpsys notification` is cheap on a
     /// modern phone, so a few seconds keeps banners prompt without busy-looping.
@@ -82,6 +111,7 @@ final class NotificationForwarder {
         baselineSerial = nil
         hasBaseline = false
         iconAttachmentCache.removeAll()
+        sourceIconCache.removeAll()
     }
 
     private func runLoop() async {
@@ -137,18 +167,35 @@ final class NotificationForwarder {
 
     private func post(_ entry: Entry, serial: String?) {
         let content = Self.notificationContent(for: entry, serial: serial)
+        let pkg = entry.pkg
+
+        // Always attach the composed badge (source icon + PhoneRelay corner) as
+        // the guaranteed fallback: if the communication style below isn't applied
+        // (e.g. the entitlement isn't honored by the current signing), the banner
+        // still shows the source icon on the right exactly as before.
         if let serial,
-           let attachmentURL = iconAttachmentURL(for: entry.pkg, serial: serial),
+           let attachmentURL = iconAttachmentURL(for: pkg, serial: serial),
            let attachment = try? UNNotificationAttachment(
-            identifier: "\(entry.pkg)-icon",
+            identifier: "\(pkg)-icon",
             url: attachmentURL,
             options: nil
            ) {
             content.attachments = [attachment]
         }
-        let pkg = entry.pkg
+
+        // Prefer the communication-notification style (iPhone-Mirroring look):
+        // the raw source app icon becomes the large left avatar and macOS
+        // auto-badges PhoneRelay into the corner. Falls back to `content` when it
+        // can't be built or the style isn't authorized.
+        var finalContent: UNNotificationContent = content
+        if let serial,
+           let avatarURL = sourceIconURL(for: pkg, serial: serial),
+           let communication = Self.communicationContent(from: content, entry: entry, avatarURL: avatarURL) {
+            finalContent = communication
+        }
+
         UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+            UNNotificationRequest(identifier: UUID().uuidString, content: finalContent, trigger: nil)
         ) { error in
             // Without this, an unauthorized identity (fresh signature/bundle
             // id) drops every banner with no trace in the log.
@@ -161,19 +208,80 @@ final class NotificationForwarder {
         Logger.log("Forwarded notification pkg=\(entry.pkg) key=\(entry.key)")
     }
 
+    /// Upgrades a forwarded banner to a communication notification so the source
+    /// app icon shows as the large left avatar (with PhoneRelay auto-badged in
+    /// the corner), mirroring how iPhone Mirroring presents phone notifications.
+    /// Returns nil — leaving the caller's attachment-based content in place — when
+    /// the style can't be applied (e.g. the `com.apple.developer.usernotifications.communication`
+    /// entitlement isn't authorized by the app's signing).
+    nonisolated static func communicationContent(
+        from content: UNMutableNotificationContent,
+        entry: Entry,
+        avatarURL: URL
+    ) -> UNNotificationContent? {
+        let avatar = INImage(url: avatarURL)
+        let sender = INPerson(
+            personHandle: INPersonHandle(value: entry.pkg, type: .unknown),
+            nameComponents: nil,
+            displayName: content.title,
+            image: avatar,
+            contactIdentifier: nil,
+            customIdentifier: entry.pkg
+        )
+        let intent = INSendMessageIntent(
+            recipients: nil,
+            outgoingMessageType: .outgoingMessageText,
+            content: entry.text.isEmpty ? nil : entry.text,
+            speakableGroupName: nil,
+            conversationIdentifier: entry.key.isEmpty ? entry.pkg : entry.key,
+            serviceName: nil,
+            sender: sender,
+            attachments: nil
+        )
+        // The sender avatar is carried by `INPerson(image:)` above; the
+        // `intent.setImage(_:forParameterNamed:)` helper is unavailable on macOS.
+
+        let interaction = INInteraction(intent: intent, response: nil)
+        interaction.direction = .incoming
+        interaction.donate(completion: nil)
+
+        return try? content.updating(from: intent)
+    }
+
     /// Builds the macOS notification for a forwarded entry. A default sound is
     /// attached so the banner pops audibly like it does on the phone — without it
     /// the banner is delivered silently. Pure/inspectable so it can be unit-tested.
     nonisolated static func notificationContent(for entry: Entry, serial: String? = nil) -> UNMutableNotificationContent {
-        _ = serial
         let content = UNMutableNotificationContent()
         let sourceApp = appLabel(for: entry.pkg)
         content.title = notificationTitle(sourceApp: sourceApp, entryTitle: entry.title)
         if !entry.text.isEmpty { content.body = entry.text }
         // Group banners by source app in Notification Center.
         content.threadIdentifier = entry.pkg
+        // Carry the originating notification's identity so a click or reply can
+        // act on it back on the phone, and pick the category that decides which
+        // actions (Open, or Open + inline Reply) the banner offers.
+        var userInfo: [String: String] = [
+            UserInfoKey.sourcePackage: entry.pkg,
+            UserInfoKey.notificationKey: entry.key,
+            UserInfoKey.notificationTitle: entry.title,
+            UserInfoKey.notificationText: entry.text
+        ]
+        if let serial, !serial.isEmpty {
+            userInfo[UserInfoKey.deviceSerial] = serial
+        }
+        content.userInfo = userInfo
+        content.categoryIdentifier = isRepliable(entry) ? Category.message : Category.standard
         content.sound = .default
         return content
+    }
+
+    /// Whether a notification exposes a sensible inline-reply surface: a chat
+    /// message (`category=msg`) or a `MessagingStyle` notification. These are
+    /// the ones that carry a RemoteInput "Reply" action we can drive.
+    nonisolated static func isRepliable(_ entry: Entry) -> Bool {
+        if entry.category.caseInsensitiveCompare("msg") == .orderedSame { return true }
+        return entry.template.localizedCaseInsensitiveContains("MessagingStyle")
     }
 
     nonisolated static func notificationTitle(sourceApp: String, entryTitle: String) -> String {
@@ -198,6 +306,19 @@ final class NotificationForwarder {
         return url
     }
 
+    /// Raw source-app icon used as the communication-notification avatar, cached
+    /// per device+package like the composed attachment.
+    private func sourceIconURL(for pkg: String, serial: String) -> URL? {
+        let cacheKey = "\(serial)\u{1}\(pkg)"
+        if let cached = sourceIconCache[cacheKey],
+           FileManager.default.fileExists(atPath: cached.path) {
+            return cached
+        }
+        guard let url = Self.extractSourceIcon(pkg: pkg, serial: serial) else { return nil }
+        sourceIconCache[cacheKey] = url
+        return url
+    }
+
     // MARK: - adb fetch
 
     private nonisolated static func fetchDump(serial: String) -> String? {
@@ -209,7 +330,7 @@ final class NotificationForwarder {
         // portable across device shells.
         args += [
             "shell",
-            "dumpsys notification --noredact | grep -e NotificationRecord -e android.title= -e android.text="
+            "dumpsys notification --noredact | grep -e NotificationRecord -e android.title= -e android.text= -e android.template="
         ]
         let result = Tooling.runResult("adb", arguments: args, timeout: 4)
         guard result.succeeded else { return nil }
@@ -218,10 +339,20 @@ final class NotificationForwarder {
 
     // MARK: - App icon attachment
 
-    /// Best-effort source-app icon: pulls the notifying package's APK, extracts
-    /// its highest-density launcher PNG/WebP, and badges it with this app icon so
-    /// the banner still reads as forwarded by PhoneRelay.
+    /// Composed badge for the fallback attachment: the source-app icon with this
+    /// app's icon badged into the corner so the banner still reads as forwarded
+    /// by PhoneRelay even when the communication-notification style isn't applied.
     private nonisolated static func buildIconAttachment(pkg: String, serial: String) -> URL? {
+        guard let iconURL = extractSourceIcon(pkg: pkg, serial: serial) else { return nil }
+        let outputURL = iconURL.deletingLastPathComponent().appendingPathComponent("forwarded-icon.png")
+        return composeForwardedIcon(sourceIconURL: iconURL, outputURL: outputURL)
+    }
+
+    /// Best-effort *raw* source-app icon: pulls the notifying package's APK and
+    /// extracts its highest-density launcher PNG/WebP to `source-icon`. Used both
+    /// as the communication-notification avatar and as the input to the composed
+    /// fallback badge.
+    private nonisolated static func extractSourceIcon(pkg: String, serial: String) -> URL? {
         guard !pkg.isEmpty, !serial.isEmpty else { return nil }
         let apkPaths = apkPaths(for: pkg, serial: serial)
         guard !apkPaths.isEmpty else { return nil }
@@ -234,7 +365,6 @@ final class NotificationForwarder {
         try? FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
 
         let iconURL = workDir.appendingPathComponent("source-icon")
-        let outputURL = workDir.appendingPathComponent("forwarded-icon.png")
 
         for (index, apkPath) in apkPaths.enumerated() {
             let apkURL = workDir.appendingPathComponent("package-\(index).apk")
@@ -249,9 +379,7 @@ final class NotificationForwarder {
                 let data = try runProcessCapturingData(process, timeout: 4)
                 guard !data.isEmpty else { continue }
                 try data.write(to: iconURL)
-                if let composed = composeForwardedIcon(sourceIconURL: iconURL, outputURL: outputURL) {
-                    return composed
-                }
+                return iconURL
             } catch {
                 continue
             }
@@ -325,15 +453,13 @@ final class NotificationForwarder {
             fraction: 1
         )
 
+        // The PhoneRelay app icon already is a rounded black card, so it stands
+        // on its own as the badge — no extra card fill or border around it.
+        // Draw it scaled to fill the badge footprint.
         let badgeRect = NSRect(x: 100, y: 0, width: 58, height: 58)
-        NSColor.controlBackgroundColor.setFill()
-        NSBezierPath(roundedRect: badgeRect, xRadius: 14, yRadius: 14).fill()
-        NSColor.separatorColor.setStroke()
-        NSBezierPath(roundedRect: badgeRect.insetBy(dx: 0.5, dy: 0.5), xRadius: 14, yRadius: 14).stroke()
-
         if let badge = NSImage(named: NSImage.applicationIconName) {
             badge.draw(
-                in: badgeRect.insetBy(dx: 7, dy: 7),
+                in: badgeRect,
                 from: .zero,
                 operation: .sourceOver,
                 fraction: 1
@@ -414,12 +540,15 @@ final class NotificationForwarder {
                     pkg: token(after: "pkg=", in: line) ?? "",
                     title: "",
                     text: "",
-                    flags: hexValue(after: "flags=0x", in: line) ?? 0
+                    flags: hexValue(after: "flags=0x", in: line) ?? 0,
+                    category: token(after: "category=", in: line) ?? ""
                 )
                 fallbackText = nil
             } else if current != nil, !haveTitle, line.hasPrefix("android.title=") {
                 current?.title = bundleValue(line) ?? ""
                 haveTitle = true
+            } else if current != nil, line.hasPrefix("android.template=") {
+                current?.template = bundleValue(line) ?? ""
             } else if current != nil, !haveText, line.hasPrefix("android.text=") {
                 if let text = bundleValue(line), !text.isEmpty {
                     current?.text = text
@@ -456,12 +585,16 @@ final class NotificationForwarder {
         guard let eq = line.firstIndex(of: "=") else { return nil }
         let rhs = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
         if rhs == "null" || rhs.isEmpty { return nil }
-        guard let open = rhs.firstIndex(of: "("),
-              let close = rhs.lastIndex(of: ")"),
-              open < close else {
+        guard let open = rhs.firstIndex(of: "(") else {
             return rhs
         }
-        let inner = rhs[rhs.index(after: open)..<close].trimmingCharacters(in: .whitespaces)
+        let typeName = rhs[..<open].trimmingCharacters(in: .whitespaces)
+        guard !typeName.isEmpty, typeName.allSatisfy({ $0.isLetter || $0 == "." || $0 == "$" }) else {
+            return rhs
+        }
+        let close = rhs.lastIndex(of: ")")
+        let end = close.map { open < $0 ? $0 : rhs.endIndex } ?? rhs.endIndex
+        let inner = rhs[rhs.index(after: open)..<end].trimmingCharacters(in: .whitespaces)
         return inner.isEmpty ? nil : inner
     }
 

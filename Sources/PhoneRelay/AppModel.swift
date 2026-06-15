@@ -4538,6 +4538,118 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - Forwarded notification interactions
+
+    nonisolated static func launchSourceAppArguments(serial: String, package: String) -> [String] {
+        [
+            "-s", serial,
+            "shell",
+            "monkey",
+            "-p", package,
+            "-c", "android.intent.category.LAUNCHER",
+            "1"
+        ]
+    }
+
+    /// Opens a forwarded notification on the phone — taps its row in the shade
+    /// to fire the real content intent (a chat opens the chat), falling back to
+    /// launching the source app if the row can't be located. Runs on the
+    /// serialized tap queue so rapid banner clicks can't interleave, and brings
+    /// the mirror on screen so the opened content is actually visible.
+    func openSourceAppFromForwardedNotification(
+        package: String,
+        serial notificationSerial: String?,
+        notificationKey: String? = nil,
+        title: String? = nil,
+        text: String? = nil
+    ) {
+        let package = package.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !package.isEmpty else { return }
+
+        let serial = (notificationSerial?.isEmpty == false ? notificationSerial : nil)
+            ?? selectedDevice.adbSerial
+        guard let serial, !serial.isEmpty else {
+            reportError("Can’t open phone app", "Connect the phone before opening a forwarded notification.")
+            return
+        }
+
+        surfaceMirrorForForwardedNotification()
+
+        let args = Self.launchSourceAppArguments(serial: serial, package: package)
+        NotificationTapService.tapQueue.async {
+            if NotificationTapService.tapForwardedNotificationInShade(
+                serial: serial,
+                notificationKey: notificationKey,
+                title: title,
+                text: text
+            ) {
+                return
+            }
+
+            let result = Tooling.runResult("adb", arguments: args, timeout: 5)
+            if !result.succeeded {
+                Logger.log("Could not open notification source app package=\(package): \(result.output)")
+            }
+        }
+    }
+
+    /// Types a reply into a message notification's inline RemoteInput on the
+    /// phone. Best-effort and app-dependent; if the inline reply can't be
+    /// driven it falls back to opening the conversation so the user can finish
+    /// the reply by hand.
+    func replyToForwardedNotification(
+        package: String,
+        serial notificationSerial: String?,
+        notificationKey: String? = nil,
+        title: String? = nil,
+        text: String? = nil,
+        reply: String
+    ) {
+        let package = package.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reply = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reply.isEmpty else { return }
+
+        let serial = (notificationSerial?.isEmpty == false ? notificationSerial : nil)
+            ?? selectedDevice.adbSerial
+        guard let serial, !serial.isEmpty else {
+            reportError("Can’t reply", "Connect the phone before replying to a forwarded notification.")
+            return
+        }
+
+        NotificationTapService.tapQueue.async {
+            if NotificationTapService.replyToForwardedNotificationInShade(
+                serial: serial,
+                notificationKey: notificationKey,
+                title: title,
+                text: text,
+                reply: reply
+            ) {
+                return
+            }
+            // Couldn't drive the inline reply — open the conversation so the
+            // user can type it themselves.
+            Task { @MainActor [weak self] in
+                self?.openSourceAppFromForwardedNotification(
+                    package: package,
+                    serial: serial,
+                    notificationKey: notificationKey,
+                    title: title,
+                    text: text
+                )
+            }
+        }
+    }
+
+    /// Brings the phone on screen for a notification the user just acted on:
+    /// starts mirroring when nothing is live and a device is connected. The
+    /// window itself is raised by the app delegate when it activates the app.
+    private func surfaceMirrorForForwardedNotification() {
+        guard !isMirroring, mirrorSession == nil, mirrorLaunchTask == nil else { return }
+        guard !isPairing, !isFirstRunOnboardingActive else { return }
+        guard selectedDevice.adbSerial != nil else { return }
+        startMirroring(manual: true)
+    }
+
     func takeScreenshot() {
         let serial = selectedDevice.adbSerial
         let outputDirectory = screenshotOutputDirectory()

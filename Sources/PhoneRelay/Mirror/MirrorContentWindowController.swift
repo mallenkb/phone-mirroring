@@ -1565,7 +1565,7 @@ final class MirrorChromeBar: NSView {
     private var titleLeadingAfterTrafficLightsConstraint: NSLayoutConstraint?
     private static let leadingPadding: CGFloat = 12
     private static let titleLeadingAfterTrafficLights: CGFloat = 12
-    private static let trailingPadding: CGFloat = 5
+    private static let trailingPadding: CGFloat = (MirrorContentWindowController.toolbarBarHeight - MirrorChromeOutlineButton.touchHeight) / 2
     /// Corner radius of the detached floating bar.
     private static var barCornerRadius: CGFloat {
         MirrorContentWindowController.toolbarBarHeight / 2
@@ -1584,7 +1584,9 @@ final class MirrorChromeBar: NSView {
     )
     private let recentAppsBtn = MirrorChromeOutlineButton(
         symbol: "rectangle.stack.fill",
-        accessibilityDescription: "Recent apps"
+        accessibilityDescription: "Recent apps",
+        hoverCornerRadius: MirrorChromeBar.controlHoverCornerRadius,
+        hoverLeadingCornerRadius: MirrorChromeOutlineButton.defaultHoverCornerRadius
     )
     private let screenshotBtn = MirrorChromeOutlineButton(
         resource: "chrome-screenshot",
@@ -2080,6 +2082,7 @@ private final class MirrorTrafficLightGlyphView: NSView {
 
     override var isFlipped: Bool { false }
     override var mouseDownCanMoveWindow: Bool { false }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)

@@ -18,5 +18,15 @@
   <true/>
   <key>com.apple.security.files.user-selected.read-write</key>
   <true/>
+  <!--
+    Communication Notifications: lets forwarded banners present the source app
+    icon as the large left avatar (with PhoneRelay auto-badged in the corner),
+    the iPhone-Mirroring look. This is a RESTRICTED entitlement: macOS only
+    honors it when authorized by a provisioning profile from a paid Apple
+    Developer account with the "Communication Notifications" capability enabled
+    on the App ID. Without that, the code falls back to the attachment thumbnail.
+  -->
+  <key>com.apple.developer.usernotifications.communication</key>
+  <true/>
 </dict>
 </plist>

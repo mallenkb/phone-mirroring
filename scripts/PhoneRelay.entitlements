@@ -13,5 +13,16 @@
     <true/>
     <key>com.apple.security.cs.allow-dyld-environment-variables</key>
     <true/>
+    <!--
+      Communication Notifications: forwarded banners present the source app icon
+      as the large left avatar with PhoneRelay auto-badged in the corner (the
+      iPhone-Mirroring look). RESTRICTED: only honored when authorized by a
+      provisioning profile from a paid Apple Developer account with the
+      "Communication Notifications" capability on the App ID — and the script
+      pipeline must also pass `--entitlements` to codesign (it currently does
+      not). Without those, the code falls back to the attachment thumbnail.
+    -->
+    <key>com.apple.developer.usernotifications.communication</key>
+    <true/>
 </dict>
 </plist>

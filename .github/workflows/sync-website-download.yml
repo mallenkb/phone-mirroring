@@ -1,0 +1,43 @@
+name: Sync Website Download
+
+on:
+  release:
+    types:
+      - published
+      - edited
+      - released
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to sync. Leave empty for the latest release."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  notify-website:
+    name: Notify website repo
+    runs-on: ubuntu-latest
+    env:
+      WEBSITE_REPO: mallenkb/phonerelay-website
+      RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      GH_TOKEN: ${{ secrets.WEBSITE_SYNC_TOKEN }}
+    steps:
+      - name: Require website sync token
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "Missing WEBSITE_SYNC_TOKEN secret." >&2
+            echo "Create a fine-grained GitHub token with Actions: write and Contents: read/write on $WEBSITE_REPO." >&2
+            exit 1
+          fi
+
+      - name: Trigger website download mirror
+        run: |
+          set -euo pipefail
+          printf '{"event_type":"phonerelay-release","client_payload":{"tag":"%s"}}' "$RELEASE_TAG" \
+            | gh api "repos/$WEBSITE_REPO/dispatches" \
+              --method POST \
+              --input -

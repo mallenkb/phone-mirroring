@@ -9,6 +9,7 @@ struct SettingsView: View {
         case devices = "Devices"
         case mirroring = "Mirroring"
         case sharing = "Sharing"
+        case shortcuts = "Shortcuts"
         case connection = "Connection"
         case about = "About"
 
@@ -63,6 +64,8 @@ struct SettingsView: View {
             mirroringTab
         case .sharing:
             sharingTab
+        case .shortcuts:
+            shortcutsTab
         case .connection:
             connectionTab
         case .about:
@@ -265,6 +268,36 @@ struct SettingsView: View {
                 .padding(.vertical, 12)
             }
         }
+    }
+
+    // MARK: - Shortcuts
+
+    private var shortcutsTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            ForEach(KeyboardShortcutsCatalog.groups, id: \.title) { group in
+                SettingsGroup(title: group.title) {
+                    ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
+                        if index > 0 { rowDivider }
+                        shortcutRow(keys: item.keys, action: item.action)
+                    }
+                }
+            }
+        }
+    }
+
+    private func shortcutRow(keys: String, action: String) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            Text(keys)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .frame(width: 120, alignment: .leading)
+            Text(action)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
     }
 
     // MARK: - Connection

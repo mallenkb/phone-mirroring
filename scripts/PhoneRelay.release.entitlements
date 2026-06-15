@@ -8,5 +8,15 @@
       which does not require DYLD environment variables or disabled library
       validation in the main app process.
     -->
+    <!--
+      Communication Notifications: forwarded banners present the source app icon
+      as the large left avatar with PhoneRelay auto-badged in the corner (the
+      iPhone-Mirroring look). RESTRICTED: only honored when authorized by a
+      provisioning profile from a paid Apple Developer account with the
+      "Communication Notifications" capability on the App ID. Without that, the
+      code falls back to the attachment thumbnail.
+    -->
+    <key>com.apple.developer.usernotifications.communication</key>
+    <true/>
 </dict>
 </plist>
