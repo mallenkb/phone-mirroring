@@ -568,12 +568,7 @@ final class AppModel: ObservableObject {
 
     /// Maps a thrown mirror/host error to a friendly, actionable sentence.
     static func mirrorFailureMessage(for error: Error) -> String {
-        let detail: String
-        switch error {
-        case let hostError as ScrcpyServerHost.HostError: detail = hostError.description
-        case let sessionError as MirrorSession.SessionError: detail = sessionError.description
-        default: detail = error.localizedDescription
-        }
+        let detail = mirrorFailureDetail(for: error)
         let lowered = detail.lowercased()
         if lowered.contains("adb is not on path") || lowered.contains("adb is missing") {
             return "adb wasn't found. Install Android platform-tools (e.g. `brew install android-platform-tools`) and try again."
@@ -598,6 +593,14 @@ final class AppModel: ObservableObject {
         return detail
     }
 
+    static func mirrorFailureDetail(for error: Error) -> String {
+        switch error {
+        case let hostError as ScrcpyServerHost.HostError: return hostError.description
+        case let sessionError as MirrorSession.SessionError: return sessionError.description
+        default: return error.localizedDescription
+        }
+    }
+
     nonisolated static func shouldKeepRetryingMirrorLaunchFailure(_ message: String) -> Bool {
         let lowered = message.lowercased()
         return lowered.contains("offline")
@@ -609,6 +612,24 @@ final class AppModel: ObservableObject {
             || lowered.contains("not found")
             || lowered.contains("didn’t respond")
             || lowered.contains("didn't respond")
+    }
+
+    nonisolated static func rememberedWirelessRouteForUSBLaunchFailure(
+        message: String,
+        failedSerial: String,
+        pairedPhones: [PairedPhoneRecord]
+    ) -> PairedPhoneRecord? {
+        let lowered = message.lowercased()
+        guard !isWirelessADBTarget(failedSerial),
+              lowered.contains("not found"),
+              lowered.contains(failedSerial.lowercased()) else {
+            return nil
+        }
+
+        return recordsByMostRecent(pairedPhones).first { record in
+            recordMatchesSelectedADBSerial(record, selectedSerial: failedSerial)
+                && isWirelessRecord(record)
+        }
     }
 
     static let minimumConnectionWindowSize = NSSize(width: 384, height: 688)
@@ -3898,7 +3919,11 @@ final class AppModel: ObservableObject {
                 self.isMirroring = false
                 self.mirrorLaunchTask = nil
                 Logger.log("Mirror launch failed: \(error)")
+                let detail = Self.mirrorFailureDetail(for: error)
                 let message = Self.mirrorFailureMessage(for: error)
+                if self.recoverUSBLaunchFailureOverWireless(serial: serial, detail: detail) {
+                    return
+                }
                 if Self.shouldKeepRetryingMirrorLaunchFailure(message) {
                     Logger.log("Mirror launch will keep retrying without showing connection failure badge: \(message)")
                     self.activeError = nil
@@ -3910,6 +3935,25 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private func recoverUSBLaunchFailureOverWireless(serial: String?, detail: String) -> Bool {
+        guard let serial,
+              let record = Self.rememberedWirelessRouteForUSBLaunchFailure(
+                message: detail,
+                failedSerial: serial,
+                pairedPhones: pairedPhones
+              ) else {
+            return false
+        }
+
+        Logger.log("USB mirror launch failed because \(serial) disappeared; retrying remembered Wi-Fi route \(record.lastAddress)")
+        activeError = nil
+        isAwaitingReconnect = true
+        select(record: record)
+        startWirelessMirroring(savedTarget: record.lastAddress)
+        showConnectionWindow(startsQRCodePairing: false)
+        return true
     }
 
     private func startDisconnectRecoveryFallback() {

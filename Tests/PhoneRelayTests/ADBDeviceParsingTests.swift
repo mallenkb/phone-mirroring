@@ -138,6 +138,63 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertTrue(AppModel.shouldKeepRetryingMirrorLaunchFailure("The phone didn’t respond in time. Check the cable or Wi-Fi connection and try again."))
     }
 
+    func testUSBNotFoundLaunchFailureRecoversThroughRememberedWirelessRoute() {
+        let record = PairedPhoneRecord(
+            id: "RFCT10ZLTAJ",
+            displayName: "SM-S906B",
+            lastAddress: "192.168.68.57:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+
+        let route = AppModel.rememberedWirelessRouteForUSBLaunchFailure(
+            message: "adb: device 'RFCT10ZLTAJ' not found",
+            failedSerial: "RFCT10ZLTAJ",
+            pairedPhones: [record]
+        )
+
+        XCTAssertEqual(route, record)
+    }
+
+    func testUSBLaunchFailureRecoveryRequiresMissingUSBAndWirelessRoute() {
+        let record = PairedPhoneRecord(
+            id: "RFCT10ZLTAJ",
+            displayName: "SM-S906B",
+            lastAddress: "192.168.68.57:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let usbOnlyRecord = PairedPhoneRecord(
+            id: "RFCT10ZLTAJ",
+            displayName: "SM-S906B",
+            lastAddress: "RFCT10ZLTAJ",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 300)
+        )
+
+        XCTAssertNil(
+            AppModel.rememberedWirelessRouteForUSBLaunchFailure(
+                message: "adb: device 'RFCT10ZLTAJ' not found",
+                failedSerial: "192.168.68.57:5555",
+                pairedPhones: [record]
+            )
+        )
+        XCTAssertNil(
+            AppModel.rememberedWirelessRouteForUSBLaunchFailure(
+                message: "adb: device 'RFCT10ZLTAJ' offline",
+                failedSerial: "RFCT10ZLTAJ",
+                pairedPhones: [record]
+            )
+        )
+        XCTAssertNil(
+            AppModel.rememberedWirelessRouteForUSBLaunchFailure(
+                message: "adb: device 'RFCT10ZLTAJ' not found",
+                failedSerial: "RFCT10ZLTAJ",
+                pairedPhones: [usbOnlyRecord]
+            )
+        )
+    }
+
     func testActionableMirrorLaunchFailuresStillSurface() {
         XCTAssertFalse(AppModel.shouldKeepRetryingMirrorLaunchFailure("This Mac isn't authorized on the phone yet. Unlock the phone and tap Allow."))
         XCTAssertFalse(AppModel.shouldKeepRetryingMirrorLaunchFailure("The mirroring engine file is missing from the app. Reinstall PhoneRelay."))
