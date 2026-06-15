@@ -640,7 +640,9 @@ final class AppModel: ObservableObject {
     private let notificationAuthorizationRequester: NotificationAuthorizationRequester
     private let notificationSettingsOpener: NotificationSettingsOpener
     private let localNetworkPermissionPrompter: LocalNetworkPermissionPrompter
+    private let backgroundServicesEnabled: Bool
     private var isRequestingNotificationAuthorization = false
+    private(set) var isConnectionDiscoveryPausedForManualDisconnect = false
     private var lastPresenceAutoConnectAttemptAt: Date?
     private var failedAutoConnectTargets: [String: Date] = [:]
     private var autoConnectTargetsInFlight: Set<String> = []
@@ -844,6 +846,7 @@ final class AppModel: ObservableObject {
         self.notificationAuthorizationRequester = notificationAuthorizationRequester
         self.notificationSettingsOpener = notificationSettingsOpener
         self.localNetworkPermissionPrompter = localNetworkPermissionPrompter
+        self.backgroundServicesEnabled = startBackgroundServices
         explicitDeviceSetupRequired = Self.explicitDeviceSetupRequiredPreference()
         if explicitDeviceSetupRequired {
             store.clearAll()
@@ -856,17 +859,9 @@ final class AppModel: ObservableObject {
             select(record: mostRecentRecord)
         }
 
-        guard startBackgroundServices else { return }
+        guard backgroundServicesEnabled else { return }
 
-        discovery.start { [weak self] phones in
-            guard let self else { return }
-            guard !(self.pairedPhones.isEmpty && self.explicitDeviceSetupRequired) else {
-                self.discoveredPhones = []
-                return
-            }
-            self.discoveredPhones = phones
-            self.autoConnectToAvailableRememberedDevice(livePhones: phones)
-        }
+        startDiscovery()
         startDeviceWatcher()
         attemptAutoReconnect()
         updateNotificationForwarding()
@@ -1103,6 +1098,54 @@ final class AppModel: ObservableObject {
         isAwaitingReconnect = false
         isAutoConnecting = false
         autoConnectTargetsInFlight.removeAll()
+        launchReconnectDeadline = nil
+    }
+
+    private func startDiscovery() {
+        guard backgroundServicesEnabled else { return }
+        discovery.start { [weak self] phones in
+            guard let self else { return }
+            guard !self.isConnectionDiscoveryPausedForManualDisconnect else {
+                self.discoveredPhones = []
+                return
+            }
+            guard !(self.pairedPhones.isEmpty && self.explicitDeviceSetupRequired) else {
+                self.discoveredPhones = []
+                return
+            }
+            self.discoveredPhones = phones
+            self.autoConnectToAvailableRememberedDevice(livePhones: phones)
+        }
+    }
+
+    private func resumeDiscoveryAfterManualConnect() {
+        guard isConnectionDiscoveryPausedForManualDisconnect else {
+            if backgroundServicesEnabled {
+                startDiscovery()
+                startDeviceWatcher()
+            }
+            return
+        }
+        isConnectionDiscoveryPausedForManualDisconnect = false
+        if backgroundServicesEnabled {
+            startDiscovery()
+            startDeviceWatcher()
+        }
+    }
+
+    private func pauseDiscoveryForManualDisconnect() {
+        isConnectionDiscoveryPausedForManualDisconnect = true
+        discovery.stop()
+        discoveredPhones = []
+        deviceWatcherTask?.cancel()
+        deviceWatcherTask = nil
+        isAutoConnecting = false
+        isScanning = false
+        lastPresenceAutoConnectAttemptAt = nil
+        autoConnectTargetsInFlight.removeAll()
+        failedAutoConnectTargets.removeAll()
+        previousAuthorizedSerials.removeAll()
+        lastUSBHandoffSerial = nil
         launchReconnectDeadline = nil
     }
 
@@ -1605,6 +1648,7 @@ final class AppModel: ObservableObject {
     // MARK: - Scan / pair flows
 
     func scanADBDevices() {
+        resumeDiscoveryAfterManualConnect()
         isScanning = true
         let adb = self.adb
         Task { [weak self] in
@@ -1624,6 +1668,7 @@ final class AppModel: ObservableObject {
     /// process churn, and the adaptive interval eases off further when there's
     /// nothing to do — meaningfully lower idle CPU/battery.
     private func startDeviceWatcher() {
+        guard backgroundServicesEnabled, !isConnectionDiscoveryPausedForManualDisconnect else { return }
         guard deviceWatcherTask == nil else { return }
         let adb = self.adb
         deviceWatcherTask = Task { [weak self] in
@@ -1632,6 +1677,7 @@ final class AppModel: ObservableObject {
                     adb.run(["devices", "-l"], timeout: Self.adbDeviceListTimeout)
                 }.value
                 guard let self else { return }
+                guard !self.isConnectionDiscoveryPausedForManualDisconnect else { return }
                 let authorized = Self.authorizedADBDevices(in: output)
                 self.recordADBHealth(output, authorizedDevices: authorized)
                 self.updateUSBAuthorizationHint(from: output, authorizedDevices: authorized)
@@ -1890,6 +1936,7 @@ final class AppModel: ObservableObject {
     }
 
     func ensureQRCodePairingSession() {
+        resumeDiscoveryAfterManualConnect()
         guard !isFirstRunOnboardingActive else {
             suspendQRCodePairingForOnboarding()
             return
@@ -1902,6 +1949,7 @@ final class AppModel: ObservableObject {
     }
 
     func restartQRCodePairingSession() {
+        resumeDiscoveryAfterManualConnect()
         guard !isFirstRunOnboardingActive else {
             suspendQRCodePairingForOnboarding()
             return
@@ -2333,6 +2381,7 @@ final class AppModel: ObservableObject {
 
     func connectViaUSB() {
         guard !isMirroring else { return }
+        resumeDiscoveryAfterManualConnect()
         usbConnectTask?.cancel()
         usbWiFiHandoffTask?.cancel()
         usbWiFiHandoffTask = nil
@@ -3613,6 +3662,7 @@ final class AppModel: ObservableObject {
         guard manual || !isAutoMirrorHeldForOnboarding else { return }
 
         if manual {
+            resumeDiscoveryAfterManualConnect()
             // A deliberate retry clears backoff.
             setAutoConnectSuspendedForSelectedDevice(false)
             consecutiveQuickMirrorFailures = 0
@@ -3723,6 +3773,13 @@ final class AppModel: ObservableObject {
     func stopMirroring(suspendAutoConnect: Bool = true) {
         if suspendAutoConnect {
             setAutoConnectSuspendedForSelectedDevice(true)
+            let wirelessTargets = Self.wirelessTargetsToDisconnect(
+                selectedSerial: selectedDevice.adbSerial,
+                selectedID: selectedDevice.id,
+                records: pairedPhones
+            )
+            disconnectForgottenWirelessTargets(wirelessTargets)
+            pauseDiscoveryForManualDisconnect()
         }
         mirrorStartGeneration += 1
         mirrorLaunchTask?.cancel()
@@ -4222,6 +4279,7 @@ final class AppModel: ObservableObject {
 
     func connect(record: PairedPhoneRecord) {
         guard !isMirroring, !isPairing else { return }
+        resumeDiscoveryAfterManualConnect()
         resumeAutoConnect(for: record)
         if Self.isWirelessRecord(record) {
             // Wireless records get the full, restart-and-retry reconnect path so a
@@ -4249,6 +4307,7 @@ final class AppModel: ObservableObject {
     /// why. Never requires a USB cable up front.
     func reconnectOverWiFi(preferredRecord: PairedPhoneRecord? = nil) {
         guard !isMirroring, !isPairing else { return }
+        resumeDiscoveryAfterManualConnect()
 
         let ordered = Self.recordsByMostRecent(pairedPhones).filter(Self.isWirelessRecord)
         let wirelessRecords: [PairedPhoneRecord]

@@ -213,6 +213,39 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     }
 
     @MainActor
+    func testManualDisconnectPausesDiscoveryUntilManualConnect() {
+        withoutExplicitDeviceSetupRequired {
+            let record = PairedPhoneRecord(
+                id: "adb-RFCT10ZLTAJ",
+                displayName: "SM S906B",
+                lastAddress: "192.168.68.57:5555",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 200)
+            )
+            let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+            model.selectedDevice = MirrorDevice(
+                id: record.id,
+                name: record.displayName,
+                model: "SM S906B",
+                battery: 50,
+                isCharging: false,
+                network: "Wireless debugging",
+                lastSeen: record.lastConnected,
+                states: [.mirroringReady, .companionConnected],
+                adbSerial: record.lastAddress
+            )
+
+            model.stopMirroring()
+
+            XCTAssertTrue(model.isConnectionDiscoveryPausedForManualDisconnect)
+
+            model.connect(record: record)
+
+            XCTAssertFalse(model.isConnectionDiscoveryPausedForManualDisconnect)
+        }
+    }
+
+    @MainActor
     func testManualConnectResumesAutoConnectForSelectedPhone() {
         withoutExplicitDeviceSetupRequired {
             let record = PairedPhoneRecord(
