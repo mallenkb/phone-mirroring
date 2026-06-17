@@ -1,0 +1,996 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PhoneRelay Connection & Discovery Model</title>
+  <style>
+    :root {
+      --bg: #f7f7f4;
+      --surface: #ffffff;
+      --surface-soft: #fbfbf8;
+      --text: #202421;
+      --muted: #66706a;
+      --line: #dde2dc;
+      --accent: #2563eb;
+      --accent-soft: #e8efff;
+      --ok: #16803c;
+      --ok-soft: #e8f6ed;
+      --warn: #a05a00;
+      --warn-soft: #fff3df;
+      --risk: #b42318;
+      --risk-soft: #fff0ee;
+      --shadow: 0 12px 28px rgba(32, 36, 33, 0.07);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.58;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .wrap {
+      width: min(1100px, calc(100% - 40px));
+      margin: 0 auto;
+    }
+
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(247, 247, 244, 0.92);
+      backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 62px;
+      gap: 18px;
+    }
+
+    .brand {
+      font-weight: 700;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .nav-links a:hover {
+      color: var(--text);
+    }
+
+    header {
+      padding: 58px 0 40px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.06fr) minmax(320px, 0.94fr);
+      gap: 40px;
+      align-items: center;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 14px;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 760px;
+      font-size: clamp(34px, 5vw, 52px);
+      line-height: 1.06;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 690px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 26px;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 0 15px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .mockup {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .mockup-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-soft);
+    }
+
+    .mockup-title {
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: var(--ok-soft);
+      color: var(--ok);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .mockup-body {
+      padding: 18px;
+    }
+
+    .transport-row {
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr) 92px;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .transport-row:last-child {
+      border-bottom: 0;
+    }
+
+    .transport-label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .transport-main {
+      min-width: 0;
+    }
+
+    .transport-main strong {
+      display: block;
+      font-size: 15px;
+      line-height: 1.25;
+    }
+
+    .transport-main span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: normal;
+    }
+
+    .tag {
+      justify-self: end;
+      padding: 5px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .tag.ok {
+      border-color: #b9e3c5;
+      background: var(--ok-soft);
+      color: var(--ok);
+    }
+
+    .tag.warn {
+      border-color: #f0d5a8;
+      background: var(--warn-soft);
+      color: var(--warn);
+    }
+
+    main {
+      padding: 34px 0 54px;
+    }
+
+    section {
+      padding: 34px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    section:last-of-type {
+      border-bottom: 0;
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+      gap: 28px;
+      align-items: start;
+      margin-bottom: 22px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: clamp(25px, 3vw, 32px);
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+
+    .section-copy {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .grid.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    article.card {
+      min-width: 0;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: 0 6px 18px rgba(32, 36, 33, 0.035);
+    }
+
+    .label {
+      margin: 0 0 8px;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 750;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      line-height: 1.28;
+      letter-spacing: 0;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .steps {
+      display: grid;
+      gap: 10px;
+      counter-reset: steps;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      gap: 14px;
+      align-items: start;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .step::before {
+      counter-increment: steps;
+      content: counter(steps);
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 800;
+    }
+
+    .step h3 {
+      margin-bottom: 4px;
+    }
+
+    .step p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    .flow-node {
+      position: relative;
+      min-width: 0;
+      padding: 17px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .flow-node h3 {
+      font-size: 17px;
+    }
+
+    .flow-node p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .flow-node.primary {
+      border-color: #b9cdfd;
+      background: #fbfdff;
+    }
+
+    .state-board {
+      display: grid;
+      gap: 10px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .state-row {
+      display: grid;
+      grid-template-columns: 150px minmax(0, 1fr) 104px;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface-soft);
+    }
+
+    .state-name {
+      font-weight: 750;
+      font-size: 14px;
+    }
+
+    .state-desc {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .checklist {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .check {
+      display: grid;
+      grid-template-columns: 26px minmax(0, 1fr);
+      gap: 12px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .check-mark {
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .check strong {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 15px;
+    }
+
+    .check span {
+      display: block;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    footer {
+      padding: 30px 0 42px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    footer strong {
+      color: var(--text);
+    }
+
+    @media (max-width: 860px) {
+      .hero,
+      .section-head,
+      .grid,
+      .grid.two,
+      .flow,
+      .checklist {
+        grid-template-columns: 1fr;
+      }
+
+      header {
+        padding-top: 42px;
+      }
+
+      .nav-inner {
+        align-items: flex-start;
+        flex-direction: column;
+        justify-content: center;
+        padding: 13px 0;
+      }
+
+      .nav-links {
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .wrap {
+        width: min(100% - 28px, 1100px);
+      }
+
+      .hero-actions {
+        flex-direction: column;
+      }
+
+      .button {
+        width: 100%;
+      }
+
+      .transport-row,
+      .state-row {
+        grid-template-columns: 1fr;
+        gap: 6px;
+      }
+
+      .tag {
+        justify-self: start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="wrap nav-inner">
+      <a class="brand" href="#top">PhoneRelay Connection Model</a>
+      <div class="nav-links" aria-label="Page navigation">
+        <a href="#principle">Principle</a>
+        <a href="#workflow">Workflow</a>
+        <a href="#scenarios">Scenarios</a>
+        <a href="#states">States</a>
+        <a href="#guarantees">Guarantees</a>
+        <a href="#risks">Rules</a>
+      </div>
+    </div>
+  </nav>
+
+  <header id="top">
+    <div class="wrap hero">
+      <div>
+        <p class="eyebrow">Product architecture memo</p>
+        <h1>Connection should be adb-first. Discovery should only help.</h1>
+        <p class="lead">
+          PhoneRelay should feel automatic, but the reliable source of truth is still the live adb transport list. USB, Wi-Fi, mDNS, and saved routes each have a role, but only proven adb readiness should start or recover a mirror.
+        </p>
+        <div class="hero-actions">
+          <a class="button primary" href="#workflow">View workflow</a>
+          <a class="button" href="#states">See state model</a>
+        </div>
+      </div>
+
+      <aside class="mockup" aria-label="Connection status mockup">
+        <div class="mockup-head">
+          <div class="mockup-title">Connection Health</div>
+          <div class="status-pill"><span class="dot"></span>Online</div>
+        </div>
+        <div class="mockup-body">
+          <div class="transport-row">
+            <div class="transport-label">Truth</div>
+            <div class="transport-main">
+              <strong>Live adb transport</strong>
+              <span>USB or Wi-Fi device appears in `adb devices -l` and answers shell probes.</span>
+            </div>
+            <div class="tag ok">Primary</div>
+          </div>
+          <div class="transport-row">
+            <div class="transport-label">Helper</div>
+            <div class="transport-main">
+              <strong>mDNS discovery</strong>
+              <span>Useful for pairing and hints, not enough to prove mirror readiness.</span>
+            </div>
+            <div class="tag">Assistive</div>
+          </div>
+          <div class="transport-row">
+            <div class="transport-label">Memory</div>
+            <div class="transport-main">
+              <strong>Saved Wi-Fi route</strong>
+              <span>Only trusted after successful adb connect plus shell readiness.</span>
+            </div>
+            <div class="tag warn">Verify</div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </header>
+
+  <main>
+    <section id="principle">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>The core principle</h2>
+          <p class="section-copy">
+            The app can be helpful without being speculative. PhoneRelay should make the best path obvious, do background work quietly, and avoid changing the active mirror unless a transport has been proven ready.
+          </p>
+        </div>
+
+        <div class="grid">
+          <article class="card">
+            <p class="label">Source of truth</p>
+            <h3>adb decides what is real</h3>
+            <p>A device is mirror-ready only when adb sees it and it responds to a lightweight command.</p>
+          </article>
+          <article class="card">
+            <p class="label">Discovery role</p>
+            <h3>mDNS finds possibilities</h3>
+            <p>Bonjour can suggest phones for pairing or recovery, but it should not launch mirroring by itself.</p>
+          </article>
+          <article class="card">
+            <p class="label">Product layer</p>
+            <h3>Saved routes need proof</h3>
+            <p>A remembered Wi-Fi address is useful only when it passes connect and shell-readiness checks.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="workflow">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>Workflow</h2>
+          <p class="section-copy">
+            The normal connection path should be short and deterministic. Deeper discovery and recovery should exist, but they should be invoked only when the user asks or when USB disappears and a prepared Wi-Fi path is already proven.
+          </p>
+        </div>
+
+        <div class="steps">
+          <article class="step">
+            <div>
+              <h3>Poll live adb devices</h3>
+              <p>Start with `adb devices -l`. Authorized USB and already-connected Wi-Fi transports are the first-class candidates.</p>
+            </div>
+          </article>
+          <article class="step">
+            <div>
+              <h3>Prefer USB for immediate start</h3>
+              <p>If an authorized USB phone is present, start mirroring quickly and do not make the user wait for Wi-Fi preparation.</p>
+            </div>
+          </article>
+          <article class="step">
+            <div>
+              <h3>Prepare Wi-Fi in the background</h3>
+              <p>When enabled, run USB-to-Wi-Fi handoff as a speculative job. It should never block or destabilize the current USB mirror.</p>
+            </div>
+          </article>
+          <article class="step">
+            <div>
+              <h3>Verify before saving</h3>
+              <p>Persist a Wi-Fi route only after adb connect succeeds and the device answers a shell probe over that Wi-Fi serial.</p>
+            </div>
+          </article>
+          <article class="step">
+            <div>
+              <h3>Use prepared Wi-Fi on reconnect</h3>
+              <p>When the cable is removed or the mirror needs recovery, switch to the prepared route if it is still live or can be verified quickly.</p>
+            </div>
+          </article>
+          <article class="step">
+            <div>
+              <h3>Escalate only on explicit action</h3>
+              <p>Manual reconnect can try saved routes and mDNS rediscovery. The background path should avoid silent stale-route dialing.</p>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="scenarios">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>Scenarios</h2>
+          <p class="section-copy">
+            The full behavior matrix: USB-first, with a quiet Wi-Fi handoff and no internet dependency. Each row is a state the app must handle on real Mac-to-phone reachability alone, without guessing or freezing.
+          </p>
+        </div>
+
+        <div class="state-board" aria-label="Connection scenarios">
+          <div class="state-row">
+            <div class="state-name">Fresh USB connect</div>
+            <div class="state-desc">Verify the phone over USB, read real device info, and start from a known-good adb state.</div>
+            <div class="tag ok">USB</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">USB network check</div>
+            <div class="state-desc">While USB is connected, read the phone’s Wi-Fi/local route and compare it against the Mac’s local network.</div>
+            <div class="tag">Probe</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">Same local network</div>
+            <div class="state-desc">If both are on the same LAN/Wi-Fi, derive the phone’s real local IP address (a hint, not yet proof).</div>
+            <div class="tag">Probe</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">Prepare Wi-Fi adb</div>
+            <div class="state-desc">Enable/use <code>adb tcpip 5555</code> so the phone can be reached at <code>&lt;local-ip&gt;:5555</code>, quietly in the background.</div>
+            <div class="tag warn">Background</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">Handoff after USB</div>
+            <div class="state-desc">Once <code>&lt;local-ip&gt;:5555</code> is verified by connect plus a shell probe, switch mirroring from USB to local Wi-Fi automatically.</div>
+            <div class="tag ok">Handoff</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">No internet required</div>
+            <div class="state-desc">The flow never depends on internet access — only Mac-to-phone reachability on the local network.</div>
+            <div class="tag ok">LAN-only</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">Settings IP display</div>
+            <div class="state-desc">Settings shows the current local Wi-Fi IP when available, instead of hiding behind the USB serial.</div>
+            <div class="tag">UI</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">Saved device state</div>
+            <div class="state-desc">Persist the latest verified local Wi-Fi IP with the phone record so future reconnects know where to try.</div>
+            <div class="tag">Memory</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">IP changed</div>
+            <div class="state-desc">If USB or discovery finds a newer local IP, update the saved IP and the Settings display — but never downgrade a Wi-Fi IP to a USB serial.</div>
+            <div class="tag">Memory</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">Launch, no cable</div>
+            <div class="state-desc">Check the saved local Wi-Fi IP first and reconnect automatically if the phone answers.</div>
+            <div class="tag">Reconnect</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">Launch, with cable</div>
+            <div class="state-desc">Verify USB, refresh the local IP, then prefer Wi-Fi handoff if the local route is ready — without tearing USB down first.</div>
+            <div class="tag ok">USB</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">Wi-Fi route fails</div>
+            <div class="state-desc">If the saved local IP does not answer, mark Wi-Fi unavailable and fall back to USB if present.</div>
+            <div class="tag warn">Fallback</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">No USB and no Wi-Fi</div>
+            <div class="state-desc">Show offline / action-needed instead of pretending the phone is reachable.</div>
+            <div class="tag warn">Offline</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">Connection screen</div>
+            <div class="state-desc">During reconnect, show the actual transport being checked: local Wi-Fi or USB.</div>
+            <div class="tag">UI</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">Online over Wi-Fi</div>
+            <div class="state-desc">When Wi-Fi adb is verified, show the phone as online and mirror over local Wi-Fi automatically.</div>
+            <div class="tag ok">Online</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="system">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>System roles</h2>
+          <p class="section-copy">
+            Each signal has a clear job. The UX gets simpler when the app does not treat every signal as equally authoritative.
+          </p>
+        </div>
+
+        <div class="flow">
+          <article class="flow-node primary">
+            <p class="label">Layer 1</p>
+            <h3>Live adb</h3>
+            <p>Primary source for connection ownership. If adb sees a transport and shell works, the phone is usable.</p>
+          </article>
+          <article class="flow-node">
+            <p class="label">Layer 2</p>
+            <h3>Prepared Wi-Fi</h3>
+            <p>A verified standby route. It improves continuity without replacing the active USB mirror mid-session.</p>
+          </article>
+          <article class="flow-node">
+            <p class="label">Layer 3</p>
+            <h3>Discovery and memory</h3>
+            <p>mDNS and saved routes help the app find candidates, but every candidate must still become live adb.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="states">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>Visual explanation</h2>
+          <p class="section-copy">
+            The app should expose two separate concepts: the active transport currently mirroring, and the prepared transport available for a future reconnect.
+          </p>
+        </div>
+
+        <div class="state-board" aria-label="Connection state board">
+          <div class="state-row">
+            <div class="state-name">USB active</div>
+            <div class="state-desc">The current mirror is running over USB. This is the default stable path.</div>
+            <div class="tag ok">Mirroring</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">Preparing Wi-Fi</div>
+            <div class="state-desc">The app is trying tcpip/connect/readiness in the background while USB keeps working.</div>
+            <div class="tag warn">Background</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">Wi-Fi ready</div>
+            <div class="state-desc">A Wi-Fi adb serial passed shell readiness and can be used if USB disappears.</div>
+            <div class="tag ok">Standby</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">Wi-Fi failed</div>
+            <div class="state-desc">The background handoff failed, but USB is healthy. Show detail in diagnostics, not as a disruptive error.</div>
+            <div class="tag">Quiet</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">Wi-Fi blocked (macOS)</div>
+            <div class="state-desc">Every connect failed with “No route to host” — a macOS Local Network permission denial, not an offline phone. Offer to grant access; keep USB working in the meantime.</div>
+            <div class="tag warn">Action</div>
+          </div>
+          <div class="state-row">
+            <div class="state-name">Manual recovery</div>
+            <div class="state-desc">The user asks to reconnect over Wi-Fi, so saved routes and mDNS can be tried more aggressively.</div>
+            <div class="tag warn">Explicit</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="benefits">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>Benefits</h2>
+          <p class="section-copy">
+            This model keeps the app predictable for engineers and understandable for users while still enabling a seamless “plug in once, continue over Wi-Fi later” experience.
+          </p>
+        </div>
+
+        <div class="grid two">
+          <article class="card">
+            <p class="label">User experience</p>
+            <h3>Fast first mirror</h3>
+            <p>USB starts immediately instead of waiting on Wi-Fi discovery, local network permissions, or stale saved state.</p>
+          </article>
+          <article class="card">
+            <p class="label">Reliability</p>
+            <h3>Fewer invisible loops</h3>
+            <p>Background auto-connect does not keep dialing dead addresses and pinning the UI in a vague connecting state.</p>
+          </article>
+          <article class="card">
+            <p class="label">Continuity</p>
+            <h3>Wi-Fi feels prepared</h3>
+            <p>If handoff succeeds, unplugging can feel natural because a verified Wi-Fi route is already waiting.</p>
+          </article>
+          <article class="card">
+            <p class="label">Supportability</p>
+            <h3>Status is explainable</h3>
+            <p>Diagnostics can say USB active, Wi-Fi preparing, Wi-Fi ready, or Wi-Fi failed instead of hiding the real state.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="guarantees">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>Non-negotiable guarantees</h2>
+          <p class="section-copy">
+            These invariants keep the model from regressing. Each came from a real failure on real hardware, so they are requirements, not preferences — a rewrite that drops one reintroduces a bug we already fixed.
+          </p>
+        </div>
+
+        <div class="checklist">
+          <div class="check">
+            <div class="check-mark">1</div>
+            <div>
+              <strong>“Ready” means data is flowing, not that connect returned OK.</strong>
+              <span><code>adb connect</code> succeeds against half-open and stale endpoints, so readiness requires a shell probe that actually answers. Once mirroring, TCP keepalive plus a ~5s data-stall watchdog must keep watching, so a silent Wi-Fi drop ends the session in seconds instead of freezing on the last frame.</span>
+            </div>
+          </div>
+          <div class="check">
+            <div class="check-mark">2</div>
+            <div>
+              <strong>Separate “blocked by macOS” from “phone offline.”</strong>
+              <span>Repeated “No route to host” is usually a macOS Local Network permission denial — and it silently resets on every ad-hoc re-sign — not an absent phone. Surface it as a distinct action (grant Local Network access) in diagnostics, quietly, while USB keeps working. Never collapse it into a generic offline error.</span>
+            </div>
+          </div>
+          <div class="check">
+            <div class="check-mark">3</div>
+            <div>
+              <strong>Bound the retries; break crash loops.</strong>
+              <span>Some device servers load-then-bail (e.g. a Samsung aborting when the client requests display-power-off). Auto-reconnect must latch one attempt per device state, back off after quick failures, and stop — never hammer a crashing server or alternate between transports (route-key flapping is itself a storm).</span>
+            </div>
+          </div>
+          <div class="check">
+            <div class="check-mark">4</div>
+            <div>
+              <strong>A USB serial must never overwrite a saved Wi-Fi IP.</strong>
+              <span>Reconnecting over the cable must preserve the remembered <code>host:port</code>, because that is what launch and presence reconnect dial once the cable is gone. A bare USB session has no wireless address of its own to contribute.</span>
+            </div>
+          </div>
+          <div class="check">
+            <div class="check-mark">5</div>
+            <div>
+              <strong>Subnet match is a hint; reachability is the gate.</strong>
+              <span>Comparing the Mac and phone subnets only chooses where to prime the route. AP/client isolation means same-subnet can be unreachable and different-subnet can still work, so only an actual connect-plus-shell probe is allowed to authorize a handoff.</span>
+            </div>
+          </div>
+          <div class="check">
+            <div class="check-mark">6</div>
+            <div>
+              <strong>Serialize mutating adb commands.</strong>
+              <span><code>connect</code>/<code>pair</code>/<code>tcpip</code> run under one lock so concurrent USB verification and Wi-Fi probing can’t race the adb server; read-only queries stay unlocked so the UI stays responsive.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="risks">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>Rules and risks</h2>
+          <p class="section-copy">
+            The risky part is not Wi-Fi itself. The risky part is letting stale or partial signals take control of the mirror.
+          </p>
+        </div>
+
+        <div class="checklist">
+          <div class="check">
+            <div class="check-mark">✓</div>
+            <div>
+              <strong>Do not switch mid-session just because Wi-Fi appears.</strong>
+              <span>Keep a stable USB mirror unless the user unplugs or explicitly asks to reconnect.</span>
+            </div>
+          </div>
+          <div class="check">
+            <div class="check-mark">✓</div>
+            <div>
+              <strong>Do not trust mDNS as readiness.</strong>
+              <span>mDNS means a service is visible. It does not prove adb is authorized, awake, or usable.</span>
+            </div>
+          </div>
+          <div class="check">
+            <div class="check-mark">✓</div>
+            <div>
+              <strong>Do not save unverified Wi-Fi routes.</strong>
+              <span>Only persist addresses that answered over adb, otherwise future reconnects inherit bad state.</span>
+            </div>
+          </div>
+          <div class="check">
+            <div class="check-mark">✓</div>
+            <div>
+              <strong>Do not interrupt healthy USB with Wi-Fi errors.</strong>
+              <span>Failed handoff should be quiet while USB works, with detail available in diagnostics.</span>
+            </div>
+          </div>
+          <div class="check">
+            <div class="check-mark">✓</div>
+            <div>
+              <strong>Do back off after repeated Wi-Fi failures.</strong>
+              <span>Retries should be bounded so background work does not become battery, CPU, or adb churn.</span>
+            </div>
+          </div>
+          <div class="check">
+            <div class="check-mark">✓</div>
+            <div>
+              <strong>Do respect explicit user intent.</strong>
+              <span>Manual disconnect, stop mirroring, pairing, and device switching should cancel hidden reconnect work.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <strong>PhoneRelay Connection Model.</strong> A scrcpy-like core with productized discovery and Wi-Fi handoff around it.
+    </div>
+  </footer>
+</body>
+</html>

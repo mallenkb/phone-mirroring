@@ -13,9 +13,9 @@
   <key>CFBundleDisplayName</key>
   <string>PhoneRelay</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.5</string>
+  <string>1.0.6</string>
   <key>CFBundleVersion</key>
-  <string>12</string>
+  <string>13</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>PhoneRelay for Android connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
   <key>NSBonjourServices</key>

@@ -270,63 +270,6 @@ enum Tooling {
         }
         return result.output
     }
-
-    static func runInteractive(
-        _ name: String,
-        arguments: [String],
-        input: String,
-        timeout overrideTimeout: TimeInterval? = nil
-    ) -> String {
-        guard let path = toolPath(named: name) else {
-            return "\(name) is missing. Install or bundle \(name)."
-        }
-
-        let process = Process()
-        let outputPipe = Pipe()
-        let inputPipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = arguments
-        process.standardOutput = outputPipe
-        process.standardError = outputPipe
-        process.standardInput = inputPipe
-
-        let handle = outputPipe.fileHandleForReading
-        let box = DataBox()
-        let readDone = DispatchSemaphore(value: 0)
-        processOutputQueue.async {
-            box.data = handle.readDataToEndOfFile()
-            readDone.signal()
-        }
-
-        do {
-            try process.run()
-            inputPipe.fileHandleForWriting.write(Data(input.utf8))
-            try? inputPipe.fileHandleForWriting.close()
-        } catch {
-            handle.closeFile()
-            readDone.signal()
-            return "Failed to run \(name): \(error.localizedDescription)"
-        }
-
-        // Hard timeout so a stuck `adb pair`/`adb connect` can't hang forever.
-        let timeout: TimeInterval = overrideTimeout ?? 15
-        let deadline = Date().addingTimeInterval(timeout)
-        while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.03)
-        }
-        if process.isRunning {
-            process.terminate()
-            Thread.sleep(forTimeInterval: 0.1)
-            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-            process.waitUntilExit()
-            _ = readDone.wait(timeout: .now() + 1)
-            return "\(name) timed out after \(Int(timeout))s: \(arguments.joined(separator: " "))"
-        }
-
-        process.waitUntilExit()
-        _ = readDone.wait(timeout: .now() + 1)
-        return String(data: box.data, encoding: .utf8) ?? ""
-    }
 }
 
 enum Logger {

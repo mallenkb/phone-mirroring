@@ -21,8 +21,6 @@ final class DiscoveryService {
         task?.cancel()
     }
 
-    var isRunning: Bool { task != nil }
-
     func start(onUpdate: @escaping @MainActor ([DiscoveredPhone]) -> Void) {
         guard task == nil else { return }
         let pollPhones = self.pollPhones

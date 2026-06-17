@@ -72,6 +72,64 @@ final class SettingsAboutTabTests: XCTestCase {
         XCTAssertTrue(appDelegateSource.contains("model.refreshLocalNetworkPermissionAfterSettingsReturn()"))
     }
 
+    func testSavedDeviceRowsOfferConnectAndForgetWhenInactive() throws {
+        let source = try String(
+            contentsOf: Self.repoRoot()
+                .appendingPathComponent("Sources/PhoneRelay/Views/SettingsView.swift"),
+            encoding: .utf8
+        )
+        let rowStart = try XCTUnwrap(source.range(of: "private struct PairedPhoneRow"))
+        let rowBody = String(source[rowStart.lowerBound...])
+        let inactiveStart = try XCTUnwrap(rowBody.range(of: "} else {"))
+        let inactiveBody = String(rowBody[inactiveStart.lowerBound...])
+        let forgetRange = try XCTUnwrap(inactiveBody.range(of: "MoreMenuRow(title: \"Forget\", isDestructive: true)"))
+        let menuRange = try XCTUnwrap(inactiveBody.range(of: "moreActionsMenu"))
+
+        XCTAssertLessThan(menuRange.lowerBound, forgetRange.lowerBound)
+        XCTAssertTrue(rowBody.contains(".popover(isPresented: $showMoreMenu, arrowEdge: .bottom)"))
+        XCTAssertTrue(rowBody.contains("private var moreActionsDropdown: some View"))
+        XCTAssertTrue(rowBody.contains("MoreMenuRow(title: transport.connectTitle)"))
+        XCTAssertTrue(rowBody.contains("ForEach(availableTransports)"))
+        XCTAssertTrue(rowBody.contains("onConnect(transport)"))
+        XCTAssertFalse(rowBody.contains("private var connectRouteControl: some View"))
+        XCTAssertTrue(rowBody.contains("Button(\"Disconnect\", action: onDisconnect)"))
+        XCTAssertTrue(rowBody.contains(".buttonStyle(SettingsRowActionButtonStyle())"))
+        XCTAssertTrue(source.contains("private struct SettingsRowActionButtonStyle: ButtonStyle"))
+        XCTAssertFalse(rowBody.contains("enum Kind"))
+        XCTAssertTrue(source.contains("static let width: CGFloat = 96"))
+        XCTAssertTrue(source.contains("static let height: CGFloat = 28"))
+        XCTAssertTrue(source.contains(".frame(minWidth: Self.width)"))
+        XCTAssertTrue(source.contains(".frame(height: Self.height)"))
+        XCTAssertTrue(rowBody.contains("connectionDetailRow(\"USB\", usbAddress ?? \"N/A\")"))
+        XCTAssertTrue(rowBody.contains("connectionDetailRow(\"Wi-Fi\", wifiAddress ?? \"N/A\")"))
+        XCTAssertTrue(rowBody.contains("HStack(alignment: .center, spacing: 14) {\n            TemplateResourceIcon"))
+        XCTAssertTrue(rowBody.contains("VStack(alignment: .leading, spacing: 8) {\n                Text(record.displayName)"))
+        XCTAssertTrue(rowBody.contains("connectionDetails"))
+        XCTAssertFalse(rowBody.contains(".padding(.leading, 42)"))
+        XCTAssertTrue(rowBody.contains("private var connectionDetails: some View"))
+        XCTAssertTrue(rowBody.contains("Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 3)"))
+        XCTAssertTrue(rowBody.contains(".gridColumnAlignment(.leading)"))
+        XCTAssertTrue(rowBody.contains(".textSelection(.enabled)"))
+        XCTAssertFalse(rowBody.contains("VStack(alignment: .leading, spacing: 4) {\n                    if let usbAddress"))
+        XCTAssertFalse(rowBody.contains("labeledValue(\"USB\", usbAddress)"))
+        XCTAssertFalse(rowBody.contains("HStack(alignment: .center, spacing: 18) {\n            VStack(alignment: .trailing, spacing: 2)"))
+        XCTAssertFalse(source.contains(".frame(minWidth: 88, minHeight: 36)"))
+        XCTAssertFalse(rowBody.contains("} else if isOnline {\n            Button(\"Connect\", action: onConnect)\n        } else {\n            Button(\"Forget\""))
+    }
+
+    func testSavedDeviceRowsUseADBPresenceForWiFiAvailability() throws {
+        let source = try String(
+            contentsOf: Self.repoRoot()
+                .appendingPathComponent("Sources/PhoneRelay/Views/SettingsView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("AppModel.rememberedAuthorizedDevice("))
+        XCTAssertTrue(source.contains("in: model.latestAuthorizedADBDevices"))
+        XCTAssertTrue(source.contains("!device.isUSB"))
+        XCTAssertTrue(source.contains("return device.serial"))
+    }
+
     func testAboutDocumentsProvideLocalPolicyAndLicenseDetails() throws {
         let content = try String(
             contentsOf: Self.repoRoot()

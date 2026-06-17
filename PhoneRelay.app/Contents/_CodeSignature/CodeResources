@@ -4,79 +4,79 @@
 <dict>
 	<key>files</key>
 	<dict>
+		<key>Resources/AppIcon.icns</key>
+		<data>
+		PmTnfD46fpr0/4G4hnaU5Sx6vtw=
+		</data>
 		<key>Resources/Assets.car</key>
 		<data>
-		xvkGoaPzGL0vRbfET11JuJ3uCkM=
+		ghxaM5GKgsCSCUSI7/PfUUFVPpg=
 		</data>
 		<key>Resources/LICENSES/scrcpy-APACHE-2.0.txt</key>
 		<data>
 		XsXCMDNjyvajaDFg49vXjpLXfxU=
 		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Info.plist</key>
-		<data>
-		dsuY12oihD+PEj/JSb3MFFtE8rM=
-		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/AppIcon.icns</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/AppIcon.icns</key>
 		<data>
 		AufZ8dra/iielQCw3Zeh2y7q6eg=
 		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/Assets.car</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/Assets.car</key>
 		<data>
 		xvkGoaPzGL0vRbfET11JuJ3uCkM=
 		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/PHONERELAY_LICENSE.txt</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/PHONERELAY_LICENSE.txt</key>
 		<data>
 		Sfxf/QI6/EFRUdybNC2D0CcOhNM=
 		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/PRIVACY_POLICY.txt</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/PRIVACY_POLICY.txt</key>
 		<data>
 		YbSnIUWdv0uje5uNmHf8oOEmf4k=
 		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/SUPPORT.txt</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/SUPPORT.txt</key>
 		<data>
 		BUpr1jFryCzXt+JCBXJaDs8C2so=
 		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/THIRD_PARTY_NOTICES.txt</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/THIRD_PARTY_NOTICES.txt</key>
 		<data>
 		fc5GinJ3OZJ6NXPmVqgQdKA+/mA=
 		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/apps.iphone.badge.checkmark.svg</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/apps.iphone.badge.checkmark.svg</key>
 		<data>
 		vfFuT/Dre2LuDAwcTBShk5FWN3o=
 		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/apps.iphone.svg</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/apps.iphone.svg</key>
 		<data>
 		LHZ10/XnF0LtnSp+DkGuqVVHbNA=
 		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/base_scene.png</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/base_scene.png</key>
 		<data>
 		rt3E1L/hEHham34HVgxkdnNxSiw=
 		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/chrome-home.svg</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/chrome-home.svg</key>
 		<data>
 		QOfE3xj0E4Q19tsZ92ikBdzXxvM=
 		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/chrome-record.svg</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/chrome-record.svg</key>
 		<data>
 		e7H5RZAJvoC3X+Fm8h+KY2wImnk=
 		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/chrome-screenshot.svg</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/chrome-screenshot.svg</key>
 		<data>
 		hlcH3cGNMKMkjiMeE7Vn4Dy0GVQ=
 		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/macbook.and.iphone.svg</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/macbook.and.iphone.svg</key>
 		<data>
 		7BAb7PGJlLM2mT10C/J5U5R9198=
 		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/phone_screen.png</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/phone_screen.png</key>
 		<data>
 		YRvDExNGISUzR+/YaopDZIyDw80=
 		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/scrcpy-APACHE-2.0.txt</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/scrcpy-APACHE-2.0.txt</key>
 		<data>
 		XsXCMDNjyvajaDFg49vXjpLXfxU=
 		</data>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/scrcpy-server</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/scrcpy-server</key>
 		<data>
 		MRdPxStC0gb598FxLR41OgzmnRs=
 		</data>
@@ -86,7 +86,7 @@
 		</data>
 		<key>Resources/bin/adb</key>
 		<data>
-		GBBU9vhYOuLARK9K9IPD5g4+YPo=
+		N0lj46+PCZDGUxi4G+HWdQUZUHU=
 		</data>
 		<key>Resources/scrcpy-server</key>
 		<data>
@@ -95,11 +95,18 @@
 	</dict>
 	<key>files2</key>
 	<dict>
+		<key>Resources/AppIcon.icns</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			PrUnTQRLdzmraTnt1whJJjoiYrGGRUh+oiO8L/EQ6hc=
+			</data>
+		</dict>
 		<key>Resources/Assets.car</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			/5cNHfO4mEBYAAgROYF0SDlsMEPf7vq3YmFIa/mDmRI=
+			F+gw+UVYgUKMt8qsgfR60vnT1A+j9jLBE/iFHWwfh1Q=
 			</data>
 		</dict>
 		<key>Resources/LICENSES/scrcpy-APACHE-2.0.txt</key>
@@ -109,119 +116,112 @@
 			AcEgNb81rzckEpjcetU46yoH5clAQ3vGh2/uqp0ZUdA=
 			</data>
 		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Info.plist</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			5u73AGErWrp2wWQ5ahx4rLh+RITFB/h61UtG38SbKeo=
-			</data>
-		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/AppIcon.icns</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/AppIcon.icns</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			FX/GihnTVX0s3A77Y9YsH4MRHJE3JszuvZES9PbW7T8=
 			</data>
 		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/Assets.car</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/Assets.car</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			/5cNHfO4mEBYAAgROYF0SDlsMEPf7vq3YmFIa/mDmRI=
 			</data>
 		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/PHONERELAY_LICENSE.txt</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/PHONERELAY_LICENSE.txt</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			oNtMnf2QycrdYOdc/SYiNodebjXsIaWndcb43XbGfAk=
 			</data>
 		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/PRIVACY_POLICY.txt</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/PRIVACY_POLICY.txt</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			9/7s9hRjCzVe8p2yQm3cjE1FsQfEznfARw9ZNBseee0=
 			</data>
 		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/SUPPORT.txt</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/SUPPORT.txt</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			Y4LswvlPLebomZQLl7IqVHkWmGnvfE/jGRTOD8SHekY=
 			</data>
 		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/THIRD_PARTY_NOTICES.txt</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/THIRD_PARTY_NOTICES.txt</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			MtPerCKMW9tlmecNugoXtvvSRFV7F+zc6kgjaTYY5Aw=
 			</data>
 		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/apps.iphone.badge.checkmark.svg</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/apps.iphone.badge.checkmark.svg</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			lJseKvwQ2lgFNEy39FP9+2ORg/rqaJrNIy5xgumYEjA=
 			</data>
 		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/apps.iphone.svg</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/apps.iphone.svg</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			5sf5GdS/Bkgvh4qI35mFpMtR2Ladue7/ysiVXlLK6w8=
 			</data>
 		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/base_scene.png</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/base_scene.png</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			oy9RIJqrx0lQR/jQU2+AezXYoWEUsbId92DxXS2MpSM=
 			</data>
 		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/chrome-home.svg</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/chrome-home.svg</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			GzYoWCMmnXYqqpVj1oOzid4OMoRlAd81wBIe0XPfdZQ=
 			</data>
 		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/chrome-record.svg</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/chrome-record.svg</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			s8ld3k+jQIudFz3lz0haVVsrX35icQywLlZhSAgU+cA=
 			</data>
 		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/chrome-screenshot.svg</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/chrome-screenshot.svg</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			0ipe0gdPoBpxbQYH2pIehN5FOPqiK3bV/EJOgmTp0H0=
 			</data>
 		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/macbook.and.iphone.svg</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/macbook.and.iphone.svg</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			S4CPGfHnlkMHukjTI2LToA4MolMtarJjaGGegfLGhZ8=
 			</data>
 		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/phone_screen.png</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/phone_screen.png</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			H3UC55d0i9ud48O+IPzKTkaK//TQlHNrXTbEAZZE9yk=
 			</data>
 		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/scrcpy-APACHE-2.0.txt</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/scrcpy-APACHE-2.0.txt</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			AcEgNb81rzckEpjcetU46yoH5clAQ3vGh2/uqp0ZUdA=
 			</data>
 		</dict>
-		<key>Resources/PhoneRelay_PhoneRelay.bundle/Contents/Resources/scrcpy-server</key>
+		<key>Resources/PhoneRelay_PhoneRelay.bundle/scrcpy-server</key>
 		<dict>
 			<key>hash2</key>
 			<data>
@@ -239,7 +239,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			cSfSQXqjSp2D7xN0Rx4Cpd9/2T+gav1RIMD87USnWmA=
+			hmxdnsT066oMvrXomkotXa5VAuAWOpBLLbdRbXeS93I=
 			</data>
 		</dict>
 		<key>Resources/scrcpy-server</key>
@@ -247,13 +247,6 @@
 			<key>hash2</key>
 			<data>
 			hJJL1WSh62CJyHLHUh+WgFiXf5H1/wJRSox0r/MhDzo=
-			</data>
-		</dict>
-		<key>embedded.provisionprofile</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			fbVDu41IpblyZXxnrJyZQikX113zvDWOuCfPwI50/gw=
 			</data>
 		</dict>
 	</dict>

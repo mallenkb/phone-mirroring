@@ -6,7 +6,19 @@ import SwiftUI
 /// Main pre-connection screen. Renders the Figma design at a fixed surface
 /// size and scales it to fit the host window.
 struct FigmaMirrorExperienceView: View {
+    private enum ConnectionStep {
+        case chooseMethod
+        case wirelessPairing
+    }
+
     @EnvironmentObject private var model: AppModel
+    @State private var connectionStep: ConnectionStep = .chooseMethod
+    /// The row the user tapped from the chooser. While set, the chooser stays
+    /// visible and that row owns the spinner instead of showing a full loading
+    /// surface with transport-specific copy.
+    @State private var inlineConnectingTransport: AppModel.ConnectionLoadingTransport?
+    @State private var usbAvailabilityBeforeConnect = false
+    @State private var wifiAvailabilityBeforeConnect = false
     private let phoneAspect: CGFloat = MirrorContentWindowController.defaultMirrorAspect
     private let edgeBleed: CGFloat = 2
     private var referenceHeight: CGFloat { AppModel.onboardingWindowSize.height }
@@ -17,13 +29,50 @@ struct FigmaMirrorExperienceView: View {
         model.isActivelyConnecting || model.isMirroring
     }
     private var isUSBButtonBusy: Bool {
-        model.isManualUSBConnectDisabled
+        inlineConnectingTransport == .usb
     }
-    private let heroIconSize: CGFloat = 36
+    private var isWirelessButtonBusy: Bool {
+        inlineConnectingTransport == .wifi
+    }
+    private var isChooserButtonDisabled: Bool {
+        inlineConnectingTransport != nil
+    }
+    private var effectiveUSBConnectionAvailable: Bool {
+        inlineConnectingTransport == nil
+            ? model.isUSBConnectionAvailable || isCurrentUSBSessionOnline
+            : usbAvailabilityBeforeConnect
+    }
+    private var effectiveWiFiConnectionAvailable: Bool {
+        inlineConnectingTransport == nil
+            ? model.isWirelessConnectionAvailable || isCurrentWiFiSessionOnline
+            : wifiAvailabilityBeforeConnect
+    }
+    private var isCurrentUSBSessionOnline: Bool {
+        guard model.isMirroring || model.isSelectedDeviceOnline else { return false }
+        guard let serial = model.selectedDevice.adbSerial,
+              !serial.isEmpty else {
+            return model.selectedDevice.network.localizedCaseInsensitiveContains("usb")
+        }
+        return (model.isMirroring || model.isSelectedDeviceOnline)
+            && (!AppModel.isWirelessADBTarget(serial)
+                || model.selectedDevice.network.localizedCaseInsensitiveContains("usb"))
+    }
+    private var isCurrentWiFiSessionOnline: Bool {
+        guard model.isMirroring || model.isSelectedDeviceOnline else { return false }
+        let network = model.selectedDevice.network
+        let networkIsWireless = network.localizedCaseInsensitiveContains("wi-fi")
+            || network.localizedCaseInsensitiveContains("wireless")
+        guard let serial = model.selectedDevice.adbSerial,
+              !serial.isEmpty else { return networkIsWireless }
+        return (model.isMirroring || model.isSelectedDeviceOnline)
+            && (AppModel.isWirelessADBTarget(serial)
+                || networkIsWireless)
+    }
     private let maxColumnWidth: CGFloat = 620
-    private let qrCodeSize: CGFloat = 216
-    private let qrPanelSize: CGFloat = 244
+    private let qrPanelSize: CGFloat = 236.42318725585938
     private let accent = onboardingAccentCyan
+    /// Secondary/cyan/400 — the enabled "Connect" button fill in the design.
+    private let cyan400 = Color(red: 34.0 / 255.0, green: 211.0 / 255.0, blue: 238.0 / 255.0)
     private let qrRefreshTimer = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
     private let errorPillDuration: UInt64 = 5_000_000_000
 
@@ -40,21 +89,34 @@ struct FigmaMirrorExperienceView: View {
             .frame(width: referenceWidth, height: referenceHeight)
             .fixedSize()
         .onAppear {
-            model.ensureQRCodePairingSession()
+            syncPreferredConnectionStep()
+        }
+        .onChange(of: model.connectionWindowPrefersWirelessDetails) { _ in
+            syncPreferredConnectionStep()
+        }
+        .onChange(of: model.connectionWindowNavigationResetID) { _ in
+            syncPreferredConnectionStep()
         }
         .onReceive(qrRefreshTimer) { _ in
-            guard !isConnecting else { return }
+            guard connectionStep == .wirelessPairing, !isConnecting else { return }
             model.restartQRCodePairingSession()
         }
         .onDisappear {
             model.stopQRCodePairingSession()
+        }
+        .onChange(of: model.isActivelyConnecting) { connecting in
+            // The row attempt has resolved (mirroring started, or it failed and
+            // returned to idle) — drop back to the normal loading-surface rules.
+            if !connecting { inlineConnectingTransport = nil }
         }
     }
 
     @ViewBuilder
     private var designSurface: some View {
         FigmaPhoneFrame {
-            if model.shouldShowConnectionLoadingSurface {
+            if connectionStep == .chooseMethod {
+                onboardingContent
+            } else if model.shouldShowConnectionLoadingSurface && inlineConnectingTransport == nil {
                 connectionLoadingContent
             } else {
                 onboardingContent
@@ -65,7 +127,7 @@ struct FigmaMirrorExperienceView: View {
     private var connectionLoadingContent: some View {
         MirrorLoadingSurface(
             statusText: model.connectionLoadingStatusText,
-            deviceName: model.mirrorLoadingDeviceTitle,
+            deviceName: model.connectionLoadingDeviceTitle,
             cornerRadius: MirrorContentWindowController.onboardingCornerRadius(),
             repeatsProgress: true
         )
@@ -73,61 +135,56 @@ struct FigmaMirrorExperienceView: View {
 
     private var onboardingContent: some View {
         GeometryReader { proxy in
-            // A single continuous scale derived from the available space (which
-            // tracks the host display's resolution, since the onboarding window
-            // is sized from it). Every font and metric multiplies by this, so
-            // text shrinks smoothly on lower-resolution displays and only
-            // reaches its full design size at high resolution. No hard floors
-            // on individual fonts — that's what previously kept them oversized.
-            let scale = min(1, max(0.5, min(proxy.size.height / 815, proxy.size.width / 390)))
-            let usesCompactLayout = proxy.size.height <= 760 || proxy.size.width <= 360
-            let availableWidth = proxy.size.width - (usesCompactLayout ? 44 : 72)
-            let contentWidth = min(availableWidth, maxColumnWidth)
-            let qrPanelSize = min(self.qrPanelSize * scale, contentWidth * (usesCompactLayout ? 0.64 : 0.72))
-            // Keep the white border around the QR a constant fraction of the
-            // panel so it doesn't look like oversized padding when scaled down.
-            let qrCodeSize = qrPanelSize * 0.88
+            let scale = min(1, max(0.5, min(proxy.size.height / 695.2727, proxy.size.width / 320)))
+            let contentWidth = min(proxy.size.width - 32 * scale, maxColumnWidth)
 
-            VStack(spacing: 0) {
-                headerGroup(width: contentWidth, scale: scale)
+            Group {
+                if connectionStep == .chooseMethod {
+                    VStack(spacing: 23.273 * scale) {
+                        connectionChoiceScreen(width: contentWidth, scale: scale)
+                            .frame(width: contentWidth)
+                            .frame(maxHeight: .infinity)
 
-                USBConnectButton(
-                    accent: accent,
-                    scale: scale,
-                    isConnecting: isUSBButtonBusy,
-                    disabled: isUSBButtonBusy,
-                    action: model.connectViaUSB
-                )
-                .frame(width: contentWidth)
-                .padding(.top, (usesCompactLayout ? 28 : 40) * scale)
+                        bottomStatusPill(width: contentWidth, scale: scale)
+                            .transaction { transaction in
+                                transaction.animation = nil
+                            }
+                    }
+                    .frame(width: contentWidth)
+                    .padding(.top, 24 * scale)
+                    .padding(.bottom, 16 * scale)
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                } else {
+                    ZStack(alignment: .topLeading) {
+                        ScrollView(.vertical, showsIndicators: false) {
+                            VStack(spacing: 23.273 * scale) {
+                                wirelessPairingScreen(width: contentWidth, scale: scale)
+                                    .frame(width: contentWidth)
+                            }
+                            .frame(width: contentWidth)
+                            .padding(.top, 92 * scale)
+                            .padding(.bottom, 66 * scale)
+                            .frame(width: proxy.size.width)
+                        }
+                        .frame(width: proxy.size.width, height: proxy.size.height)
 
-                Text("or")
-                    .font(.system(size: 13 * scale, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.6))
-                    .padding(.vertical, (usesCompactLayout ? 18 : 26) * scale)
+                        fixedWirelessBackButton(width: contentWidth, scale: scale)
+                            .padding(.top, 24 * scale)
+                            .frame(width: proxy.size.width, alignment: .center)
 
-                connectionInstruction(
-                    iconName: "qrcode.viewfinder",
-                    title: "Scan QR code",
-                    detail: "Enable Wireless debugging, tap Pair with QR code, then scan.",
-                    iconColor: .white,
-                    width: contentWidth,
-                    scale: scale,
-                    usesCompactTitleLayout: usesCompactLayout
-                )
-
-                qrPairingPanel(panelSize: qrPanelSize, codeSize: qrCodeSize)
-                    .padding(.top, (usesCompactLayout ? 18 : 26) * scale)
-                    .frame(width: contentWidth, alignment: .center)
-
-                if shouldShowDevicePill {
-                    devicePill(width: contentWidth, scale: scale)
-                        .padding(.top, (usesCompactLayout ? 22 : 32) * scale)
+                        VStack {
+                            Spacer()
+                            bottomStatusPill(width: contentWidth, scale: scale)
+                                .transaction { transaction in
+                                    transaction.animation = nil
+                                }
+                                .padding(.bottom, 16 * scale)
+                        }
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                    }
                 }
             }
-            .padding(.horizontal, usesCompactLayout ? 22 : 36)
-            .frame(width: contentWidth, alignment: .center)
-            .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+            .animation(.smooth(duration: 0.34, extraBounce: 0.05), value: connectionStep)
             .task(id: model.activeError?.id) {
                 guard let error = model.activeError else { return }
                 do {
@@ -141,133 +198,339 @@ struct FigmaMirrorExperienceView: View {
         }
     }
 
-    private func headerGroup(width: CGFloat, scale: CGFloat) -> some View {
-        VStack(spacing: 16 * scale) {
-            Image(systemName: "iphone.gen3.radiowaves.left.and.right")
-                .font(.system(size: heroIconSize * scale, weight: .medium))
-                .foregroundStyle(accent)
+    private func connectionChoiceScreen(width: CGFloat, scale: CGFloat) -> some View {
+        // "Message and description" — centered as a group in the available
+        // space (Figma: flex-1, gap 48 between header and the option rows).
+        VStack(spacing: 48 * scale) {
+            VStack(spacing: 11.636 * scale) {
+                Image(systemName: "iphone.gen3.radiowaves.left.and.right")
+                    .font(.system(size: 33 * scale, weight: .regular))
+                    .foregroundStyle(accent)
+                    .frame(width: 61 * scale, height: 40 * scale)
 
-            VStack(spacing: 5 * scale) {
                 Text("Connect your Android phone")
-                    .font(.system(size: 20 * scale, weight: .bold))
+                    .font(.system(size: 16 * scale, weight: .semibold))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(width: width)
-
-                Text("Mirror its screen right here on your Mac.")
-                    .font(.system(size: 13.5 * scale, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.66))
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
                     .frame(width: width)
             }
+
+            VStack(spacing: 4 * scale) {
+                connectionChoiceRow(
+                    iconName: "cable.connector",
+                    title: "Connect with USB",
+                    showsProgress: isUSBButtonBusy,
+                    isDisabled: isChooserButtonDisabled,
+                    isAvailable: effectiveUSBConnectionAvailable,
+                    width: width,
+                    scale: scale,
+                    action: {
+                        usbAvailabilityBeforeConnect = model.isUSBConnectionAvailable
+                        wifiAvailabilityBeforeConnect = model.isWirelessConnectionAvailable
+                        inlineConnectingTransport = .usb
+                        model.connectViaUSB()
+                    }
+                )
+
+                connectionChoiceRow(
+                    iconName: "wifi",
+                    title: "Connect wirelessly",
+                    showsProgress: isWirelessButtonBusy,
+                    isDisabled: isChooserButtonDisabled,
+                    isAvailable: effectiveWiFiConnectionAvailable,
+                    width: width,
+                    scale: scale,
+                    action: {
+                        usbAvailabilityBeforeConnect = model.isUSBConnectionAvailable
+                        wifiAvailabilityBeforeConnect = model.isWirelessConnectionAvailable
+                        if model.hasSavedWirelessConnection {
+                            inlineConnectingTransport = .wifi
+                            model.reconnectOverWiFi(inlineUntilConnected: true)
+                        } else {
+                            navigate(to: .wirelessPairing)
+                            model.ensureQRCodePairingSession()
+                        }
+                    }
+                )
+            }
+        }
+        .frame(width: width)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func wirelessPairingScreen(width: CGFloat, scale: CGFloat) -> some View {
+        VStack(spacing: 23.273 * scale) {
+            // "Message and description" — centered as a group (Figma: flex-1,
+            // gap 16 between the header, QR panel, pairing-code fallback, and
+            // direct connect row).
+            VStack(spacing: 16 * scale) {
+                VStack(spacing: 11.636 * scale) {
+                    Image(systemName: "wifi")
+                        .font(.system(size: 28 * scale, weight: .regular))
+                        .foregroundStyle(accent)
+                        .frame(width: 41 * scale, height: 40 * scale)
+
+                    VStack(spacing: 8 * scale) {
+                        VStack(spacing: 2 * scale) {
+                            Text("Scan QR Code")
+                                .font(.system(size: 14 * scale, weight: .bold))
+                                .foregroundStyle(.white)
+
+                            Text("Open Developer options, turn on Wireless debugging, then tap Pair with QR code.")
+                                .font(.system(size: 12 * scale, weight: .regular))
+                                .foregroundStyle(.white.opacity(0.7))
+                                .multilineTextAlignment(.center)
+                                .frame(width: width)
+                        }
+
+                        Button(action: openDeveloperOptionsHelp) {
+                            Text("Need help finding developer options?")
+                                .font(.system(size: 12 * scale, weight: .regular))
+                                .foregroundStyle(accent)
+                                .underline()
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                qrPairingPanel(panelSize: qrPanelSize * scale, codeSize: qrPanelSize * 0.8985 * scale)
+
+                Text("or")
+                    .font(.system(size: 12 * scale, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .frame(width: width)
+
+                manualADBTargetRow(width: width, scale: scale)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: width)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func fixedWirelessBackButton(width: CGFloat, scale: CGFloat) -> some View {
+        HStack {
+            iconButton(systemName: "arrow.left", scale: scale) {
+                navigate(to: .chooseMethod)
+            }
+            Spacer()
+        }
+        .frame(width: width)
+    }
+
+    private func navigate(to step: ConnectionStep) {
+        if step == .chooseMethod {
+            model.clearConnectionWindowPreferredStep()
+        }
+        withAnimation(.smooth(duration: 0.34, extraBounce: 0.05)) {
+            connectionStep = step
         }
     }
 
-    private var shouldShowDevicePill: Bool {
-        model.isSelectedDeviceOnline || !model.pairedPhones.isEmpty
+    private func syncPreferredConnectionStep() {
+        if model.connectionWindowPrefersWirelessDetails {
+            connectionStep = .wirelessPairing
+            model.ensureQRCodePairingSession()
+        } else {
+            connectionStep = .chooseMethod
+            model.stopQRCodePairingSession()
+        }
     }
 
-    private func devicePill(width: CGFloat, scale: CGFloat) -> some View {
-        let error = model.activeError
-        let online = model.isSelectedDeviceOnline
-        let connecting = model.isActivelyConnecting
-        let statusText = error == nil ? model.connectionStatusText : "Connection failed"
-        let deviceLabel = error == nil ? model.connectionDeviceLabel : Self.shortFailureMessage(error?.message)
-        let isActive = online || connecting
-        let isError = error != nil
-        let dotColor = isError ? Color(red: 1.0, green: 0.48, blue: 0.38) : (isActive ? accent : Color.white.opacity(0.42))
+    private func openDeveloperOptionsHelp() {
+        guard let url = URL(string: "https://developer.android.com/studio/debug/dev-options") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func connectionChoiceRow(
+        iconName: String,
+        title: String,
+        showsProgress: Bool,
+        isDisabled: Bool,
+        isAvailable: Bool,
+        width: CGFloat,
+        scale: CGFloat,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: {
+            guard !isDisabled else { return }
+            action()
+        }) {
+            HStack(spacing: 8.727 * scale) {
+                // 32pt icon slot — transparent in the design (the row itself
+                // carries the tinted background), the glyph just sits on it.
+                Image(systemName: iconName)
+                    .font(.system(size: 16 * scale, weight: .regular))
+                    .foregroundStyle((isAvailable || showsProgress) ? Self.connectionOnlineGreen : .white)
+                    .frame(width: 32 * scale, height: 32 * scale)
+
+                Text(title)
+                    .font(.system(size: 14 * scale, weight: .regular))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                // Right-hand affordance: a spinner while this row's action is in
+                // flight, otherwise the chevron.
+                ZStack {
+                    if showsProgress {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.white)
+                            .scaleEffect(max(0.7, 0.85 * scale))
+                    } else {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13 * scale, weight: .regular))
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                }
+                .frame(width: 17.455 * scale, height: 17.455 * scale)
+            }
+            .padding(8 * scale)
+            .frame(width: width)
+            .background(
+                RoundedRectangle(cornerRadius: 12 * scale, style: .continuous)
+                    .fill(Color.white.opacity(0.05))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func iconButton(systemName: String, scale: CGFloat, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(Color.white.opacity(0.1))
+                Image(systemName: systemName)
+                    .font(.system(size: 16 * scale, weight: .regular))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 40 * scale, height: 40 * scale)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func bottomStatusPill(width: CGFloat, scale: CGFloat) -> some View {
+        let state = model.connectionPillState
+        let deviceLabel = state == .noPhone ? "" : model.connectionDeviceLabel
+        let isConnecting = state == .connecting || state == .reconnecting
         let fontSize = 12 * scale
 
-        return HStack(spacing: 8 * scale) {
-            StatusDot(color: dotColor, diameter: 7 * scale, pulses: connecting && !isError)
+        return HStack(spacing: 4 * scale) {
+            StatusDot(color: Self.pillDotColor(for: state), diameter: 8 * scale, pulses: isConnecting)
 
-            Text(statusText)
-                .font(.system(size: fontSize, weight: .semibold))
-                .foregroundStyle(.white.opacity(isActive || isError ? 0.92 : 0.82))
+            Text(model.connectionPillText)
+                .font(.system(size: fontSize, weight: .medium))
+                .foregroundStyle(.white.opacity(0.92))
                 .fixedSize()
 
-            Text(deviceLabel)
-                .font(.system(size: fontSize, weight: .medium))
-                .foregroundStyle(.white.opacity(0.62))
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .layoutPriority(1)
+            if !deviceLabel.isEmpty {
+                Text(deviceLabel)
+                    .font(.system(size: fontSize, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.62))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .layoutPriority(1)
+            }
         }
-        .padding(.horizontal, 14 * scale)
-        .frame(height: 30 * scale)
+        .padding(.horizontal, 8 * scale)
+        .frame(height: 26 * scale)
         .background(
             Capsule(style: .continuous)
-                .fill(Color.white.opacity(0.08))
+                .fill(Color.white.opacity(0.1))
                 .overlay(
                     Capsule(style: .continuous)
-                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
                 )
         )
         .frame(maxWidth: width, alignment: .center)
     }
 
-    private static func shortFailureMessage(_ message: String?) -> String {
-        guard let message else { return "Try again" }
-        let lower = message.lowercased()
-        if lower.contains("offline") {
-            return "Phone offline"
+    /// Status dot tint per pill state: grey when idle/offline, amber while
+    /// connecting/reconnecting, green online, red on failure.
+    private static let connectionOnlineGreen = Color(red: 0.29, green: 0.87, blue: 0.50)
+
+    private static func pillDotColor(for state: AppModel.ConnectionPillState) -> Color {
+        switch state {
+        case .noPhone, .offline:
+            return Color.white.opacity(0.45)
+        case .actionNeeded:
+            return Color(red: 0.97, green: 0.44, blue: 0.44)
+        case .connecting, .reconnecting:
+            return Color(red: 0.98, green: 0.75, blue: 0.18)
+        case .online:
+            return connectionOnlineGreen
+        case .failed:
+            return Color(red: 0.97, green: 0.44, blue: 0.44)
         }
-        if lower.contains("unauthorized") || lower.contains("authorize") {
-            return "Authorize USB"
-        }
-        if lower.contains("wi-fi") || lower.contains("wifi") || lower.contains("network") {
-            return "Check Wi-Fi"
-        }
-        return "Try again"
     }
 
-    private func connectionInstruction(
-        iconName: String,
-        title: String,
-        detail: String,
-        iconColor: Color,
-        width: CGFloat,
-        scale: CGFloat,
-        usesCompactTitleLayout: Bool = false
-    ) -> some View {
-        VStack(spacing: 6 * scale) {
-            HStack(alignment: .firstTextBaseline, spacing: usesCompactTitleLayout ? 5 : 8 * scale) {
-                Image(systemName: iconName)
-                    .font(.system(size: 16 * scale, weight: .semibold))
-                    .foregroundStyle(iconColor)
-                    .frame(width: usesCompactTitleLayout ? 12 : 20 * scale, alignment: .center)
+    private func manualADBTargetRow(width: CGFloat, scale: CGFloat) -> some View {
+        let isConnecting = model.isManualADBTargetConnecting
+        let connectEnabled = !model.isActivelyConnecting
+            && AppModel.normalizedManualADBTarget(model.manualADBTarget) != nil
 
-                instructionTitle(title, scale: scale)
-                    .layoutPriority(1)
+        return VStack(alignment: .leading, spacing: 6 * scale) {
+            HStack(spacing: 8.727 * scale) {
+                TextField("e.g. 192.168.1.23", text: $model.manualADBTarget)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 14 * scale, weight: .regular))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .onSubmit {
+                        model.connectManualADBTarget()
+                    }
+
+                Button(action: model.connectManualADBTarget) {
+                    HStack(spacing: 8 * scale) {
+                        if isConnecting {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(onboardingDeepCyan)
+                                .scaleEffect(max(0.7, 0.82 * scale))
+                        }
+
+                        Text(isConnecting ? "Connecting" : "Connect")
+                            .font(.system(size: 14 * scale, weight: .medium))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .foregroundStyle(connectEnabled || isConnecting ? onboardingDeepCyan : Color.white.opacity(0.5))
+                    .padding(.horizontal, 12 * scale)
+                    .frame(height: 40 * scale)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8 * scale, style: .continuous)
+                            .fill(connectEnabled || isConnecting ? cyan400 : Color.white.opacity(0.2))
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!connectEnabled || isConnecting)
             }
-            .frame(width: width, alignment: .center)
+            .padding(.leading, 16 * scale)
+            .padding(.trailing, 4 * scale)
+            .padding(.vertical, 4 * scale)
+            .frame(width: width, height: 48 * scale)
+            .background(
+                RoundedRectangle(cornerRadius: 12 * scale, style: .continuous)
+                    .fill(Color.white.opacity(0.05))
+            )
 
-            Text(detail)
-                .font(.system(size: 14 * scale, weight: .regular))
-                .foregroundStyle(.white.opacity(0.78))
-                .multilineTextAlignment(.center)
-                .lineSpacing(2 * scale)
+            Text("Enter the phone IP only. The app uses port 5555 automatically.")
+                .font(.system(size: 11 * scale, weight: .regular))
+                .foregroundStyle(.white.opacity(0.58))
+                .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(width: width)
+                .frame(width: width - 24 * scale, alignment: .leading)
+                .padding(.horizontal, 12 * scale)
         }
         .frame(width: width)
-    }
-
-    private func instructionTitle(_ title: String, scale: CGFloat) -> some View {
-        Text(title)
-            .font(.system(size: 18 * scale, weight: .bold))
-            .foregroundStyle(.white)
-            .multilineTextAlignment(.center)
-            .lineLimit(2)
-            .minimumScaleFactor(0.7)
-            .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .contain)
     }
 
     private func qrPairingPanel(panelSize: CGFloat, codeSize: CGFloat) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+        let radius = 18.472 * (panelSize / qrPanelSize)
+        return ZStack {
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
                 .fill(Color.white)
                 .shadow(color: Color.black.opacity(0.22), radius: 14 * (panelSize / qrPanelSize), x: 0, y: 8)
 
@@ -284,10 +547,6 @@ struct FigmaMirrorExperienceView: View {
             }
         }
         .frame(width: panelSize, height: panelSize)
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(0.55), lineWidth: 1)
-        )
     }
 
     private func qrImage(from payload: String, size: CGFloat) -> NSImage? {
@@ -990,78 +1249,6 @@ private struct PermissionRoundedButtonStyle: ButtonStyle {
                         lineWidth: 1
                     )
             )
-    }
-}
-
-/// Full-width USB action with an obvious tappable surface and hover feedback.
-private struct USBConnectButton: View {
-    let accent: Color
-    let scale: CGFloat
-    let isConnecting: Bool
-    let disabled: Bool
-    let action: () -> Void
-    @State private var hovering = false
-
-    private var corner: CGFloat { 14 * scale }
-    private var title: String { isConnecting ? "Connecting..." : "Connect via USB" }
-    private var detail: String {
-        isConnecting
-            ? "Checking the current device. USB connect is paused briefly."
-            : "Enable USB debugging, then plug in your cable."
-    }
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 13 * scale) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10 * scale, style: .continuous)
-                        .fill(Color.white.opacity(isConnecting ? 0.16 : 0.12))
-                    if isConnecting {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(.white)
-                            .scaleEffect(max(0.75, scale))
-                    } else {
-                        Image(systemName: "cable.connector.horizontal")
-                            .font(.system(size: 16 * scale, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
-                }
-                .frame(width: 38 * scale, height: 38 * scale)
-
-                VStack(alignment: .leading, spacing: 2 * scale) {
-                    Text(title)
-                        .font(.system(size: 15.5 * scale, weight: .bold))
-                        .foregroundStyle(.white.opacity(isConnecting ? 0.95 : 1))
-                    Text(detail)
-                        .font(.system(size: 12.5 * scale, weight: .regular))
-                        .foregroundStyle(.white.opacity(isConnecting ? 0.76 : 0.7))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13 * scale, weight: .semibold))
-                    .foregroundStyle(.white.opacity(isConnecting ? 0.22 : 0.5))
-            }
-            .padding(.horizontal, 15 * scale)
-            .padding(.vertical, 12 * scale)
-            .background(
-                RoundedRectangle(cornerRadius: corner, style: .continuous)
-                    .fill(Color.white.opacity(isConnecting ? 0.105 : (hovering && !disabled ? 0.14 : 0.075)))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: corner, style: .continuous)
-                    .stroke(Color.white.opacity(isConnecting ? 0.26 : (hovering && !disabled ? 0.30 : 0.16)), lineWidth: 1)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .opacity(1)
-        .onHover { hovering = $0 }
-        .animation(.easeOut(duration: 0.15), value: hovering)
-        .animation(.easeOut(duration: 0.15), value: isConnecting)
     }
 }
 

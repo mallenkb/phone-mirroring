@@ -87,8 +87,9 @@ struct SettingsView: View {
                         record: record,
                         isOnline: isOnline(record),
                         isActive: isActive(record),
-                        onConnect: { model.connect(record: record) },
-                        onDisconnect: { model.stopMirroring() },
+                        liveAddress: liveAddress(for: record),
+                        onConnect: { transport in model.connect(record: record, transport: transport.modelTransport) },
+                        onDisconnect: { model.disconnectFromSettings() },
                         onForget: { model.forgetPairedPhone(id: record.id) }
                     )
                 }
@@ -132,6 +133,13 @@ struct SettingsView: View {
                     isOn: $model.mirrorScreenOffAfterThirtySecondsEnabled,
                     title: "Turn the phone screen off after 30 seconds",
                     subtitle: "Mirroring keeps working here while the phone's own display goes dark. Press ⌘L to do it now."
+                )
+                rowDivider
+                toggleRow(
+                    icon: "wifi",
+                    isOn: $model.backgroundWiFiHandoffEnabled,
+                    title: "Advanced USB-to-Wi-Fi handoff",
+                    subtitle: "Leave this off unless you want USB mirroring to prepare a separate legacy ADB Wi-Fi route."
                 )
             }
 
@@ -310,6 +318,7 @@ struct SettingsView: View {
             snapshot.localNetworkPermission,
             snapshot.adbStatus,
             snapshot.selectedTransport,
+            snapshot.wifiHandoff,
             snapshot.reconnectAttempts
         ]
 
@@ -794,10 +803,21 @@ struct SettingsView: View {
             return true
         }
 
+        return liveAddress(for: record) != nil
+    }
+
+    private func liveAddress(for record: PairedPhoneRecord) -> String? {
+        if let device = AppModel.rememberedAuthorizedDevice(
+            for: record,
+            in: model.latestAuthorizedADBDevices
+        ), !device.isUSB {
+            return device.serial
+        }
+
         return AppModel.rememberedConnectablePhone(
             for: record,
             in: model.discoveredPhones
-        ) != nil
+        )?.address
     }
 
     private func recordMatchesSelectedDevice(_ record: PairedPhoneRecord) -> Bool {
@@ -930,13 +950,122 @@ private struct DestructiveSettingsButtonStyle: ButtonStyle {
     }
 }
 
+/// Bordered, low-emphasis button (e.g. the "more actions" ellipsis): a faint
+/// translucent fill plus a hairline border, distinct from the filled primary.
+private struct SettingsSecondaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(configuration.isPressed ? 0.14 : 0.05))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.white.opacity(0.16), lineWidth: 1)
+            )
+            .opacity(isEnabled ? 1 : 0.5)
+    }
+}
+
+/// One row of the custom "more actions" dropdown. Renders its own hover
+/// highlight (accent for normal rows, red for destructive) so it can show a
+/// red "Forget" that a native NSMenu item can't.
+private struct MoreMenuRow: View {
+    let title: String
+    var isDestructive: Bool = false
+    let action: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 13))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(foreground)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(isHovering ? highlight : Color.clear)
+        )
+        .onHover { isHovering = $0 }
+    }
+
+    private var foreground: Color {
+        if isDestructive { return isHovering ? .white : .red }
+        return isHovering ? .white : .primary
+    }
+
+    private var highlight: Color {
+        isDestructive ? Color.red : Color.accentColor
+    }
+}
+
+private struct SettingsRowActionButtonStyle: ButtonStyle {
+    static let width: CGFloat = 96
+    static let height: CGFloat = 28
+
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let foreground = isEnabled ? Color.red : Color.secondary
+        let background = isEnabled ? Color.red.opacity(0.12) : Color.secondary.opacity(0.12)
+
+        configuration.label
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(foreground)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.horizontal, 13)
+            .frame(minWidth: Self.width)
+            .frame(height: Self.height)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(background.opacity(configuration.isPressed ? 1.35 : 1))
+            )
+    }
+}
+
+enum SettingsDeviceTransport: String, CaseIterable, Identifiable {
+    case wifi
+    case usb
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .wifi: return "Wi-Fi"
+        case .usb: return "USB"
+        }
+    }
+
+    var connectTitle: String {
+        "Connect \(title)"
+    }
+
+    var modelTransport: AppModel.SavedConnectionTransport {
+        switch self {
+        case .wifi: return .wifi
+        case .usb: return .usb
+        }
+    }
+}
+
 private struct PairedPhoneRow: View {
     let record: PairedPhoneRecord
     let isOnline: Bool
     let isActive: Bool
-    let onConnect: () -> Void
+    let liveAddress: String?
+    let onConnect: (SettingsDeviceTransport) -> Void
     let onDisconnect: () -> Void
     let onForget: () -> Void
+    @State private var showMoreMenu = false
 
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
@@ -954,10 +1083,9 @@ private struct PairedPhoneRow: View {
                 Text(record.displayName)
                     .font(.system(size: 15, weight: .semibold))
                     .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                HStack(spacing: 10) {
-                    labeledValue("Address", record.lastAddress)
-                }
+                connectionDetails
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -986,18 +1114,62 @@ private struct PairedPhoneRow: View {
     }
 
     @ViewBuilder
-    private var actionButton: some View {
+    private var actionButtons: some View {
         if isActive {
+            // Connected: disconnecting is the only action — a connect control
+            // would be redundant, so it's hidden until the device is offline.
             Button("Disconnect", action: onDisconnect)
-        } else if isOnline {
-            Button("Connect", action: onConnect)
+                .buttonStyle(SettingsRowActionButtonStyle())
         } else {
-            Button("Forget", role: .destructive, action: onForget)
+            moreActionsMenu
         }
     }
 
+    private var moreActionsMenu: some View {
+        Button {
+            showMoreMenu.toggle()
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 32, height: 32)
+        }
+        .buttonStyle(SettingsSecondaryButtonStyle())
+        // A native Menu (NSMenu) ignores per-item colors, so the destructive
+        // "Forget" can't render red. A popover with custom rows can, and it
+        // isn't clipped by the surrounding ScrollView the way an overlay is.
+        .popover(isPresented: $showMoreMenu, arrowEdge: .bottom) {
+            moreActionsDropdown
+        }
+        .help("More actions")
+    }
+
+    private var moreActionsDropdown: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(availableTransports) { transport in
+                MoreMenuRow(title: transport.connectTitle) {
+                    showMoreMenu = false
+                    onConnect(transport)
+                }
+            }
+
+            if !availableTransports.isEmpty {
+                Divider()
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+            }
+
+            MoreMenuRow(title: "Forget", isDestructive: true) {
+                showMoreMenu = false
+                onForget()
+            }
+        }
+        .padding(5)
+        .frame(width: 190)
+    }
+
     private var rightColumn: some View {
-        HStack(alignment: .center, spacing: 18) {
+        HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(statusLabel)
                     .font(.system(size: 11, weight: .medium))
@@ -1010,13 +1182,15 @@ private struct PairedPhoneRow: View {
             }
             .frame(width: 148, alignment: .trailing)
 
-            actionButton
-                .frame(width: 96, alignment: .trailing)
+            actionButtons
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(alignment: .trailing)
         }
     }
 
     private var statusLabel: String {
         if isActive { return "Connected" }
+        if liveAddress != nil { return "Wi-Fi available" }
         if isOnline { return "Online" }
         return "Last seen"
     }
@@ -1027,18 +1201,47 @@ private struct PairedPhoneRow: View {
         return .secondary
     }
 
-    private func labeledValue(_ label: String, _ value: String) -> some View {
-        HStack(spacing: 4) {
+    private var connectionDetails: some View {
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 3) {
+            connectionDetailRow("USB", usbAddress ?? "N/A")
+            connectionDetailRow("Wi-Fi", wifiAddress ?? "N/A")
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(.secondary)
+        .textSelection(.enabled)
+    }
+
+    private func connectionDetailRow(_ label: String, _ value: String) -> some View {
+        GridRow {
             Text("\(label):")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
+                .fontWeight(.medium)
+                .gridColumnAlignment(.leading)
             Text(value)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
+
+    private var usbAddress: String? {
+        record.resolvedUSBSerial
+    }
+
+    private var wifiAddress: String? {
+        liveAddress ?? record.resolvedWiFiAddress
+    }
+
+    private var availableTransports: [SettingsDeviceTransport] {
+        SettingsDeviceTransport.allCases.filter { transport in
+            switch transport {
+            case .wifi:
+                return wifiAddress != nil
+            case .usb:
+                return usbAddress != nil
+            }
+        }
+    }
+
 }
 
 private struct TemplateResourceIcon: View {

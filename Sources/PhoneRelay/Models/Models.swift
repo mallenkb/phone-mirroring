@@ -108,8 +108,21 @@ struct DiscoveredPhone: Identifiable, Equatable, Hashable {
     enum Kind: String, Codable, Equatable {
         /// Advertising `_adb-tls-pairing._tcp` — needs a 6-digit code to pair.
         case pairable
-        /// Advertising `_adb-tls-connect._tcp` — already paired or ready to connect.
+        /// Generic connectable ADB target retained for older stored/test values.
         case connectable
+        /// Advertising `_adb-tls-connect._tcp` from Android Wireless debugging.
+        case wirelessDebugging
+        /// Advertising `_adb._tcp` from legacy `adb tcpip 5555`.
+        case legacyTCPIP
+
+        var isConnectable: Bool {
+            switch self {
+            case .connectable, .wirelessDebugging, .legacyTCPIP:
+                return true
+            case .pairable:
+                return false
+            }
+        }
     }
     /// mDNS service instance name; stable across Wireless-debugging sessions.
     let id: String
@@ -179,6 +192,7 @@ struct ConnectionHealthSnapshot: Equatable {
     var localNetworkPermission: Item
     var adbStatus: Item
     var selectedTransport: Item
+    var wifiHandoff: Item
     var reconnectAttempts: Item
     var recommendedFix: String
 }
@@ -189,14 +203,26 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
     var id: String
     var displayName: String
     var lastAddress: String
+    var usbSerial: String?
+    var wifiAddress: String?
     var firstPaired: Date
     var lastConnected: Date
     var autoConnectSuspended: Bool
+
+    var resolvedUSBSerial: String? {
+        usbSerial ?? (Self.isWirelessADBAddress(lastAddress) ? nil : lastAddress)
+    }
+
+    var resolvedWiFiAddress: String? {
+        wifiAddress ?? (Self.isWirelessADBAddress(lastAddress) ? lastAddress : nil)
+    }
 
     init(
         id: String,
         displayName: String,
         lastAddress: String,
+        usbSerial: String? = nil,
+        wifiAddress: String? = nil,
         firstPaired: Date,
         lastConnected: Date,
         autoConnectSuspended: Bool = false
@@ -204,6 +230,8 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
         self.id = id
         self.displayName = displayName
         self.lastAddress = lastAddress
+        self.usbSerial = usbSerial ?? (Self.isWirelessADBAddress(lastAddress) ? nil : lastAddress)
+        self.wifiAddress = wifiAddress ?? (Self.isWirelessADBAddress(lastAddress) ? lastAddress : nil)
         self.firstPaired = firstPaired
         self.lastConnected = lastConnected
         self.autoConnectSuspended = autoConnectSuspended
@@ -213,6 +241,8 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
         case id
         case displayName
         case lastAddress
+        case usbSerial
+        case wifiAddress
         case firstPaired
         case lastConnected
         case autoConnectSuspended
@@ -223,8 +253,16 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
         id = try container.decode(String.self, forKey: .id)
         displayName = try container.decode(String.self, forKey: .displayName)
         lastAddress = try container.decode(String.self, forKey: .lastAddress)
+        usbSerial = try container.decodeIfPresent(String.self, forKey: .usbSerial)
+            ?? (Self.isWirelessADBAddress(lastAddress) ? nil : lastAddress)
+        wifiAddress = try container.decodeIfPresent(String.self, forKey: .wifiAddress)
+            ?? (Self.isWirelessADBAddress(lastAddress) ? lastAddress : nil)
         firstPaired = try container.decode(Date.self, forKey: .firstPaired)
         lastConnected = try container.decode(Date.self, forKey: .lastConnected)
         autoConnectSuspended = try container.decodeIfPresent(Bool.self, forKey: .autoConnectSuspended) ?? false
+    }
+
+    static func isWirelessADBAddress(_ address: String) -> Bool {
+        address.contains(":") || address.hasPrefix("adb-")
     }
 }

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import UserNotifications
 
@@ -29,11 +30,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private var firstRunWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var shortcutsWindow: NSWindow?
-    private var noticesWindow: NSWindow?
     private var updateCheckTask: Task<Void, Never>?
     private let model = AppModel()
     private var keyMonitor: Any?
     private var launchedInBackground = false
+    private weak var screenRecordingMenuItem: NSMenuItem?
+    private var screenRecordingMenuCancellable: AnyCancellable?
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
         if yieldToExistingInstanceIfNeeded() {
@@ -446,6 +448,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
         mainMenu.addItem(editItem)
         let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editMenu.addItem(.separator())
         editMenu.addItem(
             NSMenuItem(
                 title: "Phone Volume Up",
@@ -500,18 +507,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                 keyEquivalent: "S"
             )
         )
-        viewMenu.addItem(
-            NSMenuItem(
-                title: "Start or Stop Screen Recording",
-                action: #selector(toggleScreenRecording(_:)),
-                keyEquivalent: "R"
-            )
+        let screenRecordingItem = NSMenuItem(
+            title: "Start Screen Recording",
+            action: #selector(toggleScreenRecording(_:)),
+            keyEquivalent: "R"
         )
+        screenRecordingMenuItem = screenRecordingItem
+        viewMenu.addItem(screenRecordingItem)
         viewMenu.addItem(
             NSMenuItem(
                 title: "Turn Phone Screen Off or On",
                 action: #selector(togglePhoneScreen(_:)),
                 keyEquivalent: "l"
+            )
+        )
+        viewMenu.addItem(
+            NSMenuItem(
+                title: "Start Presentation Mode",
+                action: #selector(togglePresentationMode(_:)),
+                keyEquivalent: ""
             )
         )
         viewMenu.addItem(.separator())
@@ -534,6 +548,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                 title: "Center Mirror",
                 action: #selector(centerMirror(_:)),
                 keyEquivalent: "0"
+            )
+        )
+        viewMenu.addItem(
+            NSMenuItem(
+                title: "Turn On Always on Top",
+                action: #selector(toggleAlwaysOnTop(_:)),
+                keyEquivalent: ""
             )
         )
         viewMenu.addItem(.separator())
@@ -603,6 +624,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         helpItem.submenu = helpMenu
 
         NSApp.mainMenu = mainMenu
+        updateScreenRecordingMenuItem()
+        screenRecordingMenuCancellable = model.$isRecording
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.updateScreenRecordingMenuItem()
+            }
     }
 
     private func installKeyboardScaling() {
@@ -813,42 +840,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         }
     }
 
-    @objc private func showThirdPartyNotices(_ sender: Any?) {
-        if let noticesWindow {
-            noticesWindow.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-
-        let textView = NSTextView()
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.isRichText = false
-        textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        textView.textColor = .labelColor
-        textView.backgroundColor = .textBackgroundColor
-        textView.textContainerInset = NSSize(width: 16, height: 16)
-        textView.string = Self.thirdPartyNoticesText()
-
-        let scrollView = NSScrollView()
-        scrollView.hasVerticalScroller = true
-        scrollView.documentView = textView
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 560),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "Third-Party Notices"
-        window.contentView = scrollView
-        window.isReleasedWhenClosed = false
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        noticesWindow = window
-    }
-
     @objc private func showKeyboardShortcuts(_ sender: Any?) {
         if let shortcutsWindow {
             shortcutsWindow.makeKeyAndOrderFront(nil)
@@ -926,10 +917,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
     @objc private func toggleScreenRecording(_ sender: Any?) {
         model.toggleScreenRecording()
+        updateScreenRecordingMenuItem()
     }
 
     @objc private func togglePhoneScreen(_ sender: Any?) {
         model.togglePhoneScreenPower()
+    }
+
+    @objc private func togglePresentationMode(_ sender: Any?) {
+        model.togglePresentationMode()
+    }
+
+    @objc private func toggleAlwaysOnTop(_ sender: Any?) {
+        model.toggleMirrorAlwaysOnTop()
+    }
+
+    private func updateScreenRecordingMenuItem(_ menuItem: NSMenuItem? = nil) {
+        let item = menuItem ?? screenRecordingMenuItem
+        item?.title = model.isRecording ? "Stop Screen Recording" : "Start Screen Recording"
+        item?.state = model.isRecording ? .on : .off
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -947,10 +953,28 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
              #selector(takeScreenshot(_:))?,
              #selector(toggleScreenRecording(_:))?,
              #selector(togglePhoneScreen(_:))?,
+             #selector(togglePresentationMode(_:))?,
              #selector(zoomIn(_:))?,
              #selector(zoomOut(_:))?,
              #selector(centerMirror(_:))?:
+            if menuItem.action == #selector(toggleScreenRecording(_:)) {
+                updateScreenRecordingMenuItem(menuItem)
+                return model.hasActiveMirrorSession || model.isRecording
+            }
+            if menuItem.action == #selector(togglePresentationMode(_:)) {
+                menuItem.title = model.presentationModeEnabled
+                    ? "Stop Presentation Mode"
+                    : "Start Presentation Mode"
+                menuItem.state = model.presentationModeEnabled ? .on : .off
+                return model.hasActiveMirrorSession || model.presentationModeEnabled
+            }
             return model.hasActiveMirrorSession
+        case #selector(toggleAlwaysOnTop(_:))?:
+            menuItem.title = model.mirrorAlwaysOnTopEnabled
+                ? "Turn Off Always on Top"
+                : "Turn On Always on Top"
+            menuItem.state = model.mirrorAlwaysOnTopEnabled ? .on : .off
+            return true
         case #selector(revealLastCapture(_:))?:
             return model.lastCaptureURL != nil
         case #selector(checkForUpdates(_:))?:
@@ -971,28 +995,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
     @objc private func centerMirror(_ sender: Any?) {
         model.centerMirrorWindow()
-    }
-
-    private static func thirdPartyNoticesText() -> String {
-        let noticeText = textResource(
-            named: "THIRD_PARTY_NOTICES",
-            extension: "md",
-            fallbackRelativePath: "THIRD_PARTY_NOTICES.md"
-        ) ?? """
-        # Third-Party Notices
-
-        This app includes components from scrcpy, licensed under the Apache License 2.0.
-        """
-
-        let licenseText = textResource(
-            named: "scrcpy-APACHE-2.0",
-            extension: "txt",
-            subdirectory: "LICENSES",
-            fallbackRelativePath: "LICENSES/scrcpy-APACHE-2.0.txt"
-        ) ?? ""
-
-        guard !licenseText.isEmpty else { return noticeText }
-        return "\(noticeText)\n\n---\n\n# Apache License 2.0 - scrcpy\n\n\(licenseText)"
     }
 
     private func runUpdateCheck() async {
@@ -1094,28 +1096,4 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         }
     }
 
-    private static func textResource(
-        named name: String,
-        extension fileExtension: String,
-        subdirectory: String? = nil,
-        fallbackRelativePath: String
-    ) -> String? {
-        if let url = Bundle.main.url(
-            forResource: name,
-            withExtension: fileExtension,
-            subdirectory: subdirectory
-        ), let text = try? String(contentsOf: url, encoding: .utf8) {
-            return text
-        }
-
-        var directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        for _ in 0..<6 {
-            let candidate = directory.appendingPathComponent(fallbackRelativePath)
-            if let text = try? String(contentsOf: candidate, encoding: .utf8) {
-                return text
-            }
-            directory.deleteLastPathComponent()
-        }
-        return nil
-    }
 }

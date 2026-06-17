@@ -22,7 +22,6 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     /// let the hover toolbar grow up to 60% taller so it stays readable.
     static let maximumChromeScale: CGFloat = 1.6
     static var maximumChromeHeight: CGFloat { chromeHeight * maximumChromeScale }
-    static let chromeActivationZone: CGFloat = chromeHeight
     /// The hover toolbar floats as an overlay over the top of the mirror, so the
     /// render fills the window all the way to the top edge and no band is
     /// reserved. At rest there is zero chrome footprint — just the phone.
@@ -113,6 +112,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private var captureCueCancellable: AnyCancellable?
     private var transferActivityCancellable: AnyCancellable?
     private var deviceTitleCancellable: AnyCancellable?
+    private var alwaysOnTopCancellable: AnyCancellable?
+    private var alwaysOnTopToolbarCancellable: AnyCancellable?
+    private var recordingToolbarCancellable: AnyCancellable?
     private var appActivationObservers: [NSObjectProtocol] = []
     private var activeCaptureCueView: MirrorCaptureCueView?
 
@@ -215,30 +217,6 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         return NSSize(
             width: targetScreenWidth + horizontalShellInset,
             height: screenHeight + verticalShellInset
-        )
-    }
-
-    static func defaultWrappedShellSize(
-        for streamSize: NSSize,
-        visibleFrame: NSRect,
-        screenMargin: CGFloat = 24
-    ) -> NSSize {
-        guard streamSize.width > 0, streamSize.height > 0 else {
-            return NSSize(width: horizontalShellInset, height: verticalShellInset)
-        }
-
-        let resolutionHeight = Self.resolutionHeight(for: NSScreen.main, fallbackVisibleFrame: visibleFrame)
-        let targetScreenHeight = max(1, resolutionHeight * initialScreenHeightRatio)
-        let maxScreenWidth = max(1, visibleFrame.width - screenMargin - horizontalShellInset)
-        let maxScreenHeight = max(1, visibleFrame.height - screenMargin - verticalShellInset)
-        let streamAspect = streamSize.width / max(streamSize.height, 1)
-        let screenHeight = min(targetScreenHeight, maxScreenHeight)
-        let screenWidth = min(maxScreenWidth, screenHeight * streamAspect)
-        let fittedScreenHeight = min(maxScreenHeight, screenWidth / max(streamAspect, 0.001))
-
-        return NSSize(
-            width: screenWidth + horizontalShellInset,
-            height: fittedScreenHeight + verticalShellInset
         )
     }
 
@@ -630,7 +608,8 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             deviceName: model.mirrorWindowDeviceTitle,
             onHome: { [weak self] in self?.model.sendAndroidKey("KEYCODE_HOME") },
             onRecentApps: { [weak self] in self?.model.sendAndroidKey("KEYCODE_APP_SWITCH") },
-            onScreenshot: { [weak self] in self?.model.takeScreenshot() }
+            onScreenshot: { [weak self] in self?.model.takeScreenshot() },
+            onStopRecording: { [weak self] in self?.model.toggleScreenRecording() }
         )
         captureCueCancellable = model.$captureCue
             .receive(on: RunLoop.main)
@@ -661,6 +640,23 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             self?.dragWindowFromChrome(with: event)
         }
         chromeBar.onHoverChange = { [weak self] _ in self?.evaluateRevealZone() }
+        chromeBar.configureAlwaysOnTop(
+            isEnabled: model.mirrorAlwaysOnTopEnabled,
+            onToggle: { [weak model] in
+                model?.toggleMirrorAlwaysOnTop()
+            }
+        )
+        alwaysOnTopToolbarCancellable = model.$mirrorAlwaysOnTopEnabled
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                self?.chromeBar.setAlwaysOnTopEnabled(enabled)
+            }
+        chromeBar.setRecordingActive(model.isRecording)
+        recordingToolbarCancellable = model.$isRecording
+            .receive(on: RunLoop.main)
+            .sink { [weak self] isRecording in
+                self?.chromeBar.setRecordingActive(isRecording)
+            }
         applyDeviceTitle()
         deviceTitleCancellable = model.$selectedDevice
             .receive(on: RunLoop.main)
@@ -690,6 +686,12 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
         window.contentView = rootView
         window.makeFirstResponder(renderView)
+        applyAlwaysOnTop(model.mirrorAlwaysOnTopEnabled)
+        alwaysOnTopCancellable = model.$mirrorAlwaysOnTopEnabled
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                self?.applyAlwaysOnTop(enabled)
+            }
 
         renderView.onMouseMoved = { [weak self] event in
             self?.handleRenderMouseMoved(event)
@@ -833,8 +835,15 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         toolbar.alphaValue = 0
         parent.addChildWindow(toolbar, ordered: .above)
         toolbarWindow = toolbar
+        applyAlwaysOnTop(model.mirrorAlwaysOnTopEnabled)
         repositionToolbarWindow()
         startRevealMonitoring()
+    }
+
+    private func applyAlwaysOnTop(_ enabled: Bool) {
+        let level: NSWindow.Level = enabled ? .floating : .normal
+        window?.level = level
+        toolbarWindow?.level = level
     }
 
     private func repositionToolbarWindow() {
@@ -891,6 +900,10 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     private func evaluateRevealZone() {
+        guard window?.isMiniaturized != true, window?.isVisible == true else {
+            hideChromeImmediately(orderOutToolbar: true)
+            return
+        }
         guard NSApp.isActive else {
             hideChromeImmediately(orderOutToolbar: true)
             return
@@ -989,6 +1002,10 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         windowWillMiniaturize(Notification(name: NSWindow.willMiniaturizeNotification, object: window))
     }
 
+    func simulateWindowDidMiniaturizeForTesting() {
+        windowDidMiniaturize(Notification(name: NSWindow.didMiniaturizeNotification, object: window))
+    }
+
     func simulateWindowDidDeminiaturizeForTesting() {
         windowDidDeminiaturize(Notification(name: NSWindow.didDeminiaturizeNotification, object: window))
     }
@@ -1017,6 +1034,10 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     private func setChromeVisible(_ visible: Bool) {
+        guard !visible || (window?.isMiniaturized != true && window?.isVisible == true) else {
+            hideChromeImmediately(orderOutToolbar: true)
+            return
+        }
         guard chromeVisible != visible else { return }
         chromeVisible = visible
         guard let toolbar = toolbarWindow else { return }
@@ -1274,6 +1295,10 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         prepareForMiniaturize()
     }
 
+    func windowDidMiniaturize(_ notification: Notification) {
+        prepareForMiniaturize()
+    }
+
     func windowDidDeminiaturize(_ notification: Notification) {
         guard let window else { return }
         if let toolbar = toolbarWindow {
@@ -1522,6 +1547,12 @@ private final class MirrorCaptureCueView: NSView {
 /// screenshot/recording actions at the trailing edge.
 /// Background is a solid default AppKit surface so desktop content never bleeds through.
 final class MirrorChromeBar: NSView {
+    enum TrailingActionsMode {
+        case full
+        case alwaysOnTopOnly
+        case hidden
+    }
+
     /// How small the bar shrinks when hidden. A more pronounced ratio makes
     /// the growing effect actually read on screen.
     static let barHiddenScale: CGFloat = 0.96
@@ -1566,6 +1597,9 @@ final class MirrorChromeBar: NSView {
     private static let leadingPadding: CGFloat = 12
     private static let titleLeadingAfterTrafficLights: CGFloat = 12
     private static let trailingPadding: CGFloat = (MirrorContentWindowController.toolbarBarHeight - MirrorChromeOutlineButton.touchHeight) / 2
+    private var controlsVisible = false
+    private var trailingActionsMode: TrailingActionsMode = .full
+    private var recordingActive = false
     /// Corner radius of the detached floating bar.
     private static var barCornerRadius: CGFloat {
         MirrorContentWindowController.toolbarBarHeight / 2
@@ -1592,12 +1626,18 @@ final class MirrorChromeBar: NSView {
         resource: "chrome-screenshot",
         accessibilityDescription: "Screenshot"
     )
+    private let alwaysOnTopBtn = MirrorChromeOutlineButton(
+        symbol: "pin.fill",
+        accessibilityDescription: "Pin mirror on top"
+    )
+    private let recordingPill = MirrorRecordingStatusPill()
     private let rightStack: NSStackView
     var chromeHeight: CGFloat = MirrorContentWindowController.chromeHeight {
         didSet {
             homeBtn.chromeScale = chromeScale
             recentAppsBtn.chromeScale = chromeScale
             screenshotBtn.chromeScale = chromeScale
+            alwaysOnTopBtn.chromeScale = chromeScale
         }
     }
 
@@ -1609,7 +1649,7 @@ final class MirrorChromeBar: NSView {
     }
 
     override init(frame frameRect: NSRect) {
-        rightStack = NSStackView(views: [screenshotBtn, homeBtn, recentAppsBtn])
+        rightStack = NSStackView(views: [alwaysOnTopBtn, screenshotBtn, recordingPill, homeBtn, recentAppsBtn])
         super.init(frame: frameRect)
         setup()
     }
@@ -1621,7 +1661,8 @@ final class MirrorChromeBar: NSView {
         deviceName: String,
         onHome: @escaping () -> Void,
         onRecentApps: @escaping () -> Void,
-        onScreenshot: @escaping () -> Void
+        onScreenshot: @escaping () -> Void,
+        onStopRecording: @escaping () -> Void
     ) {
         titleLabel.stringValue = deviceName
         homeBtn.toolTip = "Go to Android home"
@@ -1632,6 +1673,26 @@ final class MirrorChromeBar: NSView {
         recentAppsBtn.minimumActionInterval = 0.35
         screenshotBtn.toolTip = "Save screenshot to Downloads"
         screenshotBtn.action = onScreenshot
+        recordingPill.toolTip = "Stop screen recording"
+        recordingPill.action = onStopRecording
+    }
+
+    func configureAlwaysOnTop(isEnabled: Bool, onToggle: @escaping () -> Void) {
+        alwaysOnTopBtn.action = onToggle
+        alwaysOnTopBtn.minimumActionInterval = 0.2
+        setAlwaysOnTopEnabled(isEnabled)
+    }
+
+    func setAlwaysOnTopEnabled(_ enabled: Bool) {
+        alwaysOnTopBtn.setSymbol(enabled ? "pin.slash.fill" : "pin.fill")
+        alwaysOnTopBtn.toolTip = enabled ? "Unpin mirror from top" : "Pin mirror on top"
+        alwaysOnTopBtn.isActive = enabled
+    }
+
+    func setRecordingActive(_ active: Bool) {
+        recordingActive = active
+        recordingPill.setRecording(active)
+        applyActionVisibility()
     }
 
     /// Updates the toolbar title (device name) shown beside the traffic lights.
@@ -1731,14 +1792,63 @@ final class MirrorChromeBar: NSView {
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: rightStack.leadingAnchor, constant: -8),
         ])
+        updateTrailingActionHoverCorners()
     }
 
     func setControlsVisible(_ visible: Bool) {
+        controlsVisible = visible
         trafficLights.isHidden = !visible
         titleLabel.isHidden = !visible
-        recentAppsBtn.isHidden = !visible
-        screenshotBtn.isHidden = !visible
-        homeBtn.isHidden = !visible
+        applyActionVisibility()
+    }
+
+    private func applyActionVisibility() {
+        guard controlsVisible, trailingActionsMode != .hidden else {
+            alwaysOnTopBtn.isHidden = true
+            screenshotBtn.isHidden = true
+            recordingPill.isHidden = true
+            homeBtn.isHidden = true
+            recentAppsBtn.isHidden = true
+            updateTrailingActionHoverCorners()
+            return
+        }
+        guard trailingActionsMode == .full else {
+            alwaysOnTopBtn.isHidden = false
+            screenshotBtn.isHidden = true
+            recordingPill.isHidden = true
+            homeBtn.isHidden = true
+            recentAppsBtn.isHidden = true
+            updateTrailingActionHoverCorners()
+            return
+        }
+        alwaysOnTopBtn.isHidden = recordingActive
+        screenshotBtn.isHidden = recordingActive
+        recordingPill.isHidden = !recordingActive
+        homeBtn.isHidden = false
+        recentAppsBtn.isHidden = recordingActive
+        updateTrailingActionHoverCorners()
+    }
+
+    private func updateTrailingActionHoverCorners() {
+        let actionButtons = [alwaysOnTopBtn, screenshotBtn, homeBtn, recentAppsBtn]
+        for button in actionButtons {
+            button.setHoverCornerRadius(MirrorChromeOutlineButton.defaultHoverCornerRadius)
+        }
+        rightmostActionButtonForCurrentMode()?.setHoverCornerRadius(
+            Self.controlHoverCornerRadius,
+            leadingRadius: MirrorChromeOutlineButton.defaultHoverCornerRadius
+        )
+    }
+
+    private func rightmostActionButtonForCurrentMode() -> MirrorChromeOutlineButton? {
+        switch trailingActionsMode {
+        case .hidden:
+            return nil
+        case .alwaysOnTopOnly:
+            return alwaysOnTopBtn
+        case .full:
+            return recordingActive ? homeBtn : recentAppsBtn
+        }
     }
 
     /// Springs the whole bar — background *and* controls, moved as one layer —
@@ -1795,14 +1905,9 @@ final class MirrorChromeBar: NSView {
         )
     }
 
-    func setTrailingActionsVisible(_ visible: Bool) {
-        recentAppsBtn.isHidden = !visible
-        screenshotBtn.isHidden = !visible
-        homeBtn.isHidden = !visible
-    }
-
-    var isBackgroundVisibleForTesting: Bool {
-        (backgroundView.layer?.opacity ?? 0) > 0.5
+    func setTrailingActionsMode(_ mode: TrailingActionsMode) {
+        trailingActionsMode = mode
+        applyActionVisibility()
     }
 
     var horizontalPaddingForTesting: CGFloat {
@@ -1811,10 +1916,6 @@ final class MirrorChromeBar: NSView {
 
     var backgroundCornerRadiusForTesting: CGFloat {
         backgroundView.layer?.cornerRadius ?? 0
-    }
-
-    var controlHoverCornerRadiusForTesting: CGFloat {
-        Self.controlHoverCornerRadius
     }
 
     var trafficLightLeadingPaddingForTesting: CGFloat {
@@ -1833,8 +1934,35 @@ final class MirrorChromeBar: NSView {
         recentAppsBtn.iconNameForTesting
     }
 
+    var isRecordingPillVisibleForTesting: Bool {
+        !recordingPill.isHidden
+    }
+
+    var recordingPillTextForTesting: String {
+        recordingPill.elapsedTextForTesting
+    }
+
+    func triggerRecordingPillForTesting() {
+        recordingPill.action?()
+    }
+
+    var rightActionVisibilityForTesting: [Bool] {
+        [
+            !alwaysOnTopBtn.isHidden,
+            !screenshotBtn.isHidden,
+            !recordingPill.isHidden,
+            !homeBtn.isHidden,
+            !recentAppsBtn.isHidden,
+        ]
+    }
+
+    var alwaysOnTopIconNameForTesting: String? {
+        alwaysOnTopBtn.iconNameForTesting
+    }
+
     var rightActionHoverCornerRadiiForTesting: [CGFloat] {
         [
+            alwaysOnTopBtn.hoverCornerRadiusForTesting,
             screenshotBtn.hoverCornerRadiusForTesting,
             homeBtn.hoverCornerRadiusForTesting,
             recentAppsBtn.hoverCornerRadiusForTesting,
@@ -1843,6 +1971,7 @@ final class MirrorChromeBar: NSView {
 
     var rightActionHoverLeadingCornerRadiiForTesting: [CGFloat?] {
         [
+            alwaysOnTopBtn.hoverLeadingCornerRadiusForTesting,
             screenshotBtn.hoverLeadingCornerRadiusForTesting,
             homeBtn.hoverLeadingCornerRadiusForTesting,
             recentAppsBtn.hoverLeadingCornerRadiusForTesting,
@@ -1851,6 +1980,7 @@ final class MirrorChromeBar: NSView {
 
     var rightActionHoverRoundedCornersForTesting: [CACornerMask] {
         [
+            alwaysOnTopBtn.hoverRoundedCornersForTesting,
             screenshotBtn.hoverRoundedCornersForTesting,
             homeBtn.hoverRoundedCornersForTesting,
             recentAppsBtn.hoverRoundedCornersForTesting,
@@ -1859,6 +1989,7 @@ final class MirrorChromeBar: NSView {
 
     var rightActionHoverHeightsForTesting: [CGFloat] {
         [
+            alwaysOnTopBtn.hoverHeightForTesting,
             screenshotBtn.hoverHeightForTesting,
             homeBtn.hoverHeightForTesting,
             recentAppsBtn.hoverHeightForTesting,
@@ -2157,6 +2288,124 @@ private final class MirrorChromeTitleLabel: NSTextField {
     override var mouseDownCanMoveWindow: Bool { false }
 }
 
+// MARK: - Recording status pill
+
+final class MirrorRecordingStatusPill: NSView {
+    private let iconView = NSImageView()
+    private let timeLabel = NSTextField(labelWithString: "00:00")
+    private var startedAt: Date?
+    private var timer: Timer?
+    var action: (() -> Void)?
+
+    var elapsedTextForTesting: String {
+        timeLabel.stringValue
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    deinit {
+        timer?.invalidate()
+    }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.28).cgColor
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.18).cgColor
+        let point = convert(event.locationInWindow, from: nil)
+        if bounds.contains(point) {
+            action?()
+        }
+    }
+
+    func setRecording(_ recording: Bool) {
+        if recording {
+            if startedAt == nil {
+                startedAt = Date()
+            }
+            startTimerIfNeeded()
+        } else {
+            timer?.invalidate()
+            timer = nil
+            startedAt = nil
+        }
+        updateElapsed()
+    }
+
+    private func setup() {
+        wantsLayer = true
+        translatesAutoresizingMaskIntoConstraints = false
+        layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.18).cgColor
+        layer?.cornerRadius = 11
+        layer?.masksToBounds = true
+        layer?.setValue("continuous", forKey: "cornerCurve")
+
+        iconView.image = NSImage(
+            systemSymbolName: "record.circle.fill",
+            accessibilityDescription: "Recording"
+        )
+        iconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+        iconView.contentTintColor = .systemRed
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+
+        timeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        timeLabel.textColor = .white.withAlphaComponent(0.86)
+        timeLabel.alignment = .left
+        timeLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(iconView)
+        addSubview(timeLabel)
+
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(greaterThanOrEqualToConstant: 62),
+            heightAnchor.constraint(equalToConstant: 22),
+
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 12),
+            iconView.heightAnchor.constraint(equalToConstant: 12),
+
+            timeLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 5),
+            timeLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            timeLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    private func startTimerIfNeeded() {
+        guard timer == nil else { return }
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            self?.updateElapsed()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    private func updateElapsed() {
+        guard let startedAt else {
+            timeLabel.stringValue = "00:00"
+            return
+        }
+        let elapsed = max(0, Int(Date().timeIntervalSince(startedAt)))
+        let hours = elapsed / 3600
+        let minutes = (elapsed / 60) % 60
+        let seconds = elapsed % 60
+        if hours > 0 {
+            timeLabel.stringValue = String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            timeLabel.stringValue = String(format: "%02d:%02d", minutes, seconds)
+        }
+    }
+}
+
 // MARK: - Outline icon button
 
 /// Small outline-style button for the right side of the chrome bar.
@@ -2175,8 +2424,8 @@ final class MirrorChromeOutlineButton: NSView {
     private let imageView = NSImageView()
     private let hoverBackgroundLayer = CAShapeLayer()
     private var iconSource: IconSource
-    private let hoverCornerRadius: CGFloat
-    private let hoverLeadingCornerRadius: CGFloat?
+    private var hoverCornerRadius: CGFloat
+    private var hoverLeadingCornerRadius: CGFloat?
     private let hoverRoundedCorners: CACornerMask
     private var lastActionTime: TimeInterval = 0
     var action: (() -> Void)?
@@ -2302,8 +2551,10 @@ final class MirrorChromeOutlineButton: NSView {
         setIconSource(.system(symbol))
     }
 
-    func setResource(_ resource: String) {
-        setIconSource(.resource(resource))
+    func setHoverCornerRadius(_ radius: CGFloat, leadingRadius: CGFloat? = nil) {
+        hoverCornerRadius = radius
+        hoverLeadingCornerRadius = leadingRadius
+        needsLayout = true
     }
 
     private func setIconSource(_ source: IconSource) {

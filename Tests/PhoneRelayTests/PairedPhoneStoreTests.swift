@@ -162,6 +162,26 @@ final class PairedPhoneStoreTests: XCTestCase {
         XCTAssertEqual(touchedOverUSB[0].lastConnected, later)
     }
 
+    func testTouchWithUSBSerialAndWiFiAddressStoresBothRoutes() {
+        let updated = store.touch(
+            [],
+            id: "RFCT10ZLTAJ",
+            displayName: "SM S906B",
+            address: "RFCT10ZLTAJ",
+            usbSerial: "RFCT10ZLTAJ",
+            wifiAddress: "192.0.2.44:5555",
+            now: referenceDate
+        )
+
+        XCTAssertEqual(updated.count, 1)
+        XCTAssertEqual(updated[0].id, "RFCT10ZLTAJ")
+        XCTAssertEqual(updated[0].usbSerial, "RFCT10ZLTAJ")
+        XCTAssertEqual(updated[0].wifiAddress, "192.0.2.44:5555")
+        XCTAssertEqual(updated[0].resolvedUSBSerial, "RFCT10ZLTAJ")
+        XCTAssertEqual(updated[0].resolvedWiFiAddress, "192.0.2.44:5555")
+        XCTAssertEqual(updated[0].lastAddress, "192.0.2.44:5555")
+    }
+
     func testTouchWithNewWirelessAddressReplacesOldOne() {
         let wireless = store.touch(
             [],

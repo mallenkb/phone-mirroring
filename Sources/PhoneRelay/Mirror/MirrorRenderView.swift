@@ -4,7 +4,7 @@ import CoreMedia
 import SwiftUI
 
 struct MirrorLoadingSurface: NSViewRepresentable {
-    var statusText: String = "Connecting to your"
+    var statusText: String = "Connecting to"
     var deviceName: String
     var cornerRadius: CGFloat
     var repeatsProgress: Bool = false
@@ -157,8 +157,6 @@ final class MirrorRenderView: NSView {
         loadingView.deviceName = deviceName
     }
 
-    var streamAspect: CGSize { aspect }
-
     func updateVideoLayerFrame() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -307,7 +305,7 @@ final class MirrorLoadingView: NSView {
         didSet { applyCornerMask() }
     }
 
-    var statusText: String = "Connecting to your" {
+    var statusText: String = "Connecting to" {
         didSet { progressText.statusText = statusText }
     }
 
@@ -316,7 +314,7 @@ final class MirrorLoadingView: NSView {
     var deviceName: String = "" {
         didSet {
             let trimmedName = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
-            progressText.deviceName = trimmedName.isEmpty ? "Android Device" : trimmedName
+            progressText.deviceName = trimmedName
         }
     }
 
@@ -378,9 +376,9 @@ final class MirrorLoadingView: NSView {
 private final class LoadingProgressTextView: NSView {
     private let baseStack = NSStackView()
     private let fillStack = NSStackView()
-    private let baseStatusLabel = NSTextField(labelWithString: "Connecting to your")
+    private let baseStatusLabel = NSTextField(labelWithString: "Connecting to")
     private let baseDeviceLabel: NSTextField
-    private let fillStatusLabel = NSTextField(labelWithString: "Connecting to your")
+    private let fillStatusLabel = NSTextField(labelWithString: "Connecting to")
     private let fillDeviceLabel: NSTextField
     private let fillContainer = NSView()
     private var fillExtentConstraint: NSLayoutConstraint?
@@ -394,6 +392,9 @@ private final class LoadingProgressTextView: NSView {
         set {
             baseDeviceLabel.stringValue = newValue
             fillDeviceLabel.stringValue = newValue
+            let hidesDeviceName = newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            baseDeviceLabel.isHidden = hidesDeviceName
+            fillDeviceLabel.isHidden = hidesDeviceName
             invalidateIntrinsicContentSize()
             needsLayout = true
         }

@@ -90,4 +90,60 @@ final class QRCodePairingTests: XCTestCase {
             expected
         )
     }
+
+    func testQRCodePairingStartsMirrorBeforeLegacyTCPIPPromotion() throws {
+        let sourceURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("Sources/PhoneRelay/AppModel.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let watcher = try XCTUnwrap(
+            source.range(
+                of: "private func startQRCodePairingWatcher()",
+                options: [],
+                range: source.startIndex..<source.endIndex
+            )
+        )
+        let reset = try XCTUnwrap(
+            source.range(
+                of: "private func resetQRCodePairingAfterFailure",
+                options: [],
+                range: watcher.upperBound..<source.endIndex
+            )
+        )
+        let body = String(source[watcher.lowerBound..<reset.lowerBound])
+
+        let finishRange = try XCTUnwrap(body.range(of: "self.finishQRCodePairing"))
+        let promotionRange = try XCTUnwrap(body.range(of: "prepareQRCodePairingLegacyTCPIPInBackground"))
+
+        XCTAssertLessThan(
+            finishRange.lowerBound,
+            promotionRange.lowerBound,
+            "QR pairing should start the mirror on the verified wireless target before preparing the optional :5555 reconnect route."
+        )
+        XCTAssertFalse(
+            body.contains("await Self.promoteToLegacyTCPIP"),
+            "QR pairing must not block initial mirroring on legacy tcpip promotion."
+        )
+    }
+
+    func testWirelessScreenShowsIPOnlyManualConnect() throws {
+        let sourceURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("Sources/PhoneRelay/Views/FigmaMirrorExperienceView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("e.g. 192.168.1.23"))
+        XCTAssertTrue(source.contains("The app uses port 5555 automatically."))
+        XCTAssertFalse(source.contains("Pair with code"))
+        XCTAssertFalse(source.contains("Pairing IP:port"))
+        XCTAssertFalse(source.contains("6-digit code"))
+        XCTAssertFalse(source.contains("Debugging IP:port"))
+        XCTAssertFalse(source.contains("Pair and connect"))
+    }
+
+    func testPairingCodeInputsRequireAddressAndSixDigits() {
+        XCTAssertTrue(AppModel.canSubmitPairingCode(address: "192.168.68.54:44355", code: "017098"))
+        XCTAssertTrue(AppModel.canSubmitPairingCode(address: " 192.168.68.54:44355 ", code: " 017098 "))
+        XCTAssertFalse(AppModel.canSubmitPairingCode(address: "", code: "017098"))
+        XCTAssertFalse(AppModel.canSubmitPairingCode(address: "192.168.68.54:44355", code: "17098"))
+        XCTAssertFalse(AppModel.canSubmitPairingCode(address: "192.168.68.54:44355", code: "01709a"))
+    }
 }

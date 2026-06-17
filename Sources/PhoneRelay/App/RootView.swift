@@ -1,5 +1,6 @@
-import SwiftUI
 import AppKit
+import Combine
+import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
@@ -93,6 +94,7 @@ struct WindowRegistrationView: NSViewRepresentable {
         private let chromeBar = MirrorChromeBar()
         private weak var parentWindow: NSWindow?
         private var toolbarWindow: NSWindow?
+        private var alwaysOnTopToolbarCancellable: AnyCancellable?
         private var revealMonitors: [Any] = []
         private var windowObservers: [NSObjectProtocol] = []
         private var hideWorkItem: DispatchWorkItem?
@@ -142,6 +144,7 @@ struct WindowRegistrationView: NSViewRepresentable {
             isPointerInTopZone = false
             toolbarWindow = nil
             parentWindow = nil
+            alwaysOnTopToolbarCancellable = nil
         }
 
         private func install(parent: NSWindow, model: AppModel) {
@@ -154,8 +157,21 @@ struct WindowRegistrationView: NSViewRepresentable {
                 deviceName: model.mirrorWindowDeviceTitle,
                 onHome: { model.sendAndroidKey("KEYCODE_HOME") },
                 onRecentApps: { model.sendAndroidKey("KEYCODE_APP_SWITCH") },
-                onScreenshot: { model.takeScreenshot() }
+                onScreenshot: { model.takeScreenshot() },
+                onStopRecording: { model.toggleScreenRecording() }
             )
+            chromeBar.configureAlwaysOnTop(
+                isEnabled: model.mirrorAlwaysOnTopEnabled,
+                onToggle: { [weak model] in
+                    model?.toggleMirrorAlwaysOnTop()
+                }
+            )
+            alwaysOnTopToolbarCancellable = model.$mirrorAlwaysOnTopEnabled
+                .receive(on: RunLoop.main)
+                .sink { [weak self] enabled in
+                    self?.chromeBar.setAlwaysOnTopEnabled(enabled)
+                    self?.applyAlwaysOnTop(enabled)
+                }
             chromeBar.onClose = { NSApplication.shared.terminate(nil) }
             chromeBar.onMinimize = { [weak self, weak parent] in
                 self?.windowWillMiniaturize()
@@ -194,10 +210,21 @@ struct WindowRegistrationView: NSViewRepresentable {
             toolbar.alphaValue = 0
             parent.addChildWindow(toolbar, ordered: .above)
             toolbarWindow = toolbar
+            applyAlwaysOnTop(model.mirrorAlwaysOnTopEnabled)
             installWindowObservers(for: parent)
             repositionToolbarWindow()
             if !isMirroring {
                 startRevealMonitoring()
+            }
+        }
+
+        private func applyAlwaysOnTop(_ enabled: Bool) {
+            let level: NSWindow.Level = enabled ? .floating : .normal
+            parentWindow?.level = level
+            toolbarWindow?.level = level
+            if enabled && chromeVisible && !isMirroring {
+                parentWindow?.orderFront(nil)
+                toolbarWindow?.orderFront(nil)
             }
         }
 
@@ -344,6 +371,7 @@ struct WindowRegistrationView: NSViewRepresentable {
                 repositionToolbarWindow()
                 setOnboardingChromeControlsVisible(true)
                 toolbarWindow.ignoresMouseEvents = false
+                parentWindow?.orderFront(nil)
                 toolbarWindow.orderFront(nil)
             } else {
                 toolbarWindow.ignoresMouseEvents = true
@@ -394,7 +422,7 @@ struct WindowRegistrationView: NSViewRepresentable {
 
         private func setOnboardingChromeControlsVisible(_ visible: Bool) {
             chromeBar.setControlsVisible(visible)
-            chromeBar.setTrailingActionsVisible(false)
+            chromeBar.setTrailingActionsMode(visible ? .alwaysOnTopOnly : .hidden)
         }
 
         private func setChromeDragging(_ isDragging: Bool) {

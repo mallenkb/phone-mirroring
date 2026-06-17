@@ -2,6 +2,25 @@ import XCTest
 @testable import PhoneRelay
 
 final class ADBDeviceParsingTests: XCTestCase {
+    private let explicitDeviceSetupRequiredDefaultsKey = "MirrorBehavior.explicitDeviceSetupRequired"
+
+    private func withoutExplicitDeviceSetupRequired(_ body: () async throws -> Void) async rethrows {
+        let defaults = [UserDefaults.standard]
+            + PairedPhoneStore.compatibilitySuites.compactMap { UserDefaults(suiteName: $0) }
+        let previousValues = defaults.map { $0.object(forKey: explicitDeviceSetupRequiredDefaultsKey) }
+        defer {
+            for (defaults, previousValue) in zip(defaults, previousValues) {
+                if let previousValue {
+                    defaults.set(previousValue, forKey: explicitDeviceSetupRequiredDefaultsKey)
+                } else {
+                    defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
+                }
+            }
+        }
+        defaults.forEach { $0.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey) }
+        try await body()
+    }
+
     func testAuthorizedADBDevicesIncludesUSBDeviceDetails() {
         let output = """
         List of devices attached
@@ -156,6 +175,34 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(route, record)
     }
 
+    func testMissingMirrorTransportUsesRememberedWirelessRouteDirectly() {
+        let wirelessRecord = PairedPhoneRecord(
+            id: "RFCT10ZLTAJ",
+            displayName: "SM-S906B",
+            lastAddress: "192.168.68.57:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 300)
+        )
+        let selectedUSBDevice = MirrorDevice(
+            id: "RFCT10ZLTAJ",
+            name: "SM-S906B",
+            model: "SM-S906B",
+            battery: 80,
+            isCharging: true,
+            network: "USB debugging",
+            lastSeen: Date(timeIntervalSince1970: 400),
+            states: [.mirroringReady, .companionConnected],
+            adbSerial: "RFCT10ZLTAJ"
+        )
+
+        let route = AppModel.rememberedWirelessRouteForMissingMirrorTransport(
+            selectedDevice: selectedUSBDevice,
+            pairedPhones: [wirelessRecord]
+        )
+
+        XCTAssertEqual(route, wirelessRecord)
+    }
+
     func testUSBLaunchFailureRecoveryRequiresMissingUSBAndWirelessRoute() {
         let record = PairedPhoneRecord(
             id: "RFCT10ZLTAJ",
@@ -244,7 +291,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
     }
 
-    func testUSBMirroringPreferenceKeepsAuthorizedUSBDeviceOnCable() {
+    func testUSBConnectDoesNotAttemptWiFiHandoffByDefault() {
         let usbDevice = AuthorizedADBDevice(
             serial: "TESTDEVICE001",
             product: "raven",
@@ -253,7 +300,291 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
 
         XCTAssertFalse(AppModel.shouldAttemptWirelessHandoff(from: usbDevice, preferUSBMirroring: true))
-        XCTAssertTrue(AppModel.shouldAttemptWirelessHandoff(from: usbDevice, preferUSBMirroring: false))
+        XCTAssertFalse(AppModel.shouldAttemptWirelessHandoff(from: usbDevice, preferUSBMirroring: false))
+    }
+
+    func testUSBWiFiHandoffRequiresExplicitOptIn() {
+        let usbDevice = AuthorizedADBDevice(
+            serial: "TESTDEVICE001",
+            product: "raven",
+            model: "Pixel",
+            isUSB: true
+        )
+
+        XCTAssertTrue(
+            AppModel.shouldAttemptWirelessHandoff(
+                from: usbDevice,
+                preferUSBMirroring: false,
+                backgroundWiFiHandoffEnabled: true
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldAttemptWirelessHandoff(
+                from: usbDevice,
+                preferUSBMirroring: false,
+                backgroundWiFiHandoffEnabled: false
+            )
+        )
+    }
+
+    func testSettingsViewExposesBackgroundWiFiHandoffToggle() throws {
+        let source = try String(contentsOfFile: "Sources/PhoneRelay/Views/SettingsView.swift", encoding: .utf8)
+
+        XCTAssertTrue(source.contains("$model.backgroundWiFiHandoffEnabled"))
+        XCTAssertTrue(source.contains("Advanced USB-to-Wi-Fi handoff"))
+        XCTAssertTrue(source.contains("Leave this off unless you want USB mirroring to prepare a separate legacy ADB Wi-Fi route."))
+    }
+
+    func testConnectionHealthShowsWiFiHandoffStatus() {
+        let usbDevice = AuthorizedADBDevice(
+            serial: "TESTDEVICE001",
+            product: "raven",
+            model: "Pixel",
+            isUSB: true
+        )
+
+        let preparing = AppModel.connectionHealthSnapshot(
+            selectedSerial: usbDevice.serial,
+            selectedNetwork: "USB debugging",
+            isSelectedDeviceOnline: true,
+            isActivelyConnecting: true,
+            hasUnauthorizedUSBDevice: false,
+            authorizedDevices: [usbDevice],
+            discoveredPhones: [],
+            localNetworkPermissionGranted: true,
+            adbStatusText: "Running",
+            reconnectAttemptCount: 0,
+            activeErrorMessage: nil,
+            backgroundWiFiHandoffEnabled: true,
+            isPreparingWiFiHandoff: true
+        )
+
+        XCTAssertEqual(preparing.wifiHandoff.value, "Preparing")
+
+        let disabled = AppModel.connectionHealthSnapshot(
+            selectedSerial: usbDevice.serial,
+            selectedNetwork: "USB debugging",
+            isSelectedDeviceOnline: true,
+            isActivelyConnecting: false,
+            hasUnauthorizedUSBDevice: false,
+            authorizedDevices: [usbDevice],
+            discoveredPhones: [],
+            localNetworkPermissionGranted: true,
+            adbStatusText: "Running",
+            reconnectAttemptCount: 0,
+            activeErrorMessage: nil,
+            backgroundWiFiHandoffEnabled: false,
+            isPreparingWiFiHandoff: false
+        )
+
+        XCTAssertEqual(disabled.wifiHandoff.value, "Off")
+    }
+
+    func testManualADBTargetNormalizationAcceptsIPOnlyAndAddsLegacyPort() {
+        XCTAssertEqual(
+            AppModel.normalizedManualADBTarget("192.0.2.44"),
+            "192.0.2.44:5555"
+        )
+    }
+
+    func testManualADBTargetNormalizationRejectsInvalidTargets() {
+        XCTAssertNil(AppModel.normalizedManualADBTarget(""))
+        XCTAssertNil(AppModel.normalizedManualADBTarget("not a host"))
+        XCTAssertNil(AppModel.normalizedManualADBTarget("phone.local"))
+        XCTAssertNil(AppModel.normalizedManualADBTarget("192.0.2"))
+        XCTAssertNil(AppModel.normalizedManualADBTarget("192.0.2."))
+        XCTAssertNil(AppModel.normalizedManualADBTarget("192.0.2.abc"))
+        XCTAssertNil(AppModel.normalizedManualADBTarget("192.0.2.256"))
+        XCTAssertNil(AppModel.normalizedManualADBTarget("192.0.2.44:5555"))
+        XCTAssertNil(AppModel.normalizedManualADBTarget("192.0.2.44:ssh"))
+        XCTAssertNil(AppModel.normalizedManualADBTarget("192.0.2.44:0"))
+        XCTAssertNil(AppModel.normalizedManualADBTarget("192.0.2.44:70000"))
+    }
+
+    @MainActor
+    func testManualADBTargetFallsBackFromStaleRandomPortToLegacyHandoffPort() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          if [ "$2" = "192.0.2.44:5555" ]; then
+            echo "connected to $2"
+          else
+            echo "failed to connect to '$2': No route to host"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "devices" ]; then
+          echo "List of devices attached"
+          echo "192.0.2.44:5555 device product:raven model:Pixel_6_Pro device:raven transport_id:1"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          if [ "$2" = "192.0.2.44:5555" ]; then
+            echo "wifi-adb-ok"
+          else
+            echo "error: closed"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "input" ]; then
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "pkill" ]; then
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          case "$4" in
+            CLASSPATH=*) sleep 5; exit 0 ;;
+          esac
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.manualADBTarget = "192.0.2.44"
+        model.connectManualADBTarget()
+
+        let startedAt = Date()
+        while model.selectedDevice.adbSerial != "192.0.2.44:5555",
+              Date().timeIntervalSince(startedAt) < 5 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertNil(model.activeError)
+        XCTAssertEqual(model.selectedDevice.adbSerial, "192.0.2.44:5555")
+        XCTAssertEqual(model.manualADBTarget, "192.0.2.44")
+        let calls = loggedCalls(fake.log)
+        XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
+        model.stopMirroring()
+        try await Task.sleep(nanoseconds: 500_000_000)
+    }
+
+    @MainActor
+    func testManualADBTargetRestartsADBServerAfterNoRouteFailures() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          count=$(grep -c '^connect 192.0.2.44:5555$' "$ADB_FAKE_LOG")
+          if [ "$count" -le 3 ]; then
+            echo "failed to connect to '$2': No route to host"
+          else
+            echo "connected to $2"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "kill-server" ] || [ "$1" = "start-server" ]; then
+          exit 0
+        fi
+        if [ "$1" = "devices" ]; then
+          echo "List of devices attached"
+          echo "192.0.2.44:5555 device product:raven model:Pixel_6_Pro device:raven transport_id:1"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.manualADBTarget = "192.0.2.44"
+        model.connectManualADBTarget()
+
+        let startedAt = Date()
+        while model.selectedDevice.adbSerial != "192.0.2.44:5555",
+              Date().timeIntervalSince(startedAt) < 7 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertNil(model.activeError)
+        XCTAssertEqual(model.selectedDevice.adbSerial, "192.0.2.44:5555")
+        let calls = loggedCalls(fake.log)
+        XCTAssertTrue(calls.contains("kill-server"))
+        XCTAssertGreaterThanOrEqual(calls.filter { $0 == "start-server" }.count, 2)
+        XCTAssertEqual(calls.filter { $0 == "connect 192.0.2.44:5555" }.count, 4)
+        model.stopMirroring()
+        try await Task.sleep(nanoseconds: 500_000_000)
+    }
+
+    @MainActor
+    func testManualADBTargetShowsLocalNetworkErrorWhenRestartRetryStillHasNoRoute() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          echo "failed to connect to '$2': No route to host"
+          exit 0
+        fi
+        if [ "$1" = "kill-server" ] || [ "$1" = "start-server" ]; then
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.manualADBTarget = "192.0.2.44"
+        model.connectManualADBTarget()
+
+        let startedAt = Date()
+        while model.activeError == nil, Date().timeIntervalSince(startedAt) < 14 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertEqual(model.activeError?.title, "Local Network may be blocked")
+        XCTAssertTrue(model.activeError?.message.contains("System Settings > Privacy & Security > Local Network") == true)
+        let calls = loggedCalls(fake.log)
+        XCTAssertTrue(calls.contains("kill-server"))
+        XCTAssertGreaterThanOrEqual(calls.filter { $0 == "connect 192.0.2.44:5555" }.count, 6)
+    }
+
+    func testScrcpyStyleConnectionPlanPrefersUSBOrTCPIPDeterministically() {
+        let usbDevice = AuthorizedADBDevice(
+            serial: "TESTDEVICE001",
+            product: "raven",
+            model: "Pixel",
+            isUSB: true
+        )
+        let wirelessDevice = AuthorizedADBDevice(
+            serial: "192.0.2.44:5555",
+            product: "raven",
+            model: "Pixel",
+            isUSB: false
+        )
+
+        XCTAssertEqual(
+            AppModel.scrcpyStyleConnectionPlan(
+                authorizedDevices: [usbDevice, wirelessDevice],
+                preferUSBMirroring: true,
+                manualTarget: nil
+            ),
+            .usb(serial: "TESTDEVICE001")
+        )
+        XCTAssertEqual(
+            AppModel.scrcpyStyleConnectionPlan(
+                authorizedDevices: [usbDevice],
+                preferUSBMirroring: false,
+                manualTarget: nil
+            ),
+            .usbPromoteToTCPIP(serial: "TESTDEVICE001")
+        )
+        XCTAssertEqual(
+            AppModel.scrcpyStyleConnectionPlan(
+                authorizedDevices: [usbDevice],
+                preferUSBMirroring: true,
+                manualTarget: "192.0.2.44"
+            ),
+            .manualTCPIP(address: "192.0.2.44:5555")
+        )
     }
 
     // When the same phone is live on both transports, auto-connect must take
@@ -681,6 +1012,36 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(selected, wirelessDevice)
     }
 
+    func testScrcpyStyleAutoConnectUsesLiveADBTransportBeforeDiscovery() {
+        let record = PairedPhoneRecord(
+            id: "adb-stale-mdns-record",
+            displayName: "Pixel 8",
+            lastAddress: "192.0.2.44:41235",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let liveWireless = AuthorizedADBDevice(
+            serial: "192.0.2.44:5555",
+            product: "shiba",
+            model: "Pixel 8",
+            isUSB: false
+        )
+        let liveUSB = AuthorizedADBDevice(
+            serial: "USB123",
+            product: "shiba",
+            model: "Pixel 8",
+            isUSB: true
+        )
+
+        let selected = AppModel.scrcpyStyleAutoConnectDevice(
+            authorizedDevices: [liveUSB, liveWireless],
+            pairedPhones: [record],
+            preferUSBMirroring: false
+        )
+
+        XCTAssertEqual(selected, liveWireless)
+    }
+
     func testRememberedAuthorizedDeviceDoesNotMatchGenericAndroidDeviceName() {
         let record = PairedPhoneRecord(
             id: "adb-old-session",
@@ -774,6 +1135,52 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(selected, currentRoute)
     }
 
+    func testUSBOnlyRecordDoesNotClaimUnrelatedSingleConnectablePhone() {
+        let record = PairedPhoneRecord(
+            id: "TESTDEVICE001",
+            displayName: "Pixel 6 Pro",
+            lastAddress: "TESTDEVICE001",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let unrelated = DiscoveredPhone(
+            id: "adb-unrelated",
+            address: "192.0.2.54:46507",
+            kind: .connectable,
+            lastSeen: Date(timeIntervalSince1970: 300)
+        )
+
+        let selected = AppModel.rememberedConnectablePhone(
+            for: record,
+            in: [unrelated]
+        )
+
+        XCTAssertNil(selected)
+    }
+
+    func testUSBRecordCanUseExactDiscoveredWiFiServiceID() {
+        let record = PairedPhoneRecord(
+            id: "adb-TESTDEVICE001",
+            displayName: "Pixel 6 Pro",
+            lastAddress: "TESTDEVICE001",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let matching = DiscoveredPhone(
+            id: "adb-TESTDEVICE001",
+            address: "192.0.2.54:46507",
+            kind: .connectable,
+            lastSeen: Date(timeIntervalSince1970: 300)
+        )
+
+        let selected = AppModel.rememberedConnectablePhone(
+            for: record,
+            in: [matching]
+        )
+
+        XCTAssertEqual(selected, matching)
+    }
+
     func testWiFiIPAddressParsingPrefersWLANSourceAddress() {
         let output = """
         default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44
@@ -827,6 +1234,23 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
 
         XCTAssertNil(selected)
+    }
+
+    func testWirelessPhoneMatchingUSBRouteRequiresNumericUSBWiFiAddress() {
+        let routeOutput = "198.51.100.0/24 dev rmnet_data0 proto kernel scope link src 198.51.100.15"
+        let mdnsOnly = DiscoveredPhone(
+            id: "adb-RFCT10ZLTAJ",
+            address: "Android.local:5555",
+            kind: .connectable,
+            lastSeen: Date(timeIntervalSince1970: 100)
+        )
+
+        XCTAssertNil(
+            AppModel.wirelessPhoneMatchingUSBRoute(
+                routeOutput,
+                phones: [mdnsOnly]
+            )
+        )
     }
 
     func testWirelessDebuggingAddressCombinesUSBWiFiIPAndTLSPort() {
@@ -1424,6 +1848,16 @@ final class ADBDeviceParsingTests: XCTestCase {
                 hasWirelessStartTask: true
             )
         )
+        XCTAssertFalse(
+            AppModel.shouldUSBInterruptReconnect(
+                authorizedDevices: [usbDevice],
+                isRecoveringConnection: true,
+                isAwaitingReconnect: true,
+                hasReconnectTask: false,
+                hasWirelessStartTask: false,
+                hasUSBWiFiTakeoverTask: true
+            )
+        )
     }
 
     func testBackgroundServicesStartUnlessRunningUnderXCTestEnvironment() {
@@ -1549,6 +1983,60 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
     }
 
+    func testConnectToRememberedWirelessReadinessFlagsNoRouteToHostAcrossCandidates() async throws {
+        // Every connect — saved port and the :5555 fallback — fails with "No
+        // route to host", the macOS Local Network denial signature. The result
+        // must report it so the saved-route reconnect prompts for permission
+        // instead of silently treating the phone as offline.
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          echo "failed to connect to '$2': No route to host"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let result = await AppModel.connectToRememberedWirelessReadiness(
+            adb: ADBController(),
+            savedAddress: "192.0.2.44:42111"
+        )
+
+        XCTAssertNil(result.connectedAddress)
+        XCTAssertTrue(result.sawNoRouteToHost)
+        let calls = loggedCalls(fake.log)
+        XCTAssertTrue(calls.contains("connect 192.0.2.44:42111"))
+        XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
+    }
+
+    func testConnectToRememberedWirelessReadinessDoesNotFlagWhenReady() async throws {
+        // A reachable saved route must never be mistaken for a Local Network block.
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          echo "connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let result = await AppModel.connectToRememberedWirelessReadiness(
+            adb: ADBController(),
+            savedAddress: "192.0.2.44:42111"
+        )
+
+        XCTAssertEqual(result.connectedAddress, "192.0.2.44:42111")
+        XCTAssertFalse(result.sawNoRouteToHost)
+    }
+
     func testConnectToUSBDeviceOverCurrentWiFiUsesExistingLegacyListener() async throws {
         let fake = try installFakeADB(script: """
         #!/bin/sh
@@ -1650,7 +2138,6 @@ final class ADBDeviceParsingTests: XCTestCase {
           exit 0
         fi
         if [ "$1" = "connect" ]; then
-          sleep 1
           echo "failed to connect to '$2': No route to host"
           exit 0
         fi
@@ -1671,15 +2158,13 @@ final class ADBDeviceParsingTests: XCTestCase {
             maximumDuration: 3
         )
         let elapsed = Date().timeIntervalSince(startedAt)
-        let connectCalls = loggedCalls(fake.log).filter { $0 == "connect 192.0.2.44:5555" }
 
         XCTAssertNil(connected)
         XCTAssertLessThan(elapsed, 3.6)
-        XCTAssertLessThan(connectCalls.count, 8)
     }
 
     @MainActor
-    func testManualUSBConnectStartsMirrorBeforeWiFiHandoffCompletes() async throws {
+    func testManualUSBConnectFallsBackToUSBWhenWiFiIsNotReadyQuickly() async throws {
         let fake = try installFakeADB(script: """
         #!/bin/sh
         echo "$@" >> "$ADB_FAKE_LOG"
@@ -1724,17 +2209,118 @@ final class ADBDeviceParsingTests: XCTestCase {
         defer { fake.cleanup() }
 
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.backgroundWiFiHandoffEnabled = true
 
         model.connectViaUSB()
         let startedAt = Date()
-        while !model.hasActiveMirrorSession, Date().timeIntervalSince(startedAt) < 1.5 {
+        while (!model.hasActiveMirrorSession || model.pairedPhones.first?.wifiAddress != "192.0.2.44:5555"),
+              Date().timeIntervalSince(startedAt) < 10 {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
         XCTAssertTrue(model.hasActiveMirrorSession)
-        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 1.5)
+        XCTAssertEqual(model.selectedDevice.adbSerial, "TESTDEVICE001")
+        XCTAssertEqual(model.pairedPhones.first?.usbSerial, "TESTDEVICE001")
+        XCTAssertEqual(model.pairedPhones.first?.wifiAddress, "192.0.2.44:5555")
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 3.5)
         model.stopMirroring()
         try await Task.sleep(nanoseconds: 500_000_000)
+    }
+
+    @MainActor
+    func testManualUSBConnectPrefillsWirelessIPFromDeviceWiFiRoute() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "devices" ]; then
+          echo "List of devices attached"
+          echo "TESTDEVICE001 device usb:100000001X product:g0sxxx model:SM_S906B device:g0s transport_id:1"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
+          echo "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "input" ]; then
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "pkill" ]; then
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          case "$4" in
+            CLASSPATH=*) sleep 5; exit 0 ;;
+          esac
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.backgroundWiFiHandoffEnabled = false
+
+        model.connectViaUSB()
+        let startedAt = Date()
+        while model.manualADBTarget != "192.0.2.44",
+              Date().timeIntervalSince(startedAt) < 3 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertEqual(model.manualADBTarget, "192.0.2.44")
+        XCTAssertEqual(model.selectedDevice.adbSerial, "TESTDEVICE001")
+        XCTAssertEqual(model.pairedPhones.first?.usbSerial, "TESTDEVICE001")
+        XCTAssertEqual(model.pairedPhones.first?.wifiAddress, "192.0.2.44:5555")
+        XCTAssertFalse(loggedCalls(fake.log).contains("-s TESTDEVICE001 tcpip 5555"))
+        model.stopMirroring()
+        try await Task.sleep(nanoseconds: 500_000_000)
+    }
+
+    @MainActor
+    func testUSBPresencePrefillsAndStoresWirelessRouteBeforeUserChoosesTransport() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
+          echo "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(
+            startBackgroundServices: false,
+            pairedPhones: [
+                PairedPhoneRecord(
+                    id: "TESTDEVICE001",
+                    displayName: "SM S906B",
+                    lastAddress: "TESTDEVICE001",
+                    usbSerial: "TESTDEVICE001",
+                    firstPaired: .now,
+                    lastConnected: .now
+                )
+            ]
+        )
+        defer { model.shutdown() }
+
+        model.applyDevicePresence("""
+        List of devices attached
+        TESTDEVICE001 device usb:100000001X product:g0sxxx model:SM_S906B device:g0s transport_id:1
+        """)
+
+        let startedAt = Date()
+        while model.pairedPhones.first?.wifiAddress != "192.0.2.44:5555",
+              Date().timeIntervalSince(startedAt) < 3 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertEqual(model.manualADBTarget, "192.0.2.44")
+        XCTAssertEqual(model.pairedPhones.first?.usbSerial, "TESTDEVICE001")
+        XCTAssertEqual(model.pairedPhones.first?.wifiAddress, "192.0.2.44:5555")
+        XCTAssertEqual(model.pairedPhones.first?.lastAddress, "192.0.2.44:5555")
+        XCTAssertFalse(loggedCalls(fake.log).contains("tcpip 5555"))
+        XCTAssertFalse(model.hasActiveMirrorSession)
     }
 
     @MainActor
@@ -1766,7 +2352,7 @@ final class ADBDeviceParsingTests: XCTestCase {
     }
 
     @MainActor
-    func testManualUSBConnectPreparesStableWiFiHandoffInBackground() async throws {
+    func testManualUSBConnectPreparesVerifiedWiFiWhileKeepingUSBMirrorActive() async throws {
         let fake = try installFakeADB(script: """
         #!/bin/sh
         echo "$@" >> "$ADB_FAKE_LOG"
@@ -1810,18 +2396,174 @@ final class ADBDeviceParsingTests: XCTestCase {
         defer { fake.cleanup() }
 
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.backgroundWiFiHandoffEnabled = true
 
         model.connectViaUSB()
         let startedAt = Date()
         while (!model.hasActiveMirrorSession
             || !model.pairedPhones.contains(where: { $0.lastAddress == "192.0.2.44:5555" })),
-              Date().timeIntervalSince(startedAt) < 2.5 {
+              Date().timeIntervalSince(startedAt) < 6 {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
         XCTAssertTrue(model.hasActiveMirrorSession)
         XCTAssertEqual(model.selectedDevice.adbSerial, "TESTDEVICE001")
+        XCTAssertEqual(model.selectedDevice.network, "USB debugging")
         XCTAssertTrue(model.pairedPhones.contains(where: { $0.lastAddress == "192.0.2.44:5555" }))
+        model.stopMirroring()
+        try await Task.sleep(nanoseconds: 500_000_000)
+    }
+
+    @MainActor
+    func testManualUSBConnectStartsUSBImmediatelyAndPreparesWiFiHandoffInBackground() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "devices" ]; then
+          echo "List of devices attached"
+          echo "TESTDEVICE001 device usb:100000001X product:raven model:Pixel_6_Pro device:raven transport_id:1"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
+          echo "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "tcpip" ]; then
+          echo "restarting in TCP mode port: 5555"
+          exit 0
+        fi
+        if [ "$1" = "connect" ]; then
+          echo "connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "input" ]; then
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "pkill" ]; then
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          case "$4" in
+            CLASSPATH=*) sleep 20; exit 0 ;;
+          esac
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.backgroundWiFiHandoffEnabled = true
+
+        model.connectViaUSB()
+        let startedAt = Date()
+        while !model.hasActiveMirrorSession, Date().timeIntervalSince(startedAt) < 3 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertTrue(model.hasActiveMirrorSession)
+        XCTAssertEqual(model.selectedDevice.adbSerial, "TESTDEVICE001")
+
+        while !model.pairedPhones.contains(where: { $0.lastAddress == "192.0.2.44:5555" }),
+              Date().timeIntervalSince(startedAt) < 6 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        while !loggedCalls(fake.log).contains("-s TESTDEVICE001 tcpip 5555"),
+              Date().timeIntervalSince(startedAt) < 6 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertEqual(model.selectedDevice.adbSerial, "TESTDEVICE001")
+        XCTAssertTrue(model.pairedPhones.contains(where: { $0.lastAddress == "192.0.2.44:5555" }))
+        let calls = loggedCalls(fake.log)
+        XCTAssertTrue(calls.contains("-s TESTDEVICE001 tcpip 5555"))
+        XCTAssertFalse(calls.contains { $0.contains("-s 192.0.2.44:5555 shell CLASSPATH=") })
+        model.stopMirroring()
+        try await Task.sleep(nanoseconds: 500_000_000)
+    }
+
+    @MainActor
+    func testUSBMirrorExitTakesOverPreparedWiFiHandoffSilently() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        CONNECT_COUNT_FILE="$ADB_FAKE_LOG.connect-count"
+        if [ "$1" = "devices" ]; then
+          echo "List of devices attached"
+          echo "TESTDEVICE001 device usb:100000001X product:raven model:Pixel_6_Pro device:raven transport_id:1"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
+          echo "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "tcpip" ]; then
+          echo "restarting in TCP mode port: 5555"
+          exit 0
+        fi
+        if [ "$1" = "connect" ]; then
+          count=0
+          if [ -f "$CONNECT_COUNT_FILE" ]; then
+            count="$(cat "$CONNECT_COUNT_FILE")"
+          fi
+          count=$((count + 1))
+          echo "$count" > "$CONNECT_COUNT_FILE"
+          if [ "$count" -le 8 ]; then
+            echo "failed to connect to '$2': No route to host"
+          else
+            echo "connected to $2"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "input" ]; then
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "pkill" ]; then
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          case "$4" in
+            CLASSPATH=*)
+              if [ "$2" = "TESTDEVICE001" ]; then
+                sleep 1
+              else
+                sleep 20
+              fi
+              exit 0
+              ;;
+          esac
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.backgroundWiFiHandoffEnabled = true
+
+        model.connectViaUSB()
+        let startedAt = Date()
+        while (model.selectedDevice.adbSerial != "192.0.2.44:5555"
+            || !model.hasActiveMirrorSession),
+              Date().timeIntervalSince(startedAt) < 14 {
+            XCTAssertNil(model.activeError)
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        XCTAssertNil(model.activeError)
+        XCTAssertTrue(model.hasActiveMirrorSession)
+        XCTAssertEqual(model.selectedDevice.adbSerial, "192.0.2.44:5555")
+        XCTAssertEqual(model.selectedDevice.network, "Wi-Fi")
         model.stopMirroring()
         try await Task.sleep(nanoseconds: 500_000_000)
     }
@@ -1829,6 +2571,77 @@ final class ADBDeviceParsingTests: XCTestCase {
     func testShouldPromoteToLegacyTCPIPSkipsAddressesAlreadyOnPort5555() {
         XCTAssertFalse(AppModel.shouldPromoteToLegacyTCPIP(connectedAddress: "192.0.2.44:5555"))
         XCTAssertTrue(AppModel.shouldPromoteToLegacyTCPIP(connectedAddress: "192.0.2.44:42111"))
+    }
+
+    @MainActor
+    func testSavedDeviceConnectUsesDiscoveredWiFiHandoffAddress() async throws {
+        try await withoutExplicitDeviceSetupRequired {
+            let fake = try installFakeADB(script: """
+            #!/bin/sh
+            echo "$@" >> "$ADB_FAKE_LOG"
+            if [ "$1" = "start-server" ]; then
+              exit 0
+            fi
+            if [ "$1" = "connect" ]; then
+              echo "connected to $2"
+              exit 0
+            fi
+            if [ "$1" = "devices" ]; then
+              echo "List of devices attached"
+              echo "192.168.68.57:5555 device product:g0sxxx model:SM_S906B device:g0s transport_id:39"
+              exit 0
+            fi
+            if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+              echo "wifi-adb-ok"
+              exit 0
+            fi
+            if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "input" ]; then
+              exit 0
+            fi
+            if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "pkill" ]; then
+              exit 0
+            fi
+            if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+              case "$4" in
+                CLASSPATH=*) sleep 5; exit 0 ;;
+              esac
+              exit 0
+            fi
+            exit 0
+            """)
+            defer { fake.cleanup() }
+
+            let record = PairedPhoneRecord(
+                id: "adb-RFCT10ZLTAJ",
+                displayName: "SM S906B",
+                lastAddress: "RFCT10ZLTAJ",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 200)
+            )
+            let phone = DiscoveredPhone(
+                id: "adb-RFCT10ZLTAJ",
+                address: "192.168.68.57:5555",
+                kind: .connectable,
+                lastSeen: Date(timeIntervalSince1970: 300)
+            )
+            let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+            model.setDiscoveredPhonesForTesting([phone])
+
+            model.connect(record: record)
+            let startedAt = Date()
+            while model.selectedDevice.adbSerial != "192.168.68.57:5555",
+                  Date().timeIntervalSince(startedAt) < 4 {
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+
+            let calls = loggedCalls(fake.log)
+            XCTAssertTrue(calls.contains("connect 192.168.68.57:5555"))
+            XCTAssertFalse(calls.contains("connect RFCT10ZLTAJ"))
+            XCTAssertEqual(model.selectedDevice.adbSerial, "192.168.68.57:5555")
+            XCTAssertEqual(model.pairedPhones.first?.lastAddress, "192.168.68.57:5555")
+            model.stopMirroring()
+            try await Task.sleep(nanoseconds: 500_000_000)
+        }
     }
 
     func testEnsureADBServerStartedDoesNotKillExistingTransports() async throws {

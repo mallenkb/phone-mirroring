@@ -72,6 +72,13 @@ final class ScrcpyVideoStream {
     private var isStopped = false
     private let queue = DispatchQueue(label: "scrcpy.video.stream", qos: .userInteractive)
 
+    /// Stall watchdog: only valid once live audio is confirmed. Video can go
+    /// quiet on a static screen, but Opus packets stream continuously when
+    /// audio capture is active, so an audio-data stall is a real disconnect.
+    private static let stallTimeout: TimeInterval = 5
+    private var lastDataAt = Date()
+    private var stallTimer: DispatchSourceTimer?
+
     var onHeader: HeaderHandler?
     var onPacket: PacketHandler?
     var onResize: ResizeHandler?
@@ -90,6 +97,16 @@ final class ScrcpyVideoStream {
         parameters.acceptLocalOnly = true
         if let tcp = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
             tcp.noDelay = true
+            // Detect a half-open socket when the phone's Wi-Fi drops: TCP stays
+            // "open" with no FIN/RST, so without this the mirror just freezes on
+            // the last frame for minutes. Keepalive probes a silent peer and
+            // fails the connection (~5s) — and, unlike a frame-arrival check, it
+            // never false-fires on a static screen because a live network still
+            // ACKs the probes.
+            tcp.enableKeepalive = true
+            tcp.keepaliveIdle = 2
+            tcp.keepaliveInterval = 1
+            tcp.keepaliveCount = 3
         }
         let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
         listener.newConnectionHandler = { [weak self] connection in
@@ -106,6 +123,8 @@ final class ScrcpyVideoStream {
 
     func stop() {
         isStopped = true
+        stallTimer?.cancel()
+        stallTimer = nil
         onHeader = nil
         onPacket = nil
         onResize = nil
@@ -194,6 +213,44 @@ final class ScrcpyVideoStream {
         codecID == opusAudioCodecID
     }
 
+    static func shouldRunDataStallWatchdog(
+        expectsAudio: Bool,
+        audioMetaParsed: Bool,
+        audioDisabled: Bool
+    ) -> Bool {
+        expectsAudio && audioMetaParsed && !audioDisabled
+    }
+
+    /// Starts the data-stall watchdog once live audio is confirmed. Runs on the
+    /// stream queue (same queue as the receive callbacks, so `lastDataAt` needs
+    /// no extra synchronization).
+    private func startStallWatchdog() {
+        guard stallTimer == nil else { return }
+        guard Self.shouldRunDataStallWatchdog(
+            expectsAudio: expectsAudio,
+            audioMetaParsed: audioMetaParsed,
+            audioDisabled: audioDisabled
+        ) else {
+            return
+        }
+        lastDataAt = Date()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 1, repeating: 1)
+        timer.setEventHandler { [weak self] in
+            guard let self, !self.isStopped else { return }
+            guard Date().timeIntervalSince(self.lastDataAt) > Self.stallTimeout else { return }
+            Logger.log("ScrcpyVideoStream stalled — no data for \(Int(Self.stallTimeout))s; ending session")
+            self.failStream("connection lost (no data for \(Int(Self.stallTimeout))s)")
+        }
+        timer.resume()
+        stallTimer = timer
+    }
+
+    private func stopStallWatchdog() {
+        stallTimer?.cancel()
+        stallTimer = nil
+    }
+
     private func readMore(on connection: NWConnection, handler: @escaping (Data) -> Void) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             guard let self, !self.isStopped else { return }
@@ -202,6 +259,7 @@ final class ScrcpyVideoStream {
                 return
             }
             if let data, !data.isEmpty {
+                self.lastDataAt = Date()
                 handler(data)
             }
             if isComplete {
@@ -298,6 +356,7 @@ final class ScrcpyVideoStream {
                 Logger.log("ScrcpyVideoStream: device disabled audio; continuing video only")
                 audioDisabled = true
                 audioBuffer.removeAll()
+                stopStallWatchdog()
                 return
             case 1:
                 Logger.log("ScrcpyVideoStream: audio configuration error reported by device")
@@ -305,10 +364,12 @@ final class ScrcpyVideoStream {
                 return
             case Self.opusAudioCodecID:
                 Logger.log("ScrcpyVideoStream: audio codec=opus")
+                startStallWatchdog()
             default:
                 Logger.log("ScrcpyVideoStream: unsupported audio codec=\(String(format: "0x%08x", codecID)); ignoring audio")
                 audioDisabled = true
                 audioBuffer.removeAll()
+                stopStallWatchdog()
                 return
             }
         }
@@ -373,6 +434,8 @@ final class ScrcpyVideoStream {
         videoBuffer.removeAll()
         audioBuffer.removeAll()
         isStopped = true
+        stallTimer?.cancel()
+        stallTimer = nil
         let error = NSError(
             domain: "ScrcpyVideoStream",
             code: -1,

@@ -76,4 +76,38 @@ final class ScrcpyVideoStreamTests: XCTestCase {
     func testStreamEndedMessageMarksClosedSocketAsDisconnect() {
         XCTAssertEqual(ScrcpyVideoStream.streamEndedMessage, "scrcpy stream ended")
     }
+
+    func testDataStallWatchdogDoesNotRunForVideoOnlyStreams() {
+        XCTAssertFalse(
+            ScrcpyVideoStream.shouldRunDataStallWatchdog(
+                expectsAudio: false,
+                audioMetaParsed: false,
+                audioDisabled: false
+            )
+        )
+    }
+
+    func testDataStallWatchdogRunsOnlyAfterLiveAudioIsConfirmed() {
+        XCTAssertFalse(
+            ScrcpyVideoStream.shouldRunDataStallWatchdog(
+                expectsAudio: true,
+                audioMetaParsed: false,
+                audioDisabled: false
+            )
+        )
+        XCTAssertTrue(
+            ScrcpyVideoStream.shouldRunDataStallWatchdog(
+                expectsAudio: true,
+                audioMetaParsed: true,
+                audioDisabled: false
+            )
+        )
+        XCTAssertFalse(
+            ScrcpyVideoStream.shouldRunDataStallWatchdog(
+                expectsAudio: true,
+                audioMetaParsed: true,
+                audioDisabled: true
+            )
+        )
+    }
 }

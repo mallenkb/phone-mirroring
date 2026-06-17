@@ -66,7 +66,6 @@ final class ScrcpyControlChannel {
 
     static let pointerIDMouse: UInt64 = 0xFFFF_FFFF_FFFF_FFFF
     static let buttonPrimary: UInt32 = 1
-    static let buttonSecondary: UInt32 = 2
     static let metaCtrlOn: UInt32 = 0x0000_1000
 
     private let connection: NWConnection

@@ -46,29 +46,9 @@ struct ADBController: Sendable {
         return Tooling.run("adb", arguments: arguments, timeout: timeout)
     }
 
-    @discardableResult
-    func runInteractive(_ arguments: [String], input: String) -> String {
-        Self.commandLock.lock()
-        defer { Self.commandLock.unlock() }
-        return Tooling.runInteractive("adb", arguments: arguments, input: input)
-    }
-
-    /// Bounce the adb server as a last-resort recovery action. Normal
-    /// connect/pair flows should use `ensureServerStarted()` so they don't drop
-    /// an otherwise good USB or Wi-Fi transport.
-    func restartServer() async {
-        _ = await Task.detached(priority: .userInitiated) {
-            self.run(["kill-server"])
-        }.value
-        try? await Task.sleep(nanoseconds: 400_000_000)
-        _ = await Task.detached(priority: .userInitiated) {
-            self.run(["start-server"])
-        }.value
-    }
-
     /// Starts adb if needed without killing existing USB or Wi-Fi transports.
-    /// Use this before normal connect/pair flows; reserve `restartServer()` for
-    /// explicit recovery because `kill-server` drops every active connection.
+    /// Use this before normal connect/pair flows. A cold start can take a few
+    /// seconds, so it must not be interrupted mid-spawn.
     func ensureServerStarted() async {
         // A cold `adb start-server` regularly takes longer than 2s; killing it
         // mid-spawn left connect flows racing a half-started daemon.
@@ -84,7 +64,7 @@ struct ADBController: Sendable {
     }
 
     func connectableMDNSTargets() -> [DiscoveredPhone] {
-        mdnsServices().filter { $0.kind == .connectable }
+        mdnsServices().filter { $0.kind.isConnectable }
     }
 
     /// Parses `adb mdns services` output into a deduped list of phones.
@@ -108,10 +88,10 @@ struct ADBController: Sendable {
             if typeField.contains("_adb-tls-pairing._tcp") {
                 kind = .pairable
             } else if typeField.contains("_adb-tls-connect._tcp") {
-                kind = .connectable
+                kind = .wirelessDebugging
             } else if typeField.contains("_adb._tcp") {
                 // Legacy `adb tcpip 5555` mode — no pairing required.
-                kind = .connectable
+                kind = .legacyTCPIP
             } else {
                 kind = nil
             }
@@ -123,7 +103,7 @@ struct ADBController: Sendable {
                 lastSeen: .now
             )
             if let existing = byID[instance] {
-                if existing.kind == .pairable && kind == .connectable {
+                if existing.kind == .pairable && kind.isConnectable {
                     byID[instance] = phone
                 }
             } else {
@@ -207,7 +187,7 @@ struct ADBController: Sendable {
             return DiscoveredPhone(
                 id: instance,
                 address: address,
-                kind: serviceType == "_adb-tls-pairing._tcp" ? .pairable : .connectable,
+                kind: Self.discoveredPhoneKind(forServiceType: serviceType),
                 lastSeen: .now
             )
         }
@@ -230,7 +210,7 @@ struct ADBController: Sendable {
         var byID: [String: DiscoveredPhone] = [:]
         for phone in phones {
             if let existing = byID[phone.id] {
-                if existing.kind == .pairable && phone.kind == .connectable {
+                if existing.kind == .pairable && phone.kind.isConnectable {
                     byID[phone.id] = phone
                 }
             } else {
@@ -238,5 +218,15 @@ struct ADBController: Sendable {
             }
         }
         return byID.values.sorted(by: { $0.id < $1.id })
+    }
+
+    private static func discoveredPhoneKind(forServiceType serviceType: String) -> DiscoveredPhone.Kind {
+        if serviceType == "_adb-tls-pairing._tcp" {
+            return .pairable
+        }
+        if serviceType == "_adb._tcp" {
+            return .legacyTCPIP
+        }
+        return .wirelessDebugging
     }
 }

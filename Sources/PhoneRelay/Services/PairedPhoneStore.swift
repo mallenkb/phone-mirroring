@@ -78,21 +78,33 @@ struct PairedPhoneStore {
         id: String,
         displayName: String,
         address: String,
+        usbSerial: String? = nil,
+        wifiAddress: String? = nil,
         now: Date = .now
     ) -> [PairedPhoneRecord] {
         let sanitizedDisplayName = Self.sanitizedDisplayName(displayName)
+        let resolvedUSBSerial = Self.resolvedUSBSerial(address: address, explicitUSBSerial: usbSerial)
+        let resolvedWiFiAddress = Self.resolvedWiFiAddress(address: address, explicitWiFiAddress: wifiAddress)
         let matchingIndexes = matchingRecordIndexes(
             in: records,
             id: id,
             displayName: sanitizedDisplayName,
-            address: address
+            address: address,
+            usbSerial: resolvedUSBSerial,
+            wifiAddress: resolvedWiFiAddress
         )
 
         guard !matchingIndexes.isEmpty else {
             return records + [.init(
                 id: id,
                 displayName: sanitizedDisplayName,
-                lastAddress: address,
+                lastAddress: Self.preferredLastAddress(
+                    incoming: address,
+                    existing: [],
+                    wifiAddress: resolvedWiFiAddress
+                ),
+                usbSerial: resolvedUSBSerial,
+                wifiAddress: resolvedWiFiAddress,
                 firstPaired: now,
                 lastConnected: now
             )]
@@ -106,8 +118,11 @@ struct PairedPhoneStore {
             displayName: sanitizedDisplayName,
             lastAddress: Self.preferredLastAddress(
                 incoming: address,
-                existing: matchingIndexes.map { records[$0].lastAddress }
+                existing: matchingIndexes.map { records[$0].lastAddress },
+                wifiAddress: resolvedWiFiAddress ?? matchingIndexes.compactMap { records[$0].resolvedWiFiAddress }.first
             ),
+            usbSerial: resolvedUSBSerial ?? matchingIndexes.compactMap { records[$0].resolvedUSBSerial }.first,
+            wifiAddress: resolvedWiFiAddress ?? matchingIndexes.compactMap { records[$0].resolvedWiFiAddress }.first,
             firstPaired: firstPaired,
             lastConnected: now
         )
@@ -125,7 +140,9 @@ struct PairedPhoneStore {
                 in: result,
                 id: record.id,
                 displayName: record.displayName,
-                address: record.lastAddress
+                address: record.lastAddress,
+                usbSerial: record.resolvedUSBSerial,
+                wifiAddress: record.resolvedWiFiAddress
             ) {
                 result[idx] = merged(result[idx], with: record)
             } else {
@@ -146,8 +163,11 @@ struct PairedPhoneStore {
             displayName: displayName,
             lastAddress: Self.preferredLastAddress(
                 incoming: latest.lastAddress,
-                existing: [older.lastAddress]
+                existing: [older.lastAddress],
+                wifiAddress: latest.resolvedWiFiAddress ?? older.resolvedWiFiAddress
             ),
+            usbSerial: latest.resolvedUSBSerial ?? older.resolvedUSBSerial,
+            wifiAddress: latest.resolvedWiFiAddress ?? older.resolvedWiFiAddress,
             firstPaired: min(existing.firstPaired, incoming.firstPaired),
             lastConnected: max(existing.lastConnected, incoming.lastConnected),
             autoConnectSuspended: latest.autoConnectSuspended
@@ -158,32 +178,49 @@ struct PairedPhoneStore {
     /// `host:port`: the wireless address is what launch and presence
     /// auto-reconnect dial after the cable is unplugged, and a USB session
     /// has no wireless address of its own to contribute.
-    static func preferredLastAddress(incoming: String, existing: [String]) -> String {
-        if incoming.contains(":") { return incoming }
-        return existing.first(where: { $0.contains(":") }) ?? incoming
+    static func preferredLastAddress(incoming: String, existing: [String], wifiAddress: String? = nil) -> String {
+        if let wifiAddress { return wifiAddress }
+        if PairedPhoneRecord.isWirelessADBAddress(incoming) { return incoming }
+        return existing.first(where: PairedPhoneRecord.isWirelessADBAddress) ?? incoming
     }
 
     private func matchingRecordIndex(
         in records: [PairedPhoneRecord],
         id: String,
         displayName: String,
-        address: String
+        address: String,
+        usbSerial: String? = nil,
+        wifiAddress: String? = nil
     ) -> Int? {
-        matchingRecordIndexes(in: records, id: id, displayName: displayName, address: address).first
+        matchingRecordIndexes(
+            in: records,
+            id: id,
+            displayName: displayName,
+            address: address,
+            usbSerial: usbSerial,
+            wifiAddress: wifiAddress
+        ).first
     }
 
     private func matchingRecordIndexes(
         in records: [PairedPhoneRecord],
         id: String,
         displayName: String,
-        address: String
+        address: String,
+        usbSerial: String? = nil,
+        wifiAddress: String? = nil
     ) -> [Int] {
         let addressHost = Self.host(in: address)
+        let wifiHost = wifiAddress.flatMap(Self.host)
         let exactMatches = records.indices.filter { index in
             let record = records[index]
             return record.id == id
                 || record.lastAddress == address
+                || record.resolvedUSBSerial == usbSerial
+                || record.resolvedUSBSerial == id
+                || record.resolvedWiFiAddress == wifiAddress
                 || (addressHost != nil && Self.host(in: record.lastAddress) == addressHost)
+                || (wifiHost != nil && record.resolvedWiFiAddress.flatMap(Self.host) == wifiHost)
                 || (
                     Self.isSpecificDeviceName(displayName)
                     && Self.normalizedDeviceName(record.displayName) == Self.normalizedDeviceName(displayName)
@@ -221,6 +258,26 @@ struct PairedPhoneStore {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "Android device" }
         return trimmed
+    }
+
+    private static func resolvedUSBSerial(address: String, explicitUSBSerial: String?) -> String? {
+        if let explicitUSBSerial = sanitizedRouteValue(explicitUSBSerial) {
+            return explicitUSBSerial
+        }
+        return PairedPhoneRecord.isWirelessADBAddress(address) ? nil : address
+    }
+
+    private static func resolvedWiFiAddress(address: String, explicitWiFiAddress: String?) -> String? {
+        if let explicitWiFiAddress = sanitizedRouteValue(explicitWiFiAddress) {
+            return explicitWiFiAddress
+        }
+        return PairedPhoneRecord.isWirelessADBAddress(address) ? address : nil
+    }
+
+    private static func sanitizedRouteValue(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     static func normalizedDeviceName(_ name: String) -> String {

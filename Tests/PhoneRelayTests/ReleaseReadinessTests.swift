@@ -2,24 +2,40 @@ import XCTest
 @testable import PhoneRelay
 
 final class ReleaseReadinessTests: XCTestCase {
-    func testAppStoreEntitlementsAllowDownloadsForCaptures() throws {
+    func testXcodeAppSandboxAllowsADBKeysAndConnections() throws {
         let entitlements = try Self.propertyList(at: Self.repoRoot()
             .appendingPathComponent("App/PhoneRelay.entitlements"))
 
         XCTAssertEqual(entitlements["com.apple.security.app-sandbox"] as? Bool, true)
+        XCTAssertEqual(entitlements["com.apple.security.device.usb"] as? Bool, true)
+        XCTAssertEqual(entitlements["com.apple.security.network.client"] as? Bool, true)
+        XCTAssertEqual(entitlements["com.apple.security.network.server"] as? Bool, true)
         XCTAssertEqual(entitlements["com.apple.security.files.downloads.read-write"] as? Bool, true)
+        XCTAssertEqual(entitlements["com.apple.security.files.user-selected.read-write"] as? Bool, true)
+        XCTAssertEqual(
+            entitlements["com.apple.security.temporary-exception.files.home-relative-path.read-write"] as? [String],
+            [".android/"]
+        )
+        XCTAssertEqual(entitlements["com.apple.developer.usernotifications.communication"] as? Bool, true)
     }
 
     func testBundledADBHelperUsesSandboxInheritanceEntitlements() throws {
         let entitlements = try Self.propertyList(at: Self.repoRoot()
             .appendingPathComponent("App/HelperInherit.entitlements"))
-
         XCTAssertEqual(entitlements["com.apple.security.app-sandbox"] as? Bool, true)
         XCTAssertEqual(entitlements["com.apple.security.inherit"] as? Bool, true)
         XCTAssertEqual(Set(entitlements.keys), [
             "com.apple.security.app-sandbox",
             "com.apple.security.inherit"
         ])
+
+        let project = try String(
+            contentsOf: Self.repoRoot()
+                .appendingPathComponent("App/PhoneRelay.xcodeproj/project.pbxproj"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(project.contains("HelperInherit.entitlements"))
+        XCTAssertTrue(project.contains(#"--entitlements \"$SRCROOT/HelperInherit.entitlements\""#))
     }
 
     @MainActor

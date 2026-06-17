@@ -55,13 +55,13 @@ final class MDNSParserTests: XCTestCase {
     func testParsesConnectService() {
         let output = "adb-XYZ\t_adb-tls-connect._tcp.\t192.0.2.42:5555"
         let phones = ADBController.parseMDNSServices(output)
-        XCTAssertEqual(phones.first?.kind, .connectable)
+        XCTAssertEqual(phones.first?.kind, .wirelessDebugging)
     }
 
     func testParsesLegacyTCPService() {
         let output = "adb-XYZ\t_adb._tcp.\t192.0.2.42:5555"
         let phones = ADBController.parseMDNSServices(output)
-        XCTAssertEqual(phones.first?.kind, .connectable, "Legacy _adb._tcp should be treated as connectable")
+        XCTAssertEqual(phones.first?.kind, .legacyTCPIP, "Legacy _adb._tcp should stay separate from Wireless debugging")
     }
 
     func testParsesDNSServiceBrowseOutput() {
@@ -95,7 +95,7 @@ final class MDNSParserTests: XCTestCase {
 
         XCTAssertEqual(phone?.id, "adb-RFCT10ZLTAJ")
         XCTAssertEqual(phone?.address, "Android.local:5555")
-        XCTAssertEqual(phone?.kind, .connectable)
+        XCTAssertEqual(phone?.kind, .legacyTCPIP)
     }
 
     func testConnectServicePreemptsPairingForSameInstance() {
@@ -105,7 +105,7 @@ final class MDNSParserTests: XCTestCase {
         """
         let phones = ADBController.parseMDNSServices(output)
         XCTAssertEqual(phones.count, 1)
-        XCTAssertEqual(phones.first?.kind, .connectable)
+        XCTAssertEqual(phones.first?.kind, .wirelessDebugging)
         XCTAssertEqual(phones.first?.address, "192.0.2.42:5555")
     }
 

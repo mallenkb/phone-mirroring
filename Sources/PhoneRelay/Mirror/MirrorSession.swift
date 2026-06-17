@@ -132,7 +132,6 @@ final class MirrorSession {
         decoder.onSample = { [weak self] sample in
             Task { @MainActor in
                 guard let self, !self.didStop, !self.isStopping else { return }
-                self.recordMirrorActivity()
                 self.windowController?.renderView.enqueue(sample)
             }
         }
@@ -519,12 +518,11 @@ final class MirrorSession {
     private func scheduleAutomaticScreenOffIfNeeded() {
         guard model?.mirrorScreenOffAfterThirtySecondsEnabled ?? true else { return }
         screenOffTask?.cancel()
-        recordMirrorActivity()
         screenOffTask = Task { [weak self] in
             while !Task.isCancelled {
                 let delay = await MainActor.run { () -> TimeInterval? in
                     guard let self, !self.didStop, !self.isStopping else { return nil }
-                    guard let deadline = self.screenOffDeadline else { return nil }
+                    guard let deadline = self.screenOffDeadline else { return 0.5 }
                     return max(0, deadline.timeIntervalSinceNow)
                 }
                 guard let delay else { return }
@@ -534,6 +532,7 @@ final class MirrorSession {
                 }
                 let shouldTurnOff = await MainActor.run { () -> Bool in
                     guard let self, !self.didStop, !self.isStopping else { return false }
+                    guard NSApp.isActive else { return false }
                     guard let deadline = self.screenOffDeadline else { return false }
                     return Self.shouldTurnScreenOff(now: Date(), deadline: deadline)
                 }

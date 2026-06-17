@@ -320,10 +320,27 @@ final class MirrorWindowChromeTests: XCTestCase {
 
         XCTAssertEqual(progressViews.count, 1)
         XCTAssertEqual(progressViews.first?.allTextFieldValues, [
-            "Connecting to your",
+            "Connecting to",
             "Pixel 8 Pro",
-            "Connecting to your",
+            "Connecting to",
             "Pixel 8 Pro"
+        ])
+    }
+
+    @MainActor
+    func testMirrorLoadingCanRenderStatusWithoutDeviceName() {
+        let renderView = MirrorRenderView(frame: NSRect(x: 0, y: 0, width: 390, height: 850))
+        renderView.setLoadingText(statusText: "Switching to Wi-Fi", deviceName: "")
+
+        let progressView = renderView.allSubviews.first {
+            NSStringFromClass(type(of: $0)).contains("LoadingProgressTextView")
+        }
+
+        XCTAssertEqual(progressView?.allTextFieldValues, [
+            "Switching to Wi-Fi",
+            "",
+            "Switching to Wi-Fi",
+            ""
         ])
     }
 
@@ -379,10 +396,110 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(source.contains("if model.shouldShowConnectionLoadingSurface"))
         XCTAssertTrue(source.contains("MirrorLoadingSurface("))
         XCTAssertTrue(source.contains("statusText: model.connectionLoadingStatusText"))
-        XCTAssertTrue(source.contains("deviceName: model.mirrorLoadingDeviceTitle"))
+        XCTAssertTrue(source.contains("deviceName: model.connectionLoadingDeviceTitle"))
         XCTAssertFalse(source.contains("shouldShowMirrorLoading"))
-        XCTAssertFalse(source.contains("statusText: \"Reconnecting to your\""))
+        XCTAssertFalse(source.contains("statusText: \"Reconnecting to\""))
         XCTAssertFalse(source.contains("deviceName: model.selectedDevice.name"))
+    }
+
+    func testConnectionChooserUsesTransportSpecificRowLoaders() throws {
+        let testURL = URL(fileURLWithPath: #filePath)
+        let packageRoot = testURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let viewSourceURL = packageRoot
+            .appendingPathComponent("Sources/PhoneRelay/Views/FigmaMirrorExperienceView.swift")
+        let modelSourceURL = packageRoot
+            .appendingPathComponent("Sources/PhoneRelay/AppModel.swift")
+        let viewSource = try String(contentsOf: viewSourceURL, encoding: .utf8)
+        let modelSource = try String(contentsOf: modelSourceURL, encoding: .utf8)
+
+        XCTAssertTrue(viewSource.contains("private var isUSBButtonBusy: Bool {\n        inlineConnectingTransport == .usb\n    }"))
+        XCTAssertTrue(viewSource.contains("private var isWirelessButtonBusy: Bool {\n        inlineConnectingTransport == .wifi\n    }"))
+        XCTAssertTrue(viewSource.contains("private var isChooserButtonDisabled: Bool"))
+        XCTAssertTrue(viewSource.contains("isDisabled: isChooserButtonDisabled"))
+        XCTAssertTrue(viewSource.contains("guard !isDisabled else { return }"))
+        XCTAssertFalse(viewSource.contains(".disabled(isChooserButtonDisabled)"))
+        XCTAssertTrue(viewSource.contains("inlineConnectingTransport == .usb"))
+        XCTAssertTrue(viewSource.contains("inlineConnectingTransport == .wifi"))
+        XCTAssertTrue(viewSource.contains("if connectionStep == .chooseMethod"))
+        XCTAssertTrue(viewSource.contains("model.shouldShowConnectionLoadingSurface && inlineConnectingTransport == nil"))
+        XCTAssertTrue(viewSource.contains("isAvailable: effectiveUSBConnectionAvailable"))
+        XCTAssertTrue(viewSource.contains("isAvailable: effectiveWiFiConnectionAvailable"))
+        XCTAssertTrue(viewSource.contains("network.localizedCaseInsensitiveContains(\"wireless\")"))
+        XCTAssertTrue(viewSource.contains("Self.connectionOnlineGreen : .white"))
+        XCTAssertTrue(viewSource.contains("if model.hasSavedWirelessConnection"))
+        XCTAssertTrue(viewSource.contains("model.reconnectOverWiFi(inlineUntilConnected: true)"))
+        XCTAssertFalse(viewSource.contains("model.isManualUSBConnectDisabled"))
+        XCTAssertTrue(modelSource.contains("var isConnectionChooserUSBRowBusy"))
+        XCTAssertTrue(modelSource.contains("var isConnectionChooserWirelessRowBusy"))
+        XCTAssertTrue(modelSource.contains("var isUSBConnectionAvailable"))
+        XCTAssertTrue(modelSource.contains("var isWirelessConnectionAvailable"))
+        XCTAssertTrue(modelSource.contains("var hasSavedWirelessConnection"))
+        XCTAssertTrue(modelSource.contains("inlineUntilConnected: Bool = false"))
+    }
+
+    func testConnectionStatusPillStaysOutsidePageTransition() throws {
+        let testURL = URL(fileURLWithPath: #filePath)
+        let packageRoot = testURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageRoot
+            .appendingPathComponent("Sources/PhoneRelay/Views/FigmaMirrorExperienceView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        let onboardingStart = try XCTUnwrap(source.range(of: "private var onboardingContent: some View {"))
+        let choiceStart = try XCTUnwrap(source.range(of: "private func connectionChoiceScreen"))
+        let wirelessStart = try XCTUnwrap(source.range(of: "private func wirelessPairingScreen"))
+        let navigateStart = try XCTUnwrap(source.range(of: "private func navigate"))
+        let onboardingBody = String(source[onboardingStart.lowerBound..<choiceStart.lowerBound])
+        let choiceBody = String(source[choiceStart.lowerBound..<wirelessStart.lowerBound])
+        let wirelessBody = String(source[wirelessStart.lowerBound..<navigateStart.lowerBound])
+
+        XCTAssertTrue(onboardingBody.contains("bottomStatusPill(width: contentWidth, scale: scale)"))
+        XCTAssertTrue(onboardingBody.contains("transaction.animation = nil"))
+        XCTAssertFalse(choiceBody.contains("bottomStatusPill(width: width, scale: scale)"))
+        XCTAssertFalse(wirelessBody.contains("bottomStatusPill(width: width, scale: scale)"))
+        XCTAssertFalse(wirelessBody.contains("shouldShowDevicePill"))
+    }
+
+    func testConnectionChromeRevealOrdersParentWindowWithToolbar() throws {
+        let testURL = URL(fileURLWithPath: #filePath)
+        let packageRoot = testURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageRoot
+            .appendingPathComponent("Sources/PhoneRelay/App/RootView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        let revealStart = try XCTUnwrap(source.range(of: "private func setChromeVisible(_ visible: Bool)"))
+        let hideStart = try XCTUnwrap(source.range(of: "private func hideChromeImmediately"))
+        let revealBody = String(source[revealStart.lowerBound..<hideStart.lowerBound])
+        let parentOrder = try XCTUnwrap(revealBody.range(of: "parentWindow?.orderFront(nil)"))
+        let toolbarOrder = try XCTUnwrap(revealBody.range(of: "toolbarWindow.orderFront(nil)"))
+
+        XCTAssertLessThan(parentOrder.lowerBound, toolbarOrder.lowerBound)
+    }
+
+    func testConnectionPinningVisibleChromeKeepsParentWindowOrdered() throws {
+        let testURL = URL(fileURLWithPath: #filePath)
+        let packageRoot = testURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageRoot
+            .appendingPathComponent("Sources/PhoneRelay/App/RootView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        let levelStart = try XCTUnwrap(source.range(of: "private func applyAlwaysOnTop(_ enabled: Bool)"))
+        let observersStart = try XCTUnwrap(source.range(of: "private func installWindowObservers"))
+        let levelBody = String(source[levelStart.lowerBound..<observersStart.lowerBound])
+
+        XCTAssertTrue(levelBody.contains("if enabled && chromeVisible && !isMirroring"))
+        XCTAssertTrue(levelBody.contains("parentWindow?.orderFront(nil)"))
     }
 
     @MainActor
@@ -943,25 +1060,30 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertEqual(MirrorChromeOutlineButton.touchHeight, 30, accuracy: 0.001)
         XCTAssertEqual(MirrorChromeOutlineButton.visualIconSize, 18, accuracy: 0.001)
         XCTAssertEqual(MirrorChromeOutlineButton.symbolPointSize, 14, accuracy: 0.001)
+        chromeBar.setAlwaysOnTopEnabled(false)
+        XCTAssertEqual(chromeBar.alwaysOnTopIconNameForTesting, "pin.fill")
+        chromeBar.setAlwaysOnTopEnabled(true)
+        XCTAssertEqual(chromeBar.alwaysOnTopIconNameForTesting, "pin.slash.fill")
         XCTAssertEqual(chromeBar.recentAppsIconNameForTesting, "rectangle.stack.fill")
         XCTAssertEqual(
             chromeBar.rightActionHoverCornerRadiiForTesting,
-            [6, 6, 18],
-            "The rightmost action hover should use a full trailing pill cap."
+            [6, 6, 6, 18],
+            "The pin action should keep compact corners; only the rightmost action should use a full trailing pill cap."
         )
         XCTAssertEqual(
             chromeBar.rightActionHoverLeadingCornerRadiiForTesting.map { $0 ?? MirrorChromeOutlineButton.defaultHoverCornerRadius },
-            [6, 6, 6],
-            "The action hovers should keep the standard compact leading radius between adjacent controls."
+            [6, 6, 6, 6],
+            "The pin action should not get a full leading pill cap."
         )
         XCTAssertEqual(
             chromeBar.rightActionHoverHeightsForTesting,
-            [30, 30, 30],
+            [30, 30, 30, 30],
             "The hover background must stay at the fixed action-button height."
         )
         XCTAssertEqual(
             chromeBar.rightActionHoverRoundedCornersForTesting,
             [
+                [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner],
                 [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner],
                 [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner],
                 [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner],
@@ -983,6 +1105,134 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertEqual(chromeBar.titleMaximumNumberOfLinesForTesting, 1)
         XCTAssertEqual(chromeBar.trailingActionsPaddingForTesting, 4, accuracy: 0.001)
         XCTAssertEqual(chromeBar.trailingActionsSpacingForTesting, 0, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testRecordingToolbarShowsTimerPillAndOnlyHomeAction() throws {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+        let chromeBar = controller.chromeBarForTesting
+
+        chromeBar.setControlsVisible(true)
+        chromeBar.setRecordingActive(false)
+        XCTAssertEqual(chromeBar.rightActionVisibilityForTesting, [true, true, false, true, true])
+
+        chromeBar.setRecordingActive(true)
+        XCTAssertEqual(
+            chromeBar.rightActionVisibilityForTesting,
+            [false, false, true, true, false],
+            "Recording mode should hide pin, screenshot, and recents while keeping the timer pill and Home."
+        )
+        XCTAssertEqual(
+            chromeBar.rightActionHoverCornerRadiiForTesting,
+            [6, 6, 18, 6],
+            "When recording, Home becomes the visible trailing action and should get the rounded right hover cap."
+        )
+        XCTAssertEqual(
+            chromeBar.rightActionHoverLeadingCornerRadiiForTesting.map { $0 ?? MirrorChromeOutlineButton.defaultHoverCornerRadius },
+            [6, 6, 6, 6],
+            "Recording mode should only round Home's right side, not its leading side."
+        )
+        XCTAssertTrue(chromeBar.isRecordingPillVisibleForTesting)
+        XCTAssertEqual(chromeBar.recordingPillTextForTesting, "00:00")
+
+        chromeBar.setRecordingActive(false)
+        XCTAssertEqual(chromeBar.rightActionHoverCornerRadiiForTesting, [6, 6, 6, 18])
+
+        chromeBar.setRecordingActive(true)
+        chromeBar.setControlsVisible(false)
+        XCTAssertEqual(chromeBar.rightActionVisibilityForTesting, [false, false, false, false, false])
+    }
+
+    @MainActor
+    func testPinnedOnlyToolbarShowsPinAsRoundedRightmostAction() {
+        let chromeBar = MirrorChromeBar()
+
+        chromeBar.setControlsVisible(true)
+        chromeBar.setTrailingActionsMode(.alwaysOnTopOnly)
+
+        XCTAssertEqual(
+            chromeBar.rightActionVisibilityForTesting,
+            [true, false, false, false, false],
+            "Onboarding and connecting chrome should show only the pin action on the right."
+        )
+        XCTAssertEqual(
+            chromeBar.rightActionHoverCornerRadiiForTesting,
+            [18, 6, 6, 6],
+            "When the pin is the rightmost visible action, its hover background should carry the rounded right cap."
+        )
+        XCTAssertEqual(
+            chromeBar.rightActionHoverLeadingCornerRadiiForTesting.map { $0 ?? MirrorChromeOutlineButton.defaultHoverCornerRadius },
+            [6, 6, 6, 6],
+            "The rightmost hover cap should round the trailing side without changing the leading side."
+        )
+    }
+
+    @MainActor
+    func testConnectionWindowChromeAppliesAlwaysOnTopLevel() throws {
+        _ = NSApplication.shared
+        let defaults = UserDefaults.standard
+        let key = "MirrorBehavior.alwaysOnTopEnabled"
+        let previousValue = defaults.object(forKey: key)
+        defer {
+            if let previousValue {
+                defaults.set(previousValue, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+
+        defaults.set(false, forKey: key)
+        let model = AppModel(startBackgroundServices: false)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 390, height: 850),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        let coordinator = WindowRegistrationView.Coordinator()
+        defer {
+            coordinator.uninstall()
+            window.orderOut(nil)
+        }
+
+        coordinator.installOrUpdate(parent: window, model: model)
+        let toolbar = try XCTUnwrap(window.childWindows?.first)
+        toolbar.isReleasedWhenClosed = false
+
+        XCTAssertEqual(window.level, .normal)
+        XCTAssertEqual(toolbar.level, .normal)
+
+        model.toggleMirrorAlwaysOnTop()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(window.level, .floating)
+        XCTAssertEqual(toolbar.level, .floating)
+
+        model.toggleMirrorAlwaysOnTop()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(window.level, .normal)
+        XCTAssertEqual(toolbar.level, .normal)
+    }
+
+    @MainActor
+    func testRecordingPillCanTriggerStopRecordingAction() throws {
+        let chromeBar = MirrorChromeBar()
+        var didStopRecording = false
+        chromeBar.configure(
+            deviceName: "SM S906B",
+            onHome: {},
+            onRecentApps: {},
+            onScreenshot: {},
+            onStopRecording: { didStopRecording = true }
+        )
+
+        chromeBar.triggerRecordingPillForTesting()
+
+        XCTAssertTrue(didStopRecording)
     }
 
     @MainActor
@@ -1234,6 +1484,23 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(controller.toolbarIsVisibleForTesting)
 
         controller.simulateWindowWillMiniaturizeForTesting()
+
+        XCTAssertFalse(controller.isChromeVisibleForTesting)
+        XCTAssertTrue(controller.toolbarIgnoresMouseEventsForTesting)
+        XCTAssertFalse(controller.toolbarIsVisibleForTesting)
+    }
+
+    @MainActor
+    func testFloatingToolbarOrdersOutAfterMirrorMiniaturizes() {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+
+        controller.simulateRevealZoneHover(true)
+        XCTAssertTrue(controller.isChromeVisibleForTesting)
+        XCTAssertTrue(controller.toolbarIsVisibleForTesting)
+
+        controller.simulateWindowDidMiniaturizeForTesting()
 
         XCTAssertFalse(controller.isChromeVisibleForTesting)
         XCTAssertTrue(controller.toolbarIgnoresMouseEventsForTesting)
