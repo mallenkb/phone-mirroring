@@ -87,6 +87,7 @@ struct SettingsView: View {
                         record: record,
                         isOnline: isOnline(record),
                         isActive: isActive(record),
+                        activeADBSerial: model.selectedDevice.adbSerial,
                         liveAddress: liveAddress(for: record),
                         onConnect: { transport in model.connect(record: record, transport: transport.modelTransport) },
                         onDisconnect: { model.disconnectFromSettings() },
@@ -1061,6 +1062,7 @@ private struct PairedPhoneRow: View {
     let record: PairedPhoneRecord
     let isOnline: Bool
     let isActive: Bool
+    let activeADBSerial: String?
     let liveAddress: String?
     let onConnect: (SettingsDeviceTransport) -> Void
     let onDisconnect: () -> Void
@@ -1189,10 +1191,27 @@ private struct PairedPhoneRow: View {
     }
 
     private var statusLabel: String {
+        if let activeTransport {
+            return "Connected via \(activeTransport.title)"
+        }
         if isActive { return "Connected" }
         if liveAddress != nil { return "Wi-Fi available" }
         if isOnline { return "Online" }
         return "Last seen"
+    }
+
+    private var activeTransport: SettingsDeviceTransport? {
+        guard isActive, let activeADBSerial else { return nil }
+        if let usbAddress, activeADBSerial == usbAddress {
+            return .usb
+        }
+        if let wifiAddress, activeADBSerial == wifiAddress {
+            return .wifi
+        }
+        if PairedPhoneRecord.isWirelessADBAddress(activeADBSerial) {
+            return .wifi
+        }
+        return .usb
     }
 
     private var statusColor: Color {

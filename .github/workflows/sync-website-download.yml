@@ -1,11 +1,6 @@
 name: Sync Website Download
 
 on:
-  release:
-    types:
-      - published
-      - edited
-      - released
   workflow_dispatch:
     inputs:
       tag:
@@ -23,13 +18,13 @@ jobs:
     env:
       WEBSITE_REPO: mallenkb/phonerelay-website
       RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
-      GH_TOKEN: ${{ secrets.WEBSITE_SYNC_TOKEN }}
+      GH_TOKEN: ${{ secrets.WEBSITE_REPO_TOKEN }}
     steps:
       - name: Require website sync token
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "Missing WEBSITE_SYNC_TOKEN secret." >&2
+            echo "Missing WEBSITE_REPO_TOKEN secret." >&2
             echo "Create a fine-grained GitHub token with Actions: write and Contents: read/write on $WEBSITE_REPO." >&2
             exit 1
           fi

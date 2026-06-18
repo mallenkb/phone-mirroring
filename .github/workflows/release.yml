@@ -1,0 +1,141 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build, notarize, and publish
+    runs-on: macos-14
+    env:
+      APP_NAME: PhoneRelay
+      WEBSITE_REPO: mallenkb/phonerelay-website
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate tag
+        id: version
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag must match vX.Y.Z; got $TAG" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Sources/PhoneRelay/Info.plist)"
+          if [[ "$APP_VERSION" != "$VERSION" ]]; then
+            echo "App version $APP_VERSION does not match tag $TAG" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "dmg_name=PhoneRelay-$VERSION.dmg" >> "$GITHUB_OUTPUT"
+
+      - name: Select Xcode
+        run: |
+          if [ -d /Applications/Xcode_15.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          else
+            echo "Xcode 15.4 not present; using preinstalled default" >&2
+          fi
+
+      - name: Run tests
+        run: swift test
+
+      - name: Import Apple signing certificate
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${APPLE_CERTIFICATE_P12_BASE64:?Missing APPLE_CERTIFICATE_P12_BASE64 secret}"
+          : "${APPLE_CERTIFICATE_PASSWORD:?Missing APPLE_CERTIFICATE_PASSWORD secret}"
+          CERT_PATH="$RUNNER_TEMP/phone-relay-cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/phone-relay-signing.keychain-db"
+          printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERT_PATH" 2>/dev/null || \
+            printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 -D > "$CERT_PATH"
+          security create-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
+
+      - name: Build app bundle
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/package_app.sh dist/PhoneRelay.app
+
+      - name: Sign, notarize, and staple app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APP_PASSWORD: ${{ secrets.APP_SPECIFIC_PASSWORD }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          : "${APPLE_ID:?Missing APPLE_ID secret}"
+          : "${APP_PASSWORD:?Missing APP_SPECIFIC_PASSWORD secret}"
+          : "${TEAM_ID:?Missing APPLE_TEAM_ID secret}"
+          DEVELOPER_ID="$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
+          if [[ -z "$DEVELOPER_ID" ]]; then
+            echo "No Developer ID Application signing identity found in keychain." >&2
+            security find-identity -v -p codesigning
+            exit 1
+          fi
+          DEVELOPER_ID="$DEVELOPER_ID" scripts/notarize.sh dist/PhoneRelay.app
+
+      - name: Create DMG
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+          OUT: dist/${{ steps.version.outputs.dmg_name }}
+        run: scripts/make_dmg.sh dist/PhoneRelay.app
+
+      - name: Verify DMG
+        run: |
+          set -euo pipefail
+          test -f "dist/${{ steps.version.outputs.dmg_name }}"
+          hdiutil verify "dist/${{ steps.version.outputs.dmg_name }}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.version.outputs.tag }}" \
+            "dist/${{ steps.version.outputs.dmg_name }}" \
+            --title "PhoneRelay ${{ steps.version.outputs.tag }}" \
+            --notes "PhoneRelay ${{ steps.version.outputs.version }}"
+
+      - name: Expose release asset URL
+        id: asset
+        run: |
+          set -euo pipefail
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.version.outputs.tag }}/${{ steps.version.outputs.dmg_name }}"
+          echo "download_url=$URL" >> "$GITHUB_OUTPUT"
+          echo "$URL" > release-asset-url.txt
+
+      - name: Upload release URL artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-asset-url
+          path: release-asset-url.txt
+
+      - name: Dispatch website update
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${GH_TOKEN:?Missing WEBSITE_REPO_TOKEN secret}"
+          gh workflow run update-download.yml \
+            --repo "$WEBSITE_REPO" \
+            --ref main \
+            -f version="${{ steps.version.outputs.version }}" \
+            -f tag="${{ steps.version.outputs.tag }}" \
+            -f download_url="${{ steps.asset.outputs.download_url }}"
