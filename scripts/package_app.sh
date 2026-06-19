@@ -2,10 +2,10 @@
 set -euo pipefail
 
 APP="${1:-dist/PhoneRelay.app}"
-APP_NAME="${APP_NAME:-PhoneRelay}"
+APP_NAME="${APP_NAME:-Phone Relay}"
 PRODUCT_NAME="${PRODUCT_NAME:-PhoneRelay}"
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
-APP_VERSION="${APP_VERSION:-1.0.10}"
+APP_VERSION="${APP_VERSION:-1.0.11}"
 BUILD_NUMBER="${BUILD_NUMBER:-17}"
 # Prefer a real Apple Development identity when one is in the keychain: TCC
 # grants (Local Network, Notifications) are keyed to the signing identity, and
@@ -133,7 +133,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>PhoneRelay for Android connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
+  <string>Phone Relay for Android connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
   <key>NSBonjourServices</key>
   <array>
     <string>_adb._tcp</string>

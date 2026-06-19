@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="PhoneRelay"
+APP_NAME="Phone Relay"
 PRODUCT_NAME="PhoneRelay"
 # Keep local rebuilds on the same identity as the installed app. macOS Local
 # Network and Notification authorization are keyed to the app identity, so the
 # old placeholder id caused duplicate privacy entries and blocked Wi-Fi handoff.
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
-APP_VERSION="${APP_VERSION:-1.0.10}"
+APP_VERSION="${APP_VERSION:-1.0.11}"
 BUILD_NUMBER="${BUILD_NUMBER:-17}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
@@ -158,7 +158,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>PhoneRelay for Android connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
+  <string>Phone Relay for Android connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
   <key>NSBonjourServices</key>
   <array>
     <string>_adb._tcp</string>

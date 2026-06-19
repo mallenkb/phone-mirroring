@@ -9,15 +9,15 @@
   <key>CFBundleIdentifier</key>
   <string>com.mallenkb.PhoneRelay</string>
   <key>CFBundleName</key>
-  <string>PhoneRelay</string>
+  <string>Phone Relay</string>
   <key>CFBundleDisplayName</key>
-  <string>PhoneRelay</string>
+  <string>Phone Relay</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.10</string>
+  <string>1.0.11</string>
   <key>CFBundleVersion</key>
   <string>17</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>PhoneRelay for Android connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
+  <string>Phone Relay for Android connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
   <key>NSBonjourServices</key>
   <array>
     <string>_adb._tcp</string>
