@@ -31,6 +31,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private var settingsWindow: NSWindow?
     private var shortcutsWindow: NSWindow?
     private var updateCheckTask: Task<Void, Never>?
+    private var updateDownloadTask: Task<Void, Never>?
+    private var updateDownloadWindow: NSWindow?
+    private var updateDownloadStatusLabel: NSTextField?
+    private var updateDownloadProgressIndicator: NSProgressIndicator?
+    private var updateDownloadActionButton: NSButton?
+    private var pendingUpdateInstall: PendingUpdateInstall?
+    private var automaticUpdateTimer: Timer?
     private let model = AppModel()
     private var keyMonitor: Any?
     private var launchedInBackground = false
@@ -96,6 +103,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         installMainMenu()
         installKeyboardScaling()
         NSApp.activate(ignoringOtherApps: true)
+        scheduleAutomaticUpdateChecks()
     }
 
     // MARK: - Single-instance guard
@@ -308,15 +316,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             textInputButtonTitle: "Send",
             textInputPlaceholder: "Reply"
         )
+        let markReadAction = UNNotificationAction(
+            identifier: NotificationForwarder.Action.markRead,
+            title: "Mark as Read",
+            options: []
+        )
+        let clearAction = UNNotificationAction(
+            identifier: NotificationForwarder.Action.clear,
+            title: "Clear",
+            options: []
+        )
         let standard = UNNotificationCategory(
             identifier: NotificationForwarder.Category.standard,
-            actions: [openAction],
+            actions: [openAction, clearAction],
             intentIdentifiers: [],
             options: []
         )
         let message = UNNotificationCategory(
             identifier: NotificationForwarder.Category.message,
-            actions: [replyAction, openAction],
+            actions: [replyAction, markReadAction, openAction, clearAction],
             intentIdentifiers: [],
             options: []
         )
@@ -374,6 +392,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                 self.raisePrimaryWindow()
                 NSApp.activate(ignoringOtherApps: true)
             }
+        case NotificationForwarder.Action.clear:
+            // Dismiss on the phone — no app activation; the user stays where they are.
+            await MainActor.run {
+                self.model.dismissForwardedNotification(
+                    package: package, serial: serial,
+                    notificationKey: notificationKey, title: title, text: text
+                )
+            }
+        case NotificationForwarder.Action.markRead:
+            await MainActor.run {
+                self.model.markForwardedNotificationRead(
+                    package: package, serial: serial,
+                    notificationKey: notificationKey, title: title, text: text
+                )
+            }
         default:
             break
         }
@@ -404,6 +437,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             NSEvent.removeMonitor(keyMonitor)
         }
         updateCheckTask?.cancel()
+        updateDownloadTask?.cancel()
+        automaticUpdateTimer?.invalidate()
         model.shutdown()
     }
 
@@ -516,7 +551,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         viewMenu.addItem(screenRecordingItem)
         viewMenu.addItem(
             NSMenuItem(
-                title: "Turn Phone Screen Off or On",
+                title: "Turn Phone Screen Off",
                 action: #selector(togglePhoneScreen(_:)),
                 keyEquivalent: "l"
             )
@@ -610,6 +645,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             NSMenuItem(
                 title: "Support",
                 action: #selector(openSupport(_:)),
+                keyEquivalent: ""
+            )
+        )
+        helpMenu.addItem(
+            NSMenuItem(
+                title: "View Latest Release",
+                action: #selector(openLatestRelease(_:)),
                 keyEquivalent: ""
             )
         )
@@ -832,11 +874,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         NSWorkspace.shared.open(AppModel.supportURL)
     }
 
+    @objc private func openLatestRelease(_ sender: Any?) {
+        NSWorkspace.shared.open(AppModel.latestReleaseURL)
+    }
+
     @objc private func checkForUpdates(_ sender: Any?) {
         guard updateCheckTask == nil else { return }
 
         updateCheckTask = Task { [weak self] in
-            await self?.runUpdateCheck()
+            await self?.runUpdateCheck(isAutomatic: false)
         }
     }
 
@@ -978,8 +1024,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         case #selector(revealLastCapture(_:))?:
             return model.lastCaptureURL != nil
         case #selector(checkForUpdates(_:))?:
-            menuItem.title = updateCheckTask == nil ? "Check for Updates..." : "Checking for Updates..."
-            return updateCheckTask == nil
+            let isUpdating = updateCheckTask != nil || updateDownloadTask != nil
+            menuItem.title = isUpdating ? "Checking for Updates..." : "Check for Updates..."
+            return !isUpdating
         default:
             return true
         }
@@ -997,20 +1044,69 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         model.centerMirrorWindow()
     }
 
-    private func runUpdateCheck() async {
+    private func scheduleAutomaticUpdateChecks() {
+        automaticUpdateTimer?.invalidate()
+
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            await self?.runAutomaticUpdateCheckIfNeeded()
+        }
+
+        automaticUpdateTimer = Timer.scheduledTimer(withTimeInterval: Self.automaticUpdateCheckInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.runAutomaticUpdateCheckIfNeeded()
+            }
+        }
+    }
+
+    private func runAutomaticUpdateCheckIfNeeded() async {
+        guard updateCheckTask == nil, Self.shouldRunAutomaticUpdateCheck() else { return }
+
+        updateCheckTask = Task { [weak self] in
+            await self?.runUpdateCheck(isAutomatic: true)
+        }
+    }
+
+    private nonisolated static let automaticUpdateCheckInterval: TimeInterval = 24 * 60 * 60
+    private nonisolated static let lastAutomaticUpdateCheckKey = "Updates.lastAutomaticCheck"
+
+    nonisolated static func shouldRunAutomaticUpdateCheck(
+        now: Date = Date(),
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        let lastCheck = defaults.object(forKey: lastAutomaticUpdateCheckKey) as? Date
+        guard let lastCheck else { return true }
+        return now.timeIntervalSince(lastCheck) >= automaticUpdateCheckInterval
+    }
+
+    private nonisolated static func markAutomaticUpdateCheckCompleted(
+        now: Date = Date(),
+        defaults: UserDefaults = .standard
+    ) {
+        defaults.set(now, forKey: lastAutomaticUpdateCheckKey)
+    }
+
+    private func runUpdateCheck(isAutomatic: Bool) async {
         defer { updateCheckTask = nil }
 
         do {
             let release = try await Self.fetchLatestRelease()
-            presentUpdateCheckResult(release)
+            // Record the timestamp only after a *successful* fetch. Marking it up
+            // front meant a check that failed (offline, server down) still set the
+            // 24h cooldown, so a transient failure suppressed retries for a day.
+            if isAutomatic {
+                Self.markAutomaticUpdateCheckCompleted()
+            }
+            await presentUpdateCheckResult(release, isAutomatic: isAutomatic)
         } catch is CancellationError {
             return
         } catch {
+            guard !isAutomatic else { return }
             presentUpdateCheckFailure(error)
         }
     }
 
-    private func presentUpdateCheckResult(_ release: ReleaseMetadata) {
+    private func presentUpdateCheckResult(_ release: ReleaseMetadata, isAutomatic: Bool) async {
         let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
         let latestVersion = release.tagName
 
@@ -1018,26 +1114,282 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             let alert = NSAlert()
             alert.messageText = "A new version of PhoneRelay is available."
             alert.informativeText = "Version \(latestVersion) is available. You have \(currentVersion)."
-            alert.addButton(withTitle: "Download Update")
-            alert.addButton(withTitle: "View Release")
+            alert.addButton(withTitle: "Download Now")
             alert.addButton(withTitle: "Later")
 
             switch alert.runModal() {
             case .alertFirstButtonReturn:
-                NSWorkspace.shared.open(release.primaryDownloadURL ?? release.htmlURL)
-            case .alertSecondButtonReturn:
-                NSWorkspace.shared.open(release.htmlURL)
+                guard let downloadURL = release.primaryDownloadURL else {
+                    NSWorkspace.shared.open(release.htmlURL)
+                    return
+                }
+                startUpdateDownloadWindow(release: release, downloadURL: downloadURL)
             default:
                 break
             }
             return
         }
 
+        guard !isAutomatic else { return }
+
         let alert = NSAlert()
         alert.messageText = "PhoneRelay is up to date."
         alert.informativeText = "Version \(currentVersion) is the latest available release."
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    private struct PendingUpdateInstall {
+        var release: ReleaseMetadata
+        /// The downloaded disk image, or `nil` when the download failed and the
+        /// only action left is to open the release page in a browser.
+        var dmgURL: URL?
+    }
+
+    private func startUpdateDownloadWindow(release: ReleaseMetadata, downloadURL: URL) {
+        showUpdateDownloadWindow(release: release)
+        updateDownloadTask?.cancel()
+        updateDownloadTask = Task { [weak self] in
+            await self?.runUpdateDownload(release: release, downloadURL: downloadURL)
+        }
+    }
+
+    private func showUpdateDownloadWindow(release: ReleaseMetadata) {
+        pendingUpdateInstall = nil
+
+        if let updateDownloadWindow {
+            updateDownloadWindow.level = .modalPanel
+            updateDownloadWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 168))
+            contentView.wantsLayer = true
+
+            let iconView = NSImageView()
+            iconView.image = NSApp.applicationIconImage
+            iconView.imageScaling = .scaleProportionallyUpOrDown
+            iconView.translatesAutoresizingMaskIntoConstraints = false
+
+            let titleLabel = NSTextField(labelWithString: "Downloading PhoneRelay \(release.tagName)")
+            titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+            titleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+            let statusLabel = NSTextField(labelWithString: "Preparing download...")
+            statusLabel.font = .systemFont(ofSize: 13)
+            statusLabel.textColor = .secondaryLabelColor
+            statusLabel.translatesAutoresizingMaskIntoConstraints = false
+
+            let progressIndicator = NSProgressIndicator()
+            progressIndicator.isIndeterminate = true
+            progressIndicator.style = .bar
+            progressIndicator.minValue = 0
+            progressIndicator.maxValue = 1
+            progressIndicator.translatesAutoresizingMaskIntoConstraints = false
+            progressIndicator.startAnimation(nil)
+
+            let actionButton = NSButton(title: "Downloading...", target: self, action: #selector(installDownloadedUpdate(_:)))
+            actionButton.isEnabled = false
+            actionButton.bezelStyle = .rounded
+            actionButton.keyEquivalent = "\r"
+            actionButton.translatesAutoresizingMaskIntoConstraints = false
+
+            let cancelButton = NSButton(title: "Later", target: self, action: #selector(cancelUpdateDownload(_:)))
+            cancelButton.bezelStyle = .rounded
+            cancelButton.translatesAutoresizingMaskIntoConstraints = false
+
+            contentView.addSubview(iconView)
+            contentView.addSubview(titleLabel)
+            contentView.addSubview(statusLabel)
+            contentView.addSubview(progressIndicator)
+            contentView.addSubview(actionButton)
+            contentView.addSubview(cancelButton)
+
+            NSLayoutConstraint.activate([
+                iconView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 24),
+                iconView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
+                iconView.widthAnchor.constraint(equalToConstant: 44),
+                iconView.heightAnchor.constraint(equalToConstant: 44),
+
+                titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 22),
+                titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 14),
+                titleLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
+
+                statusLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
+                statusLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+                statusLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+
+                progressIndicator.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 18),
+                progressIndicator.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+                progressIndicator.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+
+                actionButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
+                actionButton.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -20),
+                actionButton.widthAnchor.constraint(equalToConstant: 132),
+
+                cancelButton.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -10),
+                cancelButton.centerYAnchor.constraint(equalTo: actionButton.centerYAnchor),
+                cancelButton.widthAnchor.constraint(equalToConstant: 92)
+            ])
+
+            let window = NSWindow(
+                contentRect: contentView.frame,
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "PhoneRelay Update"
+            window.level = .modalPanel
+            window.collectionBehavior = [.moveToActiveSpace]
+            window.contentView = contentView
+            window.isReleasedWhenClosed = false
+            // So the red close button cancels an in-flight download instead of
+            // hiding the window while the transfer keeps running.
+            window.delegate = self
+            window.center()
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+
+            updateDownloadWindow = window
+            updateDownloadStatusLabel = statusLabel
+            updateDownloadProgressIndicator = progressIndicator
+            updateDownloadActionButton = actionButton
+        }
+
+        updateDownloadStatusLabel?.stringValue = "Preparing download..."
+        updateDownloadProgressIndicator?.isIndeterminate = true
+        updateDownloadProgressIndicator?.startAnimation(nil)
+        updateDownloadActionButton?.title = "Downloading..."
+        updateDownloadActionButton?.isEnabled = false
+        updateDownloadActionButton?.keyEquivalent = ""
+    }
+
+    private func runUpdateDownload(release: ReleaseMetadata, downloadURL: URL) async {
+        defer { updateDownloadTask = nil }
+
+        do {
+            let downloadedDMG = try await Self.downloadUpdate(
+                from: downloadURL,
+                version: release.versionString,
+                progress: { [weak self] fraction in
+                    Task { @MainActor [weak self] in
+                        self?.updateDownloadProgress(fraction)
+                    }
+                }
+            )
+            pendingUpdateInstall = PendingUpdateInstall(release: release, dmgURL: downloadedDMG)
+            updateDownloadStatusLabel?.stringValue = "Download complete. Ready to install."
+            updateDownloadProgressIndicator?.isIndeterminate = false
+            updateDownloadProgressIndicator?.doubleValue = 1
+            updateDownloadActionButton?.title = "Install Update"
+            updateDownloadActionButton?.isEnabled = true
+            updateDownloadActionButton?.keyEquivalent = "\r"
+        } catch is CancellationError {
+            return
+        } catch {
+            updateDownloadStatusLabel?.stringValue = "Download failed. \(error.localizedDescription)"
+            updateDownloadProgressIndicator?.stopAnimation(nil)
+            updateDownloadActionButton?.title = "View Release"
+            updateDownloadActionButton?.isEnabled = true
+            pendingUpdateInstall = PendingUpdateInstall(release: release, dmgURL: nil)
+        }
+    }
+
+    private func updateDownloadProgress(_ fraction: Double?) {
+        guard let fraction else {
+            updateDownloadStatusLabel?.stringValue = "Downloading update..."
+            return
+        }
+
+        updateDownloadProgressIndicator?.isIndeterminate = false
+        updateDownloadProgressIndicator?.doubleValue = fraction
+        updateDownloadStatusLabel?.stringValue = "Downloading update... \(Int(fraction * 100))%"
+    }
+
+    @objc private func cancelUpdateDownload(_ sender: Any?) {
+        updateDownloadTask?.cancel()
+        updateDownloadTask = nil
+        pendingUpdateInstall = nil
+        updateDownloadWindow?.orderOut(nil)
+    }
+
+    @objc private func installDownloadedUpdate(_ sender: Any?) {
+        guard let pending = pendingUpdateInstall else { return }
+        guard let dmgURL = pending.dmgURL else {
+            NSWorkspace.shared.open(pending.release.htmlURL)
+            return
+        }
+
+        updateDownloadActionButton?.isEnabled = false
+        updateDownloadActionButton?.title = "Installing..."
+        updateDownloadStatusLabel?.stringValue = "Installing update..."
+        updateDownloadProgressIndicator?.isIndeterminate = true
+        updateDownloadProgressIndicator?.startAnimation(nil)
+
+        // Mounting the DMG and `ditto`-copying a whole app bundle blocks for a few
+        // seconds — running it inline would freeze the window (the "Installing..."
+        // label set above would never even repaint), so do it off the main actor.
+        Task { [weak self] in
+            do {
+                let installedAppURL = try await Task.detached(priority: .userInitiated) {
+                    try Self.installUpdate(fromDMG: dmgURL)
+                }.value
+                guard let self else { return }
+                self.updateDownloadWindow?.orderOut(nil)
+                self.presentUpdateReadyToRestart(installedAppURL: installedAppURL, version: pending.release.tagName)
+            } catch {
+                guard let self else { return }
+                self.updateDownloadProgressIndicator?.stopAnimation(nil)
+                self.updateDownloadActionButton?.isEnabled = true
+                self.updateDownloadActionButton?.title = "Install Update"
+                self.presentUpdateInstallFailure(error, release: pending.release)
+            }
+        }
+    }
+
+    private func presentUpdateReadyToRestart(installedAppURL: URL, version: String) {
+        let alert = NSAlert()
+        alert.messageText = "PhoneRelay \(version) is ready."
+        alert.informativeText = "Restart PhoneRelay now to finish using the update, or keep working and restart later."
+        alert.addButton(withTitle: "Restart Now")
+        alert.addButton(withTitle: "Later")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        // The updated app lives at the same bundle path as this still-running copy.
+        // With the default configuration, LaunchServices would just reactivate the
+        // current (about-to-quit) instance instead of spawning the new one, so the
+        // "restart" would simply quit. Force a fresh instance, and only terminate
+        // ourselves once the launch request has been dispatched — the new copy's
+        // single-instance guard waits out our exit before taking over.
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: installedAppURL, configuration: configuration) { _, error in
+            if let error {
+                Logger.log("Could not relaunch updated PhoneRelay: \(error.localizedDescription)")
+            }
+            Task { @MainActor in
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
+    private func presentUpdateInstallFailure(_ error: Error, release: ReleaseMetadata) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Unable to Install Update"
+        let details = Self.updateErrorMessage(error)
+        Logger.log("Update install failed: \(details)")
+        alert.informativeText = """
+        PhoneRelay downloaded the update, but could not install it automatically.
+
+        \(details)
+        """
+        alert.addButton(withTitle: "View Release")
+        alert.addButton(withTitle: "OK")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(release.htmlURL)
+        }
     }
 
     private func presentUpdateCheckFailure(_ error: Error) {
@@ -1050,7 +1402,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     }
 
     private nonisolated static func fetchLatestRelease() async throws -> ReleaseMetadata {
-        let (data, response) = try await URLSession.shared.data(from: AppModel.releaseMetadataURL)
+        var request = URLRequest(url: AppModel.releaseMetadataURL)
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        request.timeoutInterval = 30
+
+        let (data, response) = try await URLSession.shared.data(for: request)
         if let httpResponse = response as? HTTPURLResponse,
            !(200..<300).contains(httpResponse.statusCode) {
             throw UpdateCheckError.invalidStatusCode(httpResponse.statusCode)
@@ -1063,15 +1419,50 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         var htmlURL: URL
         var assets: [ReleaseAsset]
 
+        var versionString: String {
+            tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+        }
+
         var primaryDownloadURL: URL? {
-            assets.first { $0.name == "PhoneRelay.dmg" }?.browserDownloadURL
-                ?? assets.first?.browserDownloadURL
+            assets.first { $0.name == "PhoneRelay-\(versionString).dmg" }?.browserDownloadURL
+                ?? assets.first { $0.name == "PhoneRelay.dmg" }?.browserDownloadURL
+                ?? assets.first { $0.name.hasPrefix("PhoneRelay") && $0.name.hasSuffix(".dmg") }?.browserDownloadURL
         }
 
         private enum CodingKeys: String, CodingKey {
             case tagName = "tag_name"
             case htmlURL = "html_url"
             case assets
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let websiteContainer = try decoder.container(keyedBy: WebsiteCodingKeys.self)
+
+            tagName = try container.decodeIfPresent(String.self, forKey: .tagName)
+                ?? websiteContainer.decode(String.self, forKey: .tagName)
+
+            if let htmlURL = try container.decodeIfPresent(URL.self, forKey: .htmlURL) {
+                self.htmlURL = htmlURL
+            } else if let releaseURL = try websiteContainer.decodeIfPresent(URL.self, forKey: .releaseURL) {
+                htmlURL = releaseURL
+            } else {
+                htmlURL = AppModel.latestReleaseURL
+            }
+
+            if let assets = try container.decodeIfPresent([ReleaseAsset].self, forKey: .assets) {
+                self.assets = assets
+            } else if let asset = try websiteContainer.decodeIfPresent(ReleaseAsset.self, forKey: .asset) {
+                self.assets = [asset]
+            } else {
+                self.assets = []
+            }
+        }
+
+        private enum WebsiteCodingKeys: String, CodingKey {
+            case tagName
+            case releaseURL = "releaseUrl"
+            case asset
         }
     }
 
@@ -1082,18 +1473,312 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         private enum CodingKeys: String, CodingKey {
             case name
             case browserDownloadURL = "browser_download_url"
+            case url
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            name = try container.decode(String.self, forKey: .name)
+            browserDownloadURL = try container.decodeIfPresent(URL.self, forKey: .browserDownloadURL)
+                ?? container.decode(URL.self, forKey: .url)
         }
     }
 
     private enum UpdateCheckError: LocalizedError {
         case invalidStatusCode(Int)
+        case appNotBundled
+        case missingMountedApp
+        case processFailed(command: String, status: Int32, output: String)
+        case fileOperationFailed(String)
 
         var errorDescription: String? {
             switch self {
             case let .invalidStatusCode(statusCode):
                 "The update service returned HTTP \(statusCode)."
+            case .appNotBundled:
+                "Automatic installation only works when PhoneRelay is running from a .app bundle."
+            case .missingMountedApp:
+                "The downloaded disk image did not contain PhoneRelay.app."
+            case let .processFailed(command, status, output):
+                "\(command) exited with status \(status). \(output)"
+            case let .fileOperationFailed(message):
+                message
             }
         }
     }
 
+    private nonisolated static func updateErrorMessage(_ error: Error) -> String {
+        if let localizedError = error as? LocalizedError,
+           let description = localizedError.errorDescription,
+           !description.isEmpty {
+            return description
+        }
+
+        let nsError = error as NSError
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+            return "\(nsError.localizedDescription) \(underlying.localizedDescription)"
+        }
+        return nsError.localizedDescription
+    }
+
+    private nonisolated static func downloadUpdate(
+        from url: URL,
+        version: String,
+        progress: @escaping @Sendable (Double?) -> Void
+    ) async throws -> URL {
+        let downloadsDirectory = try FileManager.default.url(
+            for: .downloadsDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let destinationURL = downloadsDirectory.appendingPathComponent("PhoneRelay-\(version).dmg")
+        let downloader = UpdateDownloader(destinationURL: destinationURL, onProgress: progress)
+        return try await downloader.download(from: url)
+    }
+
+    /// Streams an update DMG to disk with a `URLSessionDownloadTask`. The earlier
+    /// implementation iterated `URLSession.bytes` one `UInt8` at a time and issued
+    /// a `write` syscall per byte, which turned a ~16 MB download into millions of
+    /// syscalls and pinned a CPU core for minutes. A download task transfers at
+    /// native speed, reports real byte-progress, and supports cancellation.
+    private final class UpdateDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+        private let destinationURL: URL
+        private let onProgress: @Sendable (Double?) -> Void
+        /// All three are only ever touched on the session's serial delegate queue
+        /// (or written once before `task.resume()`), so no extra locking is needed.
+        private var continuation: CheckedContinuation<URL, Error>?
+        private var statusError: UpdateCheckError?
+        private var savedURL: URL?
+
+        init(destinationURL: URL, onProgress: @escaping @Sendable (Double?) -> Void) {
+            self.destinationURL = destinationURL
+            self.onProgress = onProgress
+        }
+
+        func download(from url: URL) async throws -> URL {
+            var request = URLRequest(url: url)
+            request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+            // The session retains its delegate (self); invalidate so it's released.
+            defer { session.finishTasksAndInvalidate() }
+            let task = session.downloadTask(with: request)
+            return try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    self.continuation = continuation
+                    task.resume()
+                }
+            } onCancel: {
+                task.cancel()
+            }
+        }
+
+        func urlSession(
+            _ session: URLSession,
+            downloadTask: URLSessionDownloadTask,
+            didWriteData bytesWritten: Int64,
+            totalBytesWritten: Int64,
+            totalBytesExpectedToWrite: Int64
+        ) {
+            if totalBytesExpectedToWrite > 0 {
+                onProgress(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+            } else {
+                onProgress(nil)
+            }
+        }
+
+        func urlSession(
+            _ session: URLSession,
+            downloadTask: URLSessionDownloadTask,
+            didFinishDownloadingTo location: URL
+        ) {
+            // A non-2xx response still "downloads" successfully — to a temp file
+            // holding the error body. Reject it so we never rename an HTML error
+            // page to .dmg and try to mount it.
+            if let http = downloadTask.response as? HTTPURLResponse,
+               !(200..<300).contains(http.statusCode) {
+                statusError = .invalidStatusCode(http.statusCode)
+                return
+            }
+            // The temp file is removed as soon as this method returns, so the move
+            // has to happen synchronously here.
+            do {
+                try? FileManager.default.removeItem(at: destinationURL)
+                try FileManager.default.moveItem(at: location, to: destinationURL)
+                savedURL = destinationURL
+            } catch {
+                statusError = .fileOperationFailed("Could not save the downloaded update: \(error.localizedDescription)")
+            }
+        }
+
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            didCompleteWithError error: Error?
+        ) {
+            defer { continuation = nil }
+            if let urlError = error as? URLError, urlError.code == .cancelled {
+                // Surface cancellation as Swift's CancellationError so the caller's
+                // `catch is CancellationError` stays silent instead of showing a
+                // "Download failed" message.
+                continuation?.resume(throwing: CancellationError())
+            } else if let error {
+                continuation?.resume(throwing: error)
+            } else if let statusError {
+                continuation?.resume(throwing: statusError)
+            } else if let savedURL {
+                onProgress(1)
+                continuation?.resume(returning: savedURL)
+            } else {
+                continuation?.resume(throwing: UpdateCheckError.fileOperationFailed("The update download did not produce a file."))
+            }
+        }
+    }
+
+    private nonisolated static func installUpdate(fromDMG dmgURL: URL) throws -> URL {
+        let currentAppURL = Bundle.main.bundleURL
+        guard currentAppURL.pathExtension == "app" else {
+            throw UpdateCheckError.appNotBundled
+        }
+
+        let mountURL = try attachDiskImage(dmgURL)
+        defer {
+            _ = try? runProcess("/usr/bin/hdiutil", arguments: ["detach", mountURL.path, "-quiet"])
+            try? FileManager.default.removeItem(at: mountURL)
+        }
+
+        let mountedApps = try FileManager.default.contentsOfDirectory(
+            at: mountURL,
+            includingPropertiesForKeys: nil
+        ).filter { url in
+            url.pathExtension == "app" && url.lastPathComponent.hasPrefix("PhoneRelay")
+        }
+        guard let stagedAppURL = mountedApps.first else {
+            throw UpdateCheckError.missingMountedApp
+        }
+
+        let parentDirectory = currentAppURL.deletingLastPathComponent()
+        let installURL = parentDirectory.appendingPathComponent(currentAppURL.lastPathComponent)
+        let backupURL = parentDirectory.appendingPathComponent("PhoneRelay.previous.app")
+
+        if FileManager.default.fileExists(atPath: backupURL.path) {
+            do {
+                try FileManager.default.removeItem(at: backupURL)
+            } catch {
+                throw UpdateCheckError.fileOperationFailed("Could not remove old backup app at \(backupURL.path): \(updateErrorMessage(error))")
+            }
+        }
+        if FileManager.default.fileExists(atPath: installURL.path) {
+            do {
+                try FileManager.default.moveItem(at: installURL, to: backupURL)
+            } catch {
+                throw UpdateCheckError.fileOperationFailed("Could not move current app from \(installURL.path) to \(backupURL.path): \(updateErrorMessage(error))")
+            }
+        }
+
+        do {
+            try runProcess("/usr/bin/ditto", arguments: [stagedAppURL.path, installURL.path])
+            // The DMG was downloaded from the internet, so the copied app inherits
+            // `com.apple.quarantine`. Clear it so the relaunched copy isn't blocked
+            // by Gatekeeper with "PhoneRelay can't be opened". (Best-effort: a
+            // properly Developer-ID-signed + notarized build still launches even if
+            // this fails; an unsigned build needs a real signature regardless.)
+            _ = try? runProcess("/usr/bin/xattr", arguments: ["-dr", "com.apple.quarantine", installURL.path])
+            try? FileManager.default.removeItem(at: backupURL)
+            // The installed copy is what matters now; don't leave the DMG behind in
+            // ~/Downloads.
+            try? FileManager.default.removeItem(at: dmgURL)
+            return installURL
+        } catch {
+            if !FileManager.default.fileExists(atPath: installURL.path),
+               FileManager.default.fileExists(atPath: backupURL.path) {
+                try? FileManager.default.moveItem(at: backupURL, to: installURL)
+            }
+            throw error
+        }
+    }
+
+    private nonisolated static func attachDiskImage(_ dmgURL: URL) throws -> URL {
+        let mountURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhoneRelayUpdate-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: mountURL, withIntermediateDirectories: true)
+
+        do {
+            _ = try runProcess(
+                "/usr/bin/hdiutil",
+                arguments: ["attach", dmgURL.path, "-nobrowse", "-mountpoint", mountURL.path, "-quiet"]
+            )
+            return mountURL
+        } catch {
+            try? FileManager.default.removeItem(at: mountURL)
+            throw error
+        }
+    }
+
+    /// Reference box so the background drain threads can hand captured bytes back
+    /// across the wait without tripping concurrency checks.
+    private final class DataBox: @unchecked Sendable { var data = Data() }
+
+    @discardableResult
+    private nonisolated static func runProcess(_ executable: String, arguments: [String]) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        // Drain both pipes concurrently *before* waiting: a child that writes more
+        // than the ~64 KB pipe buffer (a verbose `ditto`/`hdiutil` error) would
+        // otherwise block on a full pipe while we block in waitUntilExit — deadlock.
+        let outBox = DataBox()
+        let errBox = DataBox()
+        let drainGroup = DispatchGroup()
+        let drainQueue = DispatchQueue(label: "phonerelay.update.process-drain", attributes: .concurrent)
+        let outHandle = outputPipe.fileHandleForReading
+        let errHandle = errorPipe.fileHandleForReading
+        drainGroup.enter()
+        drainQueue.async { outBox.data = outHandle.readDataToEndOfFile(); drainGroup.leave() }
+        drainGroup.enter()
+        drainQueue.async { errBox.data = errHandle.readDataToEndOfFile(); drainGroup.leave() }
+
+        do {
+            try process.run()
+        } catch {
+            outHandle.closeFile()
+            errHandle.closeFile()
+            drainGroup.wait()
+            throw error
+        }
+        process.waitUntilExit()
+        drainGroup.wait()
+
+        let output = String(data: outBox.data, encoding: .utf8) ?? ""
+        let errorOutput = String(data: errBox.data, encoding: .utf8) ?? ""
+        guard process.terminationStatus == 0 else {
+            let command = ([executable] + arguments).joined(separator: " ")
+            throw UpdateCheckError.processFailed(
+                command: command,
+                status: process.terminationStatus,
+                output: errorOutput.isEmpty ? output : errorOutput
+            )
+        }
+        return output
+    }
+
+}
+
+extension AppDelegate: NSWindowDelegate {
+    public func windowWillClose(_ notification: Notification) {
+        // Closing the update window via its red button should also stop an
+        // in-flight download — otherwise the transfer keeps running against a
+        // hidden window. Scoped to the update window so other windows are
+        // unaffected.
+        guard (notification.object as? NSWindow) === updateDownloadWindow else { return }
+        updateDownloadTask?.cancel()
+        updateDownloadTask = nil
+        pendingUpdateInstall = nil
+    }
 }

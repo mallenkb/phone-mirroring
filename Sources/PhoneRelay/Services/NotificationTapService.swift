@@ -220,6 +220,114 @@ enum NotificationTapService {
         return true
     }
 
+    // MARK: - Dismiss / Mark as read (best-effort)
+
+    /// Dismisses a forwarded notification by swiping its row out of the shade.
+    /// Best-effort: returns false if the row can't be located. The shade is always
+    /// collapsed again on the way out.
+    static func dismissForwardedNotificationInShade(
+        serial: String,
+        notificationKey: String?,
+        title: String?,
+        text: String?
+    ) -> Bool {
+        let title = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let text = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !title.isEmpty || !text.isEmpty else { return false }
+        guard wakeUnlockAndExpandShade(serial: serial, notificationKey: notificationKey) else { return false }
+
+        for pass in 1...2 {
+            Thread.sleep(forTimeInterval: pass == 1 ? 0.8 : 0.6)
+            guard let screenshot = capturePhoneScreenPNG(serial: serial) else { break }
+            let lines = recognizedTextLines(inPNG: screenshot)
+            guard let point = forwardedNotificationTapPoint(in: lines, title: title, text: text),
+                  let size = pngPixelSize(screenshot) else {
+                if pass == 1 { continue }
+                break
+            }
+            let dismissed = swipeRowAway(serial: serial, point: point, imageWidth: size.width)
+            Thread.sleep(forTimeInterval: 0.3)
+            collapseShade(serial: serial)
+            if dismissed {
+                Logger.log("Dismissed forwarded notification key=\(notificationKey ?? "")")
+            }
+            return dismissed
+        }
+
+        collapseShade(serial: serial)
+        return false
+    }
+
+    /// Marks a forwarded notification as read via its inline "Mark as read" action,
+    /// or — when the app doesn't expose one — swipes the row away (which clears the
+    /// unread state for most apps). Best-effort and English-only for the explicit
+    /// action; the dismiss fallback is locale-independent.
+    static func markReadForwardedNotificationInShade(
+        serial: String,
+        notificationKey: String?,
+        title: String?,
+        text: String?
+    ) -> Bool {
+        let title = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let text = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !title.isEmpty || !text.isEmpty else { return false }
+        guard wakeUnlockAndExpandShade(serial: serial, notificationKey: notificationKey) else { return false }
+
+        for pass in 1...2 {
+            Thread.sleep(forTimeInterval: pass == 1 ? 0.8 : 0.6)
+            guard let screenshot = capturePhoneScreenPNG(serial: serial) else { break }
+            let size = pngPixelSize(screenshot)
+            let lines = recognizedTextLines(inPNG: screenshot)
+            guard let rowPoint = forwardedNotificationTapPoint(in: lines, title: title, text: text) else {
+                if pass == 1 { continue }
+                break
+            }
+
+            let band = (size?.height ?? 0) * 0.25
+            if let markPoint = markReadAffordancePoint(in: lines, belowRowY: rowPoint.y, maxDistance: band) {
+                let tap = Tooling.runResult(
+                    "adb",
+                    arguments: ["-s", serial, "shell", "input", "tap",
+                                "\(Int(markPoint.x.rounded()))", "\(Int(markPoint.y.rounded()))"],
+                    timeout: 2
+                )
+                Thread.sleep(forTimeInterval: 0.3)
+                collapseShade(serial: serial)
+                if tap.succeeded {
+                    Logger.log("Marked forwarded notification as read key=\(notificationKey ?? "")")
+                }
+                return tap.succeeded
+            }
+
+            // No explicit affordance — dismissing clears the unread state for most apps.
+            guard let size else { break }
+            let dismissed = swipeRowAway(serial: serial, point: rowPoint, imageWidth: size.width)
+            Thread.sleep(forTimeInterval: 0.3)
+            collapseShade(serial: serial)
+            if dismissed {
+                Logger.log("Mark-as-read fell back to dismissing notification key=\(notificationKey ?? "")")
+            }
+            return dismissed
+        }
+
+        collapseShade(serial: serial)
+        return false
+    }
+
+    /// Swipes a located shade row horizontally off the right edge to dismiss it.
+    private static func swipeRowAway(serial: String, point: CGPoint, imageWidth: CGFloat) -> Bool {
+        Tooling.runResult(
+            "adb",
+            arguments: [
+                "-s", serial, "shell", "input", "swipe",
+                "\(Int(point.x.rounded()))", "\(Int(point.y.rounded()))",
+                "\(Int((imageWidth * 0.98).rounded()))", "\(Int(point.y.rounded()))",
+                "250"
+            ],
+            timeout: 2
+        ).succeeded
+    }
+
     // MARK: - Shade preparation
 
     /// Wakes the phone, clears a swipe keyguard (waiting briefly for a secure
@@ -296,7 +404,7 @@ enum NotificationTapService {
         // evidence: it collides with the shade's own clock header and other
         // rows, so it must not outweigh a solid title match on the real row.
         let textWeight = textTokens.count >= 3 ? 1.0 : 0.7
-        var best: (score: Double, point: CGPoint)?
+        var scored: [(score: Double, line: ShadeTextLine)] = []
         for line in lines {
             let candidateTokens = matchTokens(line.text)
             guard !candidateTokens.isEmpty else { continue }
@@ -304,11 +412,21 @@ enum NotificationTapService {
                 tokenRunScore(label: textTokens, candidate: candidateTokens) * textWeight,
                 tokenRunScore(label: titleTokens, candidate: candidateTokens) * 0.8
             )
-            if score >= 0.5, score > (best?.score ?? 0) {
-                best = (score, line.center)
-            }
+            if score >= 0.5 { scored.append((score, line)) }
         }
-        return best?.point
+        guard let maxScore = scored.map(\.score).max() else { return nil }
+        // When the same app stacks similarly-worded notifications (e.g. two
+        // messages from the same sender, both truncated to the same prefix), the
+        // text/title match can tie across rows. Break the tie toward the row
+        // highest on screen: Android puts the newest notification at the top, and
+        // the banner that was just clicked is the newest one. This replaces the
+        // old "first match wins" behavior, which depended on Vision's result
+        // ordering rather than on-screen position.
+        let epsilon = 0.001
+        return scored
+            .filter { $0.score >= maxScore - epsilon }
+            .min(by: { $0.line.center.y < $1.line.center.y })?
+            .line.center
     }
 
     /// Finds a notification row's inline "Reply" action: the closest line that
@@ -322,6 +440,27 @@ enum NotificationTapService {
     ) -> CGPoint? {
         var best: (distance: CGFloat, point: CGPoint)?
         for line in lines where matchTokens(line.text).contains("reply") {
+            let distance = line.center.y - belowRowY
+            guard distance > 0, distance <= maxDistance else { continue }
+            if distance < (best?.distance ?? .greatestFiniteMagnitude) {
+                best = (distance, line.center)
+            }
+        }
+        return best?.point
+    }
+
+    /// Finds a notification row's inline "Mark as read" action: the closest line
+    /// below the matched row that contains both "mark" and "read" (English-only).
+    /// Same vertical-band guard as the reply affordance.
+    static func markReadAffordancePoint(
+        in lines: [ShadeTextLine],
+        belowRowY: CGFloat,
+        maxDistance: CGFloat
+    ) -> CGPoint? {
+        var best: (distance: CGFloat, point: CGPoint)?
+        for line in lines {
+            let tokens = matchTokens(line.text)
+            guard tokens.contains("mark"), tokens.contains("read") else { continue }
             let distance = line.center.y - belowRowY
             guard distance > 0, distance <= maxDistance else { continue }
             if distance < (best?.distance ?? .greatestFiniteMagnitude) {

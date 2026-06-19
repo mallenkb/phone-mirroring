@@ -133,7 +133,7 @@ struct SettingsView: View {
                     icon: "display",
                     isOn: $model.mirrorScreenOffAfterThirtySecondsEnabled,
                     title: "Turn the phone screen off after 30 seconds",
-                    subtitle: "Mirroring keeps working here while the phone's own display goes dark. Press ⌘L to do it now."
+                    subtitle: "If the mirror is idle, the phone's own display goes dark automatically while mirroring keeps working here. Press ⌘L to do it now."
                 )
                 rowDivider
                 toggleRow(
@@ -250,6 +250,44 @@ struct SettingsView: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
                 }
+
+                if model.notificationForwardingEnabled, !model.notificationForwardingPermissionDenied {
+                    rowDivider
+                    toggleRow(
+                        icon: "lock.shield",
+                        isOn: $model.notificationSuppressSecurityCodesEnabled,
+                        title: "Hide one-time codes",
+                        subtitle: "Don't forward 2FA / verification-code notifications to this Mac."
+                    )
+                    rowDivider
+                    toggleRow(
+                        icon: "eye.slash",
+                        isOn: $model.notificationHideBodyEnabled,
+                        title: "Hide message previews",
+                        subtitle: "Show the app and sender, but not the message text."
+                    )
+                    rowDivider
+                    toggleRow(
+                        icon: "record.circle",
+                        isOn: $model.notificationPauseWhileRecordingEnabled,
+                        title: "Pause while recording",
+                        subtitle: "Stop forwarding notifications while you're recording the phone."
+                    )
+                }
+            }
+
+            if model.notificationForwardingEnabled,
+               !model.notificationForwardingPermissionDenied,
+               !model.knownNotificationApps.isEmpty {
+                SettingsGroup(
+                    title: "Apps",
+                    footnote: "Turn off an app to stop its notifications from reaching this Mac."
+                ) {
+                    ForEach(Array(model.knownNotificationApps.enumerated()), id: \.element.id) { index, app in
+                        if index > 0 { rowDivider }
+                        notificationAppRow(app)
+                    }
+                }
             }
 
             SettingsGroup(
@@ -275,8 +313,37 @@ struct SettingsView: View {
                 )
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
+
+                rowDivider
+
+                scrollingPickerRow(
+                    icon: "timer",
+                    title: "Recording length",
+                    subtitle: "Maximum length per recording. Phones on Android 11+ honor longer limits; older phones stop at 3 minutes."
+                ) {
+                    recordingLengthPicker
+                }
             }
         }
+    }
+
+    private var recordingLengthPicker: some View {
+        Picker("", selection: $model.recordingMaxMinutes) {
+            ForEach([3, 5, 10, 15, 30, 60, 120, 180], id: \.self) { value in
+                Text(Self.recordingLengthLabel(minutes: value)).tag(value)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .frame(width: 116, alignment: .leading)
+    }
+
+    static func recordingLengthLabel(minutes: Int) -> String {
+        if minutes >= 60, minutes % 60 == 0 {
+            let hours = minutes / 60
+            return hours == 1 ? "1 hour" : "\(hours) hours"
+        }
+        return "\(minutes) min"
     }
 
     // MARK: - Shortcuts
@@ -606,6 +673,36 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 40)
             }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+    }
+
+    /// One app in the per-app mute list. The switch reads as "forward this app",
+    /// so on = delivered, off = muted.
+    private func notificationAppRow(_ app: NotificationAppInfo) -> some View {
+        let isForwarded = Binding(
+            get: { !model.isNotificationPackageMuted(app.package) },
+            set: { model.setNotificationPackage(app.package, muted: !$0) }
+        )
+        return HStack(alignment: .center, spacing: 14) {
+            rowIcon("app.badge", active: isForwarded.wrappedValue)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(app.label)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(app.package)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 16)
+
+            Toggle(app.label, isOn: isForwarded)
+                .labelsHidden()
+                .toggleStyle(.switch)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -976,21 +1073,31 @@ private struct SettingsSecondaryButtonStyle: ButtonStyle {
 /// red "Forget" that a native NSMenu item can't.
 private struct MoreMenuRow: View {
     let title: String
+    var subtitle: String?
     var isDestructive: Bool = false
     let action: () -> Void
     @State private var isHovering = false
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(.system(size: 13))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .contentShape(Rectangle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(foreground)
+
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(subtitleForeground)
+                }
+            }
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 9)
+            .padding(.vertical, subtitle == nil ? 6 : 7)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(foreground)
         .background(
             RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .fill(isHovering ? highlight : Color.clear)
@@ -1001,6 +1108,10 @@ private struct MoreMenuRow: View {
     private var foreground: Color {
         if isDestructive { return isHovering ? .white : .red }
         return isHovering ? .white : .primary
+    }
+
+    private var subtitleForeground: Color {
+        isHovering ? .white.opacity(0.78) : .secondary
     }
 
     private var highlight: Color {
@@ -1048,6 +1159,13 @@ enum SettingsDeviceTransport: String, CaseIterable, Identifiable {
 
     var connectTitle: String {
         "Connect \(title)"
+    }
+
+    var connectSubtitle: String {
+        switch self {
+        case .wifi: return "No cable. Same Wi-Fi network."
+        case .usb: return "Fastest and most reliable."
+        }
     }
 
     var modelTransport: AppModel.SavedConnectionTransport {
@@ -1149,7 +1267,10 @@ private struct PairedPhoneRow: View {
     private var moreActionsDropdown: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(availableTransports) { transport in
-                MoreMenuRow(title: transport.connectTitle) {
+                MoreMenuRow(
+                    title: transport.connectTitle,
+                    subtitle: transport.connectSubtitle
+                ) {
                     showMoreMenu = false
                     onConnect(transport)
                 }
@@ -1167,7 +1288,7 @@ private struct PairedPhoneRow: View {
             }
         }
         .padding(5)
-        .frame(width: 190)
+        .frame(width: 230)
     }
 
     private var rightColumn: some View {

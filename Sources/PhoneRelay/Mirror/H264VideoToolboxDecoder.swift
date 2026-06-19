@@ -13,7 +13,9 @@ import VideoToolbox
 /// found in the scrcpy "config" packet, then wrap every subsequent NAL
 /// burst in a `CMSampleBuffer`.
 final class H264VideoToolboxDecoder {
-    typealias SampleHandler = (CMSampleBuffer) -> Void
+    /// Delivers a decoded sample plus whether it's a keyframe (IDR), so the
+    /// renderer can resync on a keyframe after a display-layer flush.
+    typealias SampleHandler = (CMSampleBuffer, Bool) -> Void
 
     private var formatDescription: CMVideoFormatDescription?
     private var spsData: Data?
@@ -90,7 +92,7 @@ final class H264VideoToolboxDecoder {
         if totalSampleCount <= 3 || totalSampleCount % 120 == 0 {
             Logger.log("H264 sample created #\(totalSampleCount) size=\(packet.payload.count) key=\(packet.isKeyFrame)")
         }
-        onSample?(sample)
+        onSample?(sample, packet.isKeyFrame)
     }
 
     private func rebuildFormatDescription() {
@@ -201,42 +203,41 @@ final class H264VideoToolboxDecoder {
     /// codes stripped). Handles both `0x00000001` and `0x000001` prefixes.
     static func extractAnnexBNALUnits(_ data: Data) -> [Data] {
         var nals: [Data] = []
-        let bytes = [UInt8](data)
-        let count = bytes.count
-        var i = 0
-        var lastStart = -1
+        let count = data.count
+        // Scan the packet in place rather than copying it into a `[UInt8]` first;
+        // each retained NAL is still its own copy (unavoidable — they outlive the
+        // packet), but the extra full-packet copy per frame is gone.
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+            var i = 0
+            var lastStart = -1
 
-        func startCodeLength(at idx: Int) -> Int {
-            if idx + 3 < count && bytes[idx] == 0 && bytes[idx + 1] == 0
-                && bytes[idx + 2] == 0 && bytes[idx + 3] == 1 {
-                return 4
-            }
-            if idx + 2 < count && bytes[idx] == 0 && bytes[idx + 1] == 0
-                && bytes[idx + 2] == 1 {
-                return 3
-            }
-            return 0
-        }
-
-        while i < count {
-            let codeLen = startCodeLength(at: i)
-            if codeLen > 0 {
-                if lastStart >= 0 {
-                    let slice = bytes[lastStart..<i]
-                    if !slice.isEmpty {
-                        nals.append(Data(slice))
-                    }
+            func startCodeLength(at idx: Int) -> Int {
+                if idx + 3 < count && base[idx] == 0 && base[idx + 1] == 0
+                    && base[idx + 2] == 0 && base[idx + 3] == 1 {
+                    return 4
                 }
-                i += codeLen
-                lastStart = i
-            } else {
-                i += 1
+                if idx + 2 < count && base[idx] == 0 && base[idx + 1] == 0
+                    && base[idx + 2] == 1 {
+                    return 3
+                }
+                return 0
             }
-        }
-        if lastStart >= 0 && lastStart < count {
-            let slice = bytes[lastStart..<count]
-            if !slice.isEmpty {
-                nals.append(Data(slice))
+
+            while i < count {
+                let codeLen = startCodeLength(at: i)
+                if codeLen > 0 {
+                    if lastStart >= 0, i > lastStart {
+                        nals.append(Data(bytes: base + lastStart, count: i - lastStart))
+                    }
+                    i += codeLen
+                    lastStart = i
+                } else {
+                    i += 1
+                }
+            }
+            if lastStart >= 0 && lastStart < count {
+                nals.append(Data(bytes: base + lastStart, count: count - lastStart))
             }
         }
         return nals

@@ -357,4 +357,76 @@ final class NotificationForwarderTests: XCTestCase {
         XCTAssertEqual(NotificationForwarder.appLabel(for: "com.whatsapp.w4b"), "WhatsApp Business")
         XCTAssertEqual(NotificationForwarder.appLabel(for: "com.instagram.android"), "Instagram")
     }
+
+    // MARK: - Security-code suppression
+
+    func testSecurityCodeDetectionCatchesOneTimeCodes() {
+        XCTAssertTrue(NotificationForwarder.isLikelySecurityCode(title: "Google", text: "G-558212 is your verification code"))
+        XCTAssertTrue(NotificationForwarder.isLikelySecurityCode(title: "Bank", text: "Your one-time code is 8841"))
+        XCTAssertTrue(NotificationForwarder.isLikelySecurityCode(title: "Login", text: "Use 4490 to sign in"))
+        XCTAssertTrue(NotificationForwarder.isLikelySecurityCode(title: "2FA", text: "123456")) // body is just the code
+        XCTAssertTrue(NotificationForwarder.isLikelySecurityCode(title: "", text: "Your OTP: 90210"))
+    }
+
+    func testSecurityCodeDetectionLeavesOrdinaryNotificationsAlone() {
+        XCTAssertFalse(NotificationForwarder.isLikelySecurityCode(title: "Amazon", text: "Order #1234 has shipped"))
+        XCTAssertFalse(NotificationForwarder.isLikelySecurityCode(title: "Calendar", text: "Standup at 1430"))
+        XCTAssertFalse(NotificationForwarder.isLikelySecurityCode(title: "Mom", text: "Dinner at 7?"))
+        XCTAssertFalse(NotificationForwarder.isLikelySecurityCode(title: "Phone", text: "Missed call from 5551234567"))
+        XCTAssertFalse(NotificationForwarder.isLikelySecurityCode(title: "News", text: "Markets up 2 percent today"))
+    }
+
+    func testStandaloneCodeIgnoresLongerNumbers() {
+        XCTAssertEqual(NotificationForwarder.firstStandaloneCode(in: "code 8842 now"), "8842")
+        XCTAssertNil(NotificationForwarder.firstStandaloneCode(in: "call 5551234567"))   // 10 digits
+        XCTAssertNil(NotificationForwarder.firstStandaloneCode(in: "only 12 left"))      // too short
+    }
+
+    // MARK: - Hide-body privacy
+
+    func testHideBodyOmitsMessageTextButKeepsTitleAndUserInfo() {
+        let entry = NotificationForwarder.Entry(
+            key: "0|com.whatsapp|1|null|10279", pkg: "com.whatsapp",
+            title: "Mom", text: "Dinner at 7?", flags: 0
+        )
+        let shown = NotificationForwarder.notificationContent(for: entry, serial: "S1", hideBody: false)
+        XCTAssertEqual(shown.body, "Dinner at 7?")
+
+        let hidden = NotificationForwarder.notificationContent(for: entry, serial: "S1", hideBody: true)
+        XCTAssertEqual(hidden.body, "")
+        XCTAssertEqual(hidden.title, "WhatsApp • Mom") // app + sender still shown
+        // The real text still rides in userInfo so click-to-open can match the row.
+        XCTAssertEqual(hidden.userInfo[NotificationForwarder.UserInfoKey.notificationText] as? String, "Dinner at 7?")
+    }
+
+    // MARK: - Per-app mute model
+
+    @MainActor
+    func testPerAppMuteAndKnownAppTracking() {
+        UserDefaults.standard.removeObject(forKey: AppModel.notificationMutedPackagesDefaultsKey)
+        UserDefaults.standard.removeObject(forKey: AppModel.notificationKnownAppsDefaultsKey)
+        defer {
+            UserDefaults.standard.removeObject(forKey: AppModel.notificationMutedPackagesDefaultsKey)
+            UserDefaults.standard.removeObject(forKey: AppModel.notificationKnownAppsDefaultsKey)
+        }
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+
+        model.registerObservedNotificationApp(package: "com.whatsapp", label: "WhatsApp")
+        model.registerObservedNotificationApp(package: "com.instagram.android", label: "Instagram")
+        // Most-recent first.
+        XCTAssertEqual(model.knownNotificationApps.first?.package, "com.instagram.android")
+        // Re-observing an existing app moves it to the front without duplicating.
+        model.registerObservedNotificationApp(package: "com.whatsapp", label: "WhatsApp")
+        XCTAssertEqual(model.knownNotificationApps.map(\.package), ["com.whatsapp", "com.instagram.android"])
+
+        XCTAssertFalse(model.isNotificationPackageMuted("com.whatsapp"))
+        model.setNotificationPackage("com.whatsapp", muted: true)
+        XCTAssertTrue(model.isNotificationPackageMuted("com.whatsapp"))
+        XCTAssertEqual(
+            Set(UserDefaults.standard.stringArray(forKey: AppModel.notificationMutedPackagesDefaultsKey) ?? []),
+            ["com.whatsapp"]
+        )
+        model.setNotificationPackage("com.whatsapp", muted: false)
+        XCTAssertFalse(model.isNotificationPackageMuted("com.whatsapp"))
+    }
 }

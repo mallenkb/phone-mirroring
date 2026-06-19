@@ -50,10 +50,15 @@ final class AppModel: ObservableObject {
     nonisolated static let localNetworkRecommendedFix =
         "Allow Local Network in macOS Settings, or connect the phone over USB."
     nonisolated static let notificationForwardingDefaultsKey = "MirrorBehavior.notificationForwardingEnabled"
+    nonisolated static let notificationHideBodyDefaultsKey = "Notifications.hideBody"
+    nonisolated static let notificationSuppressSecurityCodesDefaultsKey = "Notifications.suppressSecurityCodes"
+    nonisolated static let notificationPauseWhileRecordingDefaultsKey = "Notifications.pauseWhileRecording"
+    nonisolated static let notificationMutedPackagesDefaultsKey = "Notifications.mutedPackages"
+    nonisolated static let notificationKnownAppsDefaultsKey = "Notifications.knownApps"
     nonisolated static let privacyPolicyURL = URL(string: "https://mallenkb.github.io/phone-mirroring/privacy.html")!
     nonisolated static let supportURL = URL(string: "https://mallenkb.github.io/phone-mirroring/support.html")!
     nonisolated static let latestReleaseURL = URL(string: "https://github.com/mallenkb/phone-mirroring/releases/latest")!
-    nonisolated static let releaseMetadataURL = URL(string: "https://mallenkb.github.io/phone-mirroring/release.json")!
+    nonisolated static let releaseMetadataURL = URL(string: "https://phonerelay.mallenkb.com/downloads/release.json")!
     nonisolated static let mirrorScrollSpeedDefaultsKey = "MirrorBehavior.scrollSpeedPercent"
     nonisolated static let mirrorScrollFeelDefaultsKey = "MirrorBehavior.scrollFeel"
     nonisolated static let backgroundWiFiHandoffDefaultsKey = "MirrorBehavior.backgroundWiFiHandoffEnabled"
@@ -63,6 +68,14 @@ final class AppModel: ObservableObject {
     nonisolated static let screenshotFolderBookmarkDefaultsKey = "Capture.screenshotFolderBookmark"
     nonisolated static let recordingFolderPathDefaultsKey = "Capture.recordingFolderPath"
     nonisolated static let recordingFolderBookmarkDefaultsKey = "Capture.recordingFolderBookmark"
+    nonisolated static let recordingMaxMinutesDefaultsKey = "Capture.recordingMaxMinutes"
+    /// Default screen-recording length when the user hasn't picked one. Android's
+    /// built-in `screenrecord` defaults to a 3-minute cap when no `--time-limit`
+    /// is passed; we raise that to a friendlier default and let the user change it.
+    nonisolated static let recordingMaxMinutesDefault = 30
+    /// Clamp range for the configurable recording cap (minutes). Android 11+
+    /// honors a longer `--time-limit`; older builds cap at 3 minutes regardless.
+    nonisolated static let recordingMaxMinutesRange = 1...180
     nonisolated static var canUseUserNotifications: Bool {
         Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app"
     }
@@ -220,6 +233,38 @@ final class AppModel: ObservableObject {
         }
     }
     @Published private(set) var notificationForwardingPermissionDenied = false
+
+    /// Privacy: drop the message body from forwarded banners (keeps app + title).
+    @Published var notificationHideBodyEnabled: Bool =
+        (UserDefaults.standard.object(forKey: AppModel.notificationHideBodyDefaultsKey) as? Bool) ?? false {
+        didSet {
+            UserDefaults.standard.set(notificationHideBodyEnabled, forKey: Self.notificationHideBodyDefaultsKey)
+        }
+    }
+    /// Security: never forward likely one-time / security-code notifications.
+    /// Defaults on — a 2FA code shouldn't fan out to the Mac and its sync.
+    @Published var notificationSuppressSecurityCodesEnabled: Bool =
+        (UserDefaults.standard.object(forKey: AppModel.notificationSuppressSecurityCodesDefaultsKey) as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(notificationSuppressSecurityCodesEnabled, forKey: Self.notificationSuppressSecurityCodesDefaultsKey)
+        }
+    }
+    /// Privacy: pause forwarding while PhoneRelay is recording the phone screen.
+    @Published var notificationPauseWhileRecordingEnabled: Bool =
+        (UserDefaults.standard.object(forKey: AppModel.notificationPauseWhileRecordingDefaultsKey) as? Bool) ?? false {
+        didSet {
+            UserDefaults.standard.set(notificationPauseWhileRecordingEnabled, forKey: Self.notificationPauseWhileRecordingDefaultsKey)
+        }
+    }
+    /// Packages the user has muted; their notifications are tracked (so they stay
+    /// in the Settings list) but never posted.
+    @Published private(set) var mutedNotificationPackages: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: AppModel.notificationMutedPackagesDefaultsKey) ?? [])
+    /// Apps PhoneRelay has seen send notifications, newest first — populates the
+    /// per-app mute list in Settings. Persisted so the list survives relaunches.
+    @Published private(set) var knownNotificationApps: [NotificationAppInfo] =
+        AppModel.loadKnownNotificationApps()
+
     @Published private(set) var localNetworkPermissionGrantedForOnboarding = false
     @Published private(set) var isAwaitingLocalNetworkSettingsReturn = false
     @Published private(set) var notificationPermissionGrantedForOnboarding = false
@@ -254,6 +299,19 @@ final class AppModel: ObservableObject {
             if !suppressMirrorSettingsRestart {
                 scheduleMirrorSettingsRestart()
             }
+        }
+    }
+    /// Maximum screen-recording length in minutes. Passed to Android's
+    /// `screenrecord` as `--time-limit`; without it the OS stops at 3 minutes.
+    @Published var recordingMaxMinutes: Int = AppModel.loadRecordingMaxMinutes() {
+        didSet {
+            let clamped = Self.clampedRecordingMaxMinutes(recordingMaxMinutes)
+            if clamped != recordingMaxMinutes {
+                recordingMaxMinutes = clamped
+                return
+            }
+            guard oldValue != recordingMaxMinutes else { return }
+            UserDefaults.standard.set(recordingMaxMinutes, forKey: Self.recordingMaxMinutesDefaultsKey)
         }
     }
     /// Frame-rate ceiling. 0 = automatic (match the phone and Mac refresh rates).
@@ -531,6 +589,24 @@ final class AppModel: ObservableObject {
         captureFolder(pathKey: Self.recordingFolderPathDefaultsKey, bookmarkKey: Self.recordingFolderBookmarkDefaultsKey)
     }
 
+    nonisolated static func clampedRecordingMaxMinutes(_ minutes: Int) -> Int {
+        min(recordingMaxMinutesRange.upperBound, max(recordingMaxMinutesRange.lowerBound, minutes))
+    }
+
+    private nonisolated static func loadRecordingMaxMinutes() -> Int {
+        guard let stored = UserDefaults.standard.object(forKey: recordingMaxMinutesDefaultsKey) as? Int else {
+            return recordingMaxMinutesDefault
+        }
+        return clampedRecordingMaxMinutes(stored)
+    }
+
+    /// The `--time-limit` value (seconds) for `screenrecord`, derived from the
+    /// configured cap. Read on the main actor and captured before the detached
+    /// recording task so it stays Sendable.
+    var recordingTimeLimitSeconds: Int {
+        Self.clampedRecordingMaxMinutes(recordingMaxMinutes) * 60
+    }
+
     /// Reveals the rolling diagnostic log in Finder so the user can inspect or
     /// share it when something goes wrong.
     func revealLogFile() {
@@ -783,8 +859,12 @@ final class AppModel: ObservableObject {
     nonisolated static let wirelessHandoffRoutePrimeTimeout: TimeInterval = 0.5
     nonisolated static let wirelessHandoffTCPIPTimeout: TimeInterval = 3
     nonisolated static let wirelessHandoffPreflightTimeoutNanoseconds: UInt64 = 1_200_000_000
-    nonisolated static let wirelessHandoffTakeoverAttempts = 12
-    nonisolated static let wirelessHandoffTakeoverMaxDuration: TimeInterval = 8
+    nonisolated static let wirelessHandoffTCPProbeTimeoutNanoseconds: UInt64 = 450_000_000
+    nonisolated static let wirelessHandoffTakeoverAttempts = 24
+    nonisolated static let wirelessHandoffTakeoverMaxDuration: TimeInterval = 15
+    nonisolated(unsafe) static var adbTCPPortProbe: @Sendable (String) async -> Bool = { address in
+        await AppModel.adbTCPPortAcceptsConnection(address)
+    }
     nonisolated static let adbDeviceListTimeout: TimeInterval = 2
     /// How long after launch the status indicator keeps reading "Connecting..."
     /// while we hunt for the last-known device before showing the connection
@@ -1545,6 +1625,9 @@ final class AppModel: ObservableObject {
                 attempts: 4,
                 preflightLocalNetworkAccess: { address in
                     await Self.preflightLocalNetworkAccess(address: address)
+                },
+                tcpPortProbe: { address in
+                    await Self.adbTCPPortProbe(address)
                 }
             )
             let ready = readiness.isReady
@@ -2469,6 +2552,9 @@ final class AppModel: ObservableObject {
                             timeout: timeout
                         )
                     },
+                    tcpPortProbe: { address in
+                        await Self.adbTCPPortProbe(address)
+                    },
                     maximumDuration: remainingBudget(),
                     connectTimeout: Self.wirelessHandoffConnectTimeout,
                     shellTimeout: Self.wirelessHandoffShellTimeout
@@ -2551,6 +2637,9 @@ final class AppModel: ObservableObject {
                         timeout: timeout
                     )
                 },
+                tcpPortProbe: { address in
+                    await Self.adbTCPPortProbe(address)
+                },
                 maximumDuration: remainingBudget(),
                 connectTimeout: Self.wirelessHandoffConnectTimeout,
                 shellTimeout: Self.wirelessHandoffShellTimeout
@@ -2614,6 +2703,9 @@ final class AppModel: ObservableObject {
                         wirelessAddress: wirelessPhone.address,
                         timeout: timeout
                     )
+                },
+                tcpPortProbe: { address in
+                    await Self.adbTCPPortProbe(address)
                 },
                 maximumDuration: remainingBudget(),
                 connectTimeout: Self.wirelessHandoffConnectTimeout,
@@ -2771,6 +2863,12 @@ final class AppModel: ObservableObject {
             reportError("Invalid IP address", "Enter the phone IP address using numbers and dots, for example 192.168.1.23.")
             return
         }
+        let candidateAddresses = Self.manualADBTargetCandidateAddresses(
+            normalizedAddress: address,
+            discoveredPhones: discoveredPhones,
+            pairedPhones: pairedPhones
+        )
+        let matchedRecord = pairedRecord(matchingWirelessAddress: address)
 
         resumeDiscoveryAfterManualConnect()
         reconnectTask?.cancel()
@@ -2779,6 +2877,9 @@ final class AppModel: ObservableObject {
         usbWiFiHandoffTask = nil
         cancelWirelessReconnectWork()
         stopQRCodePairingSession()
+        if let matchedRecord {
+            select(record: matchedRecord)
+        }
         isPairing = true
         isManualADBTargetConnecting = true
         reconnectAttemptCount = 0
@@ -2790,6 +2891,7 @@ final class AppModel: ObservableObject {
             var result = await Self.connectToRememberedWirelessReadiness(
                 adb: adb,
                 savedAddress: address,
+                candidateAddresses: candidateAddresses,
                 readinessAttempts: 3,
                 delayNanoseconds: 500_000_000,
                 preflightLocalNetworkAccess: { target in
@@ -2808,6 +2910,7 @@ final class AppModel: ObservableObject {
                 result = await Self.connectToRememberedWirelessReadiness(
                     adb: adb,
                     savedAddress: address,
+                    candidateAddresses: candidateAddresses,
                     readinessAttempts: 3,
                     delayNanoseconds: 500_000_000,
                     preflightLocalNetworkAccess: { target in
@@ -2837,8 +2940,10 @@ final class AppModel: ObservableObject {
                     return
                 }
                 self.reportError(
-                    "ADB target not reachable",
-                    "Could not connect to \(address). Check the IP address, port, Wi-Fi network, and Android debugging authorization."
+                    matchedRecord.map { "\($0.displayName) not reachable" } ?? "ADB target not reachable",
+                    matchedRecord.map {
+                        "Could not connect to \($0.displayName) at \(address). Check that this phone is awake, on the same Wi-Fi, and has USB debugging authorized."
+                    } ?? "Could not connect to \(address). Check the IP address, port, Wi-Fi network, and Android debugging authorization."
                 )
                 self.showConnectionWindow(startsQRCodePairing: true)
                 return
@@ -3013,6 +3118,14 @@ final class AppModel: ObservableObject {
             states: [.wirelessDebuggingRequired, .companionConnected],
             adbSerial: record.resolvedWiFiAddress ?? record.resolvedUSBSerial ?? record.lastAddress
         )
+    }
+
+    private func pairedRecord(matchingWirelessAddress address: String) -> PairedPhoneRecord? {
+        pairedPhones.first { record in
+            guard Self.isWirelessRecord(record) else { return false }
+            return Self.wirelessADBAddress(record.resolvedWiFiAddress, matches: address)
+                || Self.wirelessADBAddress(record.lastAddress, matches: address)
+        }
     }
 
     func applyDevicePresence(_ output: String) {
@@ -3252,6 +3365,35 @@ final class AppModel: ObservableObject {
         return normalized
     }
 
+    nonisolated static func manualADBTargetCandidateAddresses(
+        normalizedAddress: String,
+        discoveredPhones: [DiscoveredPhone],
+        pairedPhones: [PairedPhoneRecord]
+    ) -> [String] {
+        guard let targetHost = host(in: normalizedAddress) else {
+            return [normalizedAddress]
+        }
+
+        var candidates: [String] = []
+        func append(_ address: String?) {
+            guard let address,
+                  host(in: address) == targetHost,
+                  !candidates.contains(address)
+            else { return }
+            candidates.append(address)
+        }
+
+        for phone in discoveredPhones where phone.kind.isConnectable {
+            append(phone.address)
+        }
+        for record in recordsByMostRecent(pairedPhones) {
+            append(record.resolvedWiFiAddress)
+            append(record.lastAddress)
+        }
+        append(normalizedAddress)
+        return candidates
+    }
+
     nonisolated static func isIPv4Address(_ address: String) -> Bool {
         let parts = address.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 4 else { return false }
@@ -3455,6 +3597,7 @@ final class AppModel: ObservableObject {
     nonisolated static func connectToRememberedWirelessReadiness(
         adb: ADBController,
         savedAddress: String,
+        candidateAddresses: [String]? = nil,
         readinessAttempts: Int = 1,
         delayNanoseconds: UInt64 = 700_000_000,
         preflightLocalNetworkAccess: ((String) async -> Void)? = nil,
@@ -3470,13 +3613,16 @@ final class AppModel: ObservableObject {
 
         var connectAttempts = 0
         var noRouteToHostFailures = 0
-        for candidate in reconnectCandidateAddresses(for: savedAddress) {
+        for candidate in candidateAddresses ?? reconnectCandidateAddresses(for: savedAddress) {
             let readiness = await waitForADBWirelessTargetReadiness(
                 adb: adb,
                 address: candidate,
                 attempts: readinessAttempts,
                 delayNanoseconds: delayNanoseconds,
                 preflightLocalNetworkAccess: preflightLocalNetworkAccess,
+                tcpPortProbe: { address in
+                    await adbTCPPortProbe(address)
+                },
                 maximumDuration: remainingBudget(),
                 connectTimeout: connectTimeout,
                 shellTimeout: shellTimeout
@@ -3564,6 +3710,9 @@ final class AppModel: ObservableObject {
                     timeout: timeout
                 )
             },
+            tcpPortProbe: { address in
+                await adbTCPPortProbe(address)
+            },
             maximumDuration: remainingBudget(),
             connectTimeout: wirelessHandoffConnectTimeout,
             shellTimeout: wirelessHandoffShellTimeout
@@ -3594,6 +3743,9 @@ final class AppModel: ObservableObject {
                     wirelessAddress: wirelessAddress,
                     timeout: timeout
                 )
+            },
+            tcpPortProbe: { address in
+                await adbTCPPortProbe(address)
             },
             maximumDuration: remainingBudget(),
             connectTimeout: wirelessHandoffConnectTimeout,
@@ -3652,6 +3804,9 @@ final class AppModel: ObservableObject {
             attempts: wirelessHandoffReadinessAttempts,
             delayNanoseconds: wirelessHandoffRetryDelayNanoseconds,
             preflightLocalNetworkAccess: preflightLocalNetworkAccess,
+            tcpPortProbe: { address in
+                await adbTCPPortProbe(address)
+            },
             maximumDuration: remainingBudget(),
             connectTimeout: wirelessHandoffConnectTimeout,
             shellTimeout: wirelessHandoffShellTimeout
@@ -3906,6 +4061,17 @@ final class AppModel: ObservableObject {
         return LocalNetworkEndpointParts(host: host, port: port)
     }
 
+    nonisolated static func wirelessADBAddress(_ candidate: String?, matches address: String) -> Bool {
+        guard let candidate,
+              let candidateParts = localNetworkEndpointParts(from: candidate),
+              let addressParts = localNetworkEndpointParts(from: address) else {
+            return false
+        }
+
+        return candidateParts.host.caseInsensitiveCompare(addressParts.host) == .orderedSame
+            && candidateParts.port == addressParts.port
+    }
+
     nonisolated static func preflightLocalNetworkAccess(
         address: String,
         timeoutNanoseconds: UInt64 = 1_200_000_000
@@ -3952,6 +4118,63 @@ final class AppModel: ObservableObject {
         output.localizedCaseInsensitiveContains("no route to host")
     }
 
+    nonisolated static func adbTCPPortAcceptsConnection(
+        _ address: String,
+        timeoutNanoseconds: UInt64 = wirelessHandoffTCPProbeTimeoutNanoseconds
+    ) async -> Bool {
+        guard let endpoint = localNetworkEndpointParts(from: address) else { return true }
+        guard shouldProbeADBPort(host: endpoint.host) else { return true }
+
+        let connection = NWConnection(
+            host: NWEndpoint.Host(endpoint.host),
+            port: NWEndpoint.Port(rawValue: endpoint.port) ?? 5555,
+            using: .tcp
+        )
+        let queue = DispatchQueue(label: "PhoneRelay.adb-tcp-probe", qos: .utility)
+        let completion = OneShotCallback()
+
+        return await withCheckedContinuation { continuation in
+            let finish: @Sendable (Bool) -> Void = { ready in
+                completion.run {
+                    connection.cancel()
+                    continuation.resume(returning: ready)
+                }
+            }
+
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    finish(true)
+                case .failed, .cancelled:
+                    finish(false)
+                default:
+                    break
+                }
+            }
+
+            connection.start(queue: queue)
+            Task {
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                finish(false)
+            }
+        }
+    }
+
+    nonisolated static func shouldProbeADBPort(host: String) -> Bool {
+        let lower = host.lowercased()
+        if lower == "localhost" || lower.hasSuffix(".local") {
+            return true
+        }
+
+        let parts = lower.split(separator: ".").compactMap { Int($0) }
+        guard parts.count == 4 else { return false }
+        if parts[0] == 10 { return true }
+        if parts[0] == 172 && (16...31).contains(parts[1]) { return true }
+        if parts[0] == 192 && parts[1] == 168 { return true }
+        if parts[0] == 169 && parts[1] == 254 { return true }
+        return false
+    }
+
     nonisolated static func waitForADBWirelessTargetReady(
         adb: ADBController,
         address: String,
@@ -3959,6 +4182,7 @@ final class AppModel: ObservableObject {
         delayNanoseconds: UInt64 = 700_000_000,
         preflightLocalNetworkAccess: ((String) async -> Void)? = nil,
         primeRoute: (() async -> Void)? = nil,
+        tcpPortProbe: ((String) async -> Bool)? = nil,
         maximumDuration: TimeInterval? = nil,
         connectTimeout: TimeInterval = 5,
         shellTimeout: TimeInterval = 2
@@ -3970,6 +4194,7 @@ final class AppModel: ObservableObject {
             delayNanoseconds: delayNanoseconds,
             preflightLocalNetworkAccess: preflightLocalNetworkAccess,
             primeRoute: primeRoute,
+            tcpPortProbe: tcpPortProbe,
             maximumDuration: maximumDuration,
             connectTimeout: connectTimeout,
             shellTimeout: shellTimeout
@@ -3983,6 +4208,7 @@ final class AppModel: ObservableObject {
         delayNanoseconds: UInt64 = 700_000_000,
         preflightLocalNetworkAccess: ((String) async -> Void)? = nil,
         primeRoute: (() async -> Void)? = nil,
+        tcpPortProbe: ((String) async -> Bool)? = nil,
         maximumDuration: TimeInterval? = nil,
         connectTimeout: TimeInterval = 5,
         shellTimeout: TimeInterval = 2
@@ -4065,6 +4291,14 @@ final class AppModel: ObservableObject {
                     connectAttempts: connectAttempts,
                     noRouteToHostFailures: noRouteToHostFailures
                 )
+            }
+
+            if let tcpPortProbe {
+                let portAcceptsConnection = await tcpPortProbe(address)
+                guard portAcceptsConnection else {
+                    Logger.log("ADB Wi-Fi handoff TCP probe attempt \(attempt + 1)/\(attempts) address=\(address) output=port not ready")
+                    continue
+                }
             }
 
             guard let connectCommandTimeout = boundedTimeout(connectTimeout) else {
@@ -4721,6 +4955,9 @@ final class AppModel: ObservableObject {
                         timeoutNanoseconds: Self.wirelessHandoffPreflightTimeoutNanoseconds
                     )
                 },
+                tcpPortProbe: { address in
+                    await Self.adbTCPPortProbe(address)
+                },
                 maximumDuration: Self.wirelessHandoffTakeoverMaxDuration,
                 connectTimeout: Self.wirelessHandoffConnectTimeout,
                 shellTimeout: Self.wirelessHandoffShellTimeout
@@ -5266,6 +5503,10 @@ final class AppModel: ObservableObject {
         appIsActive: Bool,
         mirrorAcceptsKeyboardInput: Bool
     ) -> Bool {
+        if MirrorSession.isMirrorCommandShortcut(event) {
+            return hasMirrorSession && appIsActive
+        }
+
         guard keyboardInputEnabled,
               hasMirrorSession,
               appIsActive,
@@ -5273,8 +5514,7 @@ final class AppModel: ObservableObject {
             return false
         }
 
-        return MirrorSession.isMirrorCommandShortcut(event)
-            || MirrorSession.androidKey(for: event) != nil
+        return MirrorSession.androidKey(for: event) != nil
             || MirrorSession.androidCommandShortcutKey(for: event) != nil
     }
 
@@ -5316,7 +5556,7 @@ final class AppModel: ObservableObject {
             // Wireless records get the full, restart-and-retry reconnect path so a
             // deliberate "Connect" recovers a sleeping phone instead of failing
             // silently on the first stale `adb connect`.
-            reconnectOverWiFi(preferredRecord: record)
+            reconnectOverWiFi(preferredRecord: record, restrictToPreferredRecord: true)
             return
         }
         select(record: record)
@@ -5371,7 +5611,7 @@ final class AppModel: ObservableObject {
         var wirelessRecord = record
         wirelessRecord.lastAddress = wifiAddress
         wirelessRecord.wifiAddress = wifiAddress
-        reconnectOverWiFi(preferredRecord: wirelessRecord)
+        reconnectOverWiFi(preferredRecord: wirelessRecord, restrictToPreferredRecord: true)
     }
 
     private func liveUSBDevice(for record: PairedPhoneRecord) -> AuthorizedADBDevice? {
@@ -5457,14 +5697,20 @@ final class AppModel: ObservableObject {
     /// session is promoted to a stable `:5555` listener so the next reconnect
     /// survives the Wireless-debugging toggle. If every route is dead it explains
     /// why. Never requires a USB cable up front.
-    func reconnectOverWiFi(preferredRecord: PairedPhoneRecord? = nil, inlineUntilConnected: Bool = false) {
+    func reconnectOverWiFi(
+        preferredRecord: PairedPhoneRecord? = nil,
+        inlineUntilConnected: Bool = false,
+        restrictToPreferredRecord: Bool = false
+    ) {
         guard !isMirroring, !isPairing else { return }
         resumeDiscoveryAfterManualConnect()
 
         let ordered = Self.recordsByMostRecent(pairedPhones).filter(Self.isWirelessRecord)
         let wirelessRecords: [PairedPhoneRecord]
         if let preferredRecord, Self.isWirelessRecord(preferredRecord) {
-            wirelessRecords = [preferredRecord] + ordered.filter { $0.id != preferredRecord.id }
+            wirelessRecords = restrictToPreferredRecord
+                ? [preferredRecord]
+                : [preferredRecord] + ordered.filter { $0.id != preferredRecord.id }
         } else {
             wirelessRecords = ordered
         }
@@ -5542,6 +5788,9 @@ final class AppModel: ObservableObject {
                         attempts: 1,
                         preflightLocalNetworkAccess: { address in
                             await Self.preflightLocalNetworkAccess(address: address)
+                        },
+                        tcpPortProbe: { address in
+                            await Self.adbTCPPortProbe(address)
                         }
                     ) {
                         await self.finishManualReconnect(
@@ -5864,6 +6113,58 @@ final class AppModel: ObservableObject {
     /// launching the source app if the row can't be located. Runs on the
     /// serialized tap queue so rapid banner clicks can't interleave, and brings
     /// the mirror on screen so the opened content is actually visible.
+    // MARK: - Per-app notification controls
+
+    nonisolated static let maxKnownNotificationApps = 60
+
+    private nonisolated static func loadKnownNotificationApps() -> [NotificationAppInfo] {
+        guard let data = UserDefaults.standard.data(forKey: notificationKnownAppsDefaultsKey),
+              let apps = try? JSONDecoder().decode([NotificationAppInfo].self, from: data) else {
+            return []
+        }
+        return apps
+    }
+
+    private func persistKnownNotificationApps() {
+        if let data = try? JSONEncoder().encode(knownNotificationApps) {
+            UserDefaults.standard.set(data, forKey: Self.notificationKnownAppsDefaultsKey)
+        }
+    }
+
+    func isNotificationPackageMuted(_ package: String) -> Bool {
+        mutedNotificationPackages.contains(package)
+    }
+
+    func setNotificationPackage(_ package: String, muted: Bool) {
+        guard !package.isEmpty else { return }
+        if muted {
+            guard mutedNotificationPackages.insert(package).inserted else { return }
+        } else {
+            guard mutedNotificationPackages.remove(package) != nil else { return }
+        }
+        UserDefaults.standard.set(
+            Array(mutedNotificationPackages).sorted(),
+            forKey: Self.notificationMutedPackagesDefaultsKey
+        )
+    }
+
+    /// Records that `package` sent a notification so it appears in the Settings
+    /// mute list. Most-recent first, deduped, and capped. No-op when nothing
+    /// changes so it doesn't thrash `@Published` on every poll.
+    func registerObservedNotificationApp(package: String, label: String) {
+        guard !package.isEmpty else { return }
+        if let index = knownNotificationApps.firstIndex(where: { $0.package == package }) {
+            // Already first with the same label → nothing to do.
+            if index == 0, knownNotificationApps[index].label == label { return }
+            knownNotificationApps.remove(at: index)
+        }
+        knownNotificationApps.insert(NotificationAppInfo(package: package, label: label), at: 0)
+        if knownNotificationApps.count > Self.maxKnownNotificationApps {
+            knownNotificationApps.removeLast(knownNotificationApps.count - Self.maxKnownNotificationApps)
+        }
+        persistKnownNotificationApps()
+    }
+
     func openSourceAppFromForwardedNotification(
         package: String,
         serial notificationSerial: String?,
@@ -5948,6 +6249,49 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Dismisses a forwarded notification on the phone by swiping its row out of
+    /// the shade. Best-effort and OCR-driven (no app activation); silently does
+    /// nothing if the row can't be located.
+    func dismissForwardedNotification(
+        package: String,
+        serial notificationSerial: String?,
+        notificationKey: String? = nil,
+        title: String? = nil,
+        text: String? = nil
+    ) {
+        guard let serial = resolvedNotificationSerial(notificationSerial) else { return }
+        NotificationTapService.tapQueue.async {
+            _ = NotificationTapService.dismissForwardedNotificationInShade(
+                serial: serial, notificationKey: notificationKey, title: title, text: text
+            )
+        }
+    }
+
+    /// Marks a forwarded message-style notification as read on the phone via its
+    /// inline "Mark as read" action, falling back to dismissing the row when the
+    /// app doesn't expose one. Best-effort and OCR-driven.
+    func markForwardedNotificationRead(
+        package: String,
+        serial notificationSerial: String?,
+        notificationKey: String? = nil,
+        title: String? = nil,
+        text: String? = nil
+    ) {
+        guard let serial = resolvedNotificationSerial(notificationSerial) else { return }
+        NotificationTapService.tapQueue.async {
+            _ = NotificationTapService.markReadForwardedNotificationInShade(
+                serial: serial, notificationKey: notificationKey, title: title, text: text
+            )
+        }
+    }
+
+    private func resolvedNotificationSerial(_ notificationSerial: String?) -> String? {
+        let serial = (notificationSerial?.isEmpty == false ? notificationSerial : nil)
+            ?? selectedDevice.adbSerial
+        guard let serial, !serial.isEmpty else { return nil }
+        return serial
+    }
+
     /// Brings the phone on screen for a notification the user just acted on:
     /// starts mirroring when nothing is live and a device is connected. The
     /// window itself is raised by the app delegate when it activates the app.
@@ -6002,6 +6346,7 @@ final class AppModel: ObservableObject {
         presentCaptureCue(.recordingStarted)
         let adb = self.adb
         let serial = selectedDevice.adbSerial
+        let timeLimitSeconds = recordingTimeLimitSeconds
         Task { [weak self] in
             let alreadyRunning = await Task.detached {
                 Self.androidScreenRecordingIsRunning(adb: adb, serial: serial)
@@ -6016,7 +6361,7 @@ final class AppModel: ObservableObject {
             let output = await Task.detached {
                 adb.run(Self.adbDeviceArguments(serial: serial) + [
                     "shell",
-                    "rm -f /sdcard/phonerelay-record.mp4; screenrecord /sdcard/phonerelay-record.mp4 >/dev/null 2>&1 & echo started"
+                    "rm -f /sdcard/phonerelay-record.mp4; screenrecord --time-limit \(timeLimitSeconds) /sdcard/phonerelay-record.mp4 >/dev/null 2>&1 & echo started"
                 ])
             }.value
 

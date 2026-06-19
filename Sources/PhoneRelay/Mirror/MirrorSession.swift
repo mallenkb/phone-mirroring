@@ -47,6 +47,7 @@ final class MirrorSession {
     private var screenOffTask: Task<Void, Never>?
     private var screenOffDeadline: Date?
     private var lastRequestedDisplayPowerMode: ScrcpyControlChannel.DisplayPowerMode = .normal
+
     private var streamWidth: UInt32 = 0
     private var streamHeight: UInt32 = 0
     private var isStopping = false
@@ -129,10 +130,10 @@ final class MirrorSession {
                 self.stop()
             }
         }
-        decoder.onSample = { [weak self] sample in
+        decoder.onSample = { [weak self] sample, isKeyFrame in
             Task { @MainActor in
                 guard let self, !self.didStop, !self.isStopping else { return }
-                self.windowController?.renderView.enqueue(sample)
+                self.windowController?.renderView.enqueue(sample, isKeyFrame: isKeyFrame)
             }
         }
 
@@ -342,7 +343,8 @@ final class MirrorSession {
     }
 
     func toggleDeviceScreenPower() {
-        setDeviceScreenPower(lastRequestedDisplayPowerMode == .off ? .normal : .off)
+        // Manual ⌘L should control the phone display, not lock the phone.
+        turnDeviceScreenOff()
     }
 
     private func setDeviceScreenPower(_ mode: ScrcpyControlChannel.DisplayPowerMode) {
@@ -386,16 +388,18 @@ final class MirrorSession {
     }
 
     func forwardKeyEvent(_ event: NSEvent) {
-        guard let controlChannel, acceptsKeyboardInput, NSApp.isActive else { return }
-        if event.type == .keyDown || event.type == .keyUp || event.type == .systemDefined {
-            recordMirrorActivity()
-        }
-
         if event.type == .keyDown,
            event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
            event.charactersIgnoringModifiers?.lowercased() == "l" {
+            guard controlChannel != nil, NSApp.isActive else { return }
+            recordMirrorActivity()
             toggleDeviceScreenPower()
             return
+        }
+
+        guard let controlChannel, acceptsKeyboardInput, NSApp.isActive else { return }
+        if event.type == .keyDown || event.type == .keyUp || event.type == .systemDefined {
+            recordMirrorActivity()
         }
 
         if event.type == .keyDown,
@@ -518,6 +522,7 @@ final class MirrorSession {
     private func scheduleAutomaticScreenOffIfNeeded() {
         guard model?.mirrorScreenOffAfterThirtySecondsEnabled ?? true else { return }
         screenOffTask?.cancel()
+        recordMirrorActivity()
         screenOffTask = Task { [weak self] in
             while !Task.isCancelled {
                 let delay = await MainActor.run { () -> TimeInterval? in
@@ -537,11 +542,7 @@ final class MirrorSession {
                     return Self.shouldTurnScreenOff(now: Date(), deadline: deadline)
                 }
                 if shouldTurnOff {
-                    await MainActor.run {
-                        guard let self, !self.didStop, !self.isStopping else { return }
-                        self.turnDeviceScreenOff()
-                        self.screenOffDeadline = nil
-                    }
+                    await self?.applyIdlePowerSaving()
                     return
                 }
             }
@@ -551,6 +552,13 @@ final class MirrorSession {
     private func recordMirrorActivity(now: Date = Date()) {
         guard model?.mirrorScreenOffAfterThirtySecondsEnabled ?? true else { return }
         screenOffDeadline = Self.screenOffDeadline(after: now, delay: Self.automaticScreenOffDelay)
+    }
+
+    /// Turns the phone display off after the idle timeout while keeping the
+    /// mirror stream running.
+    private func applyIdlePowerSaving() async {
+        turnDeviceScreenOff()
+        screenOffDeadline = nil
     }
 
     nonisolated static let automaticScreenOffDelay: TimeInterval = 30
@@ -577,10 +585,14 @@ final class MirrorSession {
 
     static func androidKey(for event: NSEvent) -> ScrcpyControlChannel.AndroidKey? {
         if event.type == .systemDefined, event.subtype.rawValue == 8 {
+            // NX_KEYTYPE_* media-key codes carried in the upper half of data1.
             switch (event.data1 >> 16) & 0xFFFF {
             case 0: return .volumeUp
             case 1: return .volumeDown
             case 7: return .volumeMute
+            case 16: return .mediaPlayPause
+            case 17: return .mediaNext
+            case 18: return .mediaPrevious
             default: return nil
             }
         }
@@ -588,7 +600,7 @@ final class MirrorSession {
             return nil
         }
 
-        // macOS virtual key codes (kVK_*). Only a minimal mapping for now.
+        // macOS virtual key codes (kVK_*).
         switch event.keyCode {
         case 0x35: return .back     // Escape
         case 0x30: return .tab
@@ -602,7 +614,10 @@ final class MirrorSession {
         case 0x7D: return .dpadDown
         case 0x7B: return .dpadLeft
         case 0x7C: return .dpadRight
-        case 0x53: return .home     // Keypad 1 — placeholder; user-configurable later
+        case 0x74: return .pageUp        // Page Up (fn+Up)
+        case 0x79: return .pageDown      // Page Down (fn+Down)
+        case 0x73: return .moveHome      // Home (fn+Left) — jump to start of line
+        case 0x77: return .moveEnd       // End (fn+Right) — jump to end of line
         default: return nil
         }
     }

@@ -104,6 +104,25 @@ final class NotificationLaunchTests: XCTestCase {
         XCTAssertEqual(point, CGPoint(x: 540, y: 1500))
     }
 
+    // Two notifications from the same app with identically-truncated text tie on
+    // score; the newest (topmost) row is the one the banner is for.
+    func testTapPointPrefersNewestRowWhenSameAppRepeatsIdenticalText() {
+        let lines = [
+            NotificationTapService.ShadeTextLine(text: "Mom", center: CGPoint(x: 120, y: 300)),
+            NotificationTapService.ShadeTextLine(text: "You have a new message", center: CGPoint(x: 300, y: 350)),
+            NotificationTapService.ShadeTextLine(text: "Mom", center: CGPoint(x: 120, y: 600)),
+            NotificationTapService.ShadeTextLine(text: "You have a new message", center: CGPoint(x: 300, y: 650))
+        ]
+
+        let point = NotificationTapService.forwardedNotificationTapPoint(
+            in: lines,
+            title: "Mom",
+            text: "You have a new message"
+        )
+
+        XCTAssertEqual(point, CGPoint(x: 300, y: 350))
+    }
+
     func testTapPointReturnsNilWithoutPlausibleMatch() {
         let lines = [
             NotificationTapService.ShadeTextLine(text: "Down: 88 kb/s Up: 80 kb/s Signal 10...", center: CGPoint(x: 549, y: 1833)),
@@ -180,6 +199,35 @@ final class NotificationLaunchTests: XCTestCase {
             maxDistance: 300
         )
         XCTAssertNil(tooFar)
+    }
+
+    // MARK: - Mark-as-read affordance
+
+    func testMarkReadAffordanceFindsActionBelowRow() {
+        let lines = [
+            NotificationTapService.ShadeTextLine(text: "Dinner at 7?", center: CGPoint(x: 265, y: 400)),
+            NotificationTapService.ShadeTextLine(text: "Reply", center: CGPoint(x: 180, y: 470)),
+            NotificationTapService.ShadeTextLine(text: "Mark as read", center: CGPoint(x: 360, y: 470))
+        ]
+
+        let point = NotificationTapService.markReadAffordancePoint(
+            in: lines,
+            belowRowY: 400,
+            maxDistance: 300
+        )
+
+        XCTAssertEqual(point, CGPoint(x: 360, y: 470))
+    }
+
+    func testMarkReadAffordanceRequiresBothMarkAndReadTokens() {
+        // "Read more" (read without mark) and a standalone "Mark" must not match.
+        let lines = [
+            NotificationTapService.ShadeTextLine(text: "Read more", center: CGPoint(x: 200, y: 470)),
+            NotificationTapService.ShadeTextLine(text: "Mark important", center: CGPoint(x: 200, y: 500))
+        ]
+        XCTAssertNil(
+            NotificationTapService.markReadAffordancePoint(in: lines, belowRowY: 400, maxDistance: 300)
+        )
     }
 
     // MARK: - Reply text escaping
