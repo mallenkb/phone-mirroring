@@ -1,7 +1,22 @@
+import AppKit
 import XCTest
 @testable import PhoneRelay
 
 final class MirrorWindowChromeTests: XCTestCase {
+    /// The chrome-reveal tests need the controller's window actually onscreen —
+    /// `setChromeVisible` no-ops for a hidden/offscreen window. That requires a
+    /// live window-server session; headless runs (CI over SSH, a sandbox with no
+    /// display) can't bring a window onscreen, so `show()` leaves `isVisible`
+    /// false. Skip there rather than report a false failure, checking the actual
+    /// window the test depends on.
+    @MainActor
+    private func requireVisibleWindow(_ window: NSWindow?) throws {
+        try XCTSkipUnless(
+            window?.isVisible == true,
+            "Requires an active window-server session; skipped in headless test runs."
+        )
+    }
+
     func testMirrorStartupDoesNotBlockMainActorDuringADBPreparation() async throws {
         let startupStarted = LockedFlag()
         let startupFinished = LockedFlag()
@@ -261,6 +276,31 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
+    func testCommandLForwardsToMirrorEvenWithoutKeyboardFocus() throws {
+        let commandL = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .command,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "l",
+            charactersIgnoringModifiers: "l",
+            isARepeat: false,
+            keyCode: 37
+        ))
+
+        XCTAssertTrue(AppModel.shouldForwardKeyEventToMirrorSession(
+            commandL,
+            keyboardInputEnabled: false,
+            hasMirrorSession: true,
+            appIsActive: true,
+            mirrorAcceptsKeyboardInput: false
+        ))
+        XCTAssertTrue(AppModel.shouldConsumeForwardedKeyEvent(commandL))
+    }
+
+    @MainActor
     func testNonMediaSystemEventsAreIgnoredByAndroidKeyMapping() throws {
         let event = try XCTUnwrap(NSEvent.otherEvent(
             with: .systemDefined,
@@ -383,7 +423,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertFalse(source.contains("RadialGradient"))
     }
 
-    func testConnectionSetupUsesDynamicLoadingSurfaceForConnectAndReconnect() throws {
+    func testConnectionSetupKeepsOnboardingSurfaceMountedWhileConnecting() throws {
         let testURL = URL(fileURLWithPath: #filePath)
         let packageRoot = testURL
             .deletingLastPathComponent()
@@ -393,10 +433,11 @@ final class MirrorWindowChromeTests: XCTestCase {
             .appendingPathComponent("Sources/PhoneRelay/Views/FigmaMirrorExperienceView.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("if model.shouldShowConnectionLoadingSurface"))
-        XCTAssertTrue(source.contains("MirrorLoadingSurface("))
-        XCTAssertTrue(source.contains("statusText: model.connectionLoadingStatusText"))
-        XCTAssertTrue(source.contains("deviceName: model.connectionLoadingDeviceTitle"))
+        XCTAssertTrue(source.contains("FigmaPhoneFrame {\n            onboardingContent\n        }"))
+        XCTAssertFalse(source.contains("model.shouldShowConnectionLoadingSurface && inlineConnectingTransport == nil"))
+        XCTAssertFalse(source.contains("private var connectionLoadingContent"))
+        XCTAssertFalse(source.contains("statusText: model.connectionLoadingStatusText"))
+        XCTAssertFalse(source.contains("deviceName: model.connectionLoadingDeviceTitle"))
         XCTAssertFalse(source.contains("shouldShowMirrorLoading"))
         XCTAssertFalse(source.contains("statusText: \"Reconnecting to\""))
         XCTAssertFalse(source.contains("deviceName: model.selectedDevice.name"))
@@ -424,7 +465,8 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(viewSource.contains("inlineConnectingTransport == .usb"))
         XCTAssertTrue(viewSource.contains("inlineConnectingTransport == .wifi"))
         XCTAssertTrue(viewSource.contains("if connectionStep == .chooseMethod"))
-        XCTAssertTrue(viewSource.contains("model.shouldShowConnectionLoadingSurface && inlineConnectingTransport == nil"))
+        XCTAssertTrue(viewSource.contains("FigmaPhoneFrame {\n            onboardingContent\n        }"))
+        XCTAssertFalse(viewSource.contains("model.shouldShowConnectionLoadingSurface && inlineConnectingTransport == nil"))
         XCTAssertTrue(viewSource.contains("isAvailable: effectiveUSBConnectionAvailable"))
         XCTAssertTrue(viewSource.contains("isAvailable: effectiveWiFiConnectionAvailable"))
         XCTAssertTrue(viewSource.contains("network.localizedCaseInsensitiveContains(\"wireless\")"))
@@ -432,8 +474,9 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(viewSource.contains("if model.hasSavedWirelessConnection"))
         XCTAssertTrue(viewSource.contains("model.reconnectOverWiFi(inlineUntilConnected: true)"))
         XCTAssertFalse(viewSource.contains("model.isManualUSBConnectDisabled"))
-        XCTAssertTrue(modelSource.contains("var isConnectionChooserUSBRowBusy"))
-        XCTAssertTrue(modelSource.contains("var isConnectionChooserWirelessRowBusy"))
+        // Per-row busy state now lives in the view as isUSBButtonBusy /
+        // isWirelessButtonBusy (asserted above), not as model vars — the old
+        // model.isConnectionChooser*RowBusy properties were removed.
         XCTAssertTrue(modelSource.contains("var isUSBConnectionAvailable"))
         XCTAssertTrue(modelSource.contains("var isWirelessConnectionAvailable"))
         XCTAssertTrue(modelSource.contains("var hasSavedWirelessConnection"))
@@ -1408,6 +1451,8 @@ final class MirrorWindowChromeTests: XCTestCase {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
+        controller.show()
+        try requireVisibleWindow(controller.window)
 
         controller.simulateRevealZoneHover(true)
 
@@ -1437,6 +1482,8 @@ final class MirrorWindowChromeTests: XCTestCase {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
+        controller.show()
+        try requireVisibleWindow(controller.window)
 
         controller.simulateRevealZoneHover(true)
         XCTAssertTrue(controller.isChromeVisibleForTesting)
@@ -1458,10 +1505,12 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testFloatingToolbarOrdersOutWhenAppResignsActive() {
+    func testFloatingToolbarOrdersOutWhenAppResignsActive() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
+        controller.show()
+        try requireVisibleWindow(controller.window)
 
         controller.simulateRevealZoneHover(true)
         XCTAssertTrue(controller.isChromeVisibleForTesting)
@@ -1474,10 +1523,12 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testFloatingToolbarOrdersOutBeforeMirrorMinimizes() {
+    func testFloatingToolbarOrdersOutBeforeMirrorMinimizes() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
+        controller.show()
+        try requireVisibleWindow(controller.window)
 
         controller.simulateRevealZoneHover(true)
         XCTAssertTrue(controller.isChromeVisibleForTesting)
@@ -1491,10 +1542,12 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testFloatingToolbarOrdersOutAfterMirrorMiniaturizes() {
+    func testFloatingToolbarOrdersOutAfterMirrorMiniaturizes() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
+        controller.show()
+        try requireVisibleWindow(controller.window)
 
         controller.simulateRevealZoneHover(true)
         XCTAssertTrue(controller.isChromeVisibleForTesting)

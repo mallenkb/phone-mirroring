@@ -88,7 +88,9 @@ final class SettingsAboutTabTests: XCTestCase {
         XCTAssertLessThan(menuRange.lowerBound, forgetRange.lowerBound)
         XCTAssertTrue(rowBody.contains(".popover(isPresented: $showMoreMenu, arrowEdge: .bottom)"))
         XCTAssertTrue(rowBody.contains("private var moreActionsDropdown: some View"))
-        XCTAssertTrue(rowBody.contains("MoreMenuRow(title: transport.connectTitle)"))
+        XCTAssertTrue(rowBody.contains("title: transport.connectTitle,\n                    subtitle: transport.connectSubtitle"))
+        XCTAssertTrue(source.contains("case .wifi: return \"No cable. Same Wi-Fi network.\""))
+        XCTAssertTrue(source.contains("case .usb: return \"Fastest and most reliable.\""))
         XCTAssertTrue(rowBody.contains("ForEach(availableTransports)"))
         XCTAssertTrue(rowBody.contains("onConnect(transport)"))
         XCTAssertFalse(rowBody.contains("private var connectRouteControl: some View"))
@@ -162,15 +164,15 @@ final class SettingsAboutTabTests: XCTestCase {
             encoding: .utf8
         )
 
-        XCTAssertTrue(license.contains("PhoneRelay App License"))
+        XCTAssertTrue(license.contains("Phone Relay App License"))
         XCTAssertTrue(license.contains("All rights reserved"))
         XCTAssertTrue(privacy.contains("does not run an analytics service"))
-        XCTAssertTrue(support.contains("PhoneRelay version and build from the About tab"))
+        XCTAssertTrue(support.contains("Phone Relay version and build from the About tab"))
         XCTAssertTrue(notices.contains("scrcpy"))
         XCTAssertTrue(notices.contains("Apache License 2.0"))
         XCTAssertTrue(apacheLicense.contains("TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION"))
         XCTAssertFalse(apacheLicense.contains("For complete legal terms, see:"))
-        XCTAssertTrue(content.contains("PhoneRelay App License"))
+        XCTAssertTrue(content.contains("Phone Relay App License"))
         XCTAssertTrue(content.contains("does not run an analytics service"))
     }
 

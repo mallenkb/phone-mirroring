@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PhoneRelay for macOS</title>
-  <meta name="description" content="Download the latest PhoneRelay macOS release for Android screen mirroring.">
+  <title>Phone Relay for macOS</title>
+  <meta name="description" content="Download the latest Phone Relay macOS release for Android screen mirroring.">
   <link rel="icon" href='data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"%3E%3Crect width="64" height="64" rx="14" fill="%230e7490"/%3E%3Ctext x="32" y="40" text-anchor="middle" font-family="Arial,sans-serif" font-size="30" font-weight="700" fill="white"%3EP%3C/text%3E%3C/svg%3E'>
   <style>
     :root {
@@ -478,7 +478,7 @@
     <div class="wrap nav-inner">
       <a class="brand" href="#">
         <span class="brand-mark">P</span>
-        <span>PhoneRelay</span>
+        <span>Phone Relay</span>
       </a>
       <div class="nav-links">
         <a href="#download">Download</a>
@@ -494,7 +494,7 @@
     <div class="wrap hero">
       <div>
         <p class="eyebrow">Android mirroring for macOS</p>
-        <h1>PhoneRelay for macOS</h1>
+        <h1>Phone Relay for macOS</h1>
         <p class="lead">
           Mirror an Android phone on your Mac with USB setup, wireless pairing, notification forwarding, and a native macOS window.
         </p>
@@ -508,7 +508,7 @@
         </p>
       </div>
 
-      <div class="visual" aria-label="PhoneRelay mirror preview">
+      <div class="visual" aria-label="Phone Relay mirror preview">
         <div class="screen">
           <img src="assets/base_scene.png" alt="">
           <div class="device-card">
@@ -532,7 +532,7 @@
       <div class="release-panel">
         <article class="release-box">
           <div id="source-status" class="status">Using release data from GitHub</div>
-          <h3 id="release-title">PhoneRelay 1.0.4</h3>
+          <h3 id="release-title">Phone Relay 1.0.4</h3>
           <p id="release-description">The newest signed and notarized macOS DMG is ready to download.</p>
           <div class="actions">
             <a id="download-link-secondary" class="button primary" href="https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.4/PhoneRelay.dmg">Download DMG</a>
@@ -587,7 +587,7 @@
     <section>
       <div class="section-head">
         <h2>Requirements</h2>
-        <p>PhoneRelay is built for local Android mirroring on macOS. The release should stay signed and notarized before publishing.</p>
+        <p>Phone Relay is built for local Android mirroring on macOS. The release should stay signed and notarized before publishing.</p>
       </div>
       <div class="grid">
         <article class="card">
@@ -611,7 +611,7 @@
 
   <footer>
     <div class="wrap">
-      PhoneRelay is a local-first Android mirroring client for macOS.
+      Phone Relay is a local-first Android mirroring client for macOS.
       <a href="privacy.html">Privacy</a>
       <a href="support.html">Support</a>
     </div>
@@ -624,7 +624,7 @@
     const RELEASES_URL = `https://github.com/${REPO}/releases`;
     const FALLBACK_RELEASE = {
       tag_name: "v1.0.4",
-      name: "PhoneRelay 1.0.4",
+      name: "Phone Relay 1.0.4",
       html_url: `${RELEASES_URL}/tag/v1.0.4`,
       published_at: "2026-06-15T13:00:41Z",
       assets: [
@@ -693,7 +693,7 @@
     function applyRelease(release, source) {
       const asset = findDmgAsset(release);
       const version = release.tag_name || FALLBACK_RELEASE.tag_name;
-      const title = release.name || `PhoneRelay ${version.replace(/^v/i, "")}`;
+      const title = release.name || `Phone Relay ${version.replace(/^v/i, "")}`;
       const releaseUrl = release.html_url || `${RELEASES_URL}/tag/${version}`;
       const downloadUrl = asset.browser_download_url || FALLBACK_RELEASE.assets[0].browser_download_url;
 

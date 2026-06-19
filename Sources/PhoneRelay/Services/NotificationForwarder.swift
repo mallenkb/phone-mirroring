@@ -39,6 +39,8 @@ final class NotificationForwarder {
     enum Action {
         static let open = "phoneRelay.open"
         static let reply = "phoneRelay.reply"
+        static let clear = "phoneRelay.clear"
+        static let markRead = "phoneRelay.markRead"
     }
 
     /// One active Android notification, distilled from the dumpsys text dump.
@@ -153,8 +155,22 @@ final class NotificationForwarder {
 
         for entry in Self.unseenForwardable(entries, seen: seen) {
             remember(entry.fingerprint)
+            // Track the app so it shows in the Settings mute list (even muted ones,
+            // so they can be un-muted), then apply the user's privacy gates.
+            model?.registerObservedNotificationApp(package: entry.pkg, label: Self.appLabel(for: entry.pkg))
+            guard shouldPost(entry) else { continue }
             post(entry, serial: baselineSerial)
         }
+    }
+
+    /// User-controlled gates applied after the baseline/dedup pass: pause while
+    /// recording, per-app mute, and security-code suppression.
+    private func shouldPost(_ entry: Entry) -> Bool {
+        guard let model else { return true }
+        if model.notificationPauseWhileRecordingEnabled, model.isRecording { return false }
+        if model.isNotificationPackageMuted(entry.pkg) { return false }
+        if model.notificationSuppressSecurityCodesEnabled, Self.isLikelySecurityCode(entry) { return false }
+        return true
     }
 
     private func remember(_ fingerprint: String) {
@@ -166,15 +182,55 @@ final class NotificationForwarder {
     }
 
     private func post(_ entry: Entry, serial: String?) {
-        let content = Self.notificationContent(for: entry, serial: serial)
         let pkg = entry.pkg
 
-        // Always attach the composed badge (source icon + PhoneRelay corner) as
+        // The source-app icon + composed badge come from a per-device+package
+        // cache. On a hit this is just a file-exists check, so deliver inline.
+        // On a miss the icon has to be fetched by pulling the app's APK,
+        // unzipping its launcher icon, and compositing the badge — all blocking
+        // work that must NOT run on the main actor. Doing it here froze the whole
+        // UI (window dragging, menus, clicks) for as long as the pull took every
+        // time a notification arrived from an app we hadn't cached yet.
+        guard let serial else {
+            postResolved(entry: entry, serial: nil, avatarURL: nil, attachmentURL: nil)
+            return
+        }
+        let cacheKey = "\(serial)\u{1}\(pkg)"
+        if let avatarURL = cachedIcon(sourceIconCache, key: cacheKey),
+           let attachmentURL = cachedIcon(iconAttachmentCache, key: cacheKey) {
+            postResolved(entry: entry, serial: serial, avatarURL: avatarURL, attachmentURL: attachmentURL)
+            return
+        }
+
+        Task { [weak self] in
+            let icons = await Task.detached(priority: .utility) {
+                Self.resolveIcons(pkg: pkg, serial: serial)
+            }.value
+            guard let self else { return }
+            if let avatarURL = icons.avatar { self.sourceIconCache[cacheKey] = avatarURL }
+            if let attachmentURL = icons.attachment { self.iconAttachmentCache[cacheKey] = attachmentURL }
+            self.postResolved(
+                entry: entry,
+                serial: serial,
+                avatarURL: icons.avatar,
+                attachmentURL: icons.attachment
+            )
+        }
+    }
+
+    /// Builds and delivers the macOS banner once the source-app icon URLs are
+    /// known. Pure main-actor work — no blocking I/O — so it's safe to run inline
+    /// on a cache hit or after the off-main icon fetch in `post` resolves.
+    private func postResolved(entry: Entry, serial: String?, avatarURL: URL?, attachmentURL: URL?) {
+        let hideBody = model?.notificationHideBodyEnabled ?? false
+        let content = Self.notificationContent(for: entry, serial: serial, hideBody: hideBody)
+        let pkg = entry.pkg
+
+        // Always attach the composed badge (source icon + Phone Relay corner) as
         // the guaranteed fallback: if the communication style below isn't applied
         // (e.g. the entitlement isn't honored by the current signing), the banner
         // still shows the source icon on the right exactly as before.
-        if let serial,
-           let attachmentURL = iconAttachmentURL(for: pkg, serial: serial),
+        if let attachmentURL,
            let attachment = try? UNNotificationAttachment(
             identifier: "\(pkg)-icon",
             url: attachmentURL,
@@ -185,12 +241,11 @@ final class NotificationForwarder {
 
         // Prefer the communication-notification style (iPhone-Mirroring look):
         // the raw source app icon becomes the large left avatar and macOS
-        // auto-badges PhoneRelay into the corner. Falls back to `content` when it
+        // auto-badges Phone Relay into the corner. Falls back to `content` when it
         // can't be built or the style isn't authorized.
         var finalContent: UNNotificationContent = content
-        if let serial,
-           let avatarURL = sourceIconURL(for: pkg, serial: serial),
-           let communication = Self.communicationContent(from: content, entry: entry, avatarURL: avatarURL) {
+        if let avatarURL,
+           let communication = Self.communicationContent(from: content, entry: entry, avatarURL: avatarURL, hideBody: hideBody) {
             finalContent = communication
         }
 
@@ -209,7 +264,7 @@ final class NotificationForwarder {
     }
 
     /// Upgrades a forwarded banner to a communication notification so the source
-    /// app icon shows as the large left avatar (with PhoneRelay auto-badged in
+    /// app icon shows as the large left avatar (with Phone Relay auto-badged in
     /// the corner), mirroring how iPhone Mirroring presents phone notifications.
     /// Returns nil — leaving the caller's attachment-based content in place — when
     /// the style can't be applied (e.g. the `com.apple.developer.usernotifications.communication`
@@ -217,7 +272,8 @@ final class NotificationForwarder {
     nonisolated static func communicationContent(
         from content: UNMutableNotificationContent,
         entry: Entry,
-        avatarURL: URL
+        avatarURL: URL,
+        hideBody: Bool = false
     ) -> UNNotificationContent? {
         let avatar = INImage(url: avatarURL)
         let sender = INPerson(
@@ -231,7 +287,7 @@ final class NotificationForwarder {
         let intent = INSendMessageIntent(
             recipients: nil,
             outgoingMessageType: .outgoingMessageText,
-            content: entry.text.isEmpty ? nil : entry.text,
+            content: (entry.text.isEmpty || hideBody) ? nil : entry.text,
             speakableGroupName: nil,
             conversationIdentifier: entry.key.isEmpty ? entry.pkg : entry.key,
             serviceName: nil,
@@ -251,11 +307,13 @@ final class NotificationForwarder {
     /// Builds the macOS notification for a forwarded entry. A default sound is
     /// attached so the banner pops audibly like it does on the phone — without it
     /// the banner is delivered silently. Pure/inspectable so it can be unit-tested.
-    nonisolated static func notificationContent(for entry: Entry, serial: String? = nil) -> UNMutableNotificationContent {
+    nonisolated static func notificationContent(for entry: Entry, serial: String? = nil, hideBody: Bool = false) -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
         let sourceApp = appLabel(for: entry.pkg)
         content.title = notificationTitle(sourceApp: sourceApp, entryTitle: entry.title)
-        if !entry.text.isEmpty { content.body = entry.text }
+        // Body is hidden for privacy when requested; the real text still rides in
+        // userInfo below so click-to-open can still locate the row on the phone.
+        if !entry.text.isEmpty, !hideBody { content.body = entry.text }
         // Group banners by source app in Notification Center.
         content.threadIdentifier = entry.pkg
         // Carry the originating notification's identity so a click or reply can
@@ -295,28 +353,25 @@ final class NotificationForwarder {
         return "\(source) • \(title)"
     }
 
-    private func iconAttachmentURL(for pkg: String, serial: String) -> URL? {
-        let cacheKey = "\(serial)\u{1}\(pkg)"
-        if let cached = iconAttachmentCache[cacheKey],
-           FileManager.default.fileExists(atPath: cached.path) {
-            return cached
-        }
-        guard let url = Self.buildIconAttachment(pkg: pkg, serial: serial) else { return nil }
-        iconAttachmentCache[cacheKey] = url
+    /// Returns a cached icon URL only when the file still exists on disk; a stale
+    /// temp-dir entry (the OS clears the temporary directory) falls through to a
+    /// fresh fetch instead of handing back a dead path.
+    private func cachedIcon(_ cache: [String: URL], key: String) -> URL? {
+        guard let url = cache[key], FileManager.default.fileExists(atPath: url.path) else { return nil }
         return url
     }
 
-    /// Raw source-app icon used as the communication-notification avatar, cached
-    /// per device+package like the composed attachment.
-    private func sourceIconURL(for pkg: String, serial: String) -> URL? {
-        let cacheKey = "\(serial)\u{1}\(pkg)"
-        if let cached = sourceIconCache[cacheKey],
-           FileManager.default.fileExists(atPath: cached.path) {
-            return cached
-        }
-        guard let url = Self.extractSourceIcon(pkg: pkg, serial: serial) else { return nil }
-        sourceIconCache[cacheKey] = url
-        return url
+    /// Resolves the raw source-app avatar and the composed badge attachment for a
+    /// package in one shot, pulling the APK at most once (the avatar is the
+    /// badge's own input). Blocking — only call from a detached task, never the
+    /// main actor, or the UI freezes for the duration of the pull.
+    private nonisolated static func resolveIcons(pkg: String, serial: String) -> (avatar: URL?, attachment: URL?) {
+        guard let avatar = extractSourceIcon(pkg: pkg, serial: serial) else { return (nil, nil) }
+        let attachment = composeForwardedIcon(
+            sourceIconURL: avatar,
+            outputURL: avatar.deletingLastPathComponent().appendingPathComponent("forwarded-icon.png")
+        )
+        return (avatar, attachment)
     }
 
     // MARK: - adb fetch
@@ -338,15 +393,6 @@ final class NotificationForwarder {
     }
 
     // MARK: - App icon attachment
-
-    /// Composed badge for the fallback attachment: the source-app icon with this
-    /// app's icon badged into the corner so the banner still reads as forwarded
-    /// by PhoneRelay even when the communication-notification style isn't applied.
-    private nonisolated static func buildIconAttachment(pkg: String, serial: String) -> URL? {
-        guard let iconURL = extractSourceIcon(pkg: pkg, serial: serial) else { return nil }
-        let outputURL = iconURL.deletingLastPathComponent().appendingPathComponent("forwarded-icon.png")
-        return composeForwardedIcon(sourceIconURL: iconURL, outputURL: outputURL)
-    }
 
     /// Best-effort *raw* source-app icon: pulls the notifying package's APK and
     /// extracts its highest-density launcher PNG/WebP to `source-icon`. Used both
@@ -453,7 +499,7 @@ final class NotificationForwarder {
             fraction: 1
         )
 
-        // The PhoneRelay app icon already is a rounded black card, so it stands
+        // The Phone Relay app icon already is a rounded black card, so it stands
         // on its own as the badge — no extra card fill or border around it.
         // Draw it scaled to fill the badge footprint.
         let badgeRect = NSRect(x: 100, y: 0, width: 58, height: 58)
@@ -571,6 +617,45 @@ final class NotificationForwarder {
             return false
         }
         return !(entry.title.isEmpty && entry.text.isEmpty)
+    }
+
+    /// Heuristic for a one-time / security-code notification (2FA, OTP, login
+    /// code). True when the text carries an isolated 4–8 digit code *and* either a
+    /// verification keyword is present or the body is just the code — so order
+    /// numbers, prices, and times don't get swept up. Pure and unit-tested.
+    nonisolated static func isLikelySecurityCode(_ entry: Entry) -> Bool {
+        isLikelySecurityCode(title: entry.title, text: entry.text)
+    }
+
+    nonisolated static func isLikelySecurityCode(title: String, text: String) -> Bool {
+        let haystack = "\(title) \(text)"
+        guard let code = firstStandaloneCode(in: haystack) else { return false }
+        let lowered = haystack.lowercased()
+        let keywords = [
+            "code", "otp", "one-time", "one time", "verification", "verify",
+            "2fa", "two-factor", "two factor", "password", "passcode", "pin",
+            "security", "authenticat", "log in", "login", "sign in", "sign-in", "confirm"
+        ]
+        if keywords.contains(where: { lowered.contains($0) }) {
+            return true
+        }
+        // No keyword: only suppress when the body is essentially just the code,
+        // so "Order #1234 shipped" or "Meeting at 1430" still come through.
+        return text.trimmingCharacters(in: .whitespacesAndNewlines) == code
+    }
+
+    /// First run of 4–8 digits bounded by non-digits (so 10-digit phone numbers
+    /// and longer ids don't match), or nil if there isn't one.
+    nonisolated static func firstStandaloneCode(in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: "(?<![0-9])[0-9]{4,8}(?![0-9])") else {
+            return nil
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, range: range),
+              let matchRange = Range(match.range, in: text) else {
+            return nil
+        }
+        return String(text[matchRange])
     }
 
     /// Pure diff used by `deliver`: forwardable entries not yet seen, in order.

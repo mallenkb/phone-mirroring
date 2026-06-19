@@ -1,7 +1,7 @@
 import XCTest
 @testable import PhoneRelay
 
-/// Covers the duplicate-instance guard (only one PhoneRelay may run at a time;
+/// Covers the duplicate-instance guard (only one Phone Relay may run at a time;
 /// the newest copy yields) and the connection-window presentation policy
 /// (automatic reconnect cycles must not steal focus from other apps).
 final class SingleInstanceGuardTests: XCTestCase {

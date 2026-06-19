@@ -1,7 +1,7 @@
 #!/usr/bin/env swift
 import AppKit
 
-// Renders the PhoneRelay DMG installer background. The app and Applications
+// Renders the Phone Relay DMG installer background. The app and Applications
 // icons are placed by Finder on top of this image (see make_dmg.sh), so they
 // are intentionally NOT drawn here. Output is 1440×880 px (a 720×440 pt window
 // @2x). Usage: swift dmg_background.swift /path/to/background.png

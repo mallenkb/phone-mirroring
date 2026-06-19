@@ -275,29 +275,39 @@ final class ScrcpyVideoStream {
         parseAvailableVideo()
     }
 
+    /// Test seam: drives the video parser directly with a chunk of wire bytes so
+    /// the framing logic can be unit-tested without a live socket.
+    func ingestVideoBytesForTesting(_ chunk: Data) {
+        feedVideo(chunk)
+    }
+
     private func parseAvailableVideo() {
+        // Walk the buffer with a running `consumed` offset and drop the parsed
+        // prefix in a single `removeFirst` at the end, instead of an O(remaining)
+        // memmove per packet.
+        var consumed = 0
         if !streamMetaParsed {
             guard videoBuffer.count >= 64 + 4 else { return }
             let nameData = videoBuffer.prefix(64)
             let nul = nameData.firstIndex(of: 0) ?? nameData.endIndex
             pendingDeviceName = String(data: nameData.prefix(upTo: nul), encoding: .utf8) ?? ""
             pendingCodecID = readUInt32BE(at: 64)
-            videoBuffer.removeFirst(68)
+            consumed = 68
             streamMetaParsed = true
         }
 
         while true {
-            guard videoBuffer.count >= 12 else { return }
-            let firstByte = videoBuffer[videoBuffer.startIndex]
+            guard videoBuffer.count - consumed >= 12 else { break }
+            let firstByte = videoBuffer[videoBuffer.index(videoBuffer.startIndex, offsetBy: consumed)]
             if firstByte & 0x80 != 0 {
                 // Session/resize packet, header-only.
-                let width = readUInt32BE(at: 4)
-                let height = readUInt32BE(at: 8)
+                let width = readUInt32BE(at: consumed + 4)
+                let height = readUInt32BE(at: consumed + 8)
                 guard Self.isValidStreamSize(width: width, height: height) else {
                     failStream("invalid stream size \(width)x\(height)")
                     return
                 }
-                videoBuffer.removeFirst(12)
+                consumed += 12
                 if initialHeaderSent {
                     onResize?(width, height)
                 } else {
@@ -312,8 +322,8 @@ final class ScrcpyVideoStream {
                 continue
             }
 
-            let ptsFlags = readUInt64BE(at: 0)
-            let size = Int(readUInt32BE(at: 8))
+            let ptsFlags = readUInt64BE(at: consumed)
+            let size = Int(readUInt32BE(at: consumed + 8))
             guard size > 0 else {
                 failStream("invalid video packet length 0")
                 return
@@ -322,18 +332,22 @@ final class ScrcpyVideoStream {
                 failStream("video packet length \(size) exceeds \(Self.maxVideoPacketBytes)")
                 return
             }
-            guard videoBuffer.count >= 12 + size else { return }
+            guard videoBuffer.count - consumed >= 12 + size else { break }
 
             let isConfig = (ptsFlags & (UInt64(1) << 62)) != 0
             let isKey = (ptsFlags & (UInt64(1) << 61)) != 0
             let pts = isConfig ? nil : (ptsFlags & ((UInt64(1) << 61) - 1))
 
-            let payloadStart = videoBuffer.index(videoBuffer.startIndex, offsetBy: 12)
+            let payloadStart = videoBuffer.index(videoBuffer.startIndex, offsetBy: consumed + 12)
             let payloadEnd = videoBuffer.index(payloadStart, offsetBy: size)
             let payload = videoBuffer[payloadStart..<payloadEnd]
             let packet = VideoPacket(pts: pts, isConfig: isConfig, isKeyFrame: isKey, payload: Data(payload))
-            videoBuffer.removeFirst(12 + size)
+            consumed += 12 + size
             onPacket?(packet)
+        }
+
+        if consumed > 0 {
+            videoBuffer.removeFirst(consumed)
         }
     }
 

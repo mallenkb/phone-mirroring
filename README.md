@@ -1,4 +1,4 @@
-# PhoneRelay
+# Phone Relay
 
 Native SwiftUI macOS prototype for a local-first Android mirroring client.
 

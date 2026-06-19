@@ -81,10 +81,48 @@ final class CaptureFolderTests: XCTestCase {
         XCTAssertTrue(source.contains("model.chooseRecordingFolder"))
     }
 
+    func testRecordingMaxMinutesClampsToSupportedRange() {
+        XCTAssertEqual(AppModel.clampedRecordingMaxMinutes(0), AppModel.recordingMaxMinutesRange.lowerBound)
+        XCTAssertEqual(AppModel.clampedRecordingMaxMinutes(-5), AppModel.recordingMaxMinutesRange.lowerBound)
+        XCTAssertEqual(AppModel.clampedRecordingMaxMinutes(10), 10)
+        XCTAssertEqual(AppModel.clampedRecordingMaxMinutes(9999), AppModel.recordingMaxMinutesRange.upperBound)
+    }
+
+    func testRecordingMaxMinutesPersistsAndDerivesTimeLimitSeconds() {
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+
+        XCTAssertEqual(model.recordingMaxMinutes, AppModel.recordingMaxMinutesDefault)
+        XCTAssertEqual(model.recordingTimeLimitSeconds, AppModel.recordingMaxMinutesDefault * 60)
+
+        model.recordingMaxMinutes = 10
+        XCTAssertEqual(model.recordingMaxMinutes, 10)
+        XCTAssertEqual(model.recordingTimeLimitSeconds, 600)
+        XCTAssertEqual(UserDefaults.standard.integer(forKey: AppModel.recordingMaxMinutesDefaultsKey), 10)
+
+        // Out-of-range assignments are clamped, not stored verbatim.
+        model.recordingMaxMinutes = 100_000
+        XCTAssertEqual(model.recordingMaxMinutes, AppModel.recordingMaxMinutesRange.upperBound)
+    }
+
+    func testRecordingLengthLabelFormatsMinutesAndHours() {
+        XCTAssertEqual(SettingsView.recordingLengthLabel(minutes: 3), "3 min")
+        XCTAssertEqual(SettingsView.recordingLengthLabel(minutes: 30), "30 min")
+        XCTAssertEqual(SettingsView.recordingLengthLabel(minutes: 60), "1 hour")
+        XCTAssertEqual(SettingsView.recordingLengthLabel(minutes: 120), "2 hours")
+    }
+
+    func testScreenRecordingCommandPassesConfigurableTimeLimit() throws {
+        let source = try String(contentsOfFile: "Sources/PhoneRelay/AppModel.swift", encoding: .utf8)
+        XCTAssertTrue(source.contains("screenrecord --time-limit \\(timeLimitSeconds)"))
+        let settings = try String(contentsOfFile: "Sources/PhoneRelay/Views/SettingsView.swift", encoding: .utf8)
+        XCTAssertTrue(settings.contains("$model.recordingMaxMinutes"))
+    }
+
     private func clearCaptureDefaults() {
         UserDefaults.standard.removeObject(forKey: AppModel.screenshotFolderPathDefaultsKey)
         UserDefaults.standard.removeObject(forKey: AppModel.screenshotFolderBookmarkDefaultsKey)
         UserDefaults.standard.removeObject(forKey: AppModel.recordingFolderPathDefaultsKey)
         UserDefaults.standard.removeObject(forKey: AppModel.recordingFolderBookmarkDefaultsKey)
+        UserDefaults.standard.removeObject(forKey: AppModel.recordingMaxMinutesDefaultsKey)
     }
 }

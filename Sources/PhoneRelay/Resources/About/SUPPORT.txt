@@ -1,8 +1,8 @@
-PhoneRelay Support
+Phone Relay Support
 
 For support, include:
 
-- PhoneRelay version and build from the About tab.
+- Phone Relay version and build from the About tab.
 - macOS version.
 - Android version.
 - Connection type: USB, Wireless debugging, or legacy Wi-Fi adb.

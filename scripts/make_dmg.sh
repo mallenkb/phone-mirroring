@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Assembles the PhoneRelay disk image: stages the app + an Applications symlink,
+# Assembles the Phone Relay disk image: stages the app + an Applications symlink,
 # renders the themed background (scripts/dmg_background.swift), and drives Finder
 # to lay out the icons over it before converting to a compressed .dmg.
 #
-# Usage:   scripts/make_dmg.sh [path/to/PhoneRelay.app]
+# Usage:   scripts/make_dmg.sh [path/to/Phone Relay.app]
 # Env:     VOL_NAME, DMG_APP_NAME, APP_VERSION, OUT  (all optional)
 #
 # Note: laying out the window uses AppleScript to control Finder, so the first
@@ -13,13 +13,13 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_IN="${1:-$ROOT/dist/PhoneRelay.app}"
-VOL_NAME="${VOL_NAME:-PhoneRelay Installer}"
+VOL_NAME="${VOL_NAME:-Phone Relay Installer}"
 
 [ -d "$APP_IN" ] || { echo "error: app not found at $APP_IN (run scripts/package_app.sh first)"; exit 1; }
 APP_DIR="$(cd "$(dirname "$APP_IN")" && pwd)"
 APP_IN="$APP_DIR/$(basename "$APP_IN")"
 APP_BASENAME="$(basename "$APP_IN")"
-STAGED_APP_BASENAME="${DMG_APP_NAME:-$APP_BASENAME}"
+STAGED_APP_BASENAME="${DMG_APP_NAME:-Phone Relay.app}"
 [[ "$STAGED_APP_BASENAME" == *.app ]] || STAGED_APP_BASENAME="$STAGED_APP_BASENAME.app"
 
 APP_VERSION="${APP_VERSION:-$(defaults read "$APP_IN/Contents/Info" CFBundleShortVersionString 2>/dev/null || true)}"

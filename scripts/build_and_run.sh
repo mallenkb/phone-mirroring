@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="PhoneRelay"
-PRODUCT_NAME="PhoneRelay"
+APP_NAME="Phone Relay"
+PRODUCT_NAME="Phone Relay"
 # Keep local rebuilds on the same identity as the installed app. macOS Local
 # Network and Notification authorization are keyed to the app identity, so the
 # old placeholder id caused duplicate privacy entries and blocked Wi-Fi handoff.
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
-APP_VERSION="${APP_VERSION:-1.0.8}"
-BUILD_NUMBER="${BUILD_NUMBER:-15}"
+APP_VERSION="${APP_VERSION:-1.0.9}"
+BUILD_NUMBER="${BUILD_NUMBER:-16}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
@@ -158,7 +158,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>PhoneRelay for Android connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
+  <string>Phone Relay for Android connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
   <key>NSBonjourServices</key>
   <array>
     <string>_adb._tcp</string>
@@ -199,7 +199,7 @@ if command -v codesign >/dev/null 2>&1; then
   codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 fi
 
-# Launch in the foreground by default so starting PhoneRelay always brings the
+# Launch in the foreground by default so starting Phone Relay always brings the
 # app forward. Pass --background only for scripted rebuild loops that should not
 # steal focus.
 if "$BACKGROUND"; then

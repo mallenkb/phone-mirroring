@@ -47,6 +47,12 @@ final class ScrcpyServerHost: @unchecked Sendable {
 
     private let options: Options
     private var process: Process?
+    /// stdout/stderr are appended from two separate `readabilityHandler` queues
+    /// and read together from the termination handler — three threads — so all
+    /// access goes through `outputLock`. Concurrent `String` mutation would
+    /// otherwise be undefined behavior (this class is `@unchecked Sendable`, so
+    /// the compiler won't catch it).
+    private let outputLock = NSLock()
     private var stdoutBuffer = ""
     private var stderrBuffer = ""
     private var reverseInstalled = false
@@ -119,9 +125,9 @@ final class ScrcpyServerHost: @unchecked Sendable {
 
         process.terminationHandler = { [weak self] proc in
             guard let self else { return }
-            let combined = self.stdoutBuffer + self.stderrBuffer
             stdout.fileHandleForReading.readabilityHandler = nil
             stderr.fileHandleForReading.readabilityHandler = nil
+            let combined = self.outputLock.withLock { self.stdoutBuffer + self.stderrBuffer }
             onExit(proc.terminationStatus, combined)
         }
 
@@ -209,9 +215,11 @@ final class ScrcpyServerHost: @unchecked Sendable {
     }
 
     private func appendOutput(_ output: String, to keyPath: ReferenceWritableKeyPath<ScrcpyServerHost, String>) {
-        self[keyPath: keyPath] += output
-        if self[keyPath: keyPath].count > Self.maxCapturedOutputCharacters {
-            self[keyPath: keyPath] = String(self[keyPath: keyPath].suffix(Self.maxCapturedOutputCharacters))
+        outputLock.withLock {
+            self[keyPath: keyPath] += output
+            if self[keyPath: keyPath].count > Self.maxCapturedOutputCharacters {
+                self[keyPath: keyPath] = String(self[keyPath: keyPath].suffix(Self.maxCapturedOutputCharacters))
+            }
         }
     }
 

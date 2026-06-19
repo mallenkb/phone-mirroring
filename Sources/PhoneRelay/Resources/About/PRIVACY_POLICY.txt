@@ -1,16 +1,16 @@
-PhoneRelay Privacy Policy
+Phone Relay Privacy Policy
 
 Last updated: June 13, 2026
 
-PhoneRelay does not run an analytics service, advertising SDK, tracking SDK, or hosted user account system. The app does not sell personal information.
+Phone Relay does not run an analytics service, advertising SDK, tracking SDK, or hosted user account system. The app does not sell personal information.
 
 Screen Mirroring
 
-Screen mirroring video is used locally to show your Android screen on this Mac. PhoneRelay does not upload mirrored screen content.
+Screen mirroring video is used locally to show your Android screen on this Mac. Phone Relay does not upload mirrored screen content.
 
 Notifications
 
-Notification forwarding is optional and off by default. If enabled, PhoneRelay reads Android notification text through adb and posts local macOS notifications.
+Notification forwarding is optional and off by default. If enabled, Phone Relay reads Android notification text through adb and posts local macOS notifications.
 
 Screenshots and Recordings
 
@@ -18,7 +18,7 @@ Screenshots and recordings are created only when you use those controls. Capture
 
 Local Device Data
 
-PhoneRelay may store pairing details, device names, connection state, and preferences in local macOS app storage so reconnects and settings work.
+Phone Relay may store pairing details, device names, connection state, and preferences in local macOS app storage so reconnects and settings work.
 
 Permissions
 

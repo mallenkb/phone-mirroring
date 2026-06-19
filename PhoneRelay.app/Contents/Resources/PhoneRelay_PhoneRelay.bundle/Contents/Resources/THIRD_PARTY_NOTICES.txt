@@ -1,0 +1,13 @@
+Third-Party Notices
+
+Phone Relay includes and interoperates with scrcpy components for Android screen mirroring.
+
+scrcpy
+
+- Copyright: Genymobile and scrcpy contributors
+- License: Apache License 2.0
+- Included material: scrcpy source material and the bundled scrcpy-server artifact used by the macOS app.
+
+Apache License 2.0 permits use, reproduction, modification, and distribution subject to its conditions. Required notices, copyright statements, and license text must be preserved, and significant modifications must be documented when applicable.
+
+The full Apache License 2.0 text for scrcpy is bundled locally with Phone Relay in About/LICENSES/scrcpy-APACHE-2.0.txt.

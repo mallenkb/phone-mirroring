@@ -72,14 +72,14 @@ fi
 
 if [[ "$VERSION_CHANGED" = "1" ]]; then
   git add Sources/PhoneRelay/Info.plist App/PhoneRelay.xcodeproj/project.pbxproj scripts/build_and_run.sh scripts/package_app.sh
-  git commit -m "Release PhoneRelay $TAG"
+  git commit -m "Release Phone Relay $TAG"
 fi
 
 echo "Creating tag $TAG..."
-git tag -a "$TAG" -m "PhoneRelay $TAG"
+git tag -a "$TAG" -m "Phone Relay $TAG"
 
 echo "Pushing commit and tag..."
 git push origin HEAD
 git push origin "$TAG"
 
-echo "Release tag pushed. GitHub Actions will build and publish PhoneRelay-$VERSION.dmg."
+echo "Release tag pushed. GitHub Actions will build and publish Phone Relay-$VERSION.dmg."

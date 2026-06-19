@@ -20,12 +20,13 @@ enum KeyboardShortcutsCatalog {
         ]),
         ("Phone controls", [
             ShortcutReference(keys: "⌘H", action: "Home"),
-            ShortcutReference(keys: "⌘L", action: "Turn phone screen on or off"),
+            ShortcutReference(keys: "⌘L", action: "Turn phone screen off"),
             ShortcutReference(keys: "⌘[", action: "Back"),
             ShortcutReference(keys: "⌘]", action: "Recent apps"),
             ShortcutReference(keys: "⇧⌘S", action: "Take a screenshot"),
             ShortcutReference(keys: "⇧⌘R", action: "Start or stop screen recording"),
             ShortcutReference(keys: "Volume keys", action: "Phone volume up / down / mute"),
+            ShortcutReference(keys: "Media keys", action: "Play/Pause, Next, Previous track"),
         ]),
         ("Editing & clipboard", [
             ShortcutReference(keys: "⌘A", action: "Select all"),
@@ -42,6 +43,8 @@ enum KeyboardShortcutsCatalog {
             ShortcutReference(keys: "Delete", action: "Delete backward"),
             ShortcutReference(keys: "Forward Delete", action: "Delete forward"),
             ShortcutReference(keys: "Arrow keys", action: "Move the cursor or selection"),
+            ShortcutReference(keys: "Home / End", action: "Jump to start or end of line"),
+            ShortcutReference(keys: "Page Up / Down", action: "Page up or down"),
         ]),
         ("Pointer", [
             ShortcutReference(keys: "Click", action: "Tap"),

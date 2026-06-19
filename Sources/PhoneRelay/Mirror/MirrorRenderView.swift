@@ -45,6 +45,9 @@ final class MirrorRenderView: NSView {
     }
 
     let sampleBufferDisplayLayer = AVSampleBufferDisplayLayer()
+    /// After a flush we drop non-keyframe samples until the next IDR so the
+    /// decoder can resync cleanly instead of stalling on a black frame.
+    private var awaitingKeyFrameAfterFlush = false
     private let loadingView = MirrorLoadingView()
     private var aspect: CGSize = .zero
     private var trackingArea: NSTrackingArea?
@@ -134,9 +137,17 @@ final class MirrorRenderView: NSView {
         trackingArea = area
     }
 
-    func enqueue(_ sample: CMSampleBuffer) {
+    func enqueue(_ sample: CMSampleBuffer, isKeyFrame: Bool) {
         if sampleBufferDisplayLayer.status == .failed {
+            // A flush resets the decoder, which can then only resume from a
+            // keyframe (IDR). Feeding it a P-frame first leaves the screen black
+            // until the next keyframe and can re-fail the layer, so wait for one.
             sampleBufferDisplayLayer.flush()
+            awaitingKeyFrameAfterFlush = true
+        }
+        if awaitingKeyFrameAfterFlush {
+            guard isKeyFrame else { return }
+            awaitingKeyFrameAfterFlush = false
         }
         sampleBufferDisplayLayer.enqueue(sample)
         hideLoadingViewIfNeeded()

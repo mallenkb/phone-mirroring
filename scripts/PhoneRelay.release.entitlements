@@ -10,7 +10,7 @@
     -->
     <!--
       Communication Notifications: forwarded banners present the source app icon
-      as the large left avatar with PhoneRelay auto-badged in the corner (the
+      as the large left avatar with Phone Relay auto-badged in the corner (the
       iPhone-Mirroring look). RESTRICTED: only honored when authorized by a
       provisioning profile from a paid Apple Developer account with the
       "Communication Notifications" capability on the App ID. Without that, the

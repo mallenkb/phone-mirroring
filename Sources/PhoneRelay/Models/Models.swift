@@ -79,6 +79,14 @@ enum ConnectionState: String {
     case usbAuthorizationRequired = "USB Authorization Required"
 }
 
+/// An app Phone Relay has seen post a notification, used to build the per-app
+/// mute list in Settings.
+struct NotificationAppInfo: Identifiable, Equatable, Codable {
+    let package: String
+    var label: String
+    var id: String { package }
+}
+
 struct MirrorDevice: Identifiable, Equatable {
     let id: String
     var name: String

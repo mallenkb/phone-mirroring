@@ -305,7 +305,12 @@ enum Logger {
         handle.write(data)
         if handle.offsetInFile > maxLogBytes {
             handle.seek(toFileOffset: handle.offsetInFile - maxLogBytes / 2)
-            let tail = handle.readDataToEndOfFile()
+            var tail = handle.readDataToEndOfFile()
+            // Drop the partial first line so the trimmed log starts on a clean
+            // boundary instead of mid-line (or mid-UTF-8-codepoint).
+            if let newline = tail.firstIndex(of: 0x0A) {
+                tail = tail.subdata(in: tail.index(after: newline)..<tail.endIndex)
+            }
             handle.truncateFile(atOffset: 0)
             handle.seek(toFileOffset: 0)
             handle.write(tail)

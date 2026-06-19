@@ -11,6 +11,11 @@ struct FigmaMirrorExperienceView: View {
         case wirelessPairing
     }
 
+    private enum WirelessSheet {
+        case wifiOnly
+        case wirelessDebugging
+    }
+
     @EnvironmentObject private var model: AppModel
     @State private var connectionStep: ConnectionStep = .chooseMethod
     /// The row the user tapped from the chooser. While set, the chooser stays
@@ -19,6 +24,9 @@ struct FigmaMirrorExperienceView: View {
     @State private var inlineConnectingTransport: AppModel.ConnectionLoadingTransport?
     @State private var usbAvailabilityBeforeConnect = false
     @State private var wifiAvailabilityBeforeConnect = false
+    @State private var showsConnectionHelpSheet = false
+    @State private var activeWirelessSheet: WirelessSheet?
+    @State private var isWirelessDebuggingSheetContentVisible = false
     private let phoneAspect: CGFloat = MirrorContentWindowController.defaultMirrorAspect
     private let edgeBleed: CGFloat = 2
     private var referenceHeight: CGFloat { AppModel.onboardingWindowSize.height }
@@ -98,7 +106,9 @@ struct FigmaMirrorExperienceView: View {
             syncPreferredConnectionStep()
         }
         .onReceive(qrRefreshTimer) { _ in
-            guard connectionStep == .wirelessPairing, !isConnecting else { return }
+            guard activeWirelessSheet == .wirelessDebugging || connectionStep == .wirelessPairing,
+                  !isConnecting
+            else { return }
             model.restartQRCodePairingSession()
         }
         .onDisappear {
@@ -114,23 +124,8 @@ struct FigmaMirrorExperienceView: View {
     @ViewBuilder
     private var designSurface: some View {
         FigmaPhoneFrame {
-            if connectionStep == .chooseMethod {
-                onboardingContent
-            } else if model.shouldShowConnectionLoadingSurface && inlineConnectingTransport == nil {
-                connectionLoadingContent
-            } else {
-                onboardingContent
-            }
+            onboardingContent
         }
-    }
-
-    private var connectionLoadingContent: some View {
-        MirrorLoadingSurface(
-            statusText: model.connectionLoadingStatusText,
-            deviceName: model.connectionLoadingDeviceTitle,
-            cornerRadius: MirrorContentWindowController.onboardingCornerRadius(),
-            repeatsProgress: true
-        )
     }
 
     private var onboardingContent: some View {
@@ -138,22 +133,23 @@ struct FigmaMirrorExperienceView: View {
             let scale = min(1, max(0.5, min(proxy.size.height / 695.2727, proxy.size.width / 320)))
             let contentWidth = min(proxy.size.width - 32 * scale, maxColumnWidth)
 
-            Group {
+            ZStack {
                 if connectionStep == .chooseMethod {
-                    VStack(spacing: 23.273 * scale) {
+                    VStack(spacing: 0) {
                         connectionChoiceScreen(width: contentWidth, scale: scale)
                             .frame(width: contentWidth)
                             .frame(maxHeight: .infinity)
-
-                        bottomStatusPill(width: contentWidth, scale: scale)
-                            .transaction { transaction in
-                                transaction.animation = nil
-                            }
                     }
                     .frame(width: contentWidth)
                     .padding(.top, 24 * scale)
-                    .padding(.bottom, 16 * scale)
+                    .padding(.bottom, 66 * scale)
                     .frame(width: proxy.size.width, height: proxy.size.height)
+                    .transition(
+                        .asymmetric(
+                            insertion: .move(edge: .leading).combined(with: .opacity),
+                            removal: .move(edge: .leading).combined(with: .opacity)
+                        )
+                    )
                 } else {
                     ZStack(alignment: .topLeading) {
                         ScrollView(.vertical, showsIndicators: false) {
@@ -171,20 +167,37 @@ struct FigmaMirrorExperienceView: View {
                         fixedWirelessBackButton(width: contentWidth, scale: scale)
                             .padding(.top, 24 * scale)
                             .frame(width: proxy.size.width, alignment: .center)
-
-                        VStack {
-                            Spacer()
-                            bottomStatusPill(width: contentWidth, scale: scale)
-                                .transaction { transaction in
-                                    transaction.animation = nil
-                                }
-                                .padding(.bottom, 16 * scale)
-                        }
-                        .frame(width: proxy.size.width, height: proxy.size.height)
                     }
+                    .transition(
+                        .asymmetric(
+                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                            removal: .move(edge: .trailing).combined(with: .opacity)
+                        )
+                    )
+                }
+
+                VStack {
+                    Spacer()
+                    bottomStatusPill(width: contentWidth, scale: scale)
+                        .transaction { transaction in
+                            transaction.animation = nil
+                        }
+                        .padding(.bottom, 16 * scale)
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .allowsHitTesting(false)
+            }
+            .clipped()
+            .animation(.smooth(duration: 0.38, extraBounce: 0.04), value: connectionStep)
+            .overlay {
+                if showsConnectionHelpSheet {
+                    connectionHelpOverlay(scale: scale)
+                } else if let activeWirelessSheet {
+                    wirelessSheetOverlay(activeWirelessSheet, width: contentWidth, scale: scale)
                 }
             }
-            .animation(.smooth(duration: 0.34, extraBounce: 0.05), value: connectionStep)
+            .animation(.easeOut(duration: 0.2), value: showsConnectionHelpSheet)
+            .animation(.easeOut(duration: 0.2), value: activeWirelessSheet != nil)
             .task(id: model.activeError?.id) {
                 guard let error = model.activeError else { return }
                 do {
@@ -215,43 +228,59 @@ struct FigmaMirrorExperienceView: View {
                     .frame(width: width)
             }
 
-            VStack(spacing: 4 * scale) {
-                connectionChoiceRow(
-                    iconName: "cable.connector",
-                    title: "Connect with USB",
-                    showsProgress: isUSBButtonBusy,
-                    isDisabled: isChooserButtonDisabled,
-                    isAvailable: effectiveUSBConnectionAvailable,
-                    width: width,
-                    scale: scale,
-                    action: {
-                        usbAvailabilityBeforeConnect = model.isUSBConnectionAvailable
-                        wifiAvailabilityBeforeConnect = model.isWirelessConnectionAvailable
-                        inlineConnectingTransport = .usb
-                        model.connectViaUSB()
-                    }
-                )
-
-                connectionChoiceRow(
-                    iconName: "wifi",
-                    title: "Connect wirelessly",
-                    showsProgress: isWirelessButtonBusy,
-                    isDisabled: isChooserButtonDisabled,
-                    isAvailable: effectiveWiFiConnectionAvailable,
-                    width: width,
-                    scale: scale,
-                    action: {
-                        usbAvailabilityBeforeConnect = model.isUSBConnectionAvailable
-                        wifiAvailabilityBeforeConnect = model.isWirelessConnectionAvailable
-                        if model.hasSavedWirelessConnection {
-                            inlineConnectingTransport = .wifi
-                            model.reconnectOverWiFi(inlineUntilConnected: true)
-                        } else {
-                            navigate(to: .wirelessPairing)
-                            model.ensureQRCodePairingSession()
+            VStack(spacing: 18 * scale) {
+                VStack(spacing: 4 * scale) {
+                    connectionChoiceRow(
+                        iconName: "cable.connector",
+                        resourceIconName: "usb-cable",
+                        title: "Connect with USB",
+                        subtitle: "Cable connection.",
+                        showsProgress: isUSBButtonBusy,
+                        isDisabled: isChooserButtonDisabled,
+                        isAvailable: effectiveUSBConnectionAvailable,
+                        width: width,
+                        scale: scale,
+                        action: {
+                            usbAvailabilityBeforeConnect = model.isUSBConnectionAvailable
+                            wifiAvailabilityBeforeConnect = model.isWirelessConnectionAvailable
+                            inlineConnectingTransport = .usb
+                            model.connectViaUSB()
                         }
-                    }
-                )
+                    )
+
+                    connectionChoiceRow(
+                        iconName: "wifi",
+                        title: "Connect wirelessly",
+                        subtitle: "No cable. Use WiFi IP or QR pairing.",
+                        showsProgress: isWirelessButtonBusy,
+                        isDisabled: isChooserButtonDisabled,
+                        isAvailable: effectiveWiFiConnectionAvailable,
+                        width: width,
+                        scale: scale,
+                        action: {
+                            usbAvailabilityBeforeConnect = model.isUSBConnectionAvailable
+                            wifiAvailabilityBeforeConnect = model.isWirelessConnectionAvailable
+                            if model.hasSavedWirelessConnection {
+                                inlineConnectingTransport = .wifi
+                                model.reconnectOverWiFi(inlineUntilConnected: true)
+                            } else if AppModel.normalizedManualADBTarget(model.manualADBTarget) != nil {
+                                inlineConnectingTransport = .wifi
+                                model.connectManualADBTarget()
+                            } else {
+                                navigate(to: .wirelessPairing)
+                                model.ensureQRCodePairingSession()
+                            }
+                        }
+                    )
+                }
+
+                Button(action: showConnectionHelpSheet) {
+                    Text("Can't connect?")
+                        .font(.system(size: 14 * scale, weight: .regular))
+                        .foregroundStyle(accent)
+                        .underline()
+                }
+                .buttonStyle(.plain)
             }
         }
         .frame(width: width)
@@ -260,9 +289,9 @@ struct FigmaMirrorExperienceView: View {
 
     private func wirelessPairingScreen(width: CGFloat, scale: CGFloat) -> some View {
         VStack(spacing: 23.273 * scale) {
-            // "Message and description" — centered as a group (Figma: flex-1,
-            // gap 16 between the header, QR panel, pairing-code fallback, and
-            // direct connect row).
+            // "Message and description" — centered as a group. WiFi Only is the
+            // first wireless path; Wireless Debugging QR pairing is the fallback
+            // when no legacy Wi-Fi adb listener is available yet.
             VStack(spacing: 16 * scale) {
                 VStack(spacing: 11.636 * scale) {
                     Image(systemName: "wifi")
@@ -272,35 +301,27 @@ struct FigmaMirrorExperienceView: View {
 
                     VStack(spacing: 8 * scale) {
                         VStack(spacing: 2 * scale) {
-                            Text("Scan QR Code")
+                            Text("Connect with Wi-Fi IP Only")
                                 .font(.system(size: 14 * scale, weight: .bold))
                                 .foregroundStyle(.white)
 
-                            Text("Open Developer options, turn on Wireless debugging, then tap Pair with QR code.")
+                            Text("No cable. Enter phone IP or pair with QR code.")
                                 .font(.system(size: 12 * scale, weight: .regular))
                                 .foregroundStyle(.white.opacity(0.7))
                                 .multilineTextAlignment(.center)
                                 .frame(width: width)
                         }
-
-                        Button(action: openDeveloperOptionsHelp) {
-                            Text("Need help finding developer options?")
-                                .font(.system(size: 12 * scale, weight: .regular))
-                                .foregroundStyle(accent)
-                                .underline()
-                        }
-                        .buttonStyle(.plain)
                     }
                 }
 
-                qrPairingPanel(panelSize: qrPanelSize * scale, codeSize: qrPanelSize * 0.8985 * scale)
+                manualADBTargetRow(width: width - 32 * scale, scale: scale)
 
                 Text("or")
                     .font(.system(size: 12 * scale, weight: .regular))
                     .foregroundStyle(.white.opacity(0.5))
                     .frame(width: width)
 
-                manualADBTargetRow(width: width, scale: scale)
+                wirelessDebuggingQRCodeSection(width: width, scale: scale)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -342,9 +363,44 @@ struct FigmaMirrorExperienceView: View {
         NSWorkspace.shared.open(url)
     }
 
+    private func wirelessDebuggingQRCodeSection(width: CGFloat, scale: CGFloat) -> some View {
+        let sheetPadding = 16 * scale
+        let panelSize = min(qrPanelSize * scale, width - sheetPadding * 2)
+        return VStack(spacing: 12 * scale) {
+            VStack(spacing: 4 * scale) {
+                Text("Wireless Debugging (scan QR)")
+                    .font(.system(size: 14 * scale, weight: .bold))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+
+                Text("On your phone: Settings → Developer options → Wireless debugging → Pair device with QR code.")
+                    .font(.system(size: 12 * scale, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.68))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+            }
+
+            qrPairingPanel(panelSize: panelSize, codeSize: panelSize * 0.8985)
+
+            Button(action: openDeveloperOptionsHelp) {
+                Text("Need help finding developer options?")
+                    .font(.system(size: 12 * scale, weight: .regular))
+                    .foregroundStyle(accent)
+                    .underline()
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, sheetPadding)
+        .padding(.top, 4 * scale)
+        .padding(.bottom, 16 * scale)
+        .frame(width: width)
+    }
+
     private func connectionChoiceRow(
         iconName: String,
+        resourceIconName: String? = nil,
         title: String,
+        subtitle: String,
         showsProgress: Bool,
         isDisabled: Bool,
         isAvailable: Bool,
@@ -357,17 +413,29 @@ struct FigmaMirrorExperienceView: View {
             action()
         }) {
             HStack(spacing: 8.727 * scale) {
-                // 32pt icon slot — transparent in the design (the row itself
-                // carries the tinted background), the glyph just sits on it.
-                Image(systemName: iconName)
-                    .font(.system(size: 16 * scale, weight: .regular))
-                    .foregroundStyle((isAvailable || showsProgress) ? Self.connectionOnlineGreen : .white)
-                    .frame(width: 32 * scale, height: 32 * scale)
+                connectionChoiceIcon(
+                    systemName: iconName,
+                    resourceName: resourceIconName,
+                    isAvailable: isAvailable || showsProgress,
+                    scale: scale
+                )
+                .frame(width: 32 * scale, height: 32 * scale)
 
-                Text(title)
-                    .font(.system(size: 14 * scale, weight: .regular))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 2 * scale) {
+                    Text(title)
+                        .font(.system(size: 14 * scale, weight: .regular))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+
+                    Text(subtitle)
+                        .font(.system(size: 12 * scale, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.62))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
 
                 // Right-hand affordance: a spinner while this row's action is in
                 // flight, otherwise the chevron.
@@ -386,6 +454,7 @@ struct FigmaMirrorExperienceView: View {
                 .frame(width: 17.455 * scale, height: 17.455 * scale)
             }
             .padding(8 * scale)
+            .frame(minHeight: 62 * scale)
             .frame(width: width)
             .background(
                 RoundedRectangle(cornerRadius: 12 * scale, style: .continuous)
@@ -394,6 +463,361 @@ struct FigmaMirrorExperienceView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func connectionChoiceIcon(
+        systemName: String,
+        resourceName: String?,
+        isAvailable: Bool,
+        scale: CGFloat
+    ) -> some View {
+        if let resourceName,
+           let image = Self.resourceImage(named: resourceName) {
+            Image(nsImage: image)
+                .resizable()
+                .renderingMode(.template)
+                .scaledToFit()
+                .foregroundStyle(isAvailable ? Self.connectionOnlineGreen : .white)
+                .frame(width: 22 * scale, height: 24 * scale)
+        } else {
+            Image(systemName: systemName)
+                .font(.system(size: 16 * scale, weight: .regular))
+                .foregroundStyle(isAvailable ? Self.connectionOnlineGreen : .white)
+        }
+    }
+
+    private static func resourceImage(named name: String) -> NSImage? {
+        guard let url = Bundle.module.url(forResource: name, withExtension: "svg") else { return nil }
+        return NSImage(contentsOf: url)
+    }
+
+    private func showWirelessSheet(_ sheet: WirelessSheet) {
+        if sheet == .wirelessDebugging {
+            isWirelessDebuggingSheetContentVisible = false
+        }
+        withAnimation(.smooth(duration: 0.28, extraBounce: 0.02)) {
+            activeWirelessSheet = sheet
+        }
+        if sheet == .wirelessDebugging {
+            model.ensureQRCodePairingSession()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                guard activeWirelessSheet == .wirelessDebugging else { return }
+                withAnimation(.smooth(duration: 0.28, extraBounce: 0.02)) {
+                    isWirelessDebuggingSheetContentVisible = true
+                }
+            }
+        }
+    }
+
+    private func dismissWirelessSheet() {
+        withAnimation(.smooth(duration: 0.24, extraBounce: 0.02)) {
+            activeWirelessSheet = nil
+            isWirelessDebuggingSheetContentVisible = false
+        }
+        model.stopQRCodePairingSession()
+    }
+
+    private func wirelessSheetOverlay(_ sheet: WirelessSheet, width: CGFloat, scale: CGFloat) -> some View {
+        ZStack(alignment: .bottom) {
+            Color.black.opacity(0.34)
+                .onTapGesture {
+                    dismissWirelessSheet()
+                }
+                .transition(.opacity)
+
+            switch sheet {
+            case .wifiOnly:
+                wifiOnlySheet(width: width, scale: scale)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            case .wirelessDebugging:
+                wirelessDebuggingSheet(width: width, scale: scale)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+    }
+
+    private func wifiOnlySheet(width: CGFloat, scale: CGFloat) -> some View {
+        bottomSheetChrome(scale: scale) {
+            VStack(alignment: .leading, spacing: 20 * scale) {
+                bottomSheetHeader(
+                    title: "Connect via WiFi only",
+                    subtitle: "Enter the phone Wifi IP address only.",
+                    scale: scale
+                )
+
+                manualADBTargetRow(width: width, scale: scale)
+
+                Button {
+                    showWirelessSheet(.wirelessDebugging)
+                } label: {
+                    HStack(spacing: 12 * scale) {
+                        connectionChoiceIcon(
+                            systemName: "qrcode.viewfinder",
+                            resourceName: nil,
+                            isAvailable: effectiveWiFiConnectionAvailable,
+                            scale: scale
+                        )
+                        .frame(width: 32 * scale, height: 32 * scale)
+
+                        VStack(alignment: .leading, spacing: 2 * scale) {
+                            Text("Connect via Wireless Debugging")
+                                .font(.system(size: 14 * scale, weight: .regular))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+
+                            Text("More reliable WiFi connection. Pair with QR code.")
+                                .font(.system(size: 12 * scale, weight: .regular))
+                                .foregroundStyle(.white.opacity(0.62))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.78)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .layoutPriority(1)
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13 * scale, weight: .regular))
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                    .padding(8 * scale)
+                    .frame(minHeight: 62 * scale)
+                    .frame(maxWidth: .infinity)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12 * scale, style: .continuous)
+                            .fill(Color.white.opacity(0.05))
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func wirelessDebuggingSheet(width: CGFloat, scale: CGFloat) -> some View {
+        let sheetPadding = 16 * scale
+        let panelSize = min(qrPanelSize * scale, width - sheetPadding * 2)
+        return bottomSheetChrome(scale: scale) {
+            VStack(spacing: 14 * scale) {
+                bottomSheetHeader(
+                    title: "Connect via Wireless Debugging",
+                    subtitle: "Open Settings → Developer options → Wireless debugging, tap Pair device with QR code, then scan the QR code below.",
+                    scale: scale
+                )
+
+                Button(action: openDeveloperOptionsHelp) {
+                    Text("Need help finding developer options?")
+                        .font(.system(size: 12 * scale, weight: .regular))
+                        .foregroundStyle(accent)
+                        .underline()
+                }
+                .buttonStyle(.plain)
+
+                qrPairingPanel(panelSize: panelSize, codeSize: panelSize * 0.8985)
+            }
+            .opacity(isWirelessDebuggingSheetContentVisible ? 1 : 0)
+            .offset(y: isWirelessDebuggingSheetContentVisible ? 0 : 12 * scale)
+            .scaleEffect(isWirelessDebuggingSheetContentVisible ? 1 : 0.985, anchor: .top)
+        }
+    }
+
+    private func bottomSheetChrome<Content: View>(
+        scale: CGFloat,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 20 * scale) {
+            VStack(alignment: .center, spacing: 8 * scale) {
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(0.28))
+                    .frame(width: 65 * scale, height: 6.4 * scale)
+            }
+            .frame(maxWidth: .infinity)
+
+            content()
+        }
+        .padding(.horizontal, 16 * scale)
+        .padding(.top, 12 * scale)
+        .padding(.bottom, 24 * scale)
+        .background(
+            TopRoundedRectangle(radius: 28 * scale)
+                .fill(onboardingDeepCyan)
+                .overlay(
+                    TopRoundedRectangle(radius: 28 * scale)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                )
+        )
+        .padding(.horizontal, 0)
+        .padding(.bottom, 0)
+    }
+
+    private func bottomSheetHeader(title: String, subtitle: String, scale: CGFloat) -> some View {
+        VStack(alignment: .center, spacing: 6 * scale) {
+            Text(title)
+                .font(.system(size: 18 * scale, weight: .semibold))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+
+            Text(subtitle)
+                .font(.system(size: 14 * scale, weight: .regular))
+                .foregroundStyle(.white.opacity(0.62))
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func showConnectionHelpSheet() {
+        withAnimation(.smooth(duration: 0.28, extraBounce: 0.02)) {
+            showsConnectionHelpSheet = true
+        }
+    }
+
+    private func dismissConnectionHelpSheet() {
+        withAnimation(.smooth(duration: 0.24, extraBounce: 0.02)) {
+            showsConnectionHelpSheet = false
+        }
+    }
+
+    private func connectionHelpOverlay(scale: CGFloat) -> some View {
+        ZStack(alignment: .bottom) {
+            Color.black.opacity(0.34)
+                .onTapGesture {
+                    dismissConnectionHelpSheet()
+                }
+                .transition(.opacity)
+
+            connectionHelpSheet(scale: scale)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    private func connectionHelpSheet(scale: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 20 * scale) {
+            VStack(alignment: .center, spacing: 8 * scale) {
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(0.28))
+                    .frame(width: 65 * scale, height: 6.4 * scale)
+
+                VStack(alignment: .center, spacing: 6 * scale) {
+                    Text("Can't connect?")
+                        .font(.system(size: 18 * scale, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+
+                    Text("Check the setup for each connection method.")
+                        .font(.system(size: 14 * scale, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.62))
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .frame(maxWidth: .infinity)
+
+            VStack(alignment: .leading, spacing: 16 * scale) {
+                connectionHelpStep(
+                    number: 1,
+                    text: stepText(
+                        lead: "USB debugging:",
+                        body: " open Settings → Developer options, turn on USB debugging, reconnect the cable, then tap ",
+                        emphasis: "Allow",
+                        suffix: " on your phone.",
+                        scale: scale
+                    ),
+                    scale: scale
+                )
+                connectionHelpStep(
+                    number: 2,
+                    text: stepText(
+                        lead: "Wi‑Fi IP only:",
+                        body: " open your phone’s Wi‑Fi details or Advanced settings, find the IP address, then enter it here.",
+                        emphasis: nil,
+                        suffix: "",
+                        scale: scale
+                    ),
+                    scale: scale
+                )
+                connectionHelpStep(
+                    number: 3,
+                    text: stepText(
+                        lead: "Wireless debugging QR:",
+                        body: " open Developer options → Wireless debugging, tap Pair device with QR code, then scan the QR code.",
+                        emphasis: nil,
+                        suffix: "",
+                        scale: scale
+                    ),
+                    scale: scale
+                )
+                connectionHelpStep(
+                    number: 4,
+                    text: stepText(
+                        lead: "Still stuck:",
+                        body: " reseat the cable, restart the desktop app, then try connecting again.",
+                        emphasis: nil,
+                        suffix: "",
+                        scale: scale
+                    ),
+                    scale: scale
+                )
+            }
+
+            Button(action: dismissConnectionHelpSheet) {
+                Text("Close")
+                    .font(.system(size: 14 * scale, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44 * scale)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12 * scale, style: .continuous)
+                            .fill(Color.white.opacity(0.05))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12 * scale, style: .continuous)
+                                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                            )
+                    )
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 2 * scale)
+        }
+        .padding(.horizontal, 16 * scale)
+        .padding(.top, 12 * scale)
+        .padding(.bottom, 24 * scale)
+        .background(
+            TopRoundedRectangle(radius: 28 * scale)
+                .fill(onboardingDeepCyan)
+                .overlay(
+                    TopRoundedRectangle(radius: 28 * scale)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                )
+        )
+        .padding(.horizontal, 0)
+        .padding(.bottom, 0)
+    }
+
+    private func connectionHelpStep(number: Int, text: Text, scale: CGFloat) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12 * scale) {
+            Text("\(number)")
+                .font(.system(size: 12 * scale, weight: .semibold))
+                .foregroundStyle(accent)
+                .frame(width: 24 * scale, height: 24 * scale)
+                .background(Circle().fill(Color.white.opacity(0.1)))
+
+            text
+                .font(.system(size: 14 * scale, weight: .regular))
+                .foregroundStyle(.white.opacity(0.68))
+                .lineSpacing(1.5 * scale)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func stepText(
+        lead: String,
+        body: String,
+        emphasis: String?,
+        suffix: String,
+        scale: CGFloat
+    ) -> Text {
+        var text = Text(lead).fontWeight(.bold) + Text(body)
+        if let emphasis {
+            text = text + Text(emphasis).fontWeight(.bold)
+        }
+        return text + Text(suffix)
     }
 
     private func iconButton(systemName: String, scale: CGFloat, action: @escaping () -> Void) -> some View {
@@ -477,6 +901,7 @@ struct FigmaMirrorExperienceView: View {
                     .font(.system(size: 14 * scale, weight: .regular))
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
                     .onSubmit {
                         model.connectManualADBTarget()
                     }
@@ -497,33 +922,38 @@ struct FigmaMirrorExperienceView: View {
                     }
                     .foregroundStyle(connectEnabled || isConnecting ? onboardingDeepCyan : Color.white.opacity(0.5))
                     .padding(.horizontal, 12 * scale)
+                    .frame(minWidth: (isConnecting ? 106 : 82) * scale)
                     .frame(height: 40 * scale)
                     .background(
                         RoundedRectangle(cornerRadius: 8 * scale, style: .continuous)
                             .fill(connectEnabled || isConnecting ? cyan400 : Color.white.opacity(0.2))
                     )
                 }
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(2)
                 .buttonStyle(.plain)
                 .disabled(!connectEnabled || isConnecting)
             }
             .padding(.leading, 16 * scale)
             .padding(.trailing, 4 * scale)
             .padding(.vertical, 4 * scale)
-            .frame(width: width, height: 48 * scale)
+            .frame(maxWidth: .infinity)
+            .frame(height: 48 * scale)
             .background(
                 RoundedRectangle(cornerRadius: 12 * scale, style: .continuous)
                     .fill(Color.white.opacity(0.05))
             )
 
-            Text("Enter the phone IP only. The app uses port 5555 automatically.")
+            Text("Enter the phone Wifi IP address only")
                 .font(.system(size: 11 * scale, weight: .regular))
                 .foregroundStyle(.white.opacity(0.58))
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(width: width - 24 * scale, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 12 * scale)
+
         }
-        .frame(width: width)
+        .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
     }
 
@@ -593,6 +1023,29 @@ struct FigmaPhoneFrame<Content: View>: View {
             content
         }
         .clipShape(frameShape)
+    }
+}
+
+private struct TopRoundedRectangle: Shape {
+    let radius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let radius = min(radius, rect.width / 2, rect.height / 2)
+        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + radius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + radius, y: rect.minY),
+            control: CGPoint(x: rect.minX, y: rect.minY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.minY + radius),
+            control: CGPoint(x: rect.maxX, y: rect.minY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.closeSubpath()
+        return path
     }
 }
 
@@ -944,7 +1397,7 @@ struct FirstRunOnboardingView: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canContinue)
                 .opacity(canContinue ? 1 : 0.45)
-                .help(canContinue ? "Start using PhoneRelay" : "Allow Local Network to continue")
+                .help(canContinue ? "Start using Phone Relay" : "Allow Local Network to continue")
             }
         }
         .overlay(stepIndicator)
@@ -1029,8 +1482,8 @@ private struct QuitDotButton: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
-        .help("Quit PhoneRelay")
-        .accessibilityLabel("Quit PhoneRelay")
+        .help("Quit Phone Relay")
+        .accessibilityLabel("Quit Phone Relay")
     }
 }
 

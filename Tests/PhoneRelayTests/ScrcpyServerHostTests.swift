@@ -71,6 +71,13 @@ final class ScrcpyServerHostTests: XCTestCase {
         XCTAssertTrue(MirrorSession.shouldTurnScreenOff(now: Date(timeIntervalSince1970: 131), deadline: deadline))
     }
 
+    func testManualScreenPowerShortcutUsesScrcpyDisplayOffMessage() {
+        XCTAssertEqual(
+            Array(ScrcpyControlChannel.displayPowerMessage(.off)),
+            [10, 0]
+        )
+    }
+
     func testDefaultServerArgumentsDisableAudioForStableNativeMirrorStartup() {
         let arguments = ScrcpyServerHost.serverArguments(for: .init(
             scid: 0x1234ABCD,
