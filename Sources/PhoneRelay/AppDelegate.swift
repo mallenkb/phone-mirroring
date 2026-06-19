@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CryptoKit
 import SwiftUI
 import UserNotifications
 
@@ -1119,11 +1120,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
             switch alert.runModal() {
             case .alertFirstButtonReturn:
-                guard let downloadURL = release.primaryDownloadURL else {
+                guard let asset = release.primaryDownloadAsset else {
                     NSWorkspace.shared.open(release.htmlURL)
                     return
                 }
-                startUpdateDownloadWindow(release: release, downloadURL: downloadURL)
+                startUpdateDownloadWindow(release: release, asset: asset)
             default:
                 break
             }
@@ -1146,11 +1147,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         var dmgURL: URL?
     }
 
-    private func startUpdateDownloadWindow(release: ReleaseMetadata, downloadURL: URL) {
+    private func startUpdateDownloadWindow(release: ReleaseMetadata, asset: ReleaseAsset) {
         showUpdateDownloadWindow(release: release)
         updateDownloadTask?.cancel()
         updateDownloadTask = Task { [weak self] in
-            await self?.runUpdateDownload(release: release, downloadURL: downloadURL)
+            await self?.runUpdateDownload(release: release, asset: asset)
         }
     }
 
@@ -1263,13 +1264,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         updateDownloadActionButton?.keyEquivalent = ""
     }
 
-    private func runUpdateDownload(release: ReleaseMetadata, downloadURL: URL) async {
+    private func runUpdateDownload(release: ReleaseMetadata, asset: ReleaseAsset) async {
         defer { updateDownloadTask = nil }
 
         do {
             let downloadedDMG = try await Self.downloadUpdate(
-                from: downloadURL,
+                from: asset.browserDownloadURL,
                 version: release.versionString,
+                expectedSize: asset.size,
+                expectedDigest: asset.digest,
                 progress: { [weak self] fraction in
                     Task { @MainActor [weak self] in
                         self?.updateDownloadProgress(fraction)
@@ -1423,10 +1426,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
         }
 
-        var primaryDownloadURL: URL? {
-            assets.first { $0.name == "PhoneRelay-\(versionString).dmg" }?.browserDownloadURL
-                ?? assets.first { $0.name == "PhoneRelay.dmg" }?.browserDownloadURL
-                ?? assets.first { $0.name.hasPrefix("PhoneRelay") && $0.name.hasSuffix(".dmg") }?.browserDownloadURL
+        var primaryDownloadAsset: ReleaseAsset? {
+            assets.first { $0.name == "PhoneRelay-\(versionString).dmg" }
+                ?? assets.first { $0.name == "PhoneRelay.dmg" }
+                ?? assets.first { $0.name.hasPrefix("PhoneRelay") && $0.name.hasSuffix(".dmg") }
         }
 
         private enum CodingKeys: String, CodingKey {
@@ -1469,11 +1472,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private struct ReleaseAsset: Decodable {
         var name: String
         var browserDownloadURL: URL
+        var size: Int64?
+        var digest: String?
 
         private enum CodingKeys: String, CodingKey {
             case name
             case browserDownloadURL = "browser_download_url"
             case url
+            case size
+            case digest
         }
 
         init(from decoder: Decoder) throws {
@@ -1481,12 +1488,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             name = try container.decode(String.self, forKey: .name)
             browserDownloadURL = try container.decodeIfPresent(URL.self, forKey: .browserDownloadURL)
                 ?? container.decode(URL.self, forKey: .url)
+            size = try container.decodeIfPresent(Int64.self, forKey: .size)
+            digest = try container.decodeIfPresent(String.self, forKey: .digest)
         }
     }
 
     private enum UpdateCheckError: LocalizedError {
         case invalidStatusCode(Int)
         case appNotBundled
+        case invalidDownloadedDiskImage(String)
         case missingMountedApp
         case processFailed(command: String, status: Int32, output: String)
         case fileOperationFailed(String)
@@ -1497,6 +1507,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                 "The update service returned HTTP \(statusCode)."
             case .appNotBundled:
                 "Automatic installation only works when PhoneRelay is running from a .app bundle."
+            case let .invalidDownloadedDiskImage(message):
+                "The downloaded update is not a valid disk image. \(message)"
             case .missingMountedApp:
                 "The downloaded disk image did not contain PhoneRelay.app."
             case let .processFailed(command, status, output):
@@ -1524,6 +1536,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private nonisolated static func downloadUpdate(
         from url: URL,
         version: String,
+        expectedSize: Int64?,
+        expectedDigest: String?,
         progress: @escaping @Sendable (Double?) -> Void
     ) async throws -> URL {
         let downloadsDirectory = try FileManager.default.url(
@@ -1534,7 +1548,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         )
         let destinationURL = downloadsDirectory.appendingPathComponent("PhoneRelay-\(version).dmg")
         let downloader = UpdateDownloader(destinationURL: destinationURL, onProgress: progress)
-        return try await downloader.download(from: url)
+        let downloadedURL = try await downloader.download(from: url)
+        do {
+            try validateDownloadedUpdate(downloadedURL, expectedSize: expectedSize, expectedDigest: expectedDigest)
+        } catch {
+            try? FileManager.default.removeItem(at: downloadedURL)
+            throw error
+        }
+        return downloadedURL
     }
 
     /// Streams an update DMG to disk with a `URLSessionDownloadTask`. The earlier
@@ -1641,6 +1662,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             throw UpdateCheckError.appNotBundled
         }
 
+        try validateDownloadedUpdate(dmgURL, expectedSize: nil, expectedDigest: nil)
         let mountURL = try attachDiskImage(dmgURL)
         defer {
             _ = try? runProcess("/usr/bin/hdiutil", arguments: ["detach", mountURL.path, "-quiet"])
@@ -1651,7 +1673,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             at: mountURL,
             includingPropertiesForKeys: nil
         ).filter { url in
-            url.pathExtension == "app" && url.lastPathComponent.hasPrefix("PhoneRelay")
+            isPhoneRelayAppBundle(url)
         }
         guard let stagedAppURL = mountedApps.first else {
             throw UpdateCheckError.missingMountedApp
@@ -1713,6 +1735,55 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             try? FileManager.default.removeItem(at: mountURL)
             throw error
         }
+    }
+
+    private nonisolated static func isPhoneRelayAppBundle(_ url: URL) -> Bool {
+        guard url.pathExtension == "app" else { return false }
+        let infoURL = url.appendingPathComponent("Contents/Info.plist")
+        guard let info = NSDictionary(contentsOf: infoURL) as? [String: Any] else {
+            return url.deletingPathExtension().lastPathComponent.replacingOccurrences(of: " ", with: "")
+                .localizedCaseInsensitiveContains("PhoneRelay")
+        }
+        return info["CFBundleIdentifier"] as? String == "com.mallenkb.PhoneRelay"
+    }
+
+    private nonisolated static func validateDownloadedUpdate(
+        _ dmgURL: URL,
+        expectedSize: Int64?,
+        expectedDigest: String?
+    ) throws {
+        guard FileManager.default.fileExists(atPath: dmgURL.path) else {
+            throw UpdateCheckError.invalidDownloadedDiskImage("The file no longer exists. Download the update again.")
+        }
+        if let expectedSize {
+            let actualSize = try (FileManager.default.attributesOfItem(atPath: dmgURL.path)[.size] as? NSNumber)?.int64Value
+            if actualSize != expectedSize {
+                throw UpdateCheckError.invalidDownloadedDiskImage("Expected \(expectedSize) bytes, but downloaded \(actualSize ?? 0) bytes. Download the update again.")
+            }
+        }
+        if let expectedDigest,
+           let expectedSHA256 = normalizedSHA256Digest(expectedDigest) {
+            let data = try Data(contentsOf: dmgURL)
+            let actualSHA256 = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            if actualSHA256.lowercased() != expectedSHA256 {
+                throw UpdateCheckError.invalidDownloadedDiskImage("The SHA-256 checksum did not match. Download the update again.")
+            }
+        }
+
+        do {
+            _ = try runProcess("/usr/bin/hdiutil", arguments: ["verify", dmgURL.path])
+        } catch {
+            throw UpdateCheckError.invalidDownloadedDiskImage(updateErrorMessage(error))
+        }
+    }
+
+    private nonisolated static func normalizedSHA256Digest(_ digest: String) -> String? {
+        let lowercased = digest.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let value = lowercased.hasPrefix("sha256:") ? String(lowercased.dropFirst("sha256:".count)) : lowercased
+        guard value.count == 64,
+              value.allSatisfy({ $0.isHexDigit })
+        else { return nil }
+        return value
     }
 
     /// Reference box so the background drain threads can hand captured bytes back

@@ -192,12 +192,12 @@ struct FigmaMirrorExperienceView: View {
             .overlay {
                 if showsConnectionHelpSheet {
                     connectionHelpOverlay(scale: scale)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 } else if let activeWirelessSheet {
                     wirelessSheetOverlay(activeWirelessSheet, width: contentWidth, scale: scale)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
+            .animation(.easeOut(duration: 0.2), value: showsConnectionHelpSheet)
+            .animation(.easeOut(duration: 0.2), value: activeWirelessSheet != nil)
             .task(id: model.activeError?.id) {
                 guard let error = model.activeError else { return }
                 do {
@@ -524,12 +524,15 @@ struct FigmaMirrorExperienceView: View {
                 .onTapGesture {
                     dismissWirelessSheet()
                 }
+                .transition(.opacity)
 
             switch sheet {
             case .wifiOnly:
                 wifiOnlySheet(width: width, scale: scale)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             case .wirelessDebugging:
                 wirelessDebuggingSheet(width: width, scale: scale)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
     }
@@ -679,8 +682,10 @@ struct FigmaMirrorExperienceView: View {
                 .onTapGesture {
                     dismissConnectionHelpSheet()
                 }
+                .transition(.opacity)
 
             connectionHelpSheet(scale: scale)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 
