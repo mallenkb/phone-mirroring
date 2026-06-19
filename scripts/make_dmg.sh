@@ -19,7 +19,7 @@ VOL_NAME="${VOL_NAME:-PhoneRelay Installer}"
 APP_DIR="$(cd "$(dirname "$APP_IN")" && pwd)"
 APP_IN="$APP_DIR/$(basename "$APP_IN")"
 APP_BASENAME="$(basename "$APP_IN")"
-STAGED_APP_BASENAME="${DMG_APP_NAME:-$APP_BASENAME}"
+STAGED_APP_BASENAME="${DMG_APP_NAME:-Phone Relay.app}"
 [[ "$STAGED_APP_BASENAME" == *.app ]] || STAGED_APP_BASENAME="$STAGED_APP_BASENAME.app"
 
 APP_VERSION="${APP_VERSION:-$(defaults read "$APP_IN/Contents/Info" CFBundleShortVersionString 2>/dev/null || true)}"
