@@ -55,6 +55,9 @@ final class AppMenuStateTests: XCTestCase {
         XCTAssertTrue(source.contains(".frame(width: 32, height: 32)"))
         XCTAssertTrue(source.contains("connectionDetailRow(\"USB\","))
         XCTAssertTrue(source.contains("connectionDetailRow(\"Wi-Fi\","))
+        XCTAssertTrue(source.contains("activeADBSerial: model.selectedDevice.adbSerial"))
+        XCTAssertTrue(source.contains("return \"Connected via \\(activeTransport.title)\""))
+        XCTAssertTrue(source.contains("private var activeTransport: SettingsDeviceTransport?"))
     }
 
     func testSettingsActiveDeviceRowsShowOnlyDisconnect() throws {
