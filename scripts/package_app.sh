@@ -3,10 +3,10 @@ set -euo pipefail
 
 APP="${1:-dist/PhoneRelay.app}"
 APP_NAME="${APP_NAME:-Phone Relay}"
-PRODUCT_NAME="${PRODUCT_NAME:-Phone Relay}"
+PRODUCT_NAME="${PRODUCT_NAME:-PhoneRelay}"
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
-APP_VERSION="${APP_VERSION:-1.0.9}"
-BUILD_NUMBER="${BUILD_NUMBER:-16}"
+APP_VERSION="${APP_VERSION:-1.0.12}"
+BUILD_NUMBER="${BUILD_NUMBER:-19}"
 # Prefer a real Apple Development identity when one is in the keychain: TCC
 # grants (Local Network, Notifications) are keyed to the signing identity, and
 # ad-hoc signatures change every build, which silently revokes them.
