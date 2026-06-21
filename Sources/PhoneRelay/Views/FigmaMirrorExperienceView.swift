@@ -520,7 +520,7 @@ struct FigmaMirrorExperienceView: View {
 
     private func wirelessSheetOverlay(_ sheet: WirelessSheet, width: CGFloat, scale: CGFloat) -> some View {
         ZStack(alignment: .bottom) {
-            Color.black.opacity(0.34)
+            Color.black.opacity(0.24)
                 .onTapGesture {
                     dismissWirelessSheet()
                 }
@@ -678,7 +678,7 @@ struct FigmaMirrorExperienceView: View {
 
     private func connectionHelpOverlay(scale: CGFloat) -> some View {
         ZStack(alignment: .bottom) {
-            Color.black.opacity(0.34)
+            Color.black.opacity(0.24)
                 .onTapGesture {
                     dismissConnectionHelpSheet()
                 }
