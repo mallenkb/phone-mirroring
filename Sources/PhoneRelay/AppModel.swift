@@ -174,6 +174,9 @@ final class AppModel: ObservableObject {
     @Published var isPairing = false
     @Published var manualADBTarget = ""
     @Published private(set) var isManualADBTargetConnecting = false
+    /// The 6-digit code from the phone's "Pair device with pairing code" screen.
+    @Published var manualWirelessPairingCode = ""
+    @Published private(set) var isManualWirelessPairing = false
     @Published private(set) var isRecoveringConnection = false
     /// True whenever a connect target is physically present (USB or a remembered
     /// wireless phone advertising on the network) but we aren't online/mirroring
@@ -772,7 +775,7 @@ final class AppModel: ObservableObject {
 #endif
 
     private let adb = ADBController()
-    private let store = PairedPhoneStore()
+    private let store: PairedPhoneStore
     private lazy var discovery = DiscoveryService(adb: adb)
 
     private weak var connectionWindow: NSWindow?
@@ -945,6 +948,10 @@ final class AppModel: ObservableObject {
         hasSavedWirelessConnection && isWirelessConnectionAvailable
     }
 
+    var isFirstTimeUSBSetup: Bool {
+        pairedPhones.isEmpty
+    }
+
     /// Status word for the device pill, derived from the same unified state.
     var connectionStatusText: String {
         Self.devicePillStatusText(
@@ -1114,10 +1121,12 @@ final class AppModel: ObservableObject {
     init(
         startBackgroundServices: Bool = AppModel.defaultStartBackgroundServices,
         pairedPhones previewPairedPhones: [PairedPhoneRecord]? = nil,
+        store: PairedPhoneStore = PairedPhoneStore(),
         notificationAuthorizationRequester: @escaping NotificationAuthorizationRequester = AppModel.requestNotificationAuthorization,
         notificationSettingsOpener: @escaping NotificationSettingsOpener = AppModel.openSystemNotificationSettings,
         localNetworkPermissionPrompter: @escaping LocalNetworkPermissionPrompter = AppModel.promptForLocalNetworkPermission
     ) {
+        self.store = store
         self.notificationAuthorizationRequester = notificationAuthorizationRequester
         self.notificationSettingsOpener = notificationSettingsOpener
         self.localNetworkPermissionPrompter = localNetworkPermissionPrompter
@@ -1132,8 +1141,6 @@ final class AppModel: ObservableObject {
         if let mostRecentRecord = Self.recordsByMostRecent(pairedPhones).first {
             clearExplicitDeviceSetupRequirement()
             select(record: mostRecentRecord)
-        } else {
-            connectionWindowPrefersWirelessDetails = true
         }
 
         guard backgroundServicesEnabled else { return }
@@ -1633,7 +1640,7 @@ final class AppModel: ObservableObject {
         hasSavedDevices: Bool,
         explicitDeviceSetupRequired: Bool
     ) -> Bool {
-        !hasSavedDevices && !explicitDeviceSetupRequired
+        false
     }
 
     private func connectAndMirror(phone: DiscoveredPhone) {
@@ -1850,7 +1857,8 @@ final class AppModel: ObservableObject {
                 prepareWirelessHandoff: Self.shouldAttemptWirelessHandoff(
                     from: device,
                     preferUSBMirroring: preferUSBMirroring,
-                    backgroundWiFiHandoffEnabled: backgroundWiFiHandoffEnabled
+                    backgroundWiFiHandoffEnabled: backgroundWiFiHandoffEnabled,
+                    hasSavedDevices: !pairedPhones.isEmpty
                 )
             )
             return
@@ -3100,7 +3108,8 @@ final class AppModel: ObservableObject {
                 prepareWirelessHandoff: Self.shouldAttemptWirelessHandoff(
                     from: usbDevice,
                     preferUSBMirroring: self.preferUSBMirroring,
-                    backgroundWiFiHandoffEnabled: self.backgroundWiFiHandoffEnabled
+                    backgroundWiFiHandoffEnabled: self.backgroundWiFiHandoffEnabled,
+                    hasSavedDevices: !self.pairedPhones.isEmpty
                 )
             )
         }
@@ -3114,6 +3123,140 @@ final class AppModel: ObservableObject {
         guard let wifiIP = Self.wifiIPAddress(in: routeOutput) else { return nil }
         manualADBTarget = wifiIP
         return "\(wifiIP):\(Self.legacyADBWirelessPort)"
+    }
+
+    /// The pairing address from "Pair device with pairing code" must include an
+    /// explicit port (the random pairing port) — there's no sensible default, so
+    /// unlike the connect field we never fall back to 5555.
+    nonisolated static func normalizedManualPairingAddress(_ target: String) -> String? {
+        let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+              let separator = trimmed.lastIndex(of: ":")
+        else { return nil }
+        let hostPart = String(trimmed[..<separator])
+        let portPart = String(trimmed[trimmed.index(after: separator)...])
+        guard Self.isIPv4Address(hostPart),
+              let port = Int(portPart),
+              (1...65_535).contains(port)
+        else { return nil }
+        return "\(hostPart):\(port)"
+    }
+
+    /// Android's Wi-Fi pairing code is always six digits.
+    nonisolated static func normalizedWirelessPairingCode(_ code: String) -> String? {
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count == 6, trimmed.allSatisfy(\.isNumber) else { return nil }
+        return trimmed
+    }
+
+    /// Whether the entered IP:port + code are a valid pairing request.
+    var canPairManualWirelessTarget: Bool {
+        Self.normalizedManualPairingAddress(manualADBTarget) != nil
+            && Self.normalizedWirelessPairingCode(manualWirelessPairingCode) != nil
+    }
+
+    /// Pairs with an Android 11+ Wireless-debugging device using the IP:port and
+    /// 6-digit code from "Pair device with pairing code", then discovers the
+    /// (separate) connect service over mDNS and mirrors — the same proven tail
+    /// the QR-code flow uses, just driven by typed input instead of a scan.
+    func pairManualWirelessTarget() {
+        guard !isMirroring, !isPairing, !isManualWirelessPairing, !isManualADBTargetConnecting else { return }
+        guard let pairAddress = Self.normalizedManualPairingAddress(manualADBTarget) else {
+            reportError(
+                "Enter the pairing IP and port",
+                "Open \u{201C}Pair device with pairing code\u{201D} on the phone and type the IP address and port it shows, e.g. 192.168.1.23:37123."
+            )
+            return
+        }
+        guard let code = Self.normalizedWirelessPairingCode(manualWirelessPairingCode) else {
+            reportError(
+                "Enter the 6-digit pairing code",
+                "Type the Wi-Fi pairing code shown next to the IP on the phone. It changes every time you open that screen."
+            )
+            return
+        }
+
+        resumeDiscoveryAfterManualConnect()
+        reconnectTask?.cancel()
+        usbConnectTask?.cancel()
+        usbWiFiHandoffTask?.cancel()
+        usbWiFiHandoffTask = nil
+        cancelWirelessReconnectWork()
+        stopQRCodePairingSession()
+        isPairing = true
+        isManualWirelessPairing = true
+
+        let adb = self.adb
+        let generation = mirrorStartGeneration
+        reconnectTask = Task { [weak self] in
+            await adb.ensureServerStarted()
+            let pairOutput = await Task.detached {
+                adb.run(["pair", pairAddress, code], timeout: 20)
+            }.value
+            guard let self, !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
+            Logger.log("Manual Wi-Fi pairing address=\(pairAddress) output=\(pairOutput.trimmingCharacters(in: .whitespacesAndNewlines))")
+
+            guard Self.adbPairSucceeded(pairOutput) else {
+                self.failManualWirelessPairing(
+                    "Pairing failed",
+                    "Could not pair with \(pairAddress). Re-open \u{201C}Pair device with pairing code\u{201D} (the code changes each time), make sure the phone is on the same Wi-Fi, and try again."
+                )
+                return
+            }
+            self.manualWirelessPairingCode = ""
+
+            guard let connectablePhone = await Self.waitForConnectableWirelessPhone(
+                adb: adb,
+                preferredAddress: nil,
+                matchingHostOf: pairAddress
+            ) else {
+                guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
+                self.failManualWirelessPairing(
+                    "Paired, but no connection appeared",
+                    "Paired with the phone, but its wireless-debugging connect service didn't show up. Keep the Wireless debugging screen open and try again."
+                )
+                return
+            }
+            guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
+
+            let connectOutput = await Task.detached {
+                await Self.preflightLocalNetworkAccess(address: connectablePhone.address)
+                return adb.run(["connect", connectablePhone.address])
+            }.value
+            guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
+
+            guard Self.adbConnectSucceeded(connectOutput) else {
+                self.failManualWirelessPairing(
+                    "Paired, but couldn't connect",
+                    "Pairing succeeded, but connecting to \(connectablePhone.address) failed. Try connecting again."
+                )
+                return
+            }
+
+            let deviceName = await Self.connectedDeviceName(
+                adb: adb,
+                serial: connectablePhone.address,
+                fallback: "Android device"
+            )
+            guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
+            self.reconnectTask = nil
+            self.isManualWirelessPairing = false
+            self.manualADBTarget = connectablePhone.address
+            self.finishQRCodePairing(with: connectablePhone, displayName: deviceName)
+            self.prepareQRCodePairingLegacyTCPIPInBackground(
+                phone: connectablePhone,
+                displayName: deviceName
+            )
+        }
+    }
+
+    private func failManualWirelessPairing(_ title: String, _ message: String) {
+        reconnectTask = nil
+        isPairing = false
+        isManualWirelessPairing = false
+        reportError(title, message)
+        showConnectionWindow(startsQRCodePairing: false)
     }
 
     func connectManualADBTarget() {
@@ -3661,9 +3804,12 @@ final class AppModel: ObservableObject {
     nonisolated static func shouldAttemptWirelessHandoff(
         from device: AuthorizedADBDevice,
         preferUSBMirroring: Bool,
-        backgroundWiFiHandoffEnabled: Bool = false
+        backgroundWiFiHandoffEnabled: Bool = false,
+        hasSavedDevices: Bool = true
     ) -> Bool {
-        device.isUSB && !preferUSBMirroring && backgroundWiFiHandoffEnabled
+        device.isUSB
+            && !preferUSBMirroring
+            && (backgroundWiFiHandoffEnabled || !hasSavedDevices)
     }
 
     enum ScrcpyStyleConnectionPlan: Equatable {
@@ -5888,7 +6034,7 @@ final class AppModel: ObservableObject {
         case .orderFrontOnly:
             connectionWindow.orderFront(nil)
         }
-        if startsQRCodePairing {
+        if startsQRCodePairing && !isFirstTimeUSBSetup {
             ensureQRCodePairingSession()
         }
     }

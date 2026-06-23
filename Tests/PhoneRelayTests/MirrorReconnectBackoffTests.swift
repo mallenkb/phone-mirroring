@@ -61,7 +61,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 explicitDeviceSetupRequired: true
             )
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             AppModel.shouldAttemptRecoveredWiFiReconnect(
                 hasSavedDevices: false,
                 explicitDeviceSetupRequired: false

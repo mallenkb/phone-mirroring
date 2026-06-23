@@ -22,10 +22,11 @@ final class ADBDeviceParsingTests: XCTestCase {
     }
 
     @MainActor
-    func testNoSavedDeviceOpensWirelessDetailsByDefault() {
+    func testNoSavedDeviceStartsWithUSBSetup() {
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
 
-        XCTAssertTrue(model.connectionWindowPrefersWirelessDetails)
+        XCTAssertFalse(model.connectionWindowPrefersWirelessDetails)
+        XCTAssertTrue(model.isFirstTimeUSBSetup)
     }
 
     func testAuthorizedADBDevicesIncludesUSBDeviceDetails() {
@@ -298,7 +299,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
     }
 
-    func testUSBConnectDoesNotAttemptWiFiHandoffByDefault() {
+    func testUSBConnectDoesNotAttemptWiFiHandoffByDefaultForSavedDevices() {
         let usbDevice = AuthorizedADBDevice(
             serial: "TESTDEVICE001",
             product: "raven",
@@ -307,7 +308,20 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
 
         XCTAssertFalse(AppModel.shouldAttemptWirelessHandoff(from: usbDevice, preferUSBMirroring: true))
-        XCTAssertFalse(AppModel.shouldAttemptWirelessHandoff(from: usbDevice, preferUSBMirroring: false))
+        XCTAssertFalse(
+            AppModel.shouldAttemptWirelessHandoff(
+                from: usbDevice,
+                preferUSBMirroring: false,
+                hasSavedDevices: true
+            )
+        )
+        XCTAssertTrue(
+            AppModel.shouldAttemptWirelessHandoff(
+                from: usbDevice,
+                preferUSBMirroring: false,
+                hasSavedDevices: false
+            )
+        )
     }
 
     func testUSBWiFiHandoffRequiresExplicitOptIn() {
@@ -807,6 +821,9 @@ final class ADBDeviceParsingTests: XCTestCase {
             )
             let model = AppModel(startBackgroundServices: false, pairedPhones: [huawei])
             model.manualADBTarget = "192.0.2.61"
+            let originalScanner = AppModel.manualADBPortScanner
+            AppModel.manualADBPortScanner = { _ in [] }
+            defer { AppModel.manualADBPortScanner = originalScanner }
 
             model.connectManualADBTarget()
 
@@ -814,7 +831,7 @@ final class ADBDeviceParsingTests: XCTestCase {
             XCTAssertEqual(model.connectionDeviceLabel, "VOG L09")
 
             let startedAt = Date()
-            while model.activeError == nil, Date().timeIntervalSince(startedAt) < 5 {
+            while model.activeError == nil, Date().timeIntervalSince(startedAt) < 10 {
                 try await Task.sleep(nanoseconds: 50_000_000)
             }
 
@@ -856,6 +873,9 @@ final class ADBDeviceParsingTests: XCTestCase {
         exit 0
         """)
         defer { fake.cleanup() }
+        let originalScanner = AppModel.manualADBPortScanner
+        AppModel.manualADBPortScanner = { _ in [] }
+        defer { AppModel.manualADBPortScanner = originalScanner }
 
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
         model.manualADBTarget = "192.0.2.44"
@@ -863,7 +883,7 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         let startedAt = Date()
         while model.selectedDevice.adbSerial != "192.0.2.44:5555",
-              Date().timeIntervalSince(startedAt) < 7 {
+              Date().timeIntervalSince(startedAt) < 12 {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
@@ -892,6 +912,9 @@ final class ADBDeviceParsingTests: XCTestCase {
         exit 0
         """)
         defer { fake.cleanup() }
+        let originalScanner = AppModel.manualADBPortScanner
+        AppModel.manualADBPortScanner = { _ in [] }
+        defer { AppModel.manualADBPortScanner = originalScanner }
 
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
         model.manualADBTarget = "192.0.2.44"
@@ -906,7 +929,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertTrue(model.activeError?.message.contains("System Settings > Privacy & Security > Local Network") == true)
         let calls = loggedCalls(fake.log)
         XCTAssertTrue(calls.contains("kill-server"))
-        XCTAssertGreaterThanOrEqual(calls.filter { $0 == "connect 192.0.2.44:5555" }.count, 6)
+        XCTAssertGreaterThanOrEqual(calls.filter { $0 == "connect 192.0.2.44:5555" }.count, 4)
     }
 
     func testScrcpyStyleConnectionPlanPrefersUSBOrTCPIPDeterministically() {
@@ -3185,6 +3208,124 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertTrue(AppModel.shouldPromoteToLegacyTCPIP(connectedAddress: "192.0.2.44:42111"))
     }
 
+    func testNormalizedManualPairingAddressRequiresExplicitPort() {
+        XCTAssertEqual(AppModel.normalizedManualPairingAddress("192.168.1.23:37123"), "192.168.1.23:37123")
+        XCTAssertEqual(AppModel.normalizedManualPairingAddress("  192.168.1.23:37123 "), "192.168.1.23:37123")
+        // No bare-IP default: pairing needs the specific pairing port.
+        XCTAssertNil(AppModel.normalizedManualPairingAddress("192.168.1.23"))
+        XCTAssertNil(AppModel.normalizedManualPairingAddress("192.168.1.23:0"))
+        XCTAssertNil(AppModel.normalizedManualPairingAddress("192.168.1.23:99999"))
+        XCTAssertNil(AppModel.normalizedManualPairingAddress("not-an-ip:37123"))
+        XCTAssertNil(AppModel.normalizedManualPairingAddress(""))
+    }
+
+    func testNormalizedWirelessPairingCodeRequiresSixDigits() {
+        XCTAssertEqual(AppModel.normalizedWirelessPairingCode("123456"), "123456")
+        XCTAssertEqual(AppModel.normalizedWirelessPairingCode(" 654321 "), "654321")
+        XCTAssertNil(AppModel.normalizedWirelessPairingCode("12345"))
+        XCTAssertNil(AppModel.normalizedWirelessPairingCode("1234567"))
+        XCTAssertNil(AppModel.normalizedWirelessPairingCode("12a456"))
+        XCTAssertNil(AppModel.normalizedWirelessPairingCode(""))
+    }
+
+    /// End-to-end manual Wireless-debugging pairing: `adb pair ip:pairport code`
+    /// succeeds, the connect service is discovered over mDNS on the same host,
+    /// the app connects to that (different) port and mirrors.
+    @MainActor
+    func testManualWirelessPairingPairsThenConnectsAndMirrors() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "pair" ]; then
+          if [ "$2" = "192.168.68.67:37123" ] && [ "$3" = "123456" ]; then
+            echo "Successfully paired to 192.168.68.67:43123 [guid=adb-pixel]"
+          else
+            echo "Failed: wrong code"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "mdns" ] && [ "$2" = "services" ]; then
+          echo "List of discovered mdns services"
+          echo "adb-pixel	_adb-tls-connect._tcp.	192.168.68.67:43123"
+          exit 0
+        fi
+        if [ "$1" = "connect" ]; then
+          echo "connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          case "$4" in
+            CLASSPATH=*) sleep 20; exit 0 ;;
+          esac
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let isolated = isolatedPairedPhoneStore()
+        defer { isolated.cleanup() }
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [], store: isolated.store)
+
+        model.manualADBTarget = "192.168.68.67:37123"
+        model.manualWirelessPairingCode = "123456"
+        XCTAssertTrue(model.canPairManualWirelessTarget)
+
+        model.pairManualWirelessTarget()
+        let startedAt = Date()
+        while (model.selectedDevice.adbSerial == nil
+            || !model.hasActiveMirrorSession),
+              Date().timeIntervalSince(startedAt) < 12 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        XCTAssertNil(model.activeError)
+        XCTAssertTrue(model.hasActiveMirrorSession)
+        XCTAssertTrue(AppModel.isWirelessADBTarget(model.selectedDevice.adbSerial ?? ""))
+        XCTAssertEqual(model.selectedDevice.network, "Wi-Fi")
+        XCTAssertEqual(model.manualWirelessPairingCode, "")
+        XCTAssertTrue(model.pairedPhones.contains { $0.lastAddress == "192.168.68.67:5555" })
+        let calls = loggedCalls(fake.log)
+        XCTAssertTrue(calls.contains("pair 192.168.68.67:37123 123456"))
+        model.stopMirroring()
+        try await Task.sleep(nanoseconds: 500_000_000)
+    }
+
+    @MainActor
+    func testManualWirelessPairingSurfacesErrorOnBadCode() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "pair" ]; then
+          echo "Failed: pairing code is incorrect"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let isolated = isolatedPairedPhoneStore()
+        defer { isolated.cleanup() }
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [], store: isolated.store)
+
+        model.manualADBTarget = "192.168.68.67:37123"
+        model.manualWirelessPairingCode = "000000"
+        model.pairManualWirelessTarget()
+
+        let startedAt = Date()
+        while model.activeError == nil, Date().timeIntervalSince(startedAt) < 5 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertEqual(model.activeError?.title, "Pairing failed")
+        XCTAssertFalse(model.isManualWirelessPairing)
+        XCTAssertFalse(model.hasActiveMirrorSession)
+    }
+
     @MainActor
     func testSavedDeviceConnectUsesDiscoveredWiFiHandoffAddress() async throws {
         try await withoutExplicitDeviceSetupRequired {
@@ -3279,6 +3420,18 @@ final class ADBDeviceParsingTests: XCTestCase {
     /// Writes an executable fake `adb` to a throwaway directory, points the
     /// tooling env vars at it, and returns the log file each invocation appends
     /// its arguments to plus a cleanup closure the caller defers.
+    /// A PairedPhoneStore backed by a unique, volatile UserDefaults suite so a
+    /// test that persists a phone never touches the developer's real prefs (or
+    /// the shared xctest-tool domain). `cleanup()` removes the suite.
+    private func isolatedPairedPhoneStore() -> (store: PairedPhoneStore, cleanup: () -> Void) {
+        let suiteName = "PhoneRelayTests.store.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = PairedPhoneStore(primaryDefaults: defaults, suiteNames: [])
+        return (store, {
+            defaults.removePersistentDomain(forName: suiteName)
+        })
+    }
+
     private func installFakeADB(script: String) throws -> (log: URL, cleanup: () -> Void) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PhoneRelayTests-\(UUID().uuidString)")

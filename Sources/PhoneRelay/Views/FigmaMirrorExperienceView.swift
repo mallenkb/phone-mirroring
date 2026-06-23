@@ -222,7 +222,7 @@ struct FigmaMirrorExperienceView: View {
                     .foregroundStyle(accent)
                     .frame(width: 61 * scale, height: 40 * scale)
 
-                Text("Connect your Android phone")
+                Text(model.isFirstTimeUSBSetup ? "Set up your Android phone with USB" : "Connect your Android phone")
                     .font(.system(size: 16 * scale, weight: .semibold))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
@@ -235,7 +235,7 @@ struct FigmaMirrorExperienceView: View {
                         iconName: "cable.connector",
                         resourceIconName: "usb-cable",
                         title: "Connect with USB",
-                        subtitle: "Cable connection.",
+                        subtitle: model.isFirstTimeUSBSetup ? "Plug in once to authorize Wi-Fi mirroring." : "Cable connection.",
                         showsProgress: isUSBButtonBusy,
                         isDisabled: isChooserButtonDisabled,
                         isAvailable: effectiveUSBConnectionAvailable,
@@ -249,30 +249,32 @@ struct FigmaMirrorExperienceView: View {
                         }
                     )
 
-                    connectionChoiceRow(
-                        iconName: "wifi",
-                        title: "Connect wirelessly",
-                        subtitle: "No cable. Use WiFi IP or QR pairing.",
-                        showsProgress: isWirelessButtonBusy,
-                        isDisabled: isChooserButtonDisabled,
-                        isAvailable: effectiveWiFiConnectionAvailable,
-                        width: width,
-                        scale: scale,
-                        action: {
-                            usbAvailabilityBeforeConnect = model.isUSBConnectionAvailable
-                            wifiAvailabilityBeforeConnect = model.isWirelessConnectionAvailable
-                            if model.hasVisibleSavedWirelessConnection {
-                                inlineConnectingTransport = .wifi
-                                model.reconnectOverWiFi(inlineUntilConnected: true)
-                            } else if AppModel.normalizedManualADBTarget(model.manualADBTarget) != nil {
-                                inlineConnectingTransport = .wifi
-                                model.connectManualADBTarget()
-                            } else {
-                                navigate(to: .wirelessPairing)
-                                model.ensureQRCodePairingSession()
+                    if !model.isFirstTimeUSBSetup {
+                        connectionChoiceRow(
+                            iconName: "wifi",
+                            title: "Connect wirelessly",
+                            subtitle: "No cable. Use WiFi IP or QR pairing.",
+                            showsProgress: isWirelessButtonBusy,
+                            isDisabled: isChooserButtonDisabled,
+                            isAvailable: effectiveWiFiConnectionAvailable,
+                            width: width,
+                            scale: scale,
+                            action: {
+                                usbAvailabilityBeforeConnect = model.isUSBConnectionAvailable
+                                wifiAvailabilityBeforeConnect = model.isWirelessConnectionAvailable
+                                if model.hasVisibleSavedWirelessConnection {
+                                    inlineConnectingTransport = .wifi
+                                    model.reconnectOverWiFi(inlineUntilConnected: true)
+                                } else if AppModel.normalizedManualADBTarget(model.manualADBTarget) != nil {
+                                    inlineConnectingTransport = .wifi
+                                    model.connectManualADBTarget()
+                                } else {
+                                    navigate(to: .wirelessPairing)
+                                    model.ensureQRCodePairingSession()
+                                }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
 
                 VStack(spacing: 8 * scale) {
@@ -925,6 +927,8 @@ struct FigmaMirrorExperienceView: View {
         let isConnecting = model.isManualADBTargetConnecting
         let connectEnabled = !model.isActivelyConnecting
             && AppModel.normalizedManualADBTarget(model.manualADBTarget) != nil
+        let isPairing = model.isManualWirelessPairing
+        let pairEnabled = !model.isActivelyConnecting && model.canPairManualWirelessTarget
 
         return VStack(alignment: .leading, spacing: 6 * scale) {
             HStack(spacing: 8.727 * scale) {
@@ -976,10 +980,67 @@ struct FigmaMirrorExperienceView: View {
                     .fill(Color.white.opacity(0.05))
             )
 
-            Text("Enter the phone Wi-Fi IP, or IP:port from Wireless debugging")
+            Text("Already paired, or using tcpip 5555? Enter the IP (or IP:port) and tap Connect.")
                 .font(.system(size: 11 * scale, weight: .regular))
                 .foregroundStyle(.white.opacity(0.58))
                 .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12 * scale)
+
+            HStack(spacing: 8.727 * scale) {
+                TextField("6-digit pairing code", text: $model.manualWirelessPairingCode)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 14 * scale, weight: .regular))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
+                    .onSubmit {
+                        model.pairManualWirelessTarget()
+                    }
+
+                Button(action: model.pairManualWirelessTarget) {
+                    HStack(spacing: 8 * scale) {
+                        if isPairing {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(onboardingDeepCyan)
+                                .scaleEffect(max(0.7, 0.82 * scale))
+                        }
+
+                        Text(isPairing ? "Pairing" : "Pair")
+                            .font(.system(size: 14 * scale, weight: .medium))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .foregroundStyle(pairEnabled || isPairing ? onboardingDeepCyan : Color.white.opacity(0.5))
+                    .padding(.horizontal, 12 * scale)
+                    .frame(minWidth: (isPairing ? 92 : 82) * scale)
+                    .frame(height: 40 * scale)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8 * scale, style: .continuous)
+                            .fill(pairEnabled || isPairing ? cyan400 : Color.white.opacity(0.2))
+                    )
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(2)
+                .buttonStyle(.plain)
+                .disabled(!pairEnabled || isPairing)
+            }
+            .padding(.leading, 16 * scale)
+            .padding(.trailing, 4 * scale)
+            .padding(.vertical, 4 * scale)
+            .frame(maxWidth: .infinity)
+            .frame(height: 48 * scale)
+            .background(
+                RoundedRectangle(cornerRadius: 12 * scale, style: .continuous)
+                    .fill(Color.white.opacity(0.05))
+            )
+
+            Text("New phone? On Android open \u{201C}Pair device with pairing code\u{201D}, put its IP:port in the field above and the 6-digit code here, then tap Pair.")
+                .font(.system(size: 11 * scale, weight: .regular))
+                .foregroundStyle(.white.opacity(0.58))
+                .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 12 * scale)
