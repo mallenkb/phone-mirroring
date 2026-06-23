@@ -116,7 +116,7 @@ final class AppMenuStateTests: XCTestCase {
         XCTAssertTrue(source.contains("return true"))
     }
 
-    func testClosingLastWindowTerminatesApp() throws {
+    func testClosingLastWindowDoesNotTerminateDuringHandoff() throws {
         let source = try String(
             contentsOfFile: "Sources/PhoneRelay/AppDelegate.swift",
             encoding: .utf8
@@ -127,7 +127,7 @@ final class AppMenuStateTests: XCTestCase {
             to: "public func applicationDidBecomeActive"
         )
 
-        XCTAssertTrue(body.contains("true"))
+        XCTAssertTrue(body.contains("false"))
     }
 
     func testTerminationClosesAllAppWindowsAfterModelShutdown() throws {
