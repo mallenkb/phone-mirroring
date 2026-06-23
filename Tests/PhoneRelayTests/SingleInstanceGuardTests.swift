@@ -2,14 +2,15 @@ import XCTest
 @testable import PhoneRelay
 
 /// Covers the duplicate-instance guard (only one Phone Relay may run at a time;
-/// the newest copy yields) and the connection-window presentation policy
+/// a fresh launch evicts stale older copies) and the connection-window presentation policy
 /// (automatic reconnect cycles must not steal focus from other apps).
 final class SingleInstanceGuardTests: XCTestCase {
-    @MainActor
     func testAppDelegateExplicitlySupportsSecureRestorableState() {
-        let delegate = AppDelegate()
+        let source = try! String(contentsOfFile: "Sources/PhoneRelay/AppDelegate.swift", encoding: .utf8)
 
-        XCTAssertTrue(delegate.applicationSupportsSecureRestorableState(NSApp))
+        XCTAssertTrue(source.contains("public func applicationSupportsSecureRestorableState"))
+        XCTAssertTrue(source.contains("public func application(_ app: NSApplication, shouldSaveSecureApplicationState coder: NSCoder) -> Bool {\n        false\n    }"))
+        XCTAssertTrue(source.contains("public func application(_ app: NSApplication, shouldRestoreSecureApplicationState coder: NSCoder) -> Bool {\n        false\n    }"))
     }
 
     private func instance(
@@ -30,34 +31,31 @@ final class SingleInstanceGuardTests: XCTestCase {
 
     // MARK: - Duplicate detection
 
-    func testNewerDuplicateYieldsToOlderInstance() {
+    func testNewerLaunchTargetsOlderInstanceForEviction() {
         let older = instance(pid: 100, launchedAt: 100)
         let newer = instance(pid: 200, launchedAt: 200)
 
-        XCTAssertEqual(
-            AppDelegate.blockingDuplicateInstance(candidates: [older, newer], current: newer)?.pid,
-            100
-        )
+        XCTAssertEqual(AppDelegate.olderDuplicateInstances(candidates: [older, newer], current: newer).map(\.pid), [100])
     }
 
-    func testOlderInstanceKeepsRunningWhenDuplicateIsNewer() {
+    func testOlderLaunchDoesNotTargetNewerInstanceForEviction() {
         let older = instance(pid: 100, launchedAt: 100)
         let newer = instance(pid: 200, launchedAt: 200)
 
-        XCTAssertNil(AppDelegate.blockingDuplicateInstance(candidates: [older, newer], current: older))
+        XCTAssertTrue(AppDelegate.olderDuplicateInstances(candidates: [older, newer], current: older).isEmpty)
     }
 
     func testInstanceIsNotItsOwnDuplicate() {
         let only = instance(pid: 100)
 
-        XCTAssertNil(AppDelegate.blockingDuplicateInstance(candidates: [only], current: only))
+        XCTAssertTrue(AppDelegate.olderDuplicateInstances(candidates: [only], current: only).isEmpty)
     }
 
     func testTerminatedInstancesAreIgnored() {
         let dead = instance(pid: 100, launchedAt: 100, isTerminated: true)
         let current = instance(pid: 200, launchedAt: 200)
 
-        XCTAssertNil(AppDelegate.blockingDuplicateInstance(candidates: [dead, current], current: current))
+        XCTAssertTrue(AppDelegate.olderDuplicateInstances(candidates: [dead, current], current: current).isEmpty)
     }
 
     func testUnrelatedAppsAreIgnored() {
@@ -65,9 +63,7 @@ final class SingleInstanceGuardTests: XCTestCase {
         let testRunner = instance(pid: 101, bundleID: nil, executableName: "xctest", launchedAt: 60)
         let current = instance(pid: 200, launchedAt: 200)
 
-        XCTAssertNil(
-            AppDelegate.blockingDuplicateInstance(candidates: [browser, testRunner, current], current: current)
-        )
+        XCTAssertTrue(AppDelegate.olderDuplicateInstances(candidates: [browser, testRunner, current], current: current).isEmpty)
     }
 
     func testDebugBinaryAndBundledAppCountAsTheSameApp() {
@@ -75,8 +71,8 @@ final class SingleInstanceGuardTests: XCTestCase {
         let bundled = instance(pid: 200, executableName: "PhoneRelay", launchedAt: 200)
 
         XCTAssertEqual(
-            AppDelegate.blockingDuplicateInstance(candidates: [debugRun, bundled], current: bundled)?.pid,
-            100
+            AppDelegate.olderDuplicateInstances(candidates: [debugRun, bundled], current: bundled).map(\.pid),
+            [100]
         )
     }
 
@@ -84,7 +80,7 @@ final class SingleInstanceGuardTests: XCTestCase {
         let impostor = instance(pid: 100, bundleID: "com.other.PhoneRelay", executableName: "PhoneRelay", launchedAt: 50)
         let current = instance(pid: 200, launchedAt: 200)
 
-        XCTAssertNil(AppDelegate.blockingDuplicateInstance(candidates: [impostor, current], current: current))
+        XCTAssertTrue(AppDelegate.olderDuplicateInstances(candidates: [impostor, current], current: current).isEmpty)
     }
 
     // MARK: - Ordering

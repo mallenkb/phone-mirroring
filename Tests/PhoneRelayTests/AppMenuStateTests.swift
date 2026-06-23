@@ -116,6 +116,52 @@ final class AppMenuStateTests: XCTestCase {
         XCTAssertTrue(source.contains("return true"))
     }
 
+    func testClosingLastWindowTerminatesApp() throws {
+        let source = try String(
+            contentsOfFile: "Sources/PhoneRelay/AppDelegate.swift",
+            encoding: .utf8
+        )
+        let body = try sourceSlice(
+            in: source,
+            from: "public func applicationShouldTerminateAfterLastWindowClosed",
+            to: "public func applicationDidBecomeActive"
+        )
+
+        XCTAssertTrue(body.contains("true"))
+    }
+
+    func testTerminationClosesAllAppWindowsAfterModelShutdown() throws {
+        let source = try String(
+            contentsOfFile: "Sources/PhoneRelay/AppDelegate.swift",
+            encoding: .utf8
+        )
+        let terminateBody = try sourceSlice(
+            in: source,
+            from: "public func applicationWillTerminate",
+            to: "private func installMainMenu()"
+        )
+
+        XCTAssertTrue(terminateBody.contains("model.shutdown()"))
+        XCTAssertTrue(terminateBody.contains("closeAllAppWindows()"))
+        XCTAssertTrue(terminateBody.contains("window.childWindows?.forEach"))
+        XCTAssertTrue(terminateBody.contains("window.close()"))
+    }
+
+    func testMirrorWindowCloseButtonTerminatesInsteadOfOrphaningSession() throws {
+        let source = try String(
+            contentsOfFile: "Sources/PhoneRelay/Mirror/MirrorContentWindowController.swift",
+            encoding: .utf8
+        )
+        let closeBody = try sourceSlice(
+            in: source,
+            from: "func windowShouldClose",
+            to: "func windowWillClose"
+        )
+
+        XCTAssertTrue(closeBody.contains("NSApplication.shared.terminate(nil)"))
+        XCTAssertTrue(closeBody.contains("return false"))
+    }
+
     func testPresentationModeStopClearsAndroidTouchIndicators() throws {
         let source = try String(
             contentsOfFile: "Sources/PhoneRelay/AppModel.swift",
@@ -184,6 +230,11 @@ final class AppMenuStateTests: XCTestCase {
             from: "Logger.log(\"Prepared Wi-Fi handoff address=\\(candidate.address) was not ready after USB ended\")",
             to: "        }\n        return true"
         )
+        let takeoverBody = try sourceSlice(
+            in: source,
+            from: "private func startUSBWiFiHandoffTakeoverIfAvailable(",
+            to: "    private func recoverUSBLaunchFailureOverWireless"
+        )
 
         XCTAssertTrue(failureBody.contains("self.isRecoveringConnection = false"))
         XCTAssertTrue(failureBody.contains("self.isAwaitingReconnect = false"))
@@ -192,7 +243,7 @@ final class AppMenuStateTests: XCTestCase {
         XCTAssertTrue(failureBody.contains("self.selectedDevice.network = \"USB\""))
         XCTAssertTrue(failureBody.contains("keepConnectionWindowVisibleOverride: false"))
         XCTAssertFalse(failureBody.contains("startDisconnectRecoveryFallback()"))
-        XCTAssertFalse(failureBody.contains("showConnectionWindow(startsQRCodePairing: false)"))
+        XCTAssertTrue(takeoverBody.contains("showConnectionWindow(startsQRCodePairing: false)"))
     }
 
     private func sourceSlice(in source: String, from start: String, to end: String) throws -> String {

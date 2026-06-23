@@ -1276,6 +1276,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
     // MARK: - NSWindowDelegate
 
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        NSApplication.shared.terminate(nil)
+        return false
+    }
+
     func windowWillClose(_ notification: Notification) {
         hideWorkItem?.cancel()
         stopRevealMonitoring()

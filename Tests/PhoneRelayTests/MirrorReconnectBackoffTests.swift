@@ -597,6 +597,28 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
+    func testConnectionWindowTitleDoesNotPretendGenericOfflineDeviceIsConnected() {
+        XCTAssertEqual(
+            AppModel.connectionWindowTitle(
+                name: "Android device",
+                isOnline: false,
+                isMirroring: false
+            ),
+            "Phone Relay"
+        )
+    }
+
+    func testConnectionWindowTitleUsesDeviceNameWhenOnline() {
+        XCTAssertEqual(
+            AppModel.connectionWindowTitle(
+                name: "Pixel 6 Pro",
+                isOnline: true,
+                isMirroring: false
+            ),
+            "Pixel 6 Pro"
+        )
+    }
+
     func testMirrorLoadingTitleUsesFriendlyGenericPhoneName() {
         XCTAssertEqual(AppModel.mirrorLoadingStatusText(name: "Android device"), "Connecting to")
         XCTAssertEqual(AppModel.mirrorLoadingDeviceTitle(name: "Android device"), "Android phone")

@@ -21,6 +21,13 @@ final class ADBDeviceParsingTests: XCTestCase {
         try await body()
     }
 
+    @MainActor
+    func testNoSavedDeviceOpensWirelessDetailsByDefault() {
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+
+        XCTAssertTrue(model.connectionWindowPrefersWirelessDetails)
+    }
+
     func testAuthorizedADBDevicesIncludesUSBDeviceDetails() {
         let output = """
         List of devices attached
@@ -387,6 +394,13 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
     }
 
+    func testManualADBTargetNormalizationAcceptsIPWithWirelessDebuggingPort() {
+        XCTAssertEqual(
+            AppModel.normalizedManualADBTarget("192.0.2.44:43123"),
+            "192.0.2.44:43123"
+        )
+    }
+
     func testManualADBTargetCandidatesPreferDiscoveredSameHostPort() {
         let discovered = [
             DiscoveredPhone(
@@ -420,6 +434,37 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
     }
 
+    func testManualADBTargetCandidatesPreferExplicitPortOverDiscovery() {
+        let discovered = [
+            DiscoveredPhone(
+                id: "adb-pixel",
+                address: "192.0.2.44:43123",
+                kind: .wirelessDebugging,
+                lastSeen: Date(timeIntervalSince1970: 100)
+            )
+        ]
+
+        XCTAssertEqual(
+            AppModel.manualADBTargetCandidateAddresses(
+                normalizedAddress: "192.0.2.44:39555",
+                discoveredPhones: discovered,
+                pairedPhones: []
+            ),
+            ["192.0.2.44:39555", "192.0.2.44:43123", "192.0.2.44:5555"]
+        )
+    }
+
+    func testManualADBTargetPortScanCandidatesAppendDiscoveredPorts() {
+        XCTAssertEqual(
+            AppModel.manualADBTargetPortScanCandidateAddresses(
+                host: "192.0.2.44",
+                ports: [39555, 43123],
+                existingCandidates: ["192.0.2.44:5555"]
+            ),
+            ["192.0.2.44:5555", "192.0.2.44:39555", "192.0.2.44:43123"]
+        )
+    }
+
     func testManualADBTargetNormalizationRejectsInvalidTargets() {
         XCTAssertNil(AppModel.normalizedManualADBTarget(""))
         XCTAssertNil(AppModel.normalizedManualADBTarget("not a host"))
@@ -428,7 +473,6 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertNil(AppModel.normalizedManualADBTarget("192.0.2."))
         XCTAssertNil(AppModel.normalizedManualADBTarget("192.0.2.abc"))
         XCTAssertNil(AppModel.normalizedManualADBTarget("192.0.2.256"))
-        XCTAssertNil(AppModel.normalizedManualADBTarget("192.0.2.44:5555"))
         XCTAssertNil(AppModel.normalizedManualADBTarget("192.0.2.44:ssh"))
         XCTAssertNil(AppModel.normalizedManualADBTarget("192.0.2.44:0"))
         XCTAssertNil(AppModel.normalizedManualADBTarget("192.0.2.44:70000"))
@@ -500,6 +544,10 @@ final class ADBDeviceParsingTests: XCTestCase {
         let fake = try installFakeADB(script: """
         #!/bin/sh
         echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "mdns" ] && [ "$2" = "services" ]; then
+          echo "List of discovered mdns services"
+          exit 0
+        fi
         if [ "$1" = "connect" ]; then
           if [ "$2" = "192.0.2.44:43123" ]; then
             echo "connected to $2"
@@ -551,6 +599,185 @@ final class ADBDeviceParsingTests: XCTestCase {
         let calls = loggedCalls(fake.log)
         XCTAssertTrue(calls.contains("connect 192.0.2.44:43123"))
         XCTAssertFalse(calls.contains("connect 192.0.2.44:5555"))
+        model.stopMirroring()
+        try await Task.sleep(nanoseconds: 500_000_000)
+    }
+
+    @MainActor
+    func testManualADBTargetConnectsToExplicitWirelessDebuggingPort() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "mdns" ] && [ "$2" = "services" ]; then
+          echo "List of discovered mdns services"
+          exit 0
+        fi
+        if [ "$1" = "connect" ]; then
+          if [ "$2" = "192.0.2.44:39555" ]; then
+            echo "connected to $2"
+          else
+            echo "failed to connect to '$2': Connection refused"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "devices" ]; then
+          echo "List of devices attached"
+          echo "192.0.2.44:39555 device product:raven model:Pixel_6_Pro device:raven transport_id:1"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          if [ "$2" = "192.0.2.44:39555" ]; then
+            echo "wifi-adb-ok"
+          else
+            echo "error: closed"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.manualADBTarget = "192.0.2.44:39555"
+        model.connectManualADBTarget()
+
+        let startedAt = Date()
+        while model.selectedDevice.adbSerial != "192.0.2.44:39555",
+              Date().timeIntervalSince(startedAt) < 8 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertNil(model.activeError)
+        XCTAssertEqual(model.selectedDevice.adbSerial, "192.0.2.44:39555")
+        let calls = loggedCalls(fake.log)
+        XCTAssertTrue(calls.contains("connect 192.0.2.44:39555"))
+        XCTAssertFalse(calls.contains("connect 192.0.2.44:5555"))
+        model.stopMirroring()
+        try await Task.sleep(nanoseconds: 500_000_000)
+    }
+
+    @MainActor
+    func testManualADBTargetDiscoversWirelessDebuggingPortFromBareIP() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "mdns" ] && [ "$2" = "services" ]; then
+          echo "List of discovered mdns services"
+          exit 0
+        fi
+        if [ "$1" = "connect" ]; then
+          if [ "$2" = "192.0.2.44:39555" ]; then
+            echo "connected to $2"
+          else
+            echo "failed to connect to '$2': Connection refused"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "devices" ]; then
+          echo "List of devices attached"
+          echo "192.0.2.44:39555 device product:raven model:Pixel_6_Pro device:raven transport_id:1"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          if [ "$2" = "192.0.2.44:39555" ]; then
+            echo "wifi-adb-ok"
+          else
+            echo "error: closed"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let originalScanner = AppModel.manualADBPortScanner
+        AppModel.manualADBPortScanner = { host in
+            host == "192.0.2.44" ? [39555] : []
+        }
+        let originalProbe = AppModel.adbTCPPortProbe
+        AppModel.adbTCPPortProbe = { _ in true }
+        defer {
+            AppModel.manualADBPortScanner = originalScanner
+            AppModel.adbTCPPortProbe = originalProbe
+        }
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.manualADBTarget = "192.0.2.44"
+        model.connectManualADBTarget()
+
+        let startedAt = Date()
+        while model.selectedDevice.adbSerial != "192.0.2.44:39555",
+              Date().timeIntervalSince(startedAt) < 8 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertNil(model.activeError)
+        let calls = loggedCalls(fake.log)
+        XCTAssertEqual(model.selectedDevice.adbSerial, "192.0.2.44:39555")
+        XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
+        XCTAssertTrue(calls.contains("connect 192.0.2.44:39555"))
+        model.stopMirroring()
+        try await Task.sleep(nanoseconds: 500_000_000)
+    }
+
+    @MainActor
+    func testManualADBTargetRefreshesMDNSBeforeFallingBackToLegacyPort() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "mdns" ] && [ "$2" = "services" ]; then
+          echo "adb-pixel	_adb-tls-connect._tcp.	192.0.2.44:43123"
+          exit 0
+        fi
+        if [ "$1" = "connect" ]; then
+          if [ "$2" = "192.0.2.44:43123" ]; then
+            echo "connected to $2"
+          else
+            echo "failed to connect to '$2': Connection refused"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "devices" ]; then
+          echo "List of devices attached"
+          echo "192.0.2.44:43123 device product:raven model:Pixel_6_Pro device:raven transport_id:1"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          if [ "$2" = "192.0.2.44:43123" ]; then
+            echo "wifi-adb-ok"
+          else
+            echo "error: closed"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.manualADBTarget = "192.0.2.44"
+        model.connectManualADBTarget()
+
+        let startedAt = Date()
+        while model.selectedDevice.adbSerial != "192.0.2.44:43123",
+              Date().timeIntervalSince(startedAt) < 5 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertNil(model.activeError)
+        XCTAssertEqual(model.selectedDevice.adbSerial, "192.0.2.44:43123")
+        let calls = loggedCalls(fake.log)
+        XCTAssertTrue(calls.contains("mdns services"))
+        XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
+        XCTAssertTrue(calls.contains("connect 192.0.2.44:43123"))
         model.stopMirroring()
         try await Task.sleep(nanoseconds: 500_000_000)
     }
@@ -2712,6 +2939,17 @@ final class ADBDeviceParsingTests: XCTestCase {
         """)
         defer { fake.cleanup() }
 
+        // Simulate the real port lifecycle: 5555 is closed until `adb tcpip`
+        // restarts adbd, then it accepts connections. This drives the handoff
+        // down the legacy `tcpip` path (rather than the already-listening
+        // seamless switch), matching what a freshly-plugged phone does.
+        let probeLog = fake.log
+        AppModel.adbTCPPortProbe = { _ in
+            let contents = (try? String(contentsOf: probeLog, encoding: .utf8)) ?? ""
+            return contents.contains("tcpip 5555")
+        }
+        defer { AppModel.adbTCPPortProbe = { await AppModel.adbTCPPortAcceptsConnection($0) } }
+
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
         model.backgroundWiFiHandoffEnabled = true
 
@@ -2822,6 +3060,124 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(model.selectedDevice.network, "Wi-Fi")
         model.stopMirroring()
         try await Task.sleep(nanoseconds: 500_000_000)
+    }
+
+    /// A phone already listening on 5555 must hand over to Wi-Fi *without*
+    /// running `adb tcpip` (which restarts adbd and drops the live USB mirror).
+    @MainActor
+    func testUSBConnectSwitchesToWiFiWithoutTCPIPWhenPortAlreadyOpen() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "devices" ]; then
+          echo "List of devices attached"
+          echo "TESTDEVICE001 device usb:100000001X product:raven model:Pixel_6_Pro device:raven transport_id:1"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
+          echo "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
+          exit 0
+        fi
+        if [ "$1" = "connect" ]; then
+          echo "connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          case "$4" in
+            CLASSPATH=*) sleep 20; exit 0 ;;
+          esac
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        // Port 5555 already accepts connections, so no `adb tcpip` is needed.
+        AppModel.adbTCPPortProbe = { _ in true }
+        defer { AppModel.adbTCPPortProbe = { await AppModel.adbTCPPortAcceptsConnection($0) } }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.backgroundWiFiHandoffEnabled = true
+
+        model.connectViaUSB()
+        let startedAt = Date()
+        while (model.selectedDevice.adbSerial != "192.0.2.44:5555"
+            || !model.hasActiveMirrorSession),
+              Date().timeIntervalSince(startedAt) < 10 {
+            XCTAssertNil(model.activeError)
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        XCTAssertNil(model.activeError)
+        XCTAssertTrue(model.hasActiveMirrorSession)
+        XCTAssertEqual(model.selectedDevice.adbSerial, "192.0.2.44:5555")
+        XCTAssertEqual(model.selectedDevice.network, "Wi-Fi")
+        let calls = loggedCalls(fake.log)
+        XCTAssertFalse(calls.contains { $0.contains("tcpip 5555") })
+        XCTAssertTrue(model.pairedPhones.contains { $0.lastAddress == "192.0.2.44:5555" })
+        model.stopMirroring()
+        try await Task.sleep(nanoseconds: 500_000_000)
+    }
+
+    /// On a phone that blocks adb-over-Wi-Fi (`tcpip` "succeeds" but 5555 never
+    /// opens), the handoff must restart adbd at most once per session and then
+    /// stop, so cable reconnects don't keep killing the USB mirror. It must
+    /// still persist the freshly-learned Wi-Fi IP each time.
+    @MainActor
+    func testRepeatedHandoffStopsRestartingADBDAfterWiFiFailure() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "devices" ]; then
+          echo "List of devices attached"
+          echo "TESTDEVICE001 device usb:100000001X product:raven model:Pixel_6_Pro device:raven transport_id:1"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
+          echo "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "tcpip" ]; then
+          echo "restarting in TCP mode port: 5555"
+          exit 0
+        fi
+        if [ "$1" = "connect" ]; then
+          echo "failed to connect to '$2': No route to host"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        // Wireless adb is blocked: 5555 never accepts connections.
+        AppModel.adbTCPPortProbe = { _ in false }
+        defer { AppModel.adbTCPPortProbe = { await AppModel.adbTCPPortAcceptsConnection($0) } }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.backgroundWiFiHandoffEnabled = true
+        let usb = AuthorizedADBDevice(
+            serial: "TESTDEVICE001",
+            product: "raven",
+            model: "Pixel_6_Pro",
+            isUSB: true
+        )
+
+        _ = await model.prepareWirelessHandoffForTesting(usb)
+        let tcpipAfterFirst = loggedCalls(fake.log)
+            .filter { $0 == "-s TESTDEVICE001 tcpip 5555" }.count
+        XCTAssertEqual(tcpipAfterFirst, 1)
+        XCTAssertTrue(model.legacyHandoffFailedSerialsForTesting.contains("TESTDEVICE001"))
+        // The current Wi-Fi IP is saved even though the handoff didn't complete.
+        XCTAssertTrue(model.pairedPhones.contains { $0.lastAddress == "192.0.2.44:5555" })
+
+        _ = await model.prepareWirelessHandoffForTesting(usb)
+        let tcpipAfterSecond = loggedCalls(fake.log)
+            .filter { $0 == "-s TESTDEVICE001 tcpip 5555" }.count
+        XCTAssertEqual(tcpipAfterSecond, 1)
     }
 
     func testShouldPromoteToLegacyTCPIPSkipsAddressesAlreadyOnPort5555() {

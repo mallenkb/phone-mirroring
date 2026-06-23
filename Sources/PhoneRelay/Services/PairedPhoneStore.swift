@@ -80,11 +80,13 @@ struct PairedPhoneStore {
         address: String,
         usbSerial: String? = nil,
         wifiAddress: String? = nil,
+        wifiMACAddress: String? = nil,
         now: Date = .now
     ) -> [PairedPhoneRecord] {
         let sanitizedDisplayName = Self.sanitizedDisplayName(displayName)
         let resolvedUSBSerial = Self.resolvedUSBSerial(address: address, explicitUSBSerial: usbSerial)
         let resolvedWiFiAddress = Self.resolvedWiFiAddress(address: address, explicitWiFiAddress: wifiAddress)
+        let resolvedMACAddress = PairedPhoneRecord.normalizedMACAddress(wifiMACAddress)
         let matchingIndexes = matchingRecordIndexes(
             in: records,
             id: id,
@@ -105,6 +107,7 @@ struct PairedPhoneStore {
                 ),
                 usbSerial: resolvedUSBSerial,
                 wifiAddress: resolvedWiFiAddress,
+                wifiMACAddress: resolvedMACAddress,
                 firstPaired: now,
                 lastConnected: now
             )]
@@ -123,6 +126,7 @@ struct PairedPhoneStore {
             ),
             usbSerial: resolvedUSBSerial ?? matchingIndexes.compactMap { records[$0].resolvedUSBSerial }.first,
             wifiAddress: resolvedWiFiAddress ?? matchingIndexes.compactMap { records[$0].resolvedWiFiAddress }.first,
+            wifiMACAddress: resolvedMACAddress ?? matchingIndexes.compactMap { records[$0].wifiMACAddress }.first,
             firstPaired: firstPaired,
             lastConnected: now
         )
@@ -168,6 +172,7 @@ struct PairedPhoneStore {
             ),
             usbSerial: latest.resolvedUSBSerial ?? older.resolvedUSBSerial,
             wifiAddress: latest.resolvedWiFiAddress ?? older.resolvedWiFiAddress,
+            wifiMACAddress: latest.wifiMACAddress ?? older.wifiMACAddress,
             firstPaired: min(existing.firstPaired, incoming.firstPaired),
             lastConnected: max(existing.lastConnected, incoming.lastConnected),
             autoConnectSuspended: latest.autoConnectSuspended
@@ -240,7 +245,7 @@ struct PairedPhoneStore {
         return [latestGenericIndex]
     }
 
-    private static func isSpecificDeviceName(_ name: String) -> Bool {
+    static func isSpecificDeviceName(_ name: String) -> Bool {
         let trimmed = sanitizedDisplayName(name)
         guard !trimmed.isEmpty else { return false }
         return !genericDisplayNames.contains(normalizedDeviceName(trimmed))

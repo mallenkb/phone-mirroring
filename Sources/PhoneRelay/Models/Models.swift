@@ -213,6 +213,10 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
     var lastAddress: String
     var usbSerial: String?
     var wifiAddress: String?
+    /// The phone's Wi-Fi MAC, normalized to lowercase colon form. Stable across
+    /// DHCP lease changes on the same SSID, so it's the anchor we use to find the
+    /// phone's new IP after it moves (see `WiFiAddressRecovery`).
+    var wifiMACAddress: String?
     var firstPaired: Date
     var lastConnected: Date
     var autoConnectSuspended: Bool
@@ -231,6 +235,7 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
         lastAddress: String,
         usbSerial: String? = nil,
         wifiAddress: String? = nil,
+        wifiMACAddress: String? = nil,
         firstPaired: Date,
         lastConnected: Date,
         autoConnectSuspended: Bool = false
@@ -240,9 +245,35 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
         self.lastAddress = lastAddress
         self.usbSerial = usbSerial ?? (Self.isWirelessADBAddress(lastAddress) ? nil : lastAddress)
         self.wifiAddress = wifiAddress ?? (Self.isWirelessADBAddress(lastAddress) ? lastAddress : nil)
+        self.wifiMACAddress = Self.normalizedMACAddress(wifiMACAddress)
         self.firstPaired = firstPaired
         self.lastConnected = lastConnected
         self.autoConnectSuspended = autoConnectSuspended
+    }
+
+    init(
+        id: String,
+        displayName: String,
+        model: String,
+        lastAddress: String,
+        adbSerial: String? = nil,
+        firstPaired: Date,
+        lastConnected: Date,
+        wifiAddress: String? = nil,
+        wifiMACAddress: String? = nil,
+        autoConnectSuspended: Bool = false
+    ) {
+        self.init(
+            id: id,
+            displayName: displayName.isEmpty ? model : displayName,
+            lastAddress: lastAddress,
+            usbSerial: adbSerial,
+            wifiAddress: wifiAddress,
+            wifiMACAddress: wifiMACAddress,
+            firstPaired: firstPaired,
+            lastConnected: lastConnected,
+            autoConnectSuspended: autoConnectSuspended
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -251,6 +282,7 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
         case lastAddress
         case usbSerial
         case wifiAddress
+        case wifiMACAddress
         case firstPaired
         case lastConnected
         case autoConnectSuspended
@@ -265,6 +297,9 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
             ?? (Self.isWirelessADBAddress(lastAddress) ? nil : lastAddress)
         wifiAddress = try container.decodeIfPresent(String.self, forKey: .wifiAddress)
             ?? (Self.isWirelessADBAddress(lastAddress) ? lastAddress : nil)
+        wifiMACAddress = Self.normalizedMACAddress(
+            try container.decodeIfPresent(String.self, forKey: .wifiMACAddress)
+        )
         firstPaired = try container.decode(Date.self, forKey: .firstPaired)
         lastConnected = try container.decode(Date.self, forKey: .lastConnected)
         autoConnectSuspended = try container.decodeIfPresent(Bool.self, forKey: .autoConnectSuspended) ?? false
@@ -272,5 +307,27 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
 
     static func isWirelessADBAddress(_ address: String) -> Bool {
         address.contains(":") || address.hasPrefix("adb-")
+    }
+
+    /// Canonical MAC form for storage and comparison: lowercase, colon-separated,
+    /// each octet zero-padded to two hex digits. BSD `arp` strips leading zeros
+    /// (`8:0:27:…`) while sysfs / `ip addr` keep them (`08:00:27:…`); padding lets
+    /// both compare equal. Returns nil for unusable input or the all-zero MAC
+    /// (which Android reports for an interface that isn't up).
+    static func normalizedMACAddress(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let collapsed = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: ":")
+        let octets = collapsed.split(separator: ":", omittingEmptySubsequences: true).map(String.init)
+        guard octets.count == 6 else { return nil }
+        var normalized: [String] = []
+        for octet in octets {
+            guard (1...2).contains(octet.count), octet.allSatisfy(\.isHexDigit) else { return nil }
+            normalized.append(octet.count == 1 ? "0" + octet : octet)
+        }
+        guard normalized.contains(where: { $0 != "00" }) else { return nil }
+        return normalized.joined(separator: ":")
     }
 }

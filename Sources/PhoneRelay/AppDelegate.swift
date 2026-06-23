@@ -79,6 +79,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         )
         window.title = "Phone Relay"
         window.isReleasedWhenClosed = false
+        window.isRestorable = false
         window.isOpaque = false
         window.hasShadow = false
         window.isMovableByWindowBackground = true
@@ -126,6 +127,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         true
     }
 
+    public func application(_ app: NSApplication, shouldSaveSecureApplicationState coder: NSCoder) -> Bool {
+        false
+    }
+
+    public func application(_ app: NSApplication, shouldRestoreSecureApplicationState coder: NSCoder) -> Bool {
+        false
+    }
+
     nonisolated static func describesSamePhoneRelayApp(
         _ candidate: AppInstanceDescriptor,
         as current: AppInstanceDescriptor
@@ -160,13 +169,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         }
     }
 
-    /// The still-running older sibling this instance must defer to, or nil when
-    /// this instance is the rightful single copy.
-    nonisolated static func blockingDuplicateInstance(
+    /// Older siblings that should be evicted before this launch continues.
+    nonisolated static func olderDuplicateInstances(
         candidates: [AppInstanceDescriptor],
         current: AppInstanceDescriptor
-    ) -> AppInstanceDescriptor? {
-        candidates.first { candidate in
+    ) -> [AppInstanceDescriptor] {
+        candidates.filter { candidate in
             candidate.pid != current.pid
                 && !candidate.isTerminated
                 && describesSamePhoneRelayApp(candidate, as: current)
@@ -174,35 +182,55 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         }
     }
 
+    nonisolated static func blockingDuplicateInstance(
+        candidates: [AppInstanceDescriptor],
+        current: AppInstanceDescriptor
+    ) -> AppInstanceDescriptor? {
+        olderDuplicateInstances(candidates: candidates, current: current).first
+    }
+
     /// Phone Relay owns exclusive resources — the adb server, scrcpy sessions,
     /// and the connection window — so concurrent copies fight over the phone
-    /// and flood the screen with duplicate "Connecting…" windows (e.g. from
-    /// `open -n`, or a dev build launched next to the installed app). The
-    /// newest instance yields: it waits briefly for older instances to exit
-    /// (covering the restart-onboarding relaunch handoff), then activates the
-    /// survivor and terminates itself.
+    /// and flood the screen with duplicate "Connecting…" windows. A fresh
+    /// launch is the user's explicit recovery action, so it evicts any older
+    /// siblings and continues as the one clean owner.
     private func yieldToExistingInstanceIfNeeded() -> Bool {
         let current = Self.descriptor(for: .current)
         let deadline = Date().addingTimeInterval(Self.duplicateInstanceExitGracePeriod)
+        var requestedTerminationForPIDs = Set<Int32>()
+        var requestedForceTerminationForPIDs = Set<Int32>()
         while true {
             // NSWorkspace's list only refreshes when the run loop turns, which
             // it can't while this wait blocks — re-verify liveness via signal 0
             // so an already-exited sibling never strands or kills this launch.
-            let candidates = NSWorkspace.shared.runningApplications.map { app in
+            let runningApps = NSWorkspace.shared.runningApplications
+            let candidates = runningApps.map { app in
                 var descriptor = Self.descriptor(for: app)
                 if !descriptor.isTerminated, !Self.isProcessAlive(descriptor.pid) {
                     descriptor.isTerminated = true
                 }
                 return descriptor
             }
-            guard let blocker = Self.blockingDuplicateInstance(candidates: candidates, current: current) else {
+            let blockers = Self.olderDuplicateInstances(candidates: candidates, current: current)
+            guard !blockers.isEmpty else {
                 return false
             }
-            guard Date() < deadline else {
-                Logger.log("Another Phone Relay instance (pid \(blocker.pid)) is already running; terminating this duplicate copy.")
-                NSWorkspace.shared.runningApplications
-                    .first { $0.processIdentifier == blocker.pid }?
-                    .activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+
+            for blocker in blockers {
+                guard let app = runningApps.first(where: { $0.processIdentifier == blocker.pid }) else { continue }
+                if !requestedTerminationForPIDs.contains(blocker.pid) {
+                    requestedTerminationForPIDs.insert(blocker.pid)
+                    Logger.log("Terminating older Phone Relay instance pid=\(blocker.pid) before continuing launch.")
+                    app.terminate()
+                } else if Date() >= deadline, !requestedForceTerminationForPIDs.contains(blocker.pid) {
+                    requestedForceTerminationForPIDs.insert(blocker.pid)
+                    Logger.log("Force-terminating unresponsive older Phone Relay instance pid=\(blocker.pid).")
+                    app.forceTerminate()
+                }
+            }
+
+            if Date() >= deadline.addingTimeInterval(1.0) {
+                Logger.log("Older Phone Relay instance did not exit; terminating this launch to avoid duplicate windows.")
                 NSApp.terminate(nil)
                 return true
             }
@@ -228,7 +256,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     }
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        false
+        true
     }
 
     public func applicationDidBecomeActive(_ notification: Notification) {
@@ -436,11 +464,24 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         Logger.log("Application will terminate")
         if let keyMonitor {
             NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
         }
         updateCheckTask?.cancel()
         updateDownloadTask?.cancel()
         automaticUpdateTimer?.invalidate()
         model.shutdown()
+        closeAllAppWindows()
+    }
+
+    private func closeAllAppWindows() {
+        for window in NSApp.windows {
+            window.delegate = nil
+            window.childWindows?.forEach { child in
+                child.delegate = nil
+                child.close()
+            }
+            window.close()
+        }
     }
 
     private func installMainMenu() {
