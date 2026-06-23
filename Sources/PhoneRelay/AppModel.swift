@@ -3261,12 +3261,10 @@ final class AppModel: ObservableObject {
 
     func connectManualADBTarget() {
         guard !isMirroring, !isPairing, !isManualADBTargetConnecting else { return }
-        let rawManualTarget = manualADBTarget.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let address = Self.normalizedManualADBTarget(manualADBTarget) else {
             reportError("Invalid IP address", "Enter the phone IP address using numbers and dots, for example 192.168.1.23.")
             return
         }
-        let shouldDiscoverPortFromBareIP = !rawManualTarget.contains(":")
         let initialCandidateAddresses = Self.manualADBTargetCandidateAddresses(
             normalizedAddress: address,
             discoveredPhones: discoveredPhones,
@@ -3293,20 +3291,17 @@ final class AppModel: ObservableObject {
         reconnectTask = Task { [weak self] in
             await adb.ensureServerStarted()
             var candidateAddresses = initialCandidateAddresses
-            let initialReadinessAttempts = shouldDiscoverPortFromBareIP ? 1 : 3
-            let initialMaximumDuration: TimeInterval = shouldDiscoverPortFromBareIP ? 1 : 6
-            let initialConnectTimeout: TimeInterval = shouldDiscoverPortFromBareIP ? 1 : 4
             var result = await Self.connectToRememberedWirelessReadiness(
                 adb: adb,
                 savedAddress: address,
                 candidateAddresses: candidateAddresses,
-                readinessAttempts: initialReadinessAttempts,
+                readinessAttempts: 3,
                 delayNanoseconds: 500_000_000,
-                preflightLocalNetworkAccess: shouldDiscoverPortFromBareIP ? nil : { target in
+                preflightLocalNetworkAccess: { target in
                     await Self.preflightLocalNetworkAccess(address: target)
                 },
-                maximumDuration: initialMaximumDuration,
-                connectTimeout: initialConnectTimeout,
+                maximumDuration: 6,
+                connectTimeout: 4,
                 shellTimeout: 2
             )
             if result.connectedAddress == nil {
@@ -3324,37 +3319,13 @@ final class AppModel: ObservableObject {
                         adb: adb,
                         savedAddress: address,
                         candidateAddresses: candidateAddresses,
-                        readinessAttempts: initialReadinessAttempts,
+                        readinessAttempts: 3,
                         delayNanoseconds: 500_000_000,
-                        preflightLocalNetworkAccess: shouldDiscoverPortFromBareIP ? nil : { target in
+                        preflightLocalNetworkAccess: { target in
                             await Self.preflightLocalNetworkAccess(address: target)
                         },
-                        maximumDuration: initialMaximumDuration,
-                        connectTimeout: initialConnectTimeout,
-                        shellTimeout: 2
-                    )
-                }
-            }
-            if result.connectedAddress == nil,
-               shouldDiscoverPortFromBareIP,
-               let targetHost = Self.host(in: address) {
-                let scannedPorts = await Self.manualADBPortScanner(targetHost)
-                let scannedCandidates = Self.manualADBTargetPortScanCandidateAddresses(
-                    host: targetHost,
-                    ports: scannedPorts,
-                    existingCandidates: candidateAddresses
-                )
-                if scannedCandidates != candidateAddresses {
-                    candidateAddresses = scannedCandidates
-                    result = await Self.connectToRememberedWirelessReadiness(
-                        adb: adb,
-                        savedAddress: address,
-                        candidateAddresses: candidateAddresses,
-                        readinessAttempts: 1,
-                        delayNanoseconds: 250_000_000,
-                        preflightLocalNetworkAccess: nil,
-                        maximumDuration: 10,
-                        connectTimeout: 3,
+                        maximumDuration: 6,
+                        connectTimeout: 4,
                         shellTimeout: 2
                     )
                 }
@@ -3823,25 +3794,12 @@ final class AppModel: ObservableObject {
     nonisolated static func normalizedManualADBTarget(_ target: String) -> String? {
         let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
-              trimmed.rangeOfCharacter(from: .whitespacesAndNewlines) == nil
+              trimmed.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+              !trimmed.contains(":"),
+              Self.isIPv4Address(trimmed)
         else { return nil }
 
-        let normalized: String
-        if let separator = trimmed.lastIndex(of: ":") {
-            let hostPart = String(trimmed[..<separator])
-            let portPart = String(trimmed[trimmed.index(after: separator)...])
-            guard Self.isIPv4Address(hostPart),
-                  let port = Int(portPart),
-                  (1...65535).contains(port)
-            else { return nil }
-            normalized = "\(hostPart):\(port)"
-        } else {
-            guard Self.isIPv4Address(trimmed) else { return nil }
-            normalized = "\(trimmed):\(legacyADBWirelessPort)"
-        }
-
-        guard host(in: normalized)?.isEmpty == false else { return nil }
-        return normalized
+        return "\(trimmed):\(legacyADBWirelessPort)"
     }
 
     nonisolated static func manualADBTargetCandidateAddresses(
@@ -3849,32 +3807,7 @@ final class AppModel: ObservableObject {
         discoveredPhones: [DiscoveredPhone],
         pairedPhones: [PairedPhoneRecord]
     ) -> [String] {
-        guard let targetHost = host(in: normalizedAddress) else {
-            return [normalizedAddress]
-        }
-
-        var candidates: [String] = []
-        func append(_ address: String?) {
-            guard let address,
-                  host(in: address) == targetHost,
-                  !candidates.contains(address)
-            else { return }
-            candidates.append(address)
-        }
-
-        if port(in: normalizedAddress) != legacyADBWirelessPort {
-            append(normalizedAddress)
-        }
-        for phone in discoveredPhones where phone.kind.isConnectable {
-            append(phone.address)
-        }
-        for record in recordsByMostRecent(pairedPhones) {
-            append(record.resolvedWiFiAddress)
-            append(record.lastAddress)
-        }
-        append("\(targetHost):\(legacyADBWirelessPort)")
-        append(normalizedAddress)
-        return candidates
+        [normalizedAddress]
     }
 
     nonisolated static func manualADBTargetPortScanCandidateAddresses(

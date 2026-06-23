@@ -408,14 +408,11 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
     }
 
-    func testManualADBTargetNormalizationAcceptsIPWithWirelessDebuggingPort() {
-        XCTAssertEqual(
-            AppModel.normalizedManualADBTarget("192.0.2.44:43123"),
-            "192.0.2.44:43123"
-        )
+    func testManualADBTargetNormalizationRejectsExplicitPort() {
+        XCTAssertNil(AppModel.normalizedManualADBTarget("192.0.2.44:43123"))
     }
 
-    func testManualADBTargetCandidatesPreferDiscoveredSameHostPort() {
+    func testManualADBTargetCandidatesUseOnlyLegacyPort() {
         let discovered = [
             DiscoveredPhone(
                 id: "adb-pixel",
@@ -444,11 +441,11 @@ final class ADBDeviceParsingTests: XCTestCase {
                 discoveredPhones: discovered,
                 pairedPhones: [saved]
             ),
-            ["192.0.2.44:43123", "192.0.2.44:5555"]
+            ["192.0.2.44:5555"]
         )
     }
 
-    func testManualADBTargetCandidatesPreferExplicitPortOverDiscovery() {
+    func testManualADBTargetCandidatesIgnoreDiscoveredWirelessDebuggingPorts() {
         let discovered = [
             DiscoveredPhone(
                 id: "adb-pixel",
@@ -460,11 +457,11 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         XCTAssertEqual(
             AppModel.manualADBTargetCandidateAddresses(
-                normalizedAddress: "192.0.2.44:39555",
+                normalizedAddress: "192.0.2.44:5555",
                 discoveredPhones: discovered,
                 pairedPhones: []
             ),
-            ["192.0.2.44:39555", "192.0.2.44:43123", "192.0.2.44:5555"]
+            ["192.0.2.44:5555"]
         )
     }
 
@@ -618,63 +615,17 @@ final class ADBDeviceParsingTests: XCTestCase {
     }
 
     @MainActor
-    func testManualADBTargetConnectsToExplicitWirelessDebuggingPort() async throws {
-        let fake = try installFakeADB(script: """
-        #!/bin/sh
-        echo "$@" >> "$ADB_FAKE_LOG"
-        if [ "$1" = "mdns" ] && [ "$2" = "services" ]; then
-          echo "List of discovered mdns services"
-          exit 0
-        fi
-        if [ "$1" = "connect" ]; then
-          if [ "$2" = "192.0.2.44:39555" ]; then
-            echo "connected to $2"
-          else
-            echo "failed to connect to '$2': Connection refused"
-          fi
-          exit 0
-        fi
-        if [ "$1" = "devices" ]; then
-          echo "List of devices attached"
-          echo "192.0.2.44:39555 device product:raven model:Pixel_6_Pro device:raven transport_id:1"
-          exit 0
-        fi
-        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
-          if [ "$2" = "192.0.2.44:39555" ]; then
-            echo "wifi-adb-ok"
-          else
-            echo "error: closed"
-          fi
-          exit 0
-        fi
-        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
-          exit 0
-        fi
-        exit 0
-        """)
-        defer { fake.cleanup() }
-
+    func testManualADBTargetRejectsExplicitWirelessDebuggingPort() async throws {
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
         model.manualADBTarget = "192.0.2.44:39555"
         model.connectManualADBTarget()
 
-        let startedAt = Date()
-        while model.selectedDevice.adbSerial != "192.0.2.44:39555",
-              Date().timeIntervalSince(startedAt) < 8 {
-            try await Task.sleep(nanoseconds: 50_000_000)
-        }
-
-        XCTAssertNil(model.activeError)
-        XCTAssertEqual(model.selectedDevice.adbSerial, "192.0.2.44:39555")
-        let calls = loggedCalls(fake.log)
-        XCTAssertTrue(calls.contains("connect 192.0.2.44:39555"))
-        XCTAssertFalse(calls.contains("connect 192.0.2.44:5555"))
-        model.stopMirroring()
-        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertEqual(model.activeError?.title, "Invalid IP address")
+        XCTAssertNil(model.selectedDevice.adbSerial)
     }
 
     @MainActor
-    func testManualADBTargetDiscoversWirelessDebuggingPortFromBareIP() async throws {
+    func testManualADBTargetDoesNotDiscoverWirelessDebuggingPortFromBareIP() async throws {
         let fake = try installFakeADB(script: """
         #!/bin/sh
         echo "$@" >> "$ADB_FAKE_LOG"
@@ -710,14 +661,9 @@ final class ADBDeviceParsingTests: XCTestCase {
         """)
         defer { fake.cleanup() }
 
-        let originalScanner = AppModel.manualADBPortScanner
-        AppModel.manualADBPortScanner = { host in
-            host == "192.0.2.44" ? [39555] : []
-        }
         let originalProbe = AppModel.adbTCPPortProbe
         AppModel.adbTCPPortProbe = { _ in true }
         defer {
-            AppModel.manualADBPortScanner = originalScanner
             AppModel.adbTCPPortProbe = originalProbe
         }
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
@@ -725,22 +671,19 @@ final class ADBDeviceParsingTests: XCTestCase {
         model.connectManualADBTarget()
 
         let startedAt = Date()
-        while model.selectedDevice.adbSerial != "192.0.2.44:39555",
-              Date().timeIntervalSince(startedAt) < 8 {
+        while model.activeError == nil, Date().timeIntervalSince(startedAt) < 10 {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
-        XCTAssertNil(model.activeError)
+        XCTAssertEqual(model.activeError?.title, "ADB target not reachable")
         let calls = loggedCalls(fake.log)
-        XCTAssertEqual(model.selectedDevice.adbSerial, "192.0.2.44:39555")
+        XCTAssertNil(model.selectedDevice.adbSerial)
         XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
-        XCTAssertTrue(calls.contains("connect 192.0.2.44:39555"))
-        model.stopMirroring()
-        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertFalse(calls.contains("connect 192.0.2.44:39555"))
     }
 
     @MainActor
-    func testManualADBTargetRefreshesMDNSBeforeFallingBackToLegacyPort() async throws {
+    func testManualADBTargetDoesNotUseMDNSWirelessDebuggingPort() async throws {
         let fake = try installFakeADB(script: """
         #!/bin/sh
         echo "$@" >> "$ADB_FAKE_LOG"
@@ -781,19 +724,15 @@ final class ADBDeviceParsingTests: XCTestCase {
         model.connectManualADBTarget()
 
         let startedAt = Date()
-        while model.selectedDevice.adbSerial != "192.0.2.44:43123",
-              Date().timeIntervalSince(startedAt) < 5 {
+        while model.activeError == nil, Date().timeIntervalSince(startedAt) < 10 {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
-        XCTAssertNil(model.activeError)
-        XCTAssertEqual(model.selectedDevice.adbSerial, "192.0.2.44:43123")
+        XCTAssertEqual(model.activeError?.title, "ADB target not reachable")
         let calls = loggedCalls(fake.log)
         XCTAssertTrue(calls.contains("mdns services"))
         XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
-        XCTAssertTrue(calls.contains("connect 192.0.2.44:43123"))
-        model.stopMirroring()
-        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertFalse(calls.contains("connect 192.0.2.44:43123"))
     }
 
     @MainActor

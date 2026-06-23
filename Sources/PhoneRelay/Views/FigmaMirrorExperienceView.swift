@@ -252,8 +252,8 @@ struct FigmaMirrorExperienceView: View {
                     if !model.isFirstTimeUSBSetup {
                         connectionChoiceRow(
                             iconName: "wifi",
-                            title: "Connect wirelessly",
-                            subtitle: "No cable. Use WiFi IP or QR pairing.",
+                            title: "Connect with Wi-Fi IP",
+                            subtitle: "No cable. Enter the phone Wi-Fi IP address.",
                             showsProgress: isWirelessButtonBusy,
                             isDisabled: isChooserButtonDisabled,
                             isAvailable: effectiveWiFiConnectionAvailable,
@@ -322,7 +322,7 @@ struct FigmaMirrorExperienceView: View {
                                 .font(.system(size: 14 * scale, weight: .bold))
                                 .foregroundStyle(.white)
 
-                            Text("No cable. Enter phone IP or pair with QR code.")
+                            Text("No cable. Enter Wi-Fi IP or scan QR for Wireless Debugging.")
                                 .font(.system(size: 12 * scale, weight: .regular))
                                 .foregroundStyle(.white.opacity(0.7))
                                 .multilineTextAlignment(.center)
@@ -559,7 +559,7 @@ struct FigmaMirrorExperienceView: View {
             VStack(alignment: .leading, spacing: 20 * scale) {
                 bottomSheetHeader(
                     title: "Connect via WiFi only",
-                    subtitle: "Enter the phone Wifi IP address only.",
+                    subtitle: "Enter the phone Wi-Fi IP address only.",
                     scale: scale
                 )
 
@@ -927,12 +927,10 @@ struct FigmaMirrorExperienceView: View {
         let isConnecting = model.isManualADBTargetConnecting
         let connectEnabled = !model.isActivelyConnecting
             && AppModel.normalizedManualADBTarget(model.manualADBTarget) != nil
-        let isPairing = model.isManualWirelessPairing
-        let pairEnabled = !model.isActivelyConnecting && model.canPairManualWirelessTarget
 
         return VStack(alignment: .leading, spacing: 6 * scale) {
             HStack(spacing: 8.727 * scale) {
-                TextField("e.g. 192.168.1.23:39555", text: $model.manualADBTarget)
+                TextField("e.g. 192.168.1.23", text: $model.manualADBTarget)
                     .textFieldStyle(.plain)
                     .font(.system(size: 14 * scale, weight: .regular))
                     .foregroundStyle(.white)
@@ -980,7 +978,7 @@ struct FigmaMirrorExperienceView: View {
                     .fill(Color.white.opacity(0.05))
             )
 
-            Text("Already paired, or using tcpip 5555? Enter the IP (or IP:port) and tap Connect.")
+            Text("Enter the phone Wi-Fi IP address only. Phone Relay will use port 5555.")
                 .font(.system(size: 11 * scale, weight: .regular))
                 .foregroundStyle(.white.opacity(0.58))
                 .lineLimit(2)
@@ -988,59 +986,10 @@ struct FigmaMirrorExperienceView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 12 * scale)
 
-            HStack(spacing: 8.727 * scale) {
-                TextField("6-digit pairing code", text: $model.manualWirelessPairingCode)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 14 * scale, weight: .regular))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .layoutPriority(1)
-                    .onSubmit {
-                        model.pairManualWirelessTarget()
-                    }
-
-                Button(action: model.pairManualWirelessTarget) {
-                    HStack(spacing: 8 * scale) {
-                        if isPairing {
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(onboardingDeepCyan)
-                                .scaleEffect(max(0.7, 0.82 * scale))
-                        }
-
-                        Text(isPairing ? "Pairing" : "Pair")
-                            .font(.system(size: 14 * scale, weight: .medium))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                    }
-                    .foregroundStyle(pairEnabled || isPairing ? onboardingDeepCyan : Color.white.opacity(0.5))
-                    .padding(.horizontal, 12 * scale)
-                    .frame(minWidth: (isPairing ? 92 : 82) * scale)
-                    .frame(height: 40 * scale)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8 * scale, style: .continuous)
-                            .fill(pairEnabled || isPairing ? cyan400 : Color.white.opacity(0.2))
-                    )
-                }
-                .fixedSize(horizontal: true, vertical: false)
-                .layoutPriority(2)
-                .buttonStyle(.plain)
-                .disabled(!pairEnabled || isPairing)
-            }
-            .padding(.leading, 16 * scale)
-            .padding(.trailing, 4 * scale)
-            .padding(.vertical, 4 * scale)
-            .frame(maxWidth: .infinity)
-            .frame(height: 48 * scale)
-            .background(
-                RoundedRectangle(cornerRadius: 12 * scale, style: .continuous)
-                    .fill(Color.white.opacity(0.05))
-            )
-
-            Text("New phone? On Android open \u{201C}Pair device with pairing code\u{201D}, put its IP:port in the field above and the 6-digit code here, then tap Pair.")
+            Text("For Android Wireless Debugging, use the QR code below instead of typing a port.")
                 .font(.system(size: 11 * scale, weight: .regular))
                 .foregroundStyle(.white.opacity(0.58))
-                .lineLimit(3)
+                .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 12 * scale)
