@@ -903,6 +903,14 @@
               <td>Useful polish, but not central enough to come before capture and reliability.</td>
               <td>Status is visible without creating a full clipboard manager.</td>
             </tr>
+            <tr>
+              <td><strong>11</strong></td>
+              <td><strong>Android Companion Activity Signal</strong></td>
+              <td>P3</td>
+              <td>Users can tell when the physical phone may be active outside the mirror.</td>
+              <td>Useful for trust and coordination, but it requires Android-side instrumentation and careful permission framing.</td>
+              <td>A companion service reports only narrow activity signals such as unlock, foreground changes, or likely local interaction.</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -926,7 +934,7 @@
 
         <div class="axis">Medium fit</div>
         <div class="matrix-card">Common Folder Pull<span>Keep scoped to imports.</span></div>
-        <div class="matrix-card">App Launch Shortcuts<span>Useful if simple.</span></div>
+        <div class="matrix-card">App Launch Shortcuts, Activity Signal<span>Useful if simple.</span></div>
         <div class="matrix-card">Media Remote<span>Likely not worth focus.</span></div>
 
         <div class="axis">Weak fit</div>
@@ -970,6 +978,15 @@
             <li>Common Folder Pull</li>
             <li>Optional app launch shortcuts</li>
             <li>Small clipboard sync status panel</li>
+          </ol>
+        </article>
+        <article class="phase">
+          <span class="label"><span class="dot"></span>Phase 4</span>
+          <h3>Research Android-side activity signals</h3>
+          <ol>
+            <li>Evaluate a minimal companion service for physical-phone activity detection</li>
+            <li>Limit signals to unlock, foreground changes, and likely local interaction</li>
+            <li>Define permission, privacy, and setup language before shipping</li>
           </ol>
         </article>
       </div>

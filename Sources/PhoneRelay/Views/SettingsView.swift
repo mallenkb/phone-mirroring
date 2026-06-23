@@ -91,6 +91,7 @@ struct SettingsView: View {
                         liveAddress: liveAddress(for: record),
                         onConnect: { transport in model.connect(record: record, transport: transport.modelTransport) },
                         onDisconnect: { model.disconnectFromSettings() },
+                        onUpdateWiFiIPAddress: { model.updateWiFiIPAddressFromSettings(for: record) },
                         onForget: { model.forgetPairedPhone(id: record.id) }
                     )
                 }
@@ -1084,14 +1085,16 @@ private struct MoreMenuRow: View {
                 Text(title)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(foreground)
+                    .lineLimit(1)
 
                 if let subtitle {
                     Text(subtitle)
                         .font(.system(size: 12))
                         .foregroundStyle(subtitleForeground)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 9)
             .padding(.vertical, subtitle == nil ? 6 : 7)
@@ -1184,6 +1187,7 @@ private struct PairedPhoneRow: View {
     let liveAddress: String?
     let onConnect: (SettingsDeviceTransport) -> Void
     let onDisconnect: () -> Void
+    let onUpdateWiFiIPAddress: () -> Void
     let onForget: () -> Void
     @State private var showMoreMenu = false
 
@@ -1282,13 +1286,25 @@ private struct PairedPhoneRow: View {
                     .padding(.vertical, 3)
             }
 
+            MoreMenuRow(
+                title: "Update Wi-Fi IP Address",
+                subtitle: "Enter a new IP\nor connect USB to refresh it."
+            ) {
+                showMoreMenu = false
+                onUpdateWiFiIPAddress()
+            }
+
+            Divider()
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+
             MoreMenuRow(title: "Forget", isDestructive: true) {
                 showMoreMenu = false
                 onForget()
             }
         }
         .padding(5)
-        .frame(width: 230)
+        .frame(width: 260)
     }
 
     private var rightColumn: some View {

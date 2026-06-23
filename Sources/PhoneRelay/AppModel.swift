@@ -788,6 +788,9 @@ final class AppModel: ObservableObject {
     private var lastPresenceAutoConnectAttemptAt: Date?
     private var failedAutoConnectTargets: [String: Date] = [:]
     private var autoConnectTargetsInFlight: Set<String> = []
+    /// Last time we ran the (expensive, whole-subnet) Wi-Fi address recovery for
+    /// a record. Keyed by record id; throttled by `wifiAddressRecoveryCooldown`.
+    private var wifiAddressRecoveryAttemptedAt: [String: Date] = [:]
     private var explicitDeviceSetupRequired = false
     private var hasShownLocalNetworkPermissionHint = false
     /// Authorized adb serials seen on the previous device-watcher poll. Lets us
@@ -1690,37 +1693,122 @@ final class AppModel: ObservableObject {
             )
 
             guard let self else { return }
-            self.autoConnectTargetsInFlight.remove(savedAddress)
-            guard !self.explicitDeviceSetupRequired else { return }
-
-            guard let connectedAddress = result.connectedAddress else {
-                // A saved route that fails every connect with "No route to host"
-                // is a macOS Local Network denial, not an offline phone — surface
-                // it instead of collapsing it into a generic readiness failure.
-                if result.sawNoRouteToHost {
-                    self.presentLocalNetworkPermissionHint()
-                }
-                self.noteAutoConnectFailure(address: savedAddress)
-                self.isAutoConnecting = !self.autoConnectTargetsInFlight.isEmpty
-                Logger.log("Auto-connect to saved Wi-Fi route \(savedAddress) failed readiness check")
+            guard !self.explicitDeviceSetupRequired else {
+                self.autoConnectTargetsInFlight.remove(savedAddress)
                 return
             }
 
-            self.failedAutoConnectTargets.removeValue(forKey: savedAddress)
-            self.failedAutoConnectTargets.removeValue(forKey: connectedAddress)
-            let deviceName = await Self.connectedDeviceName(
-                adb: adb,
-                serial: connectedAddress,
-                fallback: record.displayName
-            )
-            self.touchPairedPhone(id: record.id, displayName: deviceName, address: connectedAddress)
-            self.selectedDevice.adbSerial = connectedAddress
-            self.selectedDevice.name = deviceName
-            self.selectedDevice.network = "Wi-Fi"
-            self.isSelectedDeviceOnline = true
-            self.stopQRCodePairingSession()
-            self.startMirroring()
+            if let connectedAddress = result.connectedAddress {
+                self.autoConnectTargetsInFlight.remove(savedAddress)
+                await self.completeWirelessAutoConnect(
+                    record: record,
+                    savedAddress: savedAddress,
+                    connectedAddress: connectedAddress
+                )
+                return
+            }
+
+            // A saved route that fails every connect with "No route to host" is a
+            // macOS Local Network denial, not an offline phone — surface it
+            // instead of collapsing it into a generic readiness failure.
+            if result.sawNoRouteToHost {
+                self.presentLocalNetworkPermissionHint()
+            }
+
+            // Last resort: the saved IP is dead. The phone may just have a new
+            // DHCP lease, so hunt for its current IP on the LAN by its MAC. Stays
+            // "in flight" across the sweep so presence polls don't stack scans.
+            let recovered = await self.recoverChangedWiFiAddress(for: record)
+            self.autoConnectTargetsInFlight.remove(savedAddress)
+            guard !self.explicitDeviceSetupRequired else { return }
+
+            if let recovered {
+                await self.completeWirelessAutoConnect(
+                    record: record,
+                    savedAddress: savedAddress,
+                    connectedAddress: recovered
+                )
+                return
+            }
+
+            self.noteAutoConnectFailure(address: savedAddress)
+            self.isAutoConnecting = !self.autoConnectTargetsInFlight.isEmpty
+            Logger.log("Auto-connect to saved Wi-Fi route \(savedAddress) failed readiness check")
         }
+    }
+
+    /// Shared success tail for a wireless auto-connect: clear cooldowns, persist
+    /// the (possibly recovered) live route, and start mirroring.
+    private func completeWirelessAutoConnect(
+        record: PairedPhoneRecord,
+        savedAddress: String,
+        connectedAddress: String
+    ) async {
+        let adb = self.adb
+        self.failedAutoConnectTargets.removeValue(forKey: savedAddress)
+        self.failedAutoConnectTargets.removeValue(forKey: connectedAddress)
+        let deviceName = await Self.connectedDeviceName(
+            adb: adb,
+            serial: connectedAddress,
+            fallback: record.displayName
+        )
+        // Pass wifiAddress so a recovered IP replaces the stale one; the stored
+        // MAC is preserved (touch keeps the existing MAC when none is supplied).
+        self.touchPairedPhone(
+            id: record.id,
+            displayName: deviceName,
+            address: connectedAddress,
+            usbSerial: record.resolvedUSBSerial,
+            wifiAddress: connectedAddress
+        )
+        self.selectedDevice.adbSerial = connectedAddress
+        self.selectedDevice.name = deviceName
+        self.selectedDevice.network = "Wi-Fi"
+        self.isSelectedDeviceOnline = true
+        self.stopQRCodePairingSession()
+        self.startMirroring()
+    }
+
+    /// Hunts for a paired phone's current Wi-Fi address after its IP changed,
+    /// then verifies the result is adb-ready. Throttled per record so a phone
+    /// that's merely away can't trigger repeated whole-subnet scans. Returns the
+    /// verified `host:port`, or nil.
+    private func recoverChangedWiFiAddress(for record: PairedPhoneRecord) async -> String? {
+        let now = Date()
+        if let last = wifiAddressRecoveryAttemptedAt[record.id],
+           now.timeIntervalSince(last) < Self.wifiAddressRecoveryCooldown {
+            return nil
+        }
+        wifiAddressRecoveryAttemptedAt[record.id] = now
+
+        // Without a MAC and without a specific name/serial there's nothing to
+        // match against, so skip the scan entirely.
+        let hasIdentity = record.wifiMACAddress != nil
+            || record.resolvedUSBSerial?.isEmpty == false
+            || PairedPhoneStore.isSpecificDeviceName(record.displayName)
+        guard hasIdentity else { return nil }
+
+        let adb = self.adb
+        let target = WiFiAddressRecovery.Target(
+            macAddress: record.wifiMACAddress,
+            usbSerial: record.resolvedUSBSerial,
+            displayName: record.displayName,
+            lastKnownIP: record.resolvedWiFiAddress ?? record.lastAddress
+        )
+        Logger.log("Wi-Fi recovery: hunting for \(record.displayName) (mac=\(record.wifiMACAddress ?? "nil"))")
+
+        let recovered = await WiFiAddressRecovery.recover(adb: adb, target: target)
+        guard let recovered else { return nil }
+
+        let readiness = await Self.connectToRememberedWirelessReadiness(
+            adb: adb,
+            savedAddress: recovered,
+            readinessAttempts: 2,
+            preflightLocalNetworkAccess: { address in
+                await Self.preflightLocalNetworkAccess(address: address)
+            }
+        )
+        return readiness.connectedAddress
     }
 
     private func mirrorAuthorizedDevicePreferringWireless(_ device: AuthorizedADBDevice) async {
@@ -1821,7 +1909,8 @@ final class AppModel: ObservableObject {
         displayName: String,
         address: String,
         usbSerial: String? = nil,
-        wifiAddress: String? = nil
+        wifiAddress: String? = nil,
+        wifiMACAddress: String? = nil
     ) {
         clearExplicitDeviceSetupRequirement()
         resumeAutoConnect(matchingID: id, address: address)
@@ -1831,7 +1920,8 @@ final class AppModel: ObservableObject {
             displayName: displayName,
             address: address,
             usbSerial: usbSerial,
-            wifiAddress: wifiAddress
+            wifiAddress: wifiAddress,
+            wifiMACAddress: wifiMACAddress
         )
         store.save(pairedPhones)
     }
@@ -2237,6 +2327,10 @@ final class AppModel: ObservableObject {
     /// Keep failed background reconnects quiet briefly so stale Bonjour/adb
     /// entries do not pin the UI in "Connecting" forever.
     nonisolated static let autoConnectFailureCooldown: TimeInterval = 20
+
+    /// Minimum gap between whole-subnet Wi-Fi address recovery sweeps for the
+    /// same phone, so a phone that's simply away can't trigger a scan storm.
+    nonisolated static let wifiAddressRecoveryCooldown: TimeInterval = 60
     nonisolated static let presenceAutoConnectThrottle: TimeInterval = 3
 
     nonisolated static func isAutoConnectFailureCoolingDown(
@@ -2504,6 +2598,13 @@ final class AppModel: ObservableObject {
             adb.run(["-s", usbDevice.serial, "shell", "ip", "route"], timeout: routeQueryTimeout)
         }.value
 
+        // Learn the Wi-Fi MAC over USB so recovery can find the phone after its
+        // IP changes. Best-effort: a nil MAC just means recovery falls back to
+        // the port-5555 + getprop sweep later.
+        let wifiMACAddress = await Task.detached {
+            Self.resolveWiFiMACAddress(adb: adb, serial: usbDevice.serial, routeOutput: routeOutput)
+        }.value
+
         // Prefer the legacy `adb tcpip 5555` listener. It's the only wireless
         // adb path that stays reachable without the phone's Wireless debugging
         // toggle, so the address we remember keeps working on later "same
@@ -2572,6 +2673,7 @@ final class AppModel: ObservableObject {
                         usbDevice: usbDevice,
                         address: legacyAddress,
                         displayName: deviceName,
+                        wifiMACAddress: wifiMACAddress,
                         activatePreparedMirror: activatePreparedMirror
                     )
                     return true
@@ -2657,6 +2759,7 @@ final class AppModel: ObservableObject {
                     usbDevice: usbDevice,
                     address: tlsAddress,
                     displayName: deviceName,
+                    wifiMACAddress: wifiMACAddress,
                     activatePreparedMirror: activatePreparedMirror
                 )
                 return true
@@ -2724,6 +2827,7 @@ final class AppModel: ObservableObject {
                     usbDevice: usbDevice,
                     address: wirelessPhone.address,
                     displayName: deviceName,
+                    wifiMACAddress: wifiMACAddress,
                     activatePreparedMirror: activatePreparedMirror
                 )
                 return true
@@ -2764,6 +2868,7 @@ final class AppModel: ObservableObject {
         usbDevice: AuthorizedADBDevice,
         address: String,
         displayName: String,
+        wifiMACAddress: String? = nil,
         activatePreparedMirror: Bool = true
     ) {
         rememberUSBWiFiHandoffCandidate(
@@ -2776,7 +2881,8 @@ final class AppModel: ObservableObject {
             displayName: displayName,
             address: address,
             usbSerial: usbDevice.serial,
-            wifiAddress: address
+            wifiAddress: address,
+            wifiMACAddress: wifiMACAddress
         )
         guard activatePreparedMirror else {
             Logger.log("Prepared Wi-Fi handoff address=\(address) while keeping current USB mirror active")
@@ -3216,6 +3322,13 @@ final class AppModel: ObservableObject {
             let wifiAddress = "\(wifiIP):\(Self.legacyADBWirelessPort)"
             self.manualADBTarget = wifiIP
 
+            // Learn the Wi-Fi MAC while we have the cable — it's the anchor that
+            // lets recovery find the phone after its IP changes.
+            let wifiMAC = await Task.detached {
+                Self.resolveWiFiMACAddress(adb: adb, serial: usbDevice.serial, routeOutput: routeOutput)
+            }.value
+            guard !Task.isCancelled else { return }
+
             let matchingRecord = self.pairedPhones.first {
                 Self.recordMatchesSelectedADBSerial($0, selectedSerial: usbDevice.serial)
                     || PairedPhoneStore.normalizedDeviceName($0.displayName)
@@ -3226,7 +3339,8 @@ final class AppModel: ObservableObject {
                 displayName: matchingRecord?.displayName ?? self.selectedDisplayName(for: usbDevice.model),
                 address: wifiAddress,
                 usbSerial: matchingRecord?.resolvedUSBSerial ?? usbDevice.serial,
-                wifiAddress: wifiAddress
+                wifiAddress: wifiAddress,
+                wifiMACAddress: wifiMAC
             )
         }
     }
@@ -3966,6 +4080,69 @@ final class AppModel: ObservableObject {
             return parts[srcIndex + 1]
         }
         return nil
+    }
+
+    /// The Wi-Fi interface name (`wlan0`, etc.) from `ip route` output — the
+    /// token after `dev` on the wlan line. Used to read that interface's MAC.
+    nonisolated static func wifiInterfaceName(in routeOutput: String) -> String? {
+        let lines = routeOutput.split(whereSeparator: \.isNewline).map(String.init)
+        // Prefer the same line `wifiIPAddress` keys on (wlan + a src address).
+        for line in lines where line.contains("wlan") && line.contains(" src ") {
+            if let iface = interfaceAfterDev(in: line) { return iface }
+        }
+        // Fall back to any route whose `dev` names a wlan interface.
+        for line in lines {
+            if let iface = interfaceAfterDev(in: line), iface.contains("wlan") {
+                return iface
+            }
+        }
+        return nil
+    }
+
+    private nonisolated static func interfaceAfterDev(in line: String) -> String? {
+        let parts = line.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard let devIndex = parts.firstIndex(of: "dev"),
+              parts.indices.contains(devIndex + 1)
+        else { return nil }
+        return parts[devIndex + 1]
+    }
+
+    /// The MAC from `ip addr show <iface>` / `ip link show <iface>` output — the
+    /// token after `link/ether` — normalized to lowercase colon form.
+    nonisolated static func macAddress(inLinkOutput output: String) -> String? {
+        for line in output.split(whereSeparator: \.isNewline).map(String.init) {
+            let parts = line.split(whereSeparator: \.isWhitespace).map(String.init)
+            guard let index = parts.firstIndex(of: "link/ether"),
+                  parts.indices.contains(index + 1)
+            else { continue }
+            if let mac = PairedPhoneRecord.normalizedMACAddress(parts[index + 1]) {
+                return mac
+            }
+        }
+        return nil
+    }
+
+    /// Reads the phone's Wi-Fi MAC over an existing adb transport (USB or
+    /// wireless). Prefers the cheap sysfs read, falling back to `ip addr`.
+    /// Blocking — call from a detached task. Returns nil if the interface is
+    /// unknown or down.
+    nonisolated static func resolveWiFiMACAddress(
+        adb: ADBController,
+        serial: String,
+        routeOutput: String,
+        timeout: TimeInterval = 2
+    ) -> String? {
+        guard let iface = wifiInterfaceName(in: routeOutput) else { return nil }
+        let sysfs = adb.run(
+            ["-s", serial, "shell", "cat", "/sys/class/net/\(iface)/address"],
+            timeout: timeout
+        )
+        if let mac = PairedPhoneRecord.normalizedMACAddress(sysfs) { return mac }
+        let link = adb.run(
+            ["-s", serial, "shell", "ip", "addr", "show", iface],
+            timeout: timeout
+        )
+        return macAddress(inLinkOutput: link)
     }
 
     nonisolated static func wirelessDebuggingAddress(
@@ -4940,6 +5117,7 @@ final class AppModel: ObservableObject {
         isAwaitingReconnect = true
         isAutoConnecting = true
         activeError = nil
+        showConnectionWindow(startsQRCodePairing: false)
 
         let adb = self.adb
         let generation = mirrorStartGeneration
@@ -5420,6 +5598,14 @@ final class AppModel: ObservableObject {
     func showWirelessConnectionDetailsFromSettings() {
         connectionWindowPrefersWirelessDetails = true
         showConnectionWindow(startsQRCodePairing: true)
+    }
+
+    func updateWiFiIPAddressFromSettings(for record: PairedPhoneRecord) {
+        if let host = record.resolvedWiFiAddress.flatMap(Self.host) {
+            manualADBTarget = host
+        }
+        connectionWindowPrefersWirelessDetails = true
+        showConnectionWindow(startsQRCodePairing: false)
     }
 
     func disconnectFromSettings() {

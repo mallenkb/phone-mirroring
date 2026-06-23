@@ -31,7 +31,10 @@ enum Tooling {
             localScrcpyBuildPath(toolName: name),
             "/opt/homebrew/bin/\(name)",
             "/usr/local/bin/\(name)",
-            "/usr/bin/\(name)"
+            "/usr/bin/\(name)",
+            // System network tools (e.g. `arp`) live here, not in /usr/bin.
+            "/usr/sbin/\(name)",
+            "/sbin/\(name)"
         ].compactMap { $0 }
 
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }

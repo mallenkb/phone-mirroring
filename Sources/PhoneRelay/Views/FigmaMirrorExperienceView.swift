@@ -25,6 +25,7 @@ struct FigmaMirrorExperienceView: View {
     @State private var usbAvailabilityBeforeConnect = false
     @State private var wifiAvailabilityBeforeConnect = false
     @State private var showsConnectionHelpSheet = false
+    @State private var isConnectionHelpSheetPresented = false
     @State private var activeWirelessSheet: WirelessSheet?
     @State private var isWirelessDebuggingSheetContentVisible = false
     private let phoneAspect: CGFloat = MirrorContentWindowController.defaultMirrorAspect
@@ -274,13 +275,27 @@ struct FigmaMirrorExperienceView: View {
                     )
                 }
 
-                Button(action: showConnectionHelpSheet) {
-                    Text("Can't connect?")
-                        .font(.system(size: 14 * scale, weight: .regular))
-                        .foregroundStyle(accent)
-                        .underline()
+                VStack(spacing: 8 * scale) {
+                    Button(action: showConnectionHelpSheet) {
+                        Text("Can't connect?")
+                            .font(.system(size: 14 * scale, weight: .regular))
+                            .foregroundStyle(accent)
+                            .underline()
+                            .frame(height: 28 * scale)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    Button(action: openDeviceSettings) {
+                        Text("Manage Devices")
+                            .font(.system(size: 14 * scale, weight: .regular))
+                            .foregroundStyle(accent)
+                            .underline()
+                            .frame(height: 28 * scale)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
         .frame(width: width)
@@ -665,27 +680,44 @@ struct FigmaMirrorExperienceView: View {
     }
 
     private func showConnectionHelpSheet() {
-        withAnimation(.smooth(duration: 0.28, extraBounce: 0.02)) {
-            showsConnectionHelpSheet = true
+        showsConnectionHelpSheet = true
+        isConnectionHelpSheetPresented = false
+        Task { @MainActor in
+            await Task.yield()
+            guard showsConnectionHelpSheet else { return }
+            withAnimation(.easeOut(duration: 0.3)) {
+                isConnectionHelpSheetPresented = true
+            }
         }
     }
 
+    private func openDeviceSettings() {
+        NSApp.sendAction(Selector(("showSettings:")), to: nil, from: nil)
+    }
+
     private func dismissConnectionHelpSheet() {
-        withAnimation(.smooth(duration: 0.24, extraBounce: 0.02)) {
-            showsConnectionHelpSheet = false
+        withAnimation(.easeIn(duration: 0.22)) {
+            isConnectionHelpSheetPresented = false
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            if !isConnectionHelpSheetPresented {
+                showsConnectionHelpSheet = false
+            }
         }
     }
 
     private func connectionHelpOverlay(scale: CGFloat) -> some View {
         ZStack(alignment: .bottom) {
-            Color.black.opacity(0.24)
+            Color.black.opacity(isConnectionHelpSheetPresented ? 0.24 : 0)
                 .onTapGesture {
                     dismissConnectionHelpSheet()
                 }
-                .transition(.opacity)
+                .animation(.easeInOut(duration: 0.22), value: isConnectionHelpSheetPresented)
 
             connectionHelpSheet(scale: scale)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .offset(y: isConnectionHelpSheetPresented ? 0 : referenceHeight * scale)
+                .animation(.easeOut(duration: 0.3), value: isConnectionHelpSheetPresented)
         }
     }
 

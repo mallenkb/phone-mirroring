@@ -184,6 +184,11 @@ final class AppMenuStateTests: XCTestCase {
             from: "Logger.log(\"Prepared Wi-Fi handoff address=\\(candidate.address) was not ready after USB ended\")",
             to: "        }\n        return true"
         )
+        let takeoverBody = try sourceSlice(
+            in: source,
+            from: "private func startUSBWiFiHandoffTakeoverIfAvailable(",
+            to: "    private func recoverUSBLaunchFailureOverWireless"
+        )
 
         XCTAssertTrue(failureBody.contains("self.isRecoveringConnection = false"))
         XCTAssertTrue(failureBody.contains("self.isAwaitingReconnect = false"))
@@ -192,7 +197,7 @@ final class AppMenuStateTests: XCTestCase {
         XCTAssertTrue(failureBody.contains("self.selectedDevice.network = \"USB\""))
         XCTAssertTrue(failureBody.contains("keepConnectionWindowVisibleOverride: false"))
         XCTAssertFalse(failureBody.contains("startDisconnectRecoveryFallback()"))
-        XCTAssertFalse(failureBody.contains("showConnectionWindow(startsQRCodePairing: false)"))
+        XCTAssertTrue(takeoverBody.contains("showConnectionWindow(startsQRCodePairing: false)"))
     }
 
     private func sourceSlice(in source: String, from start: String, to end: String) throws -> String {
