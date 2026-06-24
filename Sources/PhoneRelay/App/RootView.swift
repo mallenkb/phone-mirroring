@@ -236,8 +236,9 @@ struct WindowRegistrationView: NSViewRepresentable {
                 object: parent,
                 queue: .main
             ) { [weak self] _ in
+                guard let coordinator = self else { return }
                 Task { @MainActor in
-                    self?.windowWillMiniaturize()
+                    coordinator.windowWillMiniaturize()
                 }
             })
             windowObservers.append(center.addObserver(
@@ -245,8 +246,9 @@ struct WindowRegistrationView: NSViewRepresentable {
                 object: parent,
                 queue: .main
             ) { [weak self] _ in
+                guard let coordinator = self else { return }
                 Task { @MainActor in
-                    self?.windowDidDeminiaturize()
+                    coordinator.windowDidDeminiaturize()
                 }
             })
         }

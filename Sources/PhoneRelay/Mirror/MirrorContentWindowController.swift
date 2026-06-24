@@ -60,13 +60,13 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             + (maximumMirrorCornerRadius - minimumMirrorCornerRadius) * cornerScale
     }
 
-    static func onboardingCornerRadius(visibleFrame: NSRect = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 390, height: 850)) -> CGFloat {
+    static func onboardingCornerRadius(visibleFrame: NSRect = NSRect(x: 0, y: 0, width: 390, height: 850)) -> CGFloat {
         let limits = sizeLimits(
             visibleFrame: visibleFrame,
             aspect: defaultMirrorAspect,
             chromeHeight: verticalShellInset,
             horizontalChromeWidth: horizontalShellInset,
-            maximumHeightBasis: resolutionHeight(for: NSScreen.main, fallbackVisibleFrame: visibleFrame)
+            maximumHeightBasis: resolutionHeight(for: nil, fallbackVisibleFrame: visibleFrame)
         )
         return mirrorCornerRadius(
             forWindowHeight: AppModel.onboardingWindowSize.height,
@@ -1148,8 +1148,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             object: NSApp,
             queue: .main
         ) { [weak self] _ in
+            guard let controller = self else { return }
             Task { @MainActor in
-                self?.hideChromeImmediately(orderOutToolbar: true)
+                controller.hideChromeImmediately(orderOutToolbar: true)
             }
         })
     }
