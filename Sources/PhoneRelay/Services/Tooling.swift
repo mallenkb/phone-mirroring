@@ -286,13 +286,34 @@ enum Logger {
     private static let maxLogBytes: UInt64 = 2 * 1024 * 1024
     private static let queue = DispatchQueue(label: "phonerelay.logger")
     private static let timestampFormatter = ISO8601DateFormatter()
-    static let logURL = URL(
-        fileURLWithPath: NSString(string: "~/Library/Logs/PhoneRelay.log").expandingTildeInPath
-    )
+    /// True when hosted by XCTest. File logging is then redirected to a temp
+    /// file so the suite never appends fixture data to the shipping app's
+    /// `~/Library/Logs/PhoneRelay.log` (which made live debugging confusing).
+    static let isRunningUnderXCTest: Bool = {
+        let env = ProcessInfo.processInfo.environment
+        return env["XCTestConfigurationFilePath"] != nil
+            || env["XCTestSessionIdentifier"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }()
+    static let logURL: URL = {
+        if isRunningUnderXCTest {
+            return FileManager.default.temporaryDirectory
+                .appendingPathComponent("PhoneRelay-xctest.log")
+        }
+        return URL(
+            fileURLWithPath: NSString(string: "~/Library/Logs/PhoneRelay.log").expandingTildeInPath
+        )
+    }()
 
     static func log(_ message: String) {
         osLog.log("\(message, privacy: .public)")
         queue.async { appendToFile(message) }
+    }
+
+    /// Block until every queued `log` write has hit disk. Test-only helper so a
+    /// test can assert on the on-disk log right after calling `log`.
+    static func flushForTesting() {
+        queue.sync {}
     }
 
     private static func appendToFile(_ message: String) {

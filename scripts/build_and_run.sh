@@ -9,17 +9,21 @@ PRODUCT_NAME="PhoneRelay"
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
 APP_VERSION="${APP_VERSION:-1.0.13}"
 BUILD_NUMBER="${BUILD_NUMBER:-20}"
+SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://phonerelay.mallenkb.com/appcast.xml}"
+SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-BRG3UL9d/8qtx7RJdobbGi1q87hpbEflfn1izHj/qgc=}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 EXECUTABLE_PATH="$APP_BUNDLE/Contents/MacOS/$PRODUCT_NAME"
 RESOURCES_DIR="$APP_BUNDLE/Contents/Resources"
+FRAMEWORKS_DIR="$APP_BUNDLE/Contents/Frameworks"
 BIN_DIR="$RESOURCES_DIR/bin"
 LICENSES_DIR="$RESOURCES_DIR/LICENSES"
 SCRCPY_SERVER="$ROOT_DIR/scrcpy-source/build-mac/server/scrcpy-server"
 RESOURCE_SCRCPY_SERVER="$ROOT_DIR/Sources/PhoneRelay/Resources/scrcpy-server"
 APP_ASSETS="$ROOT_DIR/App/Assets.xcassets"
 RESOURCE_BUNDLE="$ROOT_DIR/.build/debug/PhoneRelay_PhoneRelay.bundle"
+SPARKLE_FRAMEWORK="$ROOT_DIR/.build/debug/Sparkle.framework"
 
 VERIFY=false
 LOGS=false
@@ -82,7 +86,7 @@ cd "$ROOT_DIR"
 swift build --product "$BUILD_PRODUCT"
 
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_BUNDLE/Contents/MacOS" "$RESOURCES_DIR" "$BIN_DIR" "$LICENSES_DIR"
+mkdir -p "$APP_BUNDLE/Contents/MacOS" "$RESOURCES_DIR" "$FRAMEWORKS_DIR" "$BIN_DIR" "$LICENSES_DIR"
 cp ".build/debug/$BUILD_PRODUCT" "$EXECUTABLE_PATH"
 chmod +x "$EXECUTABLE_PATH"
 
@@ -105,6 +109,12 @@ fi
 
 if [[ -d "$RESOURCE_BUNDLE" ]]; then
   cp -R "$RESOURCE_BUNDLE" "$RESOURCES_DIR/PhoneRelay_PhoneRelay.bundle"
+fi
+
+if [[ -d "$SPARKLE_FRAMEWORK" ]]; then
+  cp -R "$SPARKLE_FRAMEWORK" "$FRAMEWORKS_DIR/Sparkle.framework"
+else
+  echo "warning: Sparkle.framework was not found at $SPARKLE_FRAMEWORK; in-app updates will not run in this bundle" >&2
 fi
 
 if [[ -f "$ROOT_DIR/THIRD_PARTY_NOTICES.md" ]]; then
@@ -165,6 +175,16 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <string>_adb-tls-connect._tcp</string>
     <string>_adb-tls-pairing._tcp</string>
   </array>
+  <key>SUFeedURL</key>
+  <string>$SPARKLE_FEED_URL</string>
+  <key>SUPublicEDKey</key>
+  <string>$SPARKLE_PUBLIC_ED_KEY</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUAllowsAutomaticUpdates</key>
+  <true/>
+  <key>SUScheduledCheckInterval</key>
+  <integer>86400</integer>
 </dict>
 </plist>
 PLIST
@@ -192,7 +212,20 @@ sign_if_macho() {
   fi
 }
 
+ensure_framework_rpath() {
+  local executable="$1"
+  local rpath="@executable_path/../Frameworks"
+  if ! otool -l "$executable" | grep -Fq "path $rpath "; then
+    install_name_tool -add_rpath "$rpath" "$executable"
+  fi
+}
+
+ensure_framework_rpath "$EXECUTABLE_PATH"
+
 if command -v codesign >/dev/null 2>&1; then
+  if [[ -d "$FRAMEWORKS_DIR/Sparkle.framework" ]]; then
+    codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework"
+  fi
   sign_if_macho "$EXECUTABLE_PATH"
   sign_if_macho "$BIN_DIR/adb"
   codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"
@@ -211,12 +244,16 @@ fi
 if "$VERIFY"; then
   for _ in {1..20}; do
     if pgrep -x "$PRODUCT_NAME" >/dev/null; then
-      echo "$APP_NAME is running."
-      break
+      sleep 1
+      if pgrep -x "$PRODUCT_NAME" >/dev/null; then
+        echo "$APP_NAME is running."
+        exit 0
+      fi
     fi
     sleep 0.25
   done
-  pgrep -x "$PRODUCT_NAME" >/dev/null
+  echo "$APP_NAME did not stay running." >&2
+  exit 1
 fi
 
 if "$LOGS"; then

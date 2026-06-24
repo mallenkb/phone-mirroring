@@ -150,6 +150,19 @@ final class ScrcpyControlChannel {
         write(buf)
     }
 
+    func sendHorizontalTrackpadSwipe(normalized: CGPoint, deltaX: CGFloat) {
+        guard deviceWidth > 0, deviceHeight > 0 else { return }
+        let end = Self.horizontalTrackpadSwipeEndPoint(from: normalized, deltaX: deltaX)
+        sendTouch(action: .down, normalized: normalized, button: Self.buttonPrimary)
+        sendTouch(
+            action: .move,
+            normalized: CGPoint(x: (normalized.x + end.x) / 2, y: normalized.y),
+            button: Self.buttonPrimary
+        )
+        sendTouch(action: .move, normalized: end, button: Self.buttonPrimary)
+        sendTouch(action: .up, normalized: end)
+    }
+
     func sendKeyEvent(_ key: AndroidKey, action: KeyAction = .down, metastate: UInt32 = 0) {
         sendKeycode(action: action, keycode: key.rawValue, metastate: metastate)
         if action == .down {
@@ -263,6 +276,15 @@ final class ScrcpyControlChannel {
         buf.append(MessageType.setDisplayPower.rawValue)
         buf.append(mode.rawValue)
         return buf
+    }
+
+    static func horizontalTrackpadSwipeEndPoint(from point: CGPoint, deltaX: CGFloat) -> CGPoint {
+        let distance = min(0.22, max(0.035, abs(deltaX) / 420))
+        let direction: CGFloat = deltaX >= 0 ? -1 : 1
+        return CGPoint(
+            x: min(0.98, max(0.02, point.x + direction * distance)),
+            y: min(0.98, max(0.02, point.y))
+        )
     }
 
     /// Result of attempting to parse one device message from the front of a

@@ -251,6 +251,31 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
         self.autoConnectSuspended = autoConnectSuspended
     }
 
+    init(
+        id: String,
+        displayName: String,
+        model: String,
+        lastAddress: String,
+        adbSerial: String? = nil,
+        firstPaired: Date,
+        lastConnected: Date,
+        wifiAddress: String? = nil,
+        wifiMACAddress: String? = nil,
+        autoConnectSuspended: Bool = false
+    ) {
+        self.init(
+            id: id,
+            displayName: displayName.isEmpty ? model : displayName,
+            lastAddress: lastAddress,
+            usbSerial: adbSerial,
+            wifiAddress: wifiAddress,
+            wifiMACAddress: wifiMACAddress,
+            firstPaired: firstPaired,
+            lastConnected: lastConnected,
+            autoConnectSuspended: autoConnectSuspended
+        )
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id
         case displayName

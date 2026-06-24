@@ -46,7 +46,6 @@ final class MirrorSession {
     private var windowController: MirrorContentWindowController?
     private var screenOffTask: Task<Void, Never>?
     private var screenOffDeadline: Date?
-    private var lastRequestedDisplayPowerMode: ScrcpyControlChannel.DisplayPowerMode = .normal
 
     private var streamWidth: UInt32 = 0
     private var streamHeight: UInt32 = 0
@@ -349,7 +348,6 @@ final class MirrorSession {
 
     private func setDeviceScreenPower(_ mode: ScrcpyControlChannel.DisplayPowerMode) {
         controlChannel?.sendDisplayPowerMode(mode)
-        lastRequestedDisplayPowerMode = mode
     }
 
     func forwardPointerEvent(_ event: MirrorRenderView.PointerEvent,
@@ -373,18 +371,28 @@ final class MirrorSession {
             recordMirrorActivity()
             let scrollSpeedPercent = model?.mirrorScrollSpeedPercent ?? 35
             let scrollFeel = model?.mirrorScrollFeel ?? .balanced
-            controlChannel.sendScroll(normalized: event.normalized,
-                                      deltaX: AppModel.shapedMirrorScrollDelta(
-                                        event.scrollDX,
-                                        speedPercent: scrollSpeedPercent,
-                                        feel: scrollFeel
-                                      ),
-                                      deltaY: AppModel.shapedMirrorScrollDelta(
-                                        event.scrollDY,
-                                        speedPercent: scrollSpeedPercent,
-                                        feel: scrollFeel
-                                      ))
+            let deltaX = AppModel.shapedMirrorScrollDelta(
+                event.scrollDX,
+                speedPercent: scrollSpeedPercent,
+                feel: scrollFeel
+            )
+            let deltaY = AppModel.shapedMirrorScrollDelta(
+                event.scrollDY,
+                speedPercent: scrollSpeedPercent,
+                feel: scrollFeel
+            )
+            if Self.shouldUseHorizontalTrackpadSwipe(deltaX: deltaX, deltaY: deltaY) {
+                controlChannel.sendHorizontalTrackpadSwipe(normalized: event.normalized, deltaX: deltaX)
+            } else {
+                controlChannel.sendScroll(normalized: event.normalized, deltaX: deltaX, deltaY: deltaY)
+            }
         }
+    }
+
+    nonisolated static func shouldUseHorizontalTrackpadSwipe(deltaX: CGFloat, deltaY: CGFloat) -> Bool {
+        let absX = abs(deltaX)
+        let absY = abs(deltaY)
+        return absX >= 6 && absX >= absY * 1.4
     }
 
     func forwardKeyEvent(_ event: NSEvent) {

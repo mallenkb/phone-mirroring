@@ -24,6 +24,16 @@
     <string>_adb-tls-connect._tcp</string>
     <string>_adb-tls-pairing._tcp</string>
   </array>
+  <key>SUFeedURL</key>
+  <string>https://phonerelay.mallenkb.com/appcast.xml</string>
+  <key>SUPublicEDKey</key>
+  <string>BRG3UL9d/8qtx7RJdobbGi1q87hpbEflfn1izHj/qgc=</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUAllowsAutomaticUpdates</key>
+  <true/>
+  <key>SUScheduledCheckInterval</key>
+  <integer>86400</integer>
   <!-- Keep the pre-macOS-26 ("Liquid Glass") control appearance: rounded
        segmented controls and no visible card behind grouped content. Building
        against the macOS 26+ SDK otherwise opts the app into the new design. -->

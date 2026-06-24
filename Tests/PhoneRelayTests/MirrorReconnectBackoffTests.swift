@@ -61,7 +61,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 explicitDeviceSetupRequired: true
             )
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             AppModel.shouldAttemptRecoveredWiFiReconnect(
                 hasSavedDevices: false,
                 explicitDeviceSetupRequired: false
@@ -594,6 +594,28 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         XCTAssertEqual(
             AppModel.mirrorWindowDeviceTitle(name: "Work phone"),
             "Work phone"
+        )
+    }
+
+    func testConnectionWindowTitleDoesNotPretendGenericOfflineDeviceIsConnected() {
+        XCTAssertEqual(
+            AppModel.connectionWindowTitle(
+                name: "Android device",
+                isOnline: false,
+                isMirroring: false
+            ),
+            "Phone Relay"
+        )
+    }
+
+    func testConnectionWindowTitleUsesDeviceNameWhenOnline() {
+        XCTAssertEqual(
+            AppModel.connectionWindowTitle(
+                name: "Pixel 6 Pro",
+                isOnline: true,
+                isMirroring: false
+            ),
+            "Pixel 6 Pro"
         )
     }
 

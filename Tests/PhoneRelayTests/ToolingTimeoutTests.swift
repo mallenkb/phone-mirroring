@@ -179,6 +179,33 @@ final class ToolingTimeoutTests: XCTestCase {
         XCTAssertTrue(lingering.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
+    // The suite must never append fixture data to the shipping app's log file
+    // (`~/Library/Logs/PhoneRelay.log`) — doing so polluted live handoff debugging
+    // with test-only device serials and RFC5737 doc-IPs.
+    func testFileLoggingIsRedirectedAwayFromShippingLogUnderXCTest() {
+        let shippingPath = NSString(string: "~/Library/Logs/PhoneRelay.log").expandingTildeInPath
+
+        XCTAssertTrue(Logger.isRunningUnderXCTest)
+        XCTAssertNotEqual(Logger.logURL.path, shippingPath)
+
+        // A log call from a test must land in the redirected temp file, not the
+        // shipping log. Snapshot the shipping log size, log, and confirm it is
+        // untouched while the temp file receives the line.
+        let fm = FileManager.default
+        let sizeBefore = (try? fm.attributesOfItem(atPath: shippingPath)[.size] as? UInt64) ?? nil
+
+        let marker = "xctest-redirect-marker-\(UUID().uuidString)"
+        Logger.log(marker)
+        // `Logger.log` writes on a private serial queue; drain it before reading.
+        Logger.flushForTesting()
+
+        let sizeAfter = (try? fm.attributesOfItem(atPath: shippingPath)[.size] as? UInt64) ?? nil
+        XCTAssertEqual(sizeBefore, sizeAfter, "test logging grew the shipping app log file")
+
+        let redirected = (try? String(contentsOf: Logger.logURL, encoding: .utf8)) ?? ""
+        XCTAssertTrue(redirected.contains(marker), "marker did not reach the redirected temp log")
+    }
+
     func testRunDataResultKeepsStdoutFreeOfStderrNoise() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PhoneRelayTests-\(UUID().uuidString)")

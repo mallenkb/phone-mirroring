@@ -222,7 +222,7 @@ struct FigmaMirrorExperienceView: View {
                     .foregroundStyle(accent)
                     .frame(width: 61 * scale, height: 40 * scale)
 
-                Text("Connect your Android phone")
+                Text(model.isFirstTimeUSBSetup ? "Set up your Android phone with USB" : "Connect your Android phone")
                     .font(.system(size: 16 * scale, weight: .semibold))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
@@ -235,7 +235,7 @@ struct FigmaMirrorExperienceView: View {
                         iconName: "cable.connector",
                         resourceIconName: "usb-cable",
                         title: "Connect with USB",
-                        subtitle: "Cable connection.",
+                        subtitle: model.isFirstTimeUSBSetup ? "Plug in once to authorize Wi-Fi mirroring." : "Cable connection.",
                         showsProgress: isUSBButtonBusy,
                         isDisabled: isChooserButtonDisabled,
                         isAvailable: effectiveUSBConnectionAvailable,
@@ -249,30 +249,32 @@ struct FigmaMirrorExperienceView: View {
                         }
                     )
 
-                    connectionChoiceRow(
-                        iconName: "wifi",
-                        title: "Connect wirelessly",
-                        subtitle: "No cable. Use WiFi IP or QR pairing.",
-                        showsProgress: isWirelessButtonBusy,
-                        isDisabled: isChooserButtonDisabled,
-                        isAvailable: effectiveWiFiConnectionAvailable,
-                        width: width,
-                        scale: scale,
-                        action: {
-                            usbAvailabilityBeforeConnect = model.isUSBConnectionAvailable
-                            wifiAvailabilityBeforeConnect = model.isWirelessConnectionAvailable
-                            if model.hasSavedWirelessConnection {
-                                inlineConnectingTransport = .wifi
-                                model.reconnectOverWiFi(inlineUntilConnected: true)
-                            } else if AppModel.normalizedManualADBTarget(model.manualADBTarget) != nil {
-                                inlineConnectingTransport = .wifi
-                                model.connectManualADBTarget()
-                            } else {
-                                navigate(to: .wirelessPairing)
-                                model.ensureQRCodePairingSession()
+                    if !model.isFirstTimeUSBSetup {
+                        connectionChoiceRow(
+                            iconName: "wifi",
+                            title: "Connect with Wi-Fi IP",
+                            subtitle: "No cable. Enter the phone Wi-Fi IP address.",
+                            showsProgress: isWirelessButtonBusy,
+                            isDisabled: isChooserButtonDisabled,
+                            isAvailable: effectiveWiFiConnectionAvailable,
+                            width: width,
+                            scale: scale,
+                            action: {
+                                usbAvailabilityBeforeConnect = model.isUSBConnectionAvailable
+                                wifiAvailabilityBeforeConnect = model.isWirelessConnectionAvailable
+                                if model.hasVisibleSavedWirelessConnection {
+                                    inlineConnectingTransport = .wifi
+                                    model.reconnectOverWiFi(inlineUntilConnected: true)
+                                } else if AppModel.normalizedManualADBTarget(model.manualADBTarget) != nil {
+                                    inlineConnectingTransport = .wifi
+                                    model.connectManualADBTarget()
+                                } else {
+                                    navigate(to: .wirelessPairing)
+                                    model.ensureQRCodePairingSession()
+                                }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
 
                 VStack(spacing: 8 * scale) {
@@ -320,7 +322,7 @@ struct FigmaMirrorExperienceView: View {
                                 .font(.system(size: 14 * scale, weight: .bold))
                                 .foregroundStyle(.white)
 
-                            Text("No cable. Enter phone IP or pair with QR code.")
+                            Text("No cable. Enter Wi-Fi IP or scan QR for Wireless Debugging.")
                                 .font(.system(size: 12 * scale, weight: .regular))
                                 .foregroundStyle(.white.opacity(0.7))
                                 .multilineTextAlignment(.center)
@@ -556,8 +558,8 @@ struct FigmaMirrorExperienceView: View {
         bottomSheetChrome(scale: scale) {
             VStack(alignment: .leading, spacing: 20 * scale) {
                 bottomSheetHeader(
-                    title: "Connect via WiFi only",
-                    subtitle: "Enter the phone Wifi IP address only.",
+                    title: "Connect via Wi-Fi only",
+                    subtitle: "Enter the phone Wi-Fi IP address only.",
                     scale: scale
                 )
 
@@ -868,20 +870,22 @@ struct FigmaMirrorExperienceView: View {
 
     private func bottomStatusPill(width: CGFloat, scale: CGFloat) -> some View {
         let state = model.connectionPillState
-        let deviceLabel = state == .noPhone ? "" : model.connectionDeviceLabel
         let isConnecting = state == .connecting || state == .reconnecting
+        let statusText = isConnecting ? "Connecting to" : model.connectionPillText
+        let deviceLabel = state == .noPhone ? "" : model.connectionDeviceLabel
+        let visibleDeviceLabel = isConnecting && !deviceLabel.isEmpty ? "\(deviceLabel)..." : deviceLabel
         let fontSize = 12 * scale
 
         return HStack(spacing: 4 * scale) {
             StatusDot(color: Self.pillDotColor(for: state), diameter: 8 * scale, pulses: isConnecting)
 
-            Text(model.connectionPillText)
+            Text(statusText)
                 .font(.system(size: fontSize, weight: .medium))
                 .foregroundStyle(.white.opacity(0.92))
                 .fixedSize()
 
-            if !deviceLabel.isEmpty {
-                Text(deviceLabel)
+            if !visibleDeviceLabel.isEmpty {
+                Text(visibleDeviceLabel)
                     .font(.system(size: fontSize, weight: .medium))
                     .foregroundStyle(.white.opacity(0.62))
                     .lineLimit(1)
@@ -976,7 +980,15 @@ struct FigmaMirrorExperienceView: View {
                     .fill(Color.white.opacity(0.05))
             )
 
-            Text("Enter the phone Wifi IP address only")
+            Text("Enter the phone Wi-Fi IP address only. Phone Relay will use port 5555.")
+                .font(.system(size: 11 * scale, weight: .regular))
+                .foregroundStyle(.white.opacity(0.58))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12 * scale)
+
+            Text("For Android Wireless Debugging, use the QR code below instead of typing a port.")
                 .font(.system(size: 11 * scale, weight: .regular))
                 .foregroundStyle(.white.opacity(0.58))
                 .lineLimit(2)

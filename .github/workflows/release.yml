@@ -36,6 +36,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "dmg_name=PhoneRelay-$VERSION.dmg" >> "$GITHUB_OUTPUT"
+          echo "zip_name=PhoneRelay-$VERSION.zip" >> "$GITHUB_OUTPUT"
 
       - name: Select Xcode
         run: |
@@ -103,6 +104,23 @@ jobs:
           test -f "dist/${{ steps.version.outputs.dmg_name }}"
           hdiutil verify "dist/${{ steps.version.outputs.dmg_name }}"
 
+      - name: Create Sparkle ZIP and appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+          SPARKLE_DOWNLOAD_URL_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/
+          SPARKLE_RELEASE_LINK: https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          : "${SPARKLE_PRIVATE_KEY:?Missing SPARKLE_PRIVATE_ED_KEY secret. Export it with Sparkle's generate_keys tool and add it as a repository secret.}"
+          scripts/make_sparkle_update.sh dist/PhoneRelay.app
+
+      - name: Verify Sparkle appcast
+        run: |
+          set -euo pipefail
+          test -f "dist/sparkle/${{ steps.version.outputs.zip_name }}"
+          test -f "dist/sparkle/appcast.xml"
+          grep -q "${{ steps.version.outputs.zip_name }}" dist/sparkle/appcast.xml
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -110,6 +128,8 @@ jobs:
           set -euo pipefail
           gh release create "${{ steps.version.outputs.tag }}" \
             "dist/${{ steps.version.outputs.dmg_name }}" \
+            "dist/sparkle/${{ steps.version.outputs.zip_name }}" \
+            "dist/sparkle/appcast.xml" \
             --title "PhoneRelay ${{ steps.version.outputs.tag }}" \
             --notes "PhoneRelay ${{ steps.version.outputs.version }}"
 

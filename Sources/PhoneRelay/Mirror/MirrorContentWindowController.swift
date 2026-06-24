@@ -14,6 +14,8 @@ private enum MirrorShellStyle {
 /// at display refresh rate, exactly like Reflect.
 @MainActor
 final class MirrorContentWindowController: NSWindowController, NSWindowDelegate {
+    private static weak var activeController: MirrorContentWindowController?
+
     static let cornerRadius: CGFloat = 34
     /// Standard macOS titlebar height. Anything larger and the AppKit chrome
     /// reads as a heavy banner instead of a window's title bar.
@@ -285,6 +287,8 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
     func show() {
         guard let window else { return }
+        Self.closeSupersededMirrorWindows(keeping: self)
+        Self.activeController = self
         let frame: NSRect
         if let launchFrame {
             frame = launchFrame
@@ -302,6 +306,36 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(renderView)
         updateFullscreenPresentationIfNeeded()
+    }
+
+    static func supersededMirrorWindows(
+        in windows: [NSWindow],
+        activeWindow: NSWindow?
+    ) -> [NSWindow] {
+        windows.filter { window in
+            window !== activeWindow
+                && !window.isMiniaturized
+                && window is MirrorContentWindow
+        }
+    }
+
+    private static func closeSupersededMirrorWindows(keeping controller: MirrorContentWindowController) {
+        let activeWindow = controller.window
+        let staleWindows = supersededMirrorWindows(in: NSApp.windows, activeWindow: activeWindow)
+        guard !staleWindows.isEmpty else { return }
+        Logger.log("Closing \(staleWindows.count) superseded mirror window(s) before showing the active mirror.")
+        for window in staleWindows {
+            window.delegate = nil
+            window.childWindows?.forEach { child in
+                child.delegate = nil
+                child.close()
+            }
+            window.close()
+        }
+        if let active = activeController, active !== controller {
+            active.window?.delegate = nil
+            active.close()
+        }
     }
 
     func setStreamSize(width: UInt32, height: UInt32) {
@@ -1275,6 +1309,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     // MARK: - NSWindowDelegate
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        NSApplication.shared.terminate(nil)
+        return false
+    }
 
     func windowWillClose(_ notification: Notification) {
         hideWorkItem?.cancel()

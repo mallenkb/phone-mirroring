@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import CryptoKit
+import Sparkle
 import SwiftUI
 import UserNotifications
 
@@ -44,6 +45,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private var launchedInBackground = false
     private weak var screenRecordingMenuItem: NSMenuItem?
     private var screenRecordingMenuCancellable: AnyCancellable?
+    private lazy var sparkleUpdaterController = SPUStandardUpdaterController(
+        startingUpdater: true,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+    )
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
         if yieldToExistingInstanceIfNeeded() {
@@ -79,6 +85,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         )
         window.title = "Phone Relay"
         window.isReleasedWhenClosed = false
+        window.isRestorable = false
         window.isOpaque = false
         window.hasShadow = false
         window.isMovableByWindowBackground = true
@@ -104,7 +111,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         installMainMenu()
         installKeyboardScaling()
         NSApp.activate(ignoringOtherApps: true)
-        scheduleAutomaticUpdateChecks()
+        _ = sparkleUpdaterController
     }
 
     // MARK: - Single-instance guard
@@ -124,6 +131,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
     public func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
         true
+    }
+
+    public func application(_ app: NSApplication, shouldSaveSecureApplicationState coder: NSCoder) -> Bool {
+        false
+    }
+
+    public func application(_ app: NSApplication, shouldRestoreSecureApplicationState coder: NSCoder) -> Bool {
+        false
     }
 
     nonisolated static func describesSamePhoneRelayApp(
@@ -160,13 +175,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         }
     }
 
-    /// The still-running older sibling this instance must defer to, or nil when
-    /// this instance is the rightful single copy.
-    nonisolated static func blockingDuplicateInstance(
+    /// Older siblings that should be evicted before this launch continues.
+    nonisolated static func olderDuplicateInstances(
         candidates: [AppInstanceDescriptor],
         current: AppInstanceDescriptor
-    ) -> AppInstanceDescriptor? {
-        candidates.first { candidate in
+    ) -> [AppInstanceDescriptor] {
+        candidates.filter { candidate in
             candidate.pid != current.pid
                 && !candidate.isTerminated
                 && describesSamePhoneRelayApp(candidate, as: current)
@@ -176,33 +190,47 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
     /// Phone Relay owns exclusive resources — the adb server, scrcpy sessions,
     /// and the connection window — so concurrent copies fight over the phone
-    /// and flood the screen with duplicate "Connecting…" windows (e.g. from
-    /// `open -n`, or a dev build launched next to the installed app). The
-    /// newest instance yields: it waits briefly for older instances to exit
-    /// (covering the restart-onboarding relaunch handoff), then activates the
-    /// survivor and terminates itself.
+    /// and flood the screen with duplicate "Connecting…" windows. A fresh
+    /// launch is the user's explicit recovery action, so it evicts any older
+    /// siblings and continues as the one clean owner.
     private func yieldToExistingInstanceIfNeeded() -> Bool {
         let current = Self.descriptor(for: .current)
         let deadline = Date().addingTimeInterval(Self.duplicateInstanceExitGracePeriod)
+        var requestedTerminationForPIDs = Set<Int32>()
         while true {
             // NSWorkspace's list only refreshes when the run loop turns, which
             // it can't while this wait blocks — re-verify liveness via signal 0
             // so an already-exited sibling never strands or kills this launch.
-            let candidates = NSWorkspace.shared.runningApplications.map { app in
+            let runningApps = NSWorkspace.shared.runningApplications
+            let candidates = runningApps.map { app in
                 var descriptor = Self.descriptor(for: app)
                 if !descriptor.isTerminated, !Self.isProcessAlive(descriptor.pid) {
                     descriptor.isTerminated = true
                 }
                 return descriptor
             }
-            guard let blocker = Self.blockingDuplicateInstance(candidates: candidates, current: current) else {
+            let blockers = Self.olderDuplicateInstances(candidates: candidates, current: current)
+            guard !blockers.isEmpty else {
                 return false
             }
-            guard Date() < deadline else {
-                Logger.log("Another Phone Relay instance (pid \(blocker.pid)) is already running; terminating this duplicate copy.")
-                NSWorkspace.shared.runningApplications
-                    .first { $0.processIdentifier == blocker.pid }?
-                    .activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+
+            for blocker in blockers {
+                guard let app = runningApps.first(where: { $0.processIdentifier == blocker.pid }) else { continue }
+                if !requestedTerminationForPIDs.contains(blocker.pid) {
+                    requestedTerminationForPIDs.insert(blocker.pid)
+                    Logger.log("Terminating older Phone Relay instance pid=\(blocker.pid) before continuing launch.")
+                    app.terminate()
+                }
+            }
+
+            // NEVER escalate to forceTerminate()/SIGKILL here. On this Mac,
+            // SIGKILLing an `open`-launched (LaunchServices-managed) GUI app
+            // makes LaunchServices treat it as a failed launch and relaunch it
+            // ~1×/sec — an endless kill→relaunch cascade that floods the screen.
+            // If an older instance ignores the graceful quit, we yield THIS
+            // launch instead (below) rather than force-killing the sibling.
+            if Date() >= deadline.addingTimeInterval(1.0) {
+                Logger.log("Older Phone Relay instance did not exit; terminating this launch to avoid duplicate windows.")
                 NSApp.terminate(nil)
                 return true
             }
@@ -228,7 +256,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     }
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        false
+        // Stay alive only while a USB↔Wi-Fi handoff or reconnect is mid-flight —
+        // the brief windowless gap during a handoff must not quit the app. Once
+        // the app is genuinely idle with no window, quit; otherwise it lurks
+        // invisibly in the background and keeps throwing up mirror windows on
+        // every auto-reconnect ("the app isn't even open but it happens").
+        model.isPerformingMirrorHandoffOrRecovery
     }
 
     public func applicationDidBecomeActive(_ notification: Notification) {
@@ -436,11 +469,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         Logger.log("Application will terminate")
         if let keyMonitor {
             NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
         }
-        updateCheckTask?.cancel()
-        updateDownloadTask?.cancel()
-        automaticUpdateTimer?.invalidate()
         model.shutdown()
+        closeAllAppWindows()
+    }
+
+    private func closeAllAppWindows() {
+        for window in NSApp.windows {
+            window.delegate = nil
+            window.childWindows?.forEach { child in
+                child.delegate = nil
+                child.close()
+            }
+            window.close()
+        }
     }
 
     private func installMainMenu() {
@@ -464,13 +507,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                 keyEquivalent: ","
             )
         )
-        appMenu.addItem(
-            NSMenuItem(
-                title: "Check for Updates...",
-                action: #selector(checkForUpdates(_:)),
-                keyEquivalent: ""
-            )
+        let updateItem = NSMenuItem(
+            title: "Check for Updates...",
+            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+            keyEquivalent: ""
         )
+        updateItem.target = sparkleUpdaterController
+        appMenu.addItem(updateItem)
         appMenu.addItem(.separator())
         appMenu.addItem(
             NSMenuItem(
@@ -879,14 +922,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         NSWorkspace.shared.open(AppModel.latestReleaseURL)
     }
 
-    @objc private func checkForUpdates(_ sender: Any?) {
-        guard updateCheckTask == nil else { return }
-
-        updateCheckTask = Task { [weak self] in
-            await self?.runUpdateCheck(isAutomatic: false)
-        }
-    }
-
     @objc private func showKeyboardShortcuts(_ sender: Any?) {
         if let shortcutsWindow {
             shortcutsWindow.makeKeyAndOrderFront(nil)
@@ -1024,10 +1059,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             return true
         case #selector(revealLastCapture(_:))?:
             return model.lastCaptureURL != nil
-        case #selector(checkForUpdates(_:))?:
-            let isUpdating = updateCheckTask != nil || updateDownloadTask != nil
-            menuItem.title = isUpdating ? "Checking for Updates..." : "Check for Updates..."
-            return !isUpdating
         default:
             return true
         }

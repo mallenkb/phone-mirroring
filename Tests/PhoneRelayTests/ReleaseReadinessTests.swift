@@ -155,6 +155,54 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertFalse(AppModel.isReleaseVersionNewer("0.1", than: "0.1.0"))
     }
 
+    func testSparkleMetadataIsDeclaredForSelfHostedUpdates() throws {
+        let expectedFeed = "https://phonerelay.mallenkb.com/appcast.xml"
+        let expectedKey = "BRG3UL9d/8qtx7RJdobbGi1q87hpbEflfn1izHj/qgc="
+
+        for plistPath in ["Sources/PhoneRelay/Info.plist", "App/Info.plist"] {
+            let plist = try Self.propertyList(at: Self.repoRoot().appendingPathComponent(plistPath))
+            XCTAssertEqual(plist["SUFeedURL"] as? String, expectedFeed, plistPath)
+            XCTAssertEqual(plist["SUPublicEDKey"] as? String, expectedKey, plistPath)
+            XCTAssertEqual(plist["SUEnableAutomaticChecks"] as? Bool, true, plistPath)
+            XCTAssertEqual(plist["SUAllowsAutomaticUpdates"] as? Bool, true, plistPath)
+            XCTAssertEqual(plist["SUScheduledCheckInterval"] as? Int, 86_400, plistPath)
+        }
+
+        for scriptName in ["scripts/build_and_run.sh", "scripts/package_app.sh"] {
+            let script = try String(
+                contentsOf: Self.repoRoot().appendingPathComponent(scriptName),
+                encoding: .utf8
+            )
+            XCTAssertEqual(Self.shellDefault(named: "SPARKLE_FEED_URL", in: script), expectedFeed)
+            XCTAssertEqual(Self.shellDefault(named: "SPARKLE_PUBLIC_ED_KEY", in: script), expectedKey)
+            XCTAssertTrue(script.contains("<key>SUFeedURL</key>"), scriptName)
+            XCTAssertTrue(script.contains("<key>SUPublicEDKey</key>"), scriptName)
+        }
+    }
+
+    func testReleaseWorkflowPublishesSparkleUpdateAssets() throws {
+        let releaseWorkflow = try String(
+            contentsOf: Self.repoRoot().appendingPathComponent(".github/workflows/release.yml"),
+            encoding: .utf8
+        )
+        let pagesWorkflow = try String(
+            contentsOf: Self.repoRoot().appendingPathComponent(".github/workflows/pages.yml"),
+            encoding: .utf8
+        )
+        let sparkleScript = try String(
+            contentsOf: Self.repoRoot().appendingPathComponent("scripts/make_sparkle_update.sh"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(releaseWorkflow.contains("scripts/make_sparkle_update.sh dist/PhoneRelay.app"))
+        XCTAssertTrue(releaseWorkflow.contains("SPARKLE_PRIVATE_KEY"))
+        XCTAssertTrue(releaseWorkflow.contains("dist/sparkle/${{ steps.version.outputs.zip_name }}"))
+        XCTAssertTrue(releaseWorkflow.contains("dist/sparkle/appcast.xml"))
+        XCTAssertTrue(pagesWorkflow.contains("gh release download --repo \"$REPO\" --pattern appcast.xml --output docs/appcast.xml --clobber"))
+        XCTAssertTrue(sparkleScript.contains("ditto -c -k --keepParent"))
+        XCTAssertTrue(sparkleScript.contains("generate_appcast"))
+    }
+
     private static func waitForCaptureURL(in model: AppModel) async throws -> URL {
         let deadline = Date().addingTimeInterval(2)
         while Date() < deadline {

@@ -405,6 +405,32 @@ final class MirrorWindowChromeTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testNewMirrorWindowSupersedesOlderMirrorWindows() throws {
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        let firstSession = MirrorSession(model: model, serial: nil)
+        let secondSession = MirrorSession(model: model, serial: nil)
+        let first = MirrorContentWindowController(model: model, session: firstSession)
+        let second = MirrorContentWindowController(model: model, session: secondSession)
+        defer {
+            first.window?.delegate = nil
+            second.window?.delegate = nil
+            first.close()
+            second.close()
+        }
+
+        let firstWindow = try XCTUnwrap(first.window)
+        let secondWindow = try XCTUnwrap(second.window)
+
+        XCTAssertEqual(
+            MirrorContentWindowController.supersededMirrorWindows(
+                in: [firstWindow, secondWindow],
+                activeWindow: secondWindow
+            ),
+            [firstWindow]
+        )
+    }
+
     func testConnectionOnboardingDoesNotUseDecorativeAnimatedGlowVisuals() throws {
         let testURL = URL(fileURLWithPath: #filePath)
         let packageRoot = testURL
@@ -471,7 +497,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(viewSource.contains("isAvailable: effectiveWiFiConnectionAvailable"))
         XCTAssertTrue(viewSource.contains("network.localizedCaseInsensitiveContains(\"wireless\")"))
         XCTAssertTrue(viewSource.contains("Self.connectionOnlineGreen : .white"))
-        XCTAssertTrue(viewSource.contains("if model.hasSavedWirelessConnection"))
+        XCTAssertTrue(viewSource.contains("if model.hasVisibleSavedWirelessConnection"))
         XCTAssertTrue(viewSource.contains("model.reconnectOverWiFi(inlineUntilConnected: true)"))
         XCTAssertFalse(viewSource.contains("model.isManualUSBConnectDisabled"))
         // Per-row busy state now lives in the view as isUSBButtonBusy /
@@ -480,7 +506,39 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(modelSource.contains("var isUSBConnectionAvailable"))
         XCTAssertTrue(modelSource.contains("var isWirelessConnectionAvailable"))
         XCTAssertTrue(modelSource.contains("var hasSavedWirelessConnection"))
+        XCTAssertTrue(modelSource.contains("var hasVisibleSavedWirelessConnection"))
         XCTAssertTrue(modelSource.contains("inlineUntilConnected: Bool = false"))
+    }
+
+    @MainActor
+    func testSavedWirelessReconnectRequiresVisibleWirelessTarget() {
+        let record = PairedPhoneRecord(
+            id: "saved-pixel",
+            displayName: "Pixel",
+            model: "Pixel",
+            lastAddress: "192.0.2.44:5555",
+            adbSerial: "RFCT10ZLTAJ",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200),
+            wifiAddress: "192.0.2.44:5555"
+        )
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+
+        XCTAssertTrue(model.hasSavedWirelessConnection)
+        XCTAssertFalse(model.isWirelessConnectionAvailable)
+        XCTAssertFalse(model.hasVisibleSavedWirelessConnection)
+
+        model.setDiscoveredPhonesForTesting([
+            DiscoveredPhone(
+                id: "adb-pixel",
+                address: "192.0.2.44:5555",
+                kind: .legacyTCPIP,
+                lastSeen: Date(timeIntervalSince1970: 300)
+            )
+        ])
+
+        XCTAssertTrue(model.isWirelessConnectionAvailable)
+        XCTAssertTrue(model.hasVisibleSavedWirelessConnection)
     }
 
     func testConnectionStatusPillStaysOutsidePageTransition() throws {

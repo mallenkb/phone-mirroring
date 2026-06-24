@@ -116,6 +116,52 @@ final class AppMenuStateTests: XCTestCase {
         XCTAssertTrue(source.contains("return true"))
     }
 
+    func testClosingLastWindowDoesNotTerminateDuringHandoff() throws {
+        let source = try String(
+            contentsOfFile: "Sources/PhoneRelay/AppDelegate.swift",
+            encoding: .utf8
+        )
+        let body = try sourceSlice(
+            in: source,
+            from: "public func applicationShouldTerminateAfterLastWindowClosed",
+            to: "public func applicationDidBecomeActive"
+        )
+
+        XCTAssertTrue(body.contains("false"))
+    }
+
+    func testTerminationClosesAllAppWindowsAfterModelShutdown() throws {
+        let source = try String(
+            contentsOfFile: "Sources/PhoneRelay/AppDelegate.swift",
+            encoding: .utf8
+        )
+        let terminateBody = try sourceSlice(
+            in: source,
+            from: "public func applicationWillTerminate",
+            to: "private func installMainMenu()"
+        )
+
+        XCTAssertTrue(terminateBody.contains("model.shutdown()"))
+        XCTAssertTrue(terminateBody.contains("closeAllAppWindows()"))
+        XCTAssertTrue(terminateBody.contains("window.childWindows?.forEach"))
+        XCTAssertTrue(terminateBody.contains("window.close()"))
+    }
+
+    func testMirrorWindowCloseButtonTerminatesInsteadOfOrphaningSession() throws {
+        let source = try String(
+            contentsOfFile: "Sources/PhoneRelay/Mirror/MirrorContentWindowController.swift",
+            encoding: .utf8
+        )
+        let closeBody = try sourceSlice(
+            in: source,
+            from: "func windowShouldClose",
+            to: "func windowWillClose"
+        )
+
+        XCTAssertTrue(closeBody.contains("NSApplication.shared.terminate(nil)"))
+        XCTAssertTrue(closeBody.contains("return false"))
+    }
+
     func testPresentationModeStopClearsAndroidTouchIndicators() throws {
         let source = try String(
             contentsOfFile: "Sources/PhoneRelay/AppModel.swift",
