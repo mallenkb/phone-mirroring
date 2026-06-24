@@ -104,6 +104,10 @@ final class SettingsAboutTabTests: XCTestCase {
         XCTAssertTrue(source.contains(".frame(height: Self.height)"))
         XCTAssertTrue(rowBody.contains("connectionDetailRow(\"USB\", usbAddress ?? \"N/A\")"))
         XCTAssertTrue(rowBody.contains("connectionDetailRow(\"Wi-Fi\", wifiAddress ?? \"N/A\")"))
+        XCTAssertTrue(source.contains("liveWiFiAddress: liveAddress(for: record)"))
+        XCTAssertTrue(source.contains("liveUSBAddress: liveUSBAddress(for: record)"))
+        XCTAssertTrue(rowBody.contains("return \"Wi-Fi and USB available\""))
+        XCTAssertTrue(rowBody.contains("return \"USB available\""))
         XCTAssertTrue(rowBody.contains("HStack(alignment: .center, spacing: 14) {\n            TemplateResourceIcon"))
         XCTAssertTrue(rowBody.contains("VStack(alignment: .leading, spacing: 8) {\n                Text(record.displayName)"))
         XCTAssertTrue(rowBody.contains("connectionDetails"))
@@ -130,6 +134,10 @@ final class SettingsAboutTabTests: XCTestCase {
         XCTAssertTrue(source.contains("in: model.latestAuthorizedADBDevices"))
         XCTAssertTrue(source.contains("!device.isUSB"))
         XCTAssertTrue(source.contains("return device.serial"))
+        XCTAssertTrue(source.contains("private func liveUSBAddress(for record: PairedPhoneRecord) -> String?"))
+        XCTAssertTrue(source.contains("guard device.isUSB else { return false }"))
+        XCTAssertTrue(source.contains("device.serial == record.resolvedUSBSerial"))
+        XCTAssertTrue(source.contains("device.serial == normalizedADBIdentifier(record.id)"))
     }
 
     func testAboutDocumentsProvideLocalPolicyAndLicenseDetails() throws {

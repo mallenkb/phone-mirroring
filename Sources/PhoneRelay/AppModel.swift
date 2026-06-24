@@ -789,6 +789,7 @@ final class AppModel: ObservableObject {
     private var isShuttingDown = false
     private var isRequestingNotificationAuthorization = false
     private(set) var isConnectionDiscoveryPausedForManualDisconnect = false
+    private var lastManualDisconnectTransport: MirrorTransport?
     private var lastPresenceAutoConnectAttemptAt: Date?
     private var failedAutoConnectTargets: [String: Date] = [:]
     private var autoConnectTargetsInFlight: Set<String> = []
@@ -847,6 +848,11 @@ final class AppModel: ObservableObject {
     private var sessionAutoConnectSuspendedRecordIDs = Set<PairedPhoneRecord.ID>()
     private var autoConnectEligiblePairedPhones: [PairedPhoneRecord] {
         pairedPhones.filter { !sessionAutoConnectSuspendedRecordIDs.contains($0.id) }
+    }
+
+    enum MirrorTransport {
+        case usb
+        case wifi
     }
     /// True while a mirror session has ended but we're about to retry/reconnect
     /// (e.g. audio→video fallback, or within the backoff window). Keeps the app
@@ -1533,7 +1539,8 @@ final class AppModel: ObservableObject {
                 let authorizedDevice = Self.scrcpyStyleAutoConnectDevice(
                     authorizedDevices: authorizedDevices,
                     pairedPhones: self.autoConnectEligiblePairedPhones,
-                    preferUSBMirroring: self.preferUSBMirroring
+                    preferUSBMirroring: self.preferUSBMirroring,
+                    suppressedTransport: self.lastManualDisconnectTransport
                 )
                 if let authorizedDevice {
                     await self.mirrorAuthorizedDevicePreferringWireless(authorizedDevice)
@@ -1801,6 +1808,7 @@ final class AppModel: ObservableObject {
         guard !isMirroring, !isPairing else { return }
         guard !isAutoMirrorHeldForOnboarding else { return }
         if device.isUSB {
+            lastManualDisconnectTransport = nil
             // Pinned to Wi-Fi ("move to Wi-Fi and stay"): don't fall back to the
             // still-connected cable while we're pursuing the Wi-Fi route.
             guard !isUSBSuppressedByWirelessPin(device.serial) else { return }
@@ -1818,6 +1826,7 @@ final class AppModel: ObservableObject {
         }
 
         guard !explicitDeviceSetupRequired else { return }
+        lastManualDisconnectTransport = nil
         select(device: device)
         touchPairedPhone(
             id: device.serial,
@@ -1847,7 +1856,9 @@ final class AppModel: ObservableObject {
             return
         }
 
-        let records = Self.recordsByMostRecent(autoConnectEligiblePairedPhones)
+        let records = Self.recordsByMostRecent(
+            lastManualDisconnectTransport == .usb ? pairedPhones : autoConnectEligiblePairedPhones
+        )
         let liveRememberedPhones = autoConnectablePhones(in: livePhones)
         let liveRememberedPhone = mostRecentPairedPhone(in: liveRememberedPhones)
 
@@ -1863,7 +1874,8 @@ final class AppModel: ObservableObject {
         if let device = Self.scrcpyStyleAutoConnectDevice(
             authorizedDevices: authorizedDevices,
             pairedPhones: records,
-            preferUSBMirroring: preferUSBMirroring
+            preferUSBMirroring: preferUSBMirroring,
+            suppressedTransport: lastManualDisconnectTransport
         ) {
             lastPresenceAutoConnectAttemptAt = Date()
             Task { [weak self] in
@@ -1892,7 +1904,13 @@ final class AppModel: ObservableObject {
 	            Logger.log("Known Wi-Fi phone has saved route; verifying before auto-connect address=\(record.lastAddress)")
 	            connectAndMirror(record: record)
 	        }
-	    }
+    }
+
+    private func hasLiveWirelessAlternative(authorizedDevices: [AuthorizedADBDevice]) -> Bool {
+        authorizedDevices.contains { !$0.isUSB }
+            || discoveredPhones.contains { $0.kind.isConnectable }
+            || hasRememberedWiFiHandoffRoute
+    }
 
     private func touchPairedPhone(
         id: String,
@@ -2077,6 +2095,15 @@ final class AppModel: ObservableObject {
                 // so the auto-connect below fires this very poll instead of after
                 // the next 3s window — no waiting for a freshly-plugged phone.
                 let currentSerials = Set(authorized.map(\.serial))
+                let removedSerials = self.previousAuthorizedSerials.subtracting(currentSerials)
+                if !removedSerials.isEmpty {
+                    self.wirelessPinnedUSBSerials.subtract(removedSerials)
+                    self.manualUSBPinnedSerials.subtract(removedSerials)
+                    if let lastUSBHandoffSerial = self.lastUSBHandoffSerial,
+                       removedSerials.contains(lastUSBHandoffSerial) {
+                        self.lastUSBHandoffSerial = nil
+                    }
+                }
                 if !currentSerials.isSubset(of: self.previousAuthorizedSerials) {
                     self.lastPresenceAutoConnectAttemptAt = nil
                 }
@@ -2130,6 +2157,38 @@ final class AppModel: ObservableObject {
                     } else if authorized.first(where: \.isUSB) == nil {
                         self.lastUSBHandoffSerial = nil
                     }
+                }
+
+                if Self.shouldAutoStartIdleUSBPresence(
+                    authorizedDevices: authorized,
+                    lastAttemptAt: self.lastPresenceAutoConnectAttemptAt,
+                    suppressedTransport: self.lastManualDisconnectTransport,
+                    hasWirelessAlternative: self.hasLiveWirelessAlternative(authorizedDevices: authorized),
+                    preferUSBMirroring: self.preferUSBMirroring,
+                    isMirroring: self.isMirroring,
+                    isPairing: self.isPairing,
+                    hasMirrorLaunchTask: self.mirrorLaunchTask != nil,
+                    hasWirelessStartTask: self.wirelessStartTask != nil,
+                    hasReconnectTask: self.reconnectTask != nil,
+                    hasUSBConnectTask: self.usbConnectTask != nil,
+                    hasUSBWiFiHandoffTask: self.usbWiFiHandoffTask != nil,
+                    hasUSBWiFiTakeoverTask: self.usbWiFiTakeoverTask != nil
+                ), let usbDevice = authorized.first(where: \.isUSB),
+                   !self.isUSBSuppressedByWirelessPin(usbDevice.serial) {
+                    Logger.log("USB is available while idle; auto-starting mirror serial=\(usbDevice.serial)")
+                    self.lastPresenceAutoConnectAttemptAt = Date()
+                    self.lastUSBHandoffSerial = usbDevice.serial
+                    await self.mirrorAuthorizedDevicePreferringWireless(usbDevice)
+                    self.refreshAutoConnectingState(authorized: authorized)
+                    let interval = Self.deviceWatcherPollInterval(
+                        isPairing: self.isPairing,
+                        isMirroring: self.isMirroring,
+                        hasAuthorizedDevices: !authorized.isEmpty,
+                        hasSavedDevices: !self.pairedPhones.isEmpty,
+                        isActivelyConnecting: self.isActivelyConnecting
+                    )
+                    try? await Task.sleep(nanoseconds: interval)
+                    continue
                 }
 
                 if Self.shouldAutoStartOnlineSelectedDevice(
@@ -3965,20 +4024,35 @@ final class AppModel: ObservableObject {
     nonisolated static func scrcpyStyleAutoConnectDevice(
         authorizedDevices: [AuthorizedADBDevice],
         pairedPhones: [PairedPhoneRecord],
-        preferUSBMirroring: Bool
+        preferUSBMirroring: Bool,
+        suppressedTransport: MirrorTransport? = nil
     ) -> AuthorizedADBDevice? {
         guard !authorizedDevices.isEmpty else { return nil }
         if preferUSBMirroring {
-            return authorizedDevices.first(where: \.isUSB) ?? authorizedDevices.first
+            return authorizedDevices.first { $0.isUSB && suppressedTransport != .usb }
+                ?? authorizedDevices.first { !$0.isUSB && suppressedTransport != .wifi }
         }
 
         for record in recordsByMostRecent(pairedPhones) {
-            if let device = rememberedAuthorizedDevice(for: record, in: authorizedDevices) {
+            if let device = rememberedAuthorizedDevice(for: record, in: authorizedDevices),
+               !isSuppressed(device, by: suppressedTransport) {
                 return device
             }
         }
 
-        return authorizedDevices.first(where: { !$0.isUSB }) ?? authorizedDevices.first
+        return authorizedDevices.first { !$0.isUSB && suppressedTransport != .wifi }
+            ?? authorizedDevices.first { $0.isUSB && suppressedTransport != .usb }
+    }
+
+    private nonisolated static func isSuppressed(
+        _ device: AuthorizedADBDevice,
+        by transport: MirrorTransport?
+    ) -> Bool {
+        switch transport {
+        case .usb: return device.isUSB
+        case .wifi: return !device.isUSB
+        case nil: return false
+        }
     }
 
     nonisolated static func usbHandoffCandidate(
@@ -4014,6 +4088,45 @@ final class AppModel: ObservableObject {
         explicitDeviceSetupRequired: Bool
     ) -> Bool {
         true
+    }
+
+    nonisolated static func shouldAutoStartIdleUSBPresence(
+        authorizedDevices: [AuthorizedADBDevice],
+        lastAttemptAt: Date?,
+        now: Date = Date(),
+        throttle: TimeInterval = presenceAutoConnectThrottle,
+        suppressedTransport: MirrorTransport?,
+        hasWirelessAlternative: Bool,
+        preferUSBMirroring: Bool,
+        isMirroring: Bool,
+        isPairing: Bool,
+        hasMirrorLaunchTask: Bool,
+        hasWirelessStartTask: Bool,
+        hasReconnectTask: Bool,
+        hasUSBConnectTask: Bool,
+        hasUSBWiFiHandoffTask: Bool,
+        hasUSBWiFiTakeoverTask: Bool
+    ) -> Bool {
+        guard !preferUSBMirroring,
+              !isMirroring,
+              !isPairing,
+              !hasMirrorLaunchTask,
+              !hasWirelessStartTask,
+              !hasReconnectTask,
+              !hasUSBConnectTask,
+              !hasUSBWiFiHandoffTask,
+              !hasUSBWiFiTakeoverTask,
+              authorizedDevices.contains(where: \.isUSB)
+        else { return false }
+
+        if suppressedTransport == .usb, hasWirelessAlternative {
+            return false
+        }
+
+        if let lastAttemptAt, now.timeIntervalSince(lastAttemptAt) < throttle {
+            return false
+        }
+        return true
     }
 
     nonisolated static func shouldRunPresenceAutoConnect(
@@ -6072,11 +6185,20 @@ final class AppModel: ObservableObject {
     }
 
     func disconnectFromSettings() {
+        lastManualDisconnectTransport = activeMirrorTransport()
         connectionWindowPrefersWirelessDetails = false
         connectionWindowNavigationResetID += 1
         stopMirroring()
         showConnectionWindow(startsQRCodePairing: false)
         refreshDevicePresenceAfterManualDisconnect()
+    }
+
+    private func activeMirrorTransport() -> MirrorTransport? {
+        guard let serial = selectedDevice.adbSerial else { return nil }
+        if PairedPhoneRecord.isWirelessADBAddress(serial) {
+            return .wifi
+        }
+        return .usb
     }
 
     private func presentCaptureCue(_ kind: CaptureCueKind) {

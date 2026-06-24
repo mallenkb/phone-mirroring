@@ -2202,6 +2202,129 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
     }
 
+    func testIdleUSBPresenceCanAutoStartAfterPreviousAttempt() {
+        let usbDevice = AuthorizedADBDevice(
+            serial: "TESTDEVICE001",
+            product: "raven",
+            model: "Pixel",
+            isUSB: true
+        )
+        let wirelessDevice = AuthorizedADBDevice(
+            serial: "192.168.68.67:5555",
+            product: "raven",
+            model: "Pixel",
+            isUSB: false
+        )
+        let previousAttempt = Date(timeIntervalSince1970: 100)
+
+        XCTAssertTrue(
+            AppModel.shouldAutoStartIdleUSBPresence(
+                authorizedDevices: [usbDevice],
+                lastAttemptAt: previousAttempt,
+                now: previousAttempt.addingTimeInterval(AppModel.presenceAutoConnectThrottle + 0.1),
+                suppressedTransport: nil,
+                hasWirelessAlternative: false,
+                preferUSBMirroring: false,
+                isMirroring: false,
+                isPairing: false,
+                hasMirrorLaunchTask: false,
+                hasWirelessStartTask: false,
+                hasReconnectTask: false,
+                hasUSBConnectTask: false,
+                hasUSBWiFiHandoffTask: false,
+                hasUSBWiFiTakeoverTask: false
+            )
+        )
+        XCTAssertTrue(
+            AppModel.shouldAutoStartIdleUSBPresence(
+                authorizedDevices: [usbDevice, wirelessDevice],
+                lastAttemptAt: previousAttempt,
+                now: previousAttempt.addingTimeInterval(AppModel.presenceAutoConnectThrottle + 0.1),
+                suppressedTransport: .wifi,
+                hasWirelessAlternative: true,
+                preferUSBMirroring: false,
+                isMirroring: false,
+                isPairing: false,
+                hasMirrorLaunchTask: false,
+                hasWirelessStartTask: false,
+                hasReconnectTask: false,
+                hasUSBConnectTask: false,
+                hasUSBWiFiHandoffTask: false,
+                hasUSBWiFiTakeoverTask: false
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldAutoStartIdleUSBPresence(
+                authorizedDevices: [usbDevice],
+                lastAttemptAt: previousAttempt,
+                now: previousAttempt.addingTimeInterval(1),
+                suppressedTransport: nil,
+                hasWirelessAlternative: false,
+                preferUSBMirroring: false,
+                isMirroring: false,
+                isPairing: false,
+                hasMirrorLaunchTask: false,
+                hasWirelessStartTask: false,
+                hasReconnectTask: false,
+                hasUSBConnectTask: false,
+                hasUSBWiFiHandoffTask: false,
+                hasUSBWiFiTakeoverTask: false
+            )
+        )
+    }
+
+    func testUSBDisconnectPrefersWirelessWhenBothTransportsAreAvailable() {
+        let record = PairedPhoneRecord(
+            id: "RFCT10ZLTAJ",
+            displayName: "SM S906B",
+            lastAddress: "192.168.68.67:5555",
+            usbSerial: "RFCT10ZLTAJ",
+            wifiAddress: "192.168.68.67:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let usbDevice = AuthorizedADBDevice(
+            serial: "RFCT10ZLTAJ",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: true
+        )
+        let wirelessDevice = AuthorizedADBDevice(
+            serial: "192.168.68.67:5555",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: false
+        )
+
+        XCTAssertEqual(
+            AppModel.scrcpyStyleAutoConnectDevice(
+                authorizedDevices: [usbDevice, wirelessDevice],
+                pairedPhones: [record],
+                preferUSBMirroring: false,
+                suppressedTransport: .usb
+            ),
+            wirelessDevice
+        )
+        XCTAssertFalse(
+            AppModel.shouldAutoStartIdleUSBPresence(
+                authorizedDevices: [usbDevice, wirelessDevice],
+                lastAttemptAt: Date(timeIntervalSince1970: 100),
+                now: Date(timeIntervalSince1970: 104),
+                suppressedTransport: .usb,
+                hasWirelessAlternative: true,
+                preferUSBMirroring: false,
+                isMirroring: false,
+                isPairing: false,
+                hasMirrorLaunchTask: false,
+                hasWirelessStartTask: false,
+                hasReconnectTask: false,
+                hasUSBConnectTask: false,
+                hasUSBWiFiHandoffTask: false,
+                hasUSBWiFiTakeoverTask: false
+            )
+        )
+    }
+
     func testUSBPresenceInterruptsStuckReconnectOverlay() {
         let usbDevice = AuthorizedADBDevice(
             serial: "TESTDEVICE001",

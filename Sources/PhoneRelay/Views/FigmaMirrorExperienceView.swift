@@ -56,6 +56,17 @@ struct FigmaMirrorExperienceView: View {
             ? model.isWirelessConnectionAvailable || isCurrentWiFiSessionOnline
             : wifiAvailabilityBeforeConnect
     }
+    private var usbChoiceSubtitle: String {
+        if effectiveUSBConnectionAvailable {
+            return "Phone connected by cable."
+        }
+        return model.isFirstTimeUSBSetup ? "Plug in once to authorize Wi-Fi mirroring." : "Fast and reliable by cable."
+    }
+    private var wifiChoiceSubtitle: String {
+        effectiveWiFiConnectionAvailable
+            ? "Phone found on Wi-Fi."
+            : "No cable. Mirror by Wi-Fi IP address."
+    }
     private var isCurrentUSBSessionOnline: Bool {
         guard model.isMirroring || model.isSelectedDeviceOnline else { return false }
         guard let serial = model.selectedDevice.adbSerial,
@@ -235,7 +246,7 @@ struct FigmaMirrorExperienceView: View {
                         iconName: "cable.connector",
                         resourceIconName: "usb-cable",
                         title: "Connect with USB",
-                        subtitle: model.isFirstTimeUSBSetup ? "Plug in once to authorize Wi-Fi mirroring." : "Cable connection.",
+                        subtitle: usbChoiceSubtitle,
                         showsProgress: isUSBButtonBusy,
                         isDisabled: isChooserButtonDisabled,
                         isAvailable: effectiveUSBConnectionAvailable,
@@ -253,7 +264,7 @@ struct FigmaMirrorExperienceView: View {
                         connectionChoiceRow(
                             iconName: "wifi",
                             title: "Connect with Wi-Fi IP",
-                            subtitle: "No cable. Enter the phone Wi-Fi IP address.",
+                            subtitle: wifiChoiceSubtitle,
                             showsProgress: isWirelessButtonBusy,
                             isDisabled: isChooserButtonDisabled,
                             isAvailable: effectiveWiFiConnectionAvailable,

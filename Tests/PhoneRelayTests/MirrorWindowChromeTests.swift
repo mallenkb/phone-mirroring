@@ -581,6 +581,24 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertFalse(wirelessBody.contains("shouldShowDevicePill"))
     }
 
+    func testConnectionChoiceRowsShowReadySubtitlesWhenRoutesAreAvailable() throws {
+        let testURL = URL(fileURLWithPath: #filePath)
+        let packageRoot = testURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageRoot
+            .appendingPathComponent("Sources/PhoneRelay/Views/FigmaMirrorExperienceView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("private var usbChoiceSubtitle: String"))
+        XCTAssertTrue(source.contains("if effectiveUSBConnectionAvailable"))
+        XCTAssertTrue(source.contains("return \"Phone connected by cable.\""))
+        XCTAssertTrue(source.contains("private var wifiChoiceSubtitle: String"))
+        XCTAssertTrue(source.contains("effectiveWiFiConnectionAvailable"))
+        XCTAssertTrue(source.contains("\"Phone found on Wi-Fi.\""))
+    }
+
     func testConnectionChromeRevealOrdersParentWindowWithToolbar() throws {
         let testURL = URL(fileURLWithPath: #filePath)
         let packageRoot = testURL

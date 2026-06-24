@@ -88,7 +88,8 @@ struct SettingsView: View {
                         isOnline: isOnline(record),
                         isActive: isActive(record),
                         activeADBSerial: model.selectedDevice.adbSerial,
-                        liveAddress: liveAddress(for: record),
+                        liveWiFiAddress: liveAddress(for: record),
+                        liveUSBAddress: liveUSBAddress(for: record),
                         onConnect: { transport in model.connect(record: record, transport: transport.modelTransport) },
                         onDisconnect: { model.disconnectFromSettings() },
                         onUpdateWiFiIPAddress: { model.updateWiFiIPAddressFromSettings(for: record) },
@@ -919,6 +920,21 @@ struct SettingsView: View {
         )?.address
     }
 
+    private func liveUSBAddress(for record: PairedPhoneRecord) -> String? {
+        model.latestAuthorizedADBDevices.first { device in
+            guard device.isUSB else { return false }
+            return device.serial == record.id
+                || device.serial == record.lastAddress
+                || device.serial == record.resolvedUSBSerial
+                || device.serial == normalizedADBIdentifier(record.id)
+        }?.serial
+    }
+
+    private func normalizedADBIdentifier(_ identifier: String) -> String {
+        guard identifier.hasPrefix("adb-") else { return identifier }
+        return String(identifier.dropFirst(4))
+    }
+
     private func recordMatchesSelectedDevice(_ record: PairedPhoneRecord) -> Bool {
         isActive(record)
     }
@@ -1184,7 +1200,8 @@ private struct PairedPhoneRow: View {
     let isOnline: Bool
     let isActive: Bool
     let activeADBSerial: String?
-    let liveAddress: String?
+    let liveWiFiAddress: String?
+    let liveUSBAddress: String?
     let onConnect: (SettingsDeviceTransport) -> Void
     let onDisconnect: () -> Void
     let onUpdateWiFiIPAddress: () -> Void
@@ -1332,7 +1349,11 @@ private struct PairedPhoneRow: View {
             return "Connected via \(activeTransport.title)"
         }
         if isActive { return "Connected" }
-        if liveAddress != nil { return "Wi-Fi available" }
+        if liveWiFiAddress != nil, liveUSBAddress != nil {
+            return "Wi-Fi and USB available"
+        }
+        if liveUSBAddress != nil { return "USB available" }
+        if liveWiFiAddress != nil { return "Wi-Fi available" }
         if isOnline { return "Online" }
         return "Last seen"
     }
@@ -1384,7 +1405,7 @@ private struct PairedPhoneRow: View {
     }
 
     private var wifiAddress: String? {
-        liveAddress ?? record.resolvedWiFiAddress
+        liveWiFiAddress ?? record.resolvedWiFiAddress
     }
 
     private var availableTransports: [SettingsDeviceTransport] {
