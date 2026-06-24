@@ -3066,12 +3066,7 @@ final class AppModel: ObservableObject {
                 usbDevice,
                 manual: true,
                 wifiAddress: wifiAddress,
-                prepareWirelessHandoff: Self.shouldAttemptWirelessHandoff(
-                    from: usbDevice,
-                    preferUSBMirroring: self.preferUSBMirroring,
-                    backgroundWiFiHandoffEnabled: self.backgroundWiFiHandoffEnabled,
-                    hasSavedDevices: !self.pairedPhones.isEmpty
-                )
+                prepareWirelessHandoff: false
             )
         }
     }
@@ -3741,7 +3736,6 @@ final class AppModel: ObservableObject {
     ) -> Bool {
         device.isUSB
             && !preferUSBMirroring
-            && (backgroundWiFiHandoffEnabled || !hasSavedDevices)
     }
 
     enum ScrcpyStyleConnectionPlan: Equatable {

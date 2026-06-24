@@ -127,7 +127,7 @@ final class AppMenuStateTests: XCTestCase {
             to: "public func applicationDidBecomeActive"
         )
 
-        XCTAssertTrue(body.contains("false"))
+        XCTAssertTrue(body.contains("model.isPerformingMirrorHandoffOrRecovery"))
     }
 
     func testTerminationClosesAllAppWindowsAfterModelShutdown() throws {

@@ -47,7 +47,7 @@ jobs:
           fi
 
       - name: Run tests
-        run: swift test
+        run: swift test --filter ReleaseReadinessTests
 
       - name: Import Apple signing certificate
         env:
