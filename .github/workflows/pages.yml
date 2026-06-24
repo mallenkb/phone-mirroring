@@ -57,6 +57,19 @@ jobs:
           fi
           cat docs/release.json
 
+      - name: Write latest Sparkle appcast
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release download --repo "$REPO" --pattern appcast.xml --output docs/appcast.xml --clobber; then
+            echo "Wrote Sparkle appcast from latest GitHub Release."
+          else
+            echo "No appcast release asset found; keeping committed docs/appcast.xml fallback." >&2
+          fi
+          test -f docs/appcast.xml
+
       - name: Upload static site
         uses: actions/upload-pages-artifact@v3
         with:

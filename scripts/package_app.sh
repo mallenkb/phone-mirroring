@@ -7,6 +7,8 @@ PRODUCT_NAME="${PRODUCT_NAME:-PhoneRelay}"
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
 APP_VERSION="${APP_VERSION:-1.0.13}"
 BUILD_NUMBER="${BUILD_NUMBER:-20}"
+SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://phonerelay.mallenkb.com/appcast.xml}"
+SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-BRG3UL9d/8qtx7RJdobbGi1q87hpbEflfn1izHj/qgc=}"
 # Prefer a real Apple Development identity when one is in the keychain: TCC
 # grants (Local Network, Notifications) are keyed to the signing identity, and
 # ad-hoc signatures change every build, which silently revokes them.
@@ -31,8 +33,10 @@ ASSET_CATALOG="App/Assets.xcassets"
 # binary is renamed to $PRODUCT_NAME inside the bundle (CFBundleExecutable).
 HOST_BIN=".build/release/PhoneRelayBinary"
 RESOURCE_BUNDLE=".build/release/PhoneRelay_PhoneRelay.bundle"
+SPARKLE_FRAMEWORK=".build/release/Sparkle.framework"
 BIN_DIR="$APP/Contents/MacOS"
 RESOURCES_DIR="$APP/Contents/Resources"
+FRAMEWORKS_DIR="$APP/Contents/Frameworks"
 HELPER_BIN_DIR="$RESOURCES_DIR/bin"
 LICENSES_DIR="$RESOURCES_DIR/LICENSES"
 
@@ -51,13 +55,19 @@ elif [ -x "$APP/Contents/Resources/bin/adb" ]; then
 fi
 
 rm -rf "$APP"
-mkdir -p "$BIN_DIR" "$RESOURCES_DIR" "$HELPER_BIN_DIR" "$LICENSES_DIR"
+mkdir -p "$BIN_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR" "$HELPER_BIN_DIR" "$LICENSES_DIR"
 
 cp "$HOST_BIN" "$BIN_DIR/$PRODUCT_NAME"
 chmod +x "$BIN_DIR/$PRODUCT_NAME"
 
 if [ -d "$RESOURCE_BUNDLE" ]; then
   cp -R "$RESOURCE_BUNDLE" "$RESOURCES_DIR/PhoneRelay_PhoneRelay.bundle"
+fi
+
+if [ -d "$SPARKLE_FRAMEWORK" ]; then
+  cp -R "$SPARKLE_FRAMEWORK" "$FRAMEWORKS_DIR/Sparkle.framework"
+else
+  echo "warning: Sparkle.framework was not found at $SPARKLE_FRAMEWORK; in-app updates will not run in this bundle" >&2
 fi
 
 if [ -d "$ASSET_CATALOG" ]; then
@@ -140,11 +150,24 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>_adb-tls-connect._tcp</string>
     <string>_adb-tls-pairing._tcp</string>
   </array>
+  <key>SUFeedURL</key>
+  <string>$SPARKLE_FEED_URL</string>
+  <key>SUPublicEDKey</key>
+  <string>$SPARKLE_PUBLIC_ED_KEY</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUAllowsAutomaticUpdates</key>
+  <true/>
+  <key>SUScheduledCheckInterval</key>
+  <integer>86400</integer>
 </dict>
 </plist>
 PLIST
 
 if command -v codesign >/dev/null 2>&1; then
+  if [ -d "$FRAMEWORKS_DIR/Sparkle.framework" ]; then
+    codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework"
+  fi
   if [ -f "$HELPER_BIN_DIR/adb" ]; then
     codesign --force --sign "$SIGNING_IDENTITY" "$HELPER_BIN_DIR/adb"
   fi

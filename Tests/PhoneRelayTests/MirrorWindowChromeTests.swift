@@ -405,6 +405,32 @@ final class MirrorWindowChromeTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testNewMirrorWindowSupersedesOlderMirrorWindows() throws {
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        let firstSession = MirrorSession(model: model, serial: nil)
+        let secondSession = MirrorSession(model: model, serial: nil)
+        let first = MirrorContentWindowController(model: model, session: firstSession)
+        let second = MirrorContentWindowController(model: model, session: secondSession)
+        defer {
+            first.window?.delegate = nil
+            second.window?.delegate = nil
+            first.close()
+            second.close()
+        }
+
+        let firstWindow = try XCTUnwrap(first.window)
+        let secondWindow = try XCTUnwrap(second.window)
+
+        XCTAssertEqual(
+            MirrorContentWindowController.supersededMirrorWindows(
+                in: [firstWindow, secondWindow],
+                activeWindow: secondWindow
+            ),
+            [firstWindow]
+        )
+    }
+
     func testConnectionOnboardingDoesNotUseDecorativeAnimatedGlowVisuals() throws {
         let testURL = URL(fileURLWithPath: #filePath)
         let packageRoot = testURL

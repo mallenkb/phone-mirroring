@@ -36,5 +36,15 @@
 	<string>Phone Relay for Android connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>SUAllowsAutomaticUpdates</key>
+	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://phonerelay.mallenkb.com/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>BRG3UL9d/8qtx7RJdobbGi1q87hpbEflfn1izHj/qgc=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>

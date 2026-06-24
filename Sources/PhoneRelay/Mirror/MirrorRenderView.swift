@@ -3,29 +3,6 @@ import AVFoundation
 import CoreMedia
 import SwiftUI
 
-struct MirrorLoadingSurface: NSViewRepresentable {
-    var statusText: String = "Connecting to"
-    var deviceName: String
-    var cornerRadius: CGFloat
-    var repeatsProgress: Bool = false
-
-    func makeNSView(context: Context) -> MirrorLoadingView {
-        let view = MirrorLoadingView()
-        view.statusText = statusText
-        view.deviceName = deviceName
-        view.cornerRadius = cornerRadius
-        view.startProgress(duration: 3, repeats: repeatsProgress)
-        return view
-    }
-
-    func updateNSView(_ nsView: MirrorLoadingView, context: Context) {
-        nsView.statusText = statusText
-        nsView.deviceName = deviceName
-        nsView.cornerRadius = cornerRadius
-        nsView.repeatsProgress = repeatsProgress
-    }
-}
-
 /// An NSView whose backing layer is an `AVSampleBufferDisplayLayer`. The
 /// MirrorSession enqueues each decoded `CMSampleBuffer` and the view paints
 /// the latest frame at display refresh rate, in-process — no AX dance, no
@@ -235,11 +212,16 @@ final class MirrorRenderView: NSView {
     }
     override func scrollWheel(with event: NSEvent) {
         guard let point = normalizedPoint(for: event) else { return }
+        let deltas = Self.deviceScrollDeltas(
+            deltaX: event.scrollingDeltaX,
+            deltaY: event.scrollingDeltaY,
+            modifierFlags: event.modifierFlags
+        )
         onPointerEvent?(PointerEvent(
             kind: .scroll,
             normalized: point,
-            scrollDX: event.scrollingDeltaX,
-            scrollDY: event.scrollingDeltaY
+            scrollDX: deltas.x,
+            scrollDY: deltas.y
         ))
     }
     override func keyDown(with event: NSEvent) { onKeyEvent?(event) }
@@ -266,6 +248,18 @@ final class MirrorRenderView: NSView {
     private func emit(_ event: NSEvent, kind: PointerKind) {
         guard let point = normalizedPoint(for: event) else { return }
         onPointerEvent?(PointerEvent(kind: kind, normalized: point, scrollDX: 0, scrollDY: 0))
+    }
+
+    nonisolated static func deviceScrollDeltas(
+        deltaX: CGFloat,
+        deltaY: CGFloat,
+        modifierFlags: NSEvent.ModifierFlags
+    ) -> (x: CGFloat, y: CGFloat) {
+        let flags = modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags.contains(.shift), abs(deltaY) > abs(deltaX) {
+            return (deltaY, 0)
+        }
+        return (deltaX, deltaY)
     }
 
     /// Map the cursor position from view coordinates into the video's own

@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import CryptoKit
+import Sparkle
 import SwiftUI
 import UserNotifications
 
@@ -44,6 +45,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private var launchedInBackground = false
     private weak var screenRecordingMenuItem: NSMenuItem?
     private var screenRecordingMenuCancellable: AnyCancellable?
+    private lazy var sparkleUpdaterController = SPUStandardUpdaterController(
+        startingUpdater: true,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+    )
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
         if yieldToExistingInstanceIfNeeded() {
@@ -105,7 +111,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         installMainMenu()
         installKeyboardScaling()
         NSApp.activate(ignoringOtherApps: true)
-        scheduleAutomaticUpdateChecks()
+        _ = sparkleUpdaterController
     }
 
     // MARK: - Single-instance guard
@@ -182,13 +188,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         }
     }
 
-    nonisolated static func blockingDuplicateInstance(
-        candidates: [AppInstanceDescriptor],
-        current: AppInstanceDescriptor
-    ) -> AppInstanceDescriptor? {
-        olderDuplicateInstances(candidates: candidates, current: current).first
-    }
-
     /// Phone Relay owns exclusive resources — the adb server, scrcpy sessions,
     /// and the connection window — so concurrent copies fight over the phone
     /// and flood the screen with duplicate "Connecting…" windows. A fresh
@@ -198,7 +197,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         let current = Self.descriptor(for: .current)
         let deadline = Date().addingTimeInterval(Self.duplicateInstanceExitGracePeriod)
         var requestedTerminationForPIDs = Set<Int32>()
-        var requestedForceTerminationForPIDs = Set<Int32>()
         while true {
             // NSWorkspace's list only refreshes when the run loop turns, which
             // it can't while this wait blocks — re-verify liveness via signal 0
@@ -222,13 +220,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                     requestedTerminationForPIDs.insert(blocker.pid)
                     Logger.log("Terminating older Phone Relay instance pid=\(blocker.pid) before continuing launch.")
                     app.terminate()
-                } else if Date() >= deadline, !requestedForceTerminationForPIDs.contains(blocker.pid) {
-                    requestedForceTerminationForPIDs.insert(blocker.pid)
-                    Logger.log("Force-terminating unresponsive older Phone Relay instance pid=\(blocker.pid).")
-                    app.forceTerminate()
                 }
             }
 
+            // NEVER escalate to forceTerminate()/SIGKILL here. On this Mac,
+            // SIGKILLing an `open`-launched (LaunchServices-managed) GUI app
+            // makes LaunchServices treat it as a failed launch and relaunch it
+            // ~1×/sec — an endless kill→relaunch cascade that floods the screen.
+            // If an older instance ignores the graceful quit, we yield THIS
+            // launch instead (below) rather than force-killing the sibling.
             if Date() >= deadline.addingTimeInterval(1.0) {
                 Logger.log("Older Phone Relay instance did not exit; terminating this launch to avoid duplicate windows.")
                 NSApp.terminate(nil)
@@ -466,9 +466,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             NSEvent.removeMonitor(keyMonitor)
             self.keyMonitor = nil
         }
-        updateCheckTask?.cancel()
-        updateDownloadTask?.cancel()
-        automaticUpdateTimer?.invalidate()
         model.shutdown()
         closeAllAppWindows()
     }
@@ -505,13 +502,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                 keyEquivalent: ","
             )
         )
-        appMenu.addItem(
-            NSMenuItem(
-                title: "Check for Updates...",
-                action: #selector(checkForUpdates(_:)),
-                keyEquivalent: ""
-            )
+        let updateItem = NSMenuItem(
+            title: "Check for Updates...",
+            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+            keyEquivalent: ""
         )
+        updateItem.target = sparkleUpdaterController
+        appMenu.addItem(updateItem)
         appMenu.addItem(.separator())
         appMenu.addItem(
             NSMenuItem(
@@ -920,14 +917,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         NSWorkspace.shared.open(AppModel.latestReleaseURL)
     }
 
-    @objc private func checkForUpdates(_ sender: Any?) {
-        guard updateCheckTask == nil else { return }
-
-        updateCheckTask = Task { [weak self] in
-            await self?.runUpdateCheck(isAutomatic: false)
-        }
-    }
-
     @objc private func showKeyboardShortcuts(_ sender: Any?) {
         if let shortcutsWindow {
             shortcutsWindow.makeKeyAndOrderFront(nil)
@@ -1065,10 +1054,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             return true
         case #selector(revealLastCapture(_:))?:
             return model.lastCaptureURL != nil
-        case #selector(checkForUpdates(_:))?:
-            let isUpdating = updateCheckTask != nil || updateDownloadTask != nil
-            menuItem.title = isUpdating ? "Checking for Updates..." : "Check for Updates..."
-            return !isUpdating
         default:
             return true
         }

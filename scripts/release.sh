@@ -82,4 +82,4 @@ echo "Pushing commit and tag..."
 git push origin HEAD
 git push origin "$TAG"
 
-echo "Release tag pushed. GitHub Actions will build and publish Phone Relay-$VERSION.dmg."
+echo "Release tag pushed. GitHub Actions will build and publish the DMG plus Sparkle ZIP/appcast assets."

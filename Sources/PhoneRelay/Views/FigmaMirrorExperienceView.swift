@@ -558,7 +558,7 @@ struct FigmaMirrorExperienceView: View {
         bottomSheetChrome(scale: scale) {
             VStack(alignment: .leading, spacing: 20 * scale) {
                 bottomSheetHeader(
-                    title: "Connect via WiFi only",
+                    title: "Connect via Wi-Fi only",
                     subtitle: "Enter the phone Wi-Fi IP address only.",
                     scale: scale
                 )
@@ -870,20 +870,22 @@ struct FigmaMirrorExperienceView: View {
 
     private func bottomStatusPill(width: CGFloat, scale: CGFloat) -> some View {
         let state = model.connectionPillState
-        let deviceLabel = state == .noPhone ? "" : model.connectionDeviceLabel
         let isConnecting = state == .connecting || state == .reconnecting
+        let statusText = isConnecting ? "Connecting to" : model.connectionPillText
+        let deviceLabel = state == .noPhone ? "" : model.connectionDeviceLabel
+        let visibleDeviceLabel = isConnecting && !deviceLabel.isEmpty ? "\(deviceLabel)..." : deviceLabel
         let fontSize = 12 * scale
 
         return HStack(spacing: 4 * scale) {
             StatusDot(color: Self.pillDotColor(for: state), diameter: 8 * scale, pulses: isConnecting)
 
-            Text(model.connectionPillText)
+            Text(statusText)
                 .font(.system(size: fontSize, weight: .medium))
                 .foregroundStyle(.white.opacity(0.92))
                 .fixedSize()
 
-            if !deviceLabel.isEmpty {
-                Text(deviceLabel)
+            if !visibleDeviceLabel.isEmpty {
+                Text(visibleDeviceLabel)
                     .font(.system(size: fontSize, weight: .medium))
                     .foregroundStyle(.white.opacity(0.62))
                     .lineLimit(1)

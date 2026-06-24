@@ -551,7 +551,7 @@ final class ADBDeviceParsingTests: XCTestCase {
     }
 
     @MainActor
-    func testManualADBTargetUsesDiscoveredSameHostWirelessDebuggingPort() async throws {
+    func testManualADBTargetIgnoresDiscoveredSameHostWirelessDebuggingPort() async throws {
         let fake = try installFakeADB(script: """
         #!/bin/sh
         echo "$@" >> "$ADB_FAKE_LOG"
@@ -600,18 +600,16 @@ final class ADBDeviceParsingTests: XCTestCase {
         model.connectManualADBTarget()
 
         let startedAt = Date()
-        while model.selectedDevice.adbSerial != "192.0.2.44:43123",
-              Date().timeIntervalSince(startedAt) < 5 {
+        while model.activeError == nil,
+              Date().timeIntervalSince(startedAt) < 10 {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
-        XCTAssertNil(model.activeError)
-        XCTAssertEqual(model.selectedDevice.adbSerial, "192.0.2.44:43123")
+        XCTAssertEqual(model.activeError?.title, "Connect USB to refresh Wi-Fi")
+        XCTAssertNil(model.selectedDevice.adbSerial)
         let calls = loggedCalls(fake.log)
-        XCTAssertTrue(calls.contains("connect 192.0.2.44:43123"))
-        XCTAssertFalse(calls.contains("connect 192.0.2.44:5555"))
-        model.stopMirroring()
-        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertFalse(calls.contains("connect 192.0.2.44:43123"))
+        XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
     }
 
     @MainActor
@@ -675,7 +673,7 @@ final class ADBDeviceParsingTests: XCTestCase {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
-        XCTAssertEqual(model.activeError?.title, "ADB target not reachable")
+        XCTAssertEqual(model.activeError?.title, "Connect USB to refresh Wi-Fi")
         let calls = loggedCalls(fake.log)
         XCTAssertNil(model.selectedDevice.adbSerial)
         XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
@@ -728,7 +726,7 @@ final class ADBDeviceParsingTests: XCTestCase {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
-        XCTAssertEqual(model.activeError?.title, "ADB target not reachable")
+        XCTAssertEqual(model.activeError?.title, "Connect USB to refresh Wi-Fi")
         let calls = loggedCalls(fake.log)
         XCTAssertTrue(calls.contains("mdns services"))
         XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
@@ -774,7 +772,7 @@ final class ADBDeviceParsingTests: XCTestCase {
                 try await Task.sleep(nanoseconds: 50_000_000)
             }
 
-            XCTAssertEqual(model.activeError?.title, "VOG L09 not reachable")
+            XCTAssertEqual(model.activeError?.title, "Connect USB to refresh Wi-Fi")
             XCTAssertTrue(model.activeError?.message.contains("VOG L09") == true)
             XCTAssertFalse(model.connectionDeviceLabel.contains("Android Device"))
         }
@@ -2110,7 +2108,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
     }
 
-    func testAuthorizedUSBStartsImmediatelyEvenWhenWirelessIsAuthorized() {
+    func testAuthorizedWirelessWinsWhenUSBIsAlsoAvailable() {
         let usbDevice = AuthorizedADBDevice(
             serial: "RFCT10ZLTAJ",
             product: "g0sxxx",
@@ -2124,7 +2122,7 @@ final class ADBDeviceParsingTests: XCTestCase {
             isUSB: false
         )
 
-        XCTAssertTrue(
+        XCTAssertFalse(
             AppModel.shouldPrioritizeUSBHandoff(
                 authorizedDevices: [usbDevice, wirelessDevice],
                 lastAttemptedSerial: nil,
@@ -2133,7 +2131,7 @@ final class ADBDeviceParsingTests: XCTestCase {
                 isPairing: false
             )
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             AppModel.shouldRunPresenceAutoConnect(
                 authorizedDevices: [usbDevice, wirelessDevice],
                 lastAttemptedSerial: nil,

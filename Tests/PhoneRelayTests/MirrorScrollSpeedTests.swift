@@ -69,6 +69,56 @@ final class MirrorScrollSpeedTests: XCTestCase {
         )
     }
 
+    func testHorizontalDominantTrackpadScrollUsesTouchSwipe() {
+        XCTAssertTrue(MirrorSession.shouldUseHorizontalTrackpadSwipe(deltaX: 18, deltaY: 2))
+        XCTAssertTrue(MirrorSession.shouldUseHorizontalTrackpadSwipe(deltaX: -18, deltaY: 2))
+        XCTAssertFalse(MirrorSession.shouldUseHorizontalTrackpadSwipe(deltaX: 4, deltaY: 0))
+        XCTAssertFalse(MirrorSession.shouldUseHorizontalTrackpadSwipe(deltaX: 10, deltaY: 9))
+        XCTAssertFalse(MirrorSession.shouldUseHorizontalTrackpadSwipe(deltaX: 2, deltaY: 18))
+    }
+
+    func testHorizontalTrackpadSwipeTargetMovesAcrossThePhoneSurface() {
+        let leftSwipe = ScrcpyControlChannel.horizontalTrackpadSwipeEndPoint(
+            from: CGPoint(x: 0.5, y: 0.4),
+            deltaX: 44
+        )
+        let rightSwipe = ScrcpyControlChannel.horizontalTrackpadSwipeEndPoint(
+            from: CGPoint(x: 0.5, y: 0.4),
+            deltaX: -44
+        )
+
+        XCTAssertLessThan(leftSwipe.x, 0.5)
+        XCTAssertGreaterThan(rightSwipe.x, 0.5)
+        XCTAssertEqual(leftSwipe.y, 0.4, accuracy: 0.001)
+        XCTAssertEqual(rightSwipe.y, 0.4, accuracy: 0.001)
+        XCTAssertLessThan(abs(leftSwipe.x - 0.5), 0.12)
+    }
+
+    func testShiftScrollMapsVerticalWheelToHorizontalMovement() {
+        let shifted = MirrorRenderView.deviceScrollDeltas(
+            deltaX: 0,
+            deltaY: 24,
+            modifierFlags: [.shift]
+        )
+        let normal = MirrorRenderView.deviceScrollDeltas(
+            deltaX: 0,
+            deltaY: 24,
+            modifierFlags: []
+        )
+        let horizontalMouse = MirrorRenderView.deviceScrollDeltas(
+            deltaX: -18,
+            deltaY: 2,
+            modifierFlags: []
+        )
+
+        XCTAssertEqual(shifted.x, 24)
+        XCTAssertEqual(shifted.y, 0)
+        XCTAssertEqual(normal.x, 0)
+        XCTAssertEqual(normal.y, 24)
+        XCTAssertEqual(horizontalMouse.x, -18)
+        XCTAssertEqual(horizontalMouse.y, 2)
+    }
+
     func testSettingsViewExposesMirrorScrollSpeedControl() throws {
         let source = try String(contentsOfFile: "Sources/PhoneRelay/Views/SettingsView.swift", encoding: .utf8)
 
