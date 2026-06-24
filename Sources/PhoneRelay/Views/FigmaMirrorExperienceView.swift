@@ -980,22 +980,6 @@ struct FigmaMirrorExperienceView: View {
                     .fill(Color.white.opacity(0.05))
             )
 
-            Text("Enter the phone Wi-Fi IP address only. Phone Relay will use port 5555.")
-                .font(.system(size: 11 * scale, weight: .regular))
-                .foregroundStyle(.white.opacity(0.58))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12 * scale)
-
-            Text("For Android Wireless Debugging, use the QR code below instead of typing a port.")
-                .font(.system(size: 11 * scale, weight: .regular))
-                .foregroundStyle(.white.opacity(0.58))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12 * scale)
-
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
