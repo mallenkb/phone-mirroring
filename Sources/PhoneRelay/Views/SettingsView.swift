@@ -382,31 +382,37 @@ struct SettingsView: View {
 
     private var connectionTab: some View {
         let snapshot = model.connectionHealthSnapshot
-        let items = [
-            snapshot.usbAuthorization,
-            snapshot.wifiReachability,
-            snapshot.localNetworkPermission,
-            snapshot.adbStatus,
-            snapshot.selectedTransport,
-            snapshot.wifiHandoff,
-            snapshot.reconnectAttempts
+        // Grouped for top-down diagnosis: the live connection first, then each
+        // transport's availability, then the macOS services both depend on.
+        let categories: [(title: String, items: [ConnectionHealthSnapshot.Item])] = [
+            ("Connection", [snapshot.selectedTransport, snapshot.reconnectAttempts]),
+            ("Transports", [snapshot.usbAuthorization, snapshot.wifiReachability, snapshot.wifiHandoff]),
+            ("System", [snapshot.adbStatus, snapshot.localNetworkPermission])
         ]
 
         return SettingsGroup(
             title: "Connection health",
-            footnote: "Live status for USB, Wi-Fi, local network permission, adb, transport, and reconnect activity."
+            footnote: "Live status for the active connection, each transport, and the macOS services they depend on."
         ) {
-            VStack(alignment: .leading, spacing: 14) {
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(), spacing: 10, alignment: .top),
-                        GridItem(.flexible(), spacing: 10, alignment: .top)
-                    ],
-                    alignment: .leading,
-                    spacing: 10
-                ) {
-                    ForEach(items) { item in
-                        connectionHealthMetric(item)
+            VStack(alignment: .leading, spacing: 18) {
+                ForEach(categories, id: \.title) { category in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(category.title)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.secondary)
+
+                        LazyVGrid(
+                            columns: [
+                                GridItem(.flexible(), spacing: 10, alignment: .top),
+                                GridItem(.flexible(), spacing: 10, alignment: .top)
+                            ],
+                            alignment: .leading,
+                            spacing: 10
+                        ) {
+                            ForEach(category.items) { item in
+                                connectionHealthMetric(item)
+                            }
+                        }
                     }
                 }
 
@@ -442,15 +448,21 @@ struct SettingsView: View {
     }
 
     private func connectionHealthMetric(_ item: ConnectionHealthSnapshot.Item) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Circle()
-                .fill(connectionHealthColor(item.level))
-                .frame(width: 8, height: 8)
-                .padding(.top, 5)
+        let color = connectionHealthColor(item.level)
+        let needsAttention = item.level == .warning || item.level == .issue
+        return HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(color.opacity(0.16))
+                    .frame(width: 30, height: 30)
+                Image(systemName: connectionHealthIcon(item.id))
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(color)
+            }
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 12, weight: .regular))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Text(item.value)
@@ -459,17 +471,37 @@ struct SettingsView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+
+            Spacer(minLength: 0)
         }
         .padding(10)
-        .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(nsColor: .textBackgroundColor).opacity(0.55))
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .textBackgroundColor).opacity(0.5))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.secondary.opacity(0.16), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(
+                    needsAttention ? color.opacity(0.5) : Color.secondary.opacity(0.14),
+                    lineWidth: 1
+                )
         )
+    }
+
+    /// Maps each health item to an identifying SF Symbol so the indicators are
+    /// scannable at a glance; the symbol is tinted by the item's health level.
+    private func connectionHealthIcon(_ id: String) -> String {
+        switch id {
+        case "transport": return "arrow.left.arrow.right"
+        case "attempts": return "arrow.clockwise"
+        case "usb": return "cable.connector"
+        case "wifi": return "wifi"
+        case "wifi-handoff": return "arrow.triangle.2.circlepath"
+        case "adb": return "terminal"
+        case "local-network": return "lock.shield"
+        default: return "dot.radiowaves.left.and.right"
+        }
     }
 
     private func connectionHealthColor(_ level: ConnectionHealthSnapshot.Level) -> Color {
