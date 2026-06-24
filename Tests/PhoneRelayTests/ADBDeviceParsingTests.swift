@@ -2097,6 +2097,78 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertNil(candidate)
     }
 
+    // MARK: - Manual-disconnect re-discovery
+
+    private static let resumeUSB = AuthorizedADBDevice(
+        serial: "RFCT10ZLTAJ", product: "g0sxxx", model: "SM-S906B", isUSB: true
+    )
+    private static let resumeWiFi = AuthorizedADBDevice(
+        serial: "192.168.68.67:5555", product: "g0sxxx", model: "SM-S906B", isUSB: false
+    )
+
+    func testManualDisconnectStaysPausedWhenBothTransportsStayConnected() {
+        // Both transports were online at disconnect and remain online — the user
+        // walked away from them, so nothing should reconnect (no fall-over).
+        XCTAssertNil(
+            AppModel.manualDisconnectResumeDevice(
+                authorizedDevices: [Self.resumeUSB, Self.resumeWiFi],
+                knownSerials: [Self.resumeUSB.serial, Self.resumeWiFi.serial]
+            )
+        )
+    }
+
+    func testManualDisconnectResumesOnRepluggedCable() {
+        // Only Wi-Fi was online at disconnect; plugging the cable back in is a
+        // fresh re-discovery and should reconnect over USB.
+        let resume = AppModel.manualDisconnectResumeDevice(
+            authorizedDevices: [Self.resumeUSB, Self.resumeWiFi],
+            knownSerials: [Self.resumeWiFi.serial]
+        )
+        XCTAssertEqual(resume, Self.resumeUSB)
+    }
+
+    func testManualDisconnectResumesOnReturnedWiFi() {
+        // Wi-Fi dropped during the pause (so it left the known set) and came
+        // back — reconnect on that very channel, not the still-present cable.
+        let resume = AppModel.manualDisconnectResumeDevice(
+            authorizedDevices: [Self.resumeUSB, Self.resumeWiFi],
+            knownSerials: [Self.resumeUSB.serial]
+        )
+        XCTAssertEqual(resume, Self.resumeWiFi)
+    }
+
+    func testManualDisconnectPrefersRepluggedCableWhenBothReturn() {
+        // Phone went fully offline then came back on both transports at once —
+        // prefer the cable for a deterministic, fast reconnect.
+        let resume = AppModel.manualDisconnectResumeDevice(
+            authorizedDevices: [Self.resumeWiFi, Self.resumeUSB],
+            knownSerials: []
+        )
+        XCTAssertEqual(resume, Self.resumeUSB)
+    }
+
+    func testManualDisconnectNoResumeWhenNothingOnline() {
+        XCTAssertNil(
+            AppModel.manualDisconnectResumeDevice(
+                authorizedDevices: [],
+                knownSerials: [Self.resumeUSB.serial, Self.resumeWiFi.serial]
+            )
+        )
+    }
+
+    func testManualDisconnectResumesWhenWiFiReturnsOnNewIP() {
+        // A DHCP change gives Wi-Fi a different serial than the one online at
+        // disconnect, so it reads as a fresh transport and reconnects.
+        let newIP = AuthorizedADBDevice(
+            serial: "192.168.68.99:5555", product: "g0sxxx", model: "SM-S906B", isUSB: false
+        )
+        let resume = AppModel.manualDisconnectResumeDevice(
+            authorizedDevices: [newIP],
+            knownSerials: [Self.resumeWiFi.serial]
+        )
+        XCTAssertEqual(resume, newIP)
+    }
+
     func testFreshUSBHandoffSuppressesPresenceAutoConnectForSameWatcherPoll() {
         let usbDevice = AuthorizedADBDevice(
             serial: "TESTDEVICE001",
@@ -2198,129 +2270,6 @@ final class ADBDeviceParsingTests: XCTestCase {
                 preferUSBMirroring: false,
                 isMirroring: false,
                 isPairing: false
-            )
-        )
-    }
-
-    func testIdleUSBPresenceCanAutoStartAfterPreviousAttempt() {
-        let usbDevice = AuthorizedADBDevice(
-            serial: "TESTDEVICE001",
-            product: "raven",
-            model: "Pixel",
-            isUSB: true
-        )
-        let wirelessDevice = AuthorizedADBDevice(
-            serial: "192.168.68.67:5555",
-            product: "raven",
-            model: "Pixel",
-            isUSB: false
-        )
-        let previousAttempt = Date(timeIntervalSince1970: 100)
-
-        XCTAssertTrue(
-            AppModel.shouldAutoStartIdleUSBPresence(
-                authorizedDevices: [usbDevice],
-                lastAttemptAt: previousAttempt,
-                now: previousAttempt.addingTimeInterval(AppModel.presenceAutoConnectThrottle + 0.1),
-                suppressedTransport: nil,
-                hasWirelessAlternative: false,
-                preferUSBMirroring: false,
-                isMirroring: false,
-                isPairing: false,
-                hasMirrorLaunchTask: false,
-                hasWirelessStartTask: false,
-                hasReconnectTask: false,
-                hasUSBConnectTask: false,
-                hasUSBWiFiHandoffTask: false,
-                hasUSBWiFiTakeoverTask: false
-            )
-        )
-        XCTAssertTrue(
-            AppModel.shouldAutoStartIdleUSBPresence(
-                authorizedDevices: [usbDevice, wirelessDevice],
-                lastAttemptAt: previousAttempt,
-                now: previousAttempt.addingTimeInterval(AppModel.presenceAutoConnectThrottle + 0.1),
-                suppressedTransport: .wifi,
-                hasWirelessAlternative: true,
-                preferUSBMirroring: false,
-                isMirroring: false,
-                isPairing: false,
-                hasMirrorLaunchTask: false,
-                hasWirelessStartTask: false,
-                hasReconnectTask: false,
-                hasUSBConnectTask: false,
-                hasUSBWiFiHandoffTask: false,
-                hasUSBWiFiTakeoverTask: false
-            )
-        )
-        XCTAssertFalse(
-            AppModel.shouldAutoStartIdleUSBPresence(
-                authorizedDevices: [usbDevice],
-                lastAttemptAt: previousAttempt,
-                now: previousAttempt.addingTimeInterval(1),
-                suppressedTransport: nil,
-                hasWirelessAlternative: false,
-                preferUSBMirroring: false,
-                isMirroring: false,
-                isPairing: false,
-                hasMirrorLaunchTask: false,
-                hasWirelessStartTask: false,
-                hasReconnectTask: false,
-                hasUSBConnectTask: false,
-                hasUSBWiFiHandoffTask: false,
-                hasUSBWiFiTakeoverTask: false
-            )
-        )
-    }
-
-    func testUSBDisconnectPrefersWirelessWhenBothTransportsAreAvailable() {
-        let record = PairedPhoneRecord(
-            id: "RFCT10ZLTAJ",
-            displayName: "SM S906B",
-            lastAddress: "192.168.68.67:5555",
-            usbSerial: "RFCT10ZLTAJ",
-            wifiAddress: "192.168.68.67:5555",
-            firstPaired: Date(timeIntervalSince1970: 100),
-            lastConnected: Date(timeIntervalSince1970: 200)
-        )
-        let usbDevice = AuthorizedADBDevice(
-            serial: "RFCT10ZLTAJ",
-            product: "g0sxxx",
-            model: "SM-S906B",
-            isUSB: true
-        )
-        let wirelessDevice = AuthorizedADBDevice(
-            serial: "192.168.68.67:5555",
-            product: "g0sxxx",
-            model: "SM-S906B",
-            isUSB: false
-        )
-
-        XCTAssertEqual(
-            AppModel.scrcpyStyleAutoConnectDevice(
-                authorizedDevices: [usbDevice, wirelessDevice],
-                pairedPhones: [record],
-                preferUSBMirroring: false,
-                suppressedTransport: .usb
-            ),
-            wirelessDevice
-        )
-        XCTAssertFalse(
-            AppModel.shouldAutoStartIdleUSBPresence(
-                authorizedDevices: [usbDevice, wirelessDevice],
-                lastAttemptAt: Date(timeIntervalSince1970: 100),
-                now: Date(timeIntervalSince1970: 104),
-                suppressedTransport: .usb,
-                hasWirelessAlternative: true,
-                preferUSBMirroring: false,
-                isMirroring: false,
-                isPairing: false,
-                hasMirrorLaunchTask: false,
-                hasWirelessStartTask: false,
-                hasReconnectTask: false,
-                hasUSBConnectTask: false,
-                hasUSBWiFiHandoffTask: false,
-                hasUSBWiFiTakeoverTask: false
             )
         )
     }
