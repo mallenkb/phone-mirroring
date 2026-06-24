@@ -135,7 +135,7 @@ final class QRCodePairingTests: XCTestCase {
         XCTAssertLessThan(ipRange.lowerBound, qrRange.lowerBound)
         XCTAssertTrue(source.contains("e.g. 192.168.1.23"))
         XCTAssertTrue(source.contains("Enter the phone Wi-Fi IP address only"))
-        XCTAssertTrue(source.contains("Connect via WiFi only"))
+        XCTAssertTrue(source.contains("Connect via Wi-Fi only"))
         XCTAssertTrue(source.contains("Connect via Wireless Debugging"))
         XCTAssertTrue(source.contains("On your phone: Settings → Developer options → Wireless debugging → Pair device with QR code."))
         XCTAssertFalse(source.contains("Pair with code"))

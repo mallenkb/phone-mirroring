@@ -512,15 +512,30 @@ final class MirrorWindowChromeTests: XCTestCase {
 
     @MainActor
     func testSavedWirelessReconnectRequiresVisibleWirelessTarget() {
+        let explicitDeviceSetupRequiredDefaultsKey = "MirrorBehavior.explicitDeviceSetupRequired"
+        let defaults = [UserDefaults.standard]
+            + PairedPhoneStore.compatibilitySuites.compactMap { UserDefaults(suiteName: $0) }
+        let previousExplicitSetupValues = defaults.map { $0.object(forKey: explicitDeviceSetupRequiredDefaultsKey) }
+        defer {
+            for (defaults, previousValue) in zip(defaults, previousExplicitSetupValues) {
+                if let previousValue {
+                    defaults.set(previousValue, forKey: explicitDeviceSetupRequiredDefaultsKey)
+                } else {
+                    defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
+                }
+            }
+        }
+        defaults.forEach { $0.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey) }
+
         let record = PairedPhoneRecord(
             id: "saved-pixel",
             displayName: "Pixel",
             model: "Pixel",
-            lastAddress: "192.0.2.44:5555",
+            lastAddress: "192.168.50.44:5555",
             adbSerial: "RFCT10ZLTAJ",
             firstPaired: Date(timeIntervalSince1970: 100),
             lastConnected: Date(timeIntervalSince1970: 200),
-            wifiAddress: "192.0.2.44:5555"
+            wifiAddress: "192.168.50.44:5555"
         )
         let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
 
@@ -531,7 +546,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         model.setDiscoveredPhonesForTesting([
             DiscoveredPhone(
                 id: "adb-pixel",
-                address: "192.0.2.44:5555",
+                address: "192.168.50.44:5555",
                 kind: .legacyTCPIP,
                 lastSeen: Date(timeIntervalSince1970: 300)
             )
