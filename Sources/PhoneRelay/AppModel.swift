@@ -813,6 +813,9 @@ final class AppModel: ObservableObject {
     /// deliberate stop, on a confirmed fallback to USB, or when the device is
     /// forgotten/absent — so a genuinely dead Wi-Fi route still falls back to USB.
     private var wirelessPinnedUSBSerials: Set<String> = []
+    /// Physical USB serials the user explicitly chose for this active session.
+    /// In-flight automatic USB->Wi-Fi handoff work must not override that choice.
+    private var manualUSBPinnedSerials: Set<String> = []
     private var lastUSBWiFiAddressPrefillSerial: String?
     /// On launch we keep the status indicator on "Connecting" until this moment,
     /// so opening the app reads as "finding your last device" rather than
@@ -2932,6 +2935,15 @@ final class AppModel: ObservableObject {
         wifiMACAddress: String? = nil,
         activatePreparedMirror: Bool = true
     ) {
+        guard !manualUSBPinnedSerials.contains(usbDevice.serial) else {
+            Logger.log("Skipping Wi-Fi handoff for \(usbDevice.serial): user selected USB.")
+            usbWiFiHandoffTask?.cancel()
+            usbWiFiHandoffTask = nil
+            if usbWiFiHandoffCandidate?.usbSerial == usbDevice.serial {
+                usbWiFiHandoffCandidate = nil
+            }
+            return
+        }
         rememberUSBWiFiHandoffCandidate(
             usbDevice: usbDevice,
             address: address,
@@ -2968,6 +2980,15 @@ final class AppModel: ObservableObject {
         displayName: String,
         wifiMACAddress: String? = nil
     ) {
+        guard !manualUSBPinnedSerials.contains(usbDevice.serial) else {
+            Logger.log("Skipping live USB->Wi-Fi switch for \(usbDevice.serial): user selected USB.")
+            usbWiFiHandoffTask?.cancel()
+            usbWiFiHandoffTask = nil
+            if usbWiFiHandoffCandidate?.usbSerial == usbDevice.serial {
+                usbWiFiHandoffCandidate = nil
+            }
+            return
+        }
         rememberUSBWiFiHandoffCandidate(
             usbDevice: usbDevice,
             address: address,
@@ -2995,7 +3016,12 @@ final class AppModel: ObservableObject {
         // Commit this phone to Wi-Fi so the still-plugged cable is ignored from
         // here on ("move to Wi-Fi and stay") instead of bouncing back to USB.
         wirelessPinnedUSBSerials.insert(usbDevice.serial)
-        let lostSerial = selectedDevice.adbSerial ?? usbDevice.serial
+        isRecoveringConnection = true
+        isAwaitingReconnect = true
+        isAutoConnecting = true
+        activeError = nil
+        showConnectionWindow(startsQRCodePairing: false)
+        let lostSerial = usbDevice.serial
         let finalFrame = connectionWindow?.frame ?? lastMirrorWindowFrame
         mirrorStartGeneration += 1
         mirrorLaunchTask?.cancel()
@@ -3016,6 +3042,16 @@ final class AppModel: ObservableObject {
     }
 
     func connectViaUSB() {
+        if let liveUSBDevice = latestAuthorizedADBDevices.first(where: \.isUSB) {
+            pinManualUSBTransport(serial: liveUSBDevice.serial)
+            if isMirroring || mirrorLaunchTask != nil {
+                if selectedDevice.adbSerial == liveUSBDevice.serial {
+                    return
+                }
+                restartActiveMirrorOverManualUSB(liveUSBDevice)
+                return
+            }
+        }
         guard !isMirroring else { return }
         resumeDiscoveryAfterManualConnect()
         usbConnectTask?.cancel()
@@ -3060,6 +3096,7 @@ final class AppModel: ObservableObject {
                 return
             }
 
+            self.pinManualUSBTransport(serial: usbDevice.serial)
             let wifiAddress = await self.prefillWirelessIPFromUSBDevice(usbDevice)
             self.usbConnectTask = nil
             self.startMirroringOverUSB(
@@ -3069,6 +3106,42 @@ final class AppModel: ObservableObject {
                 prepareWirelessHandoff: false
             )
         }
+    }
+
+    private func pinManualUSBTransport(serial: String) {
+        manualUSBPinnedSerials.insert(serial)
+        usbWiFiHandoffTask?.cancel()
+        usbWiFiHandoffTask = nil
+        usbWiFiTakeoverTask?.cancel()
+        usbWiFiTakeoverTask = nil
+        if usbWiFiHandoffCandidate?.usbSerial == serial {
+            usbWiFiHandoffCandidate = nil
+        }
+        wirelessPinnedUSBSerials.remove(serial)
+        isRecoveringConnection = false
+        isAwaitingReconnect = false
+        isAutoConnecting = false
+    }
+
+    private func restartActiveMirrorOverManualUSB(_ usbDevice: AuthorizedADBDevice) {
+        mirrorStartGeneration += 1
+        mirrorLaunchTask?.cancel()
+        mirrorLaunchTask = nil
+        mirrorSession?.onSessionEnded = nil
+        mirrorSession?.stop()
+        mirrorSession = nil
+        isMirroring = false
+        restorePresentationModeIfNeeded()
+        if isRecording {
+            isRecording = false
+            stopScreenRecordingCleanup()
+        }
+        startMirroringOverUSB(
+            usbDevice,
+            manual: true,
+            wifiAddress: pairedPhones.first(where: { $0.resolvedUSBSerial == usbDevice.serial })?.resolvedWiFiAddress,
+            prepareWirelessHandoff: false
+        )
     }
 
     private func prefillWirelessIPFromUSBDevice(_ usbDevice: AuthorizedADBDevice) async -> String? {
@@ -3221,6 +3294,7 @@ final class AppModel: ObservableObject {
             reportError("Invalid IP address", "Enter the phone IP address using numbers and dots, for example 192.168.1.23.")
             return
         }
+        manualUSBPinnedSerials.removeAll()
         let initialCandidateAddresses = Self.manualADBTargetCandidateAddresses(
             normalizedAddress: address,
             discoveredPhones: discoveredPhones,
@@ -5329,6 +5403,7 @@ final class AppModel: ObservableObject {
         consecutiveQuickMirrorFailures = 0
         autoMirrorBackoffUntil = nil
         wirelessPinnedUSBSerials.removeAll()
+        manualUSBPinnedSerials.removeAll()
         isAwaitingReconnect = false
         if isRecording {
             isRecording = false
@@ -5483,7 +5558,8 @@ final class AppModel: ObservableObject {
     ) -> Bool {
         guard let usbSerial,
               let candidate = usbWiFiHandoffCandidate,
-              candidate.usbSerial == usbSerial
+              candidate.usbSerial == usbSerial,
+              !manualUSBPinnedSerials.contains(usbSerial)
         else { return false }
 
         Logger.log("USB mirror ended; attempting prepared Wi-Fi handoff address=\(candidate.address)")
@@ -6171,6 +6247,7 @@ final class AppModel: ObservableObject {
     }
 
     private func connectViaSavedWiFi(record: PairedPhoneRecord) {
+        manualUSBPinnedSerials.removeAll()
         guard let wifiAddress = record.resolvedWiFiAddress else {
             reportError("Wi-Fi route unavailable", "Connect the phone with USB once while it is on Wi-Fi so Phone Relay can save its IP address.")
             return
@@ -6276,6 +6353,7 @@ final class AppModel: ObservableObject {
         restrictToPreferredRecord: Bool = false
     ) {
         guard !isMirroring, !isPairing else { return }
+        manualUSBPinnedSerials.removeAll()
         resumeDiscoveryAfterManualConnect()
 
         let ordered = Self.recordsByMostRecent(pairedPhones).filter(Self.isWirelessRecord)

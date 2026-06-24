@@ -261,7 +261,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         // the app is genuinely idle with no window, quit; otherwise it lurks
         // invisibly in the background and keeps throwing up mirror windows on
         // every auto-reconnect ("the app isn't even open but it happens").
-        model.isPerformingMirrorHandoffOrRecovery
+        !model.isPerformingMirrorHandoffOrRecovery
     }
 
     public func applicationDidBecomeActive(_ notification: Notification) {

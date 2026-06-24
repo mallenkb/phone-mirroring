@@ -304,6 +304,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         }
         Logger.log("MirrorContentWindow show frame=\(frame)")
         setWindowFrame(frame, display: true, animate: false)
+        layoutRenderSurface()
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(renderView)
         updateFullscreenPresentationIfNeeded()
@@ -376,6 +377,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         setWindowFrame(newFrame, display: true, animate: false)
         applyScaledRenderInsets()
         tightenWindowAroundRenderContent()
+        layoutRenderSurface()
     }
 
     func scaleWindow(by scale: CGFloat) {
@@ -742,6 +744,13 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         renderView.onDropFiles = { [weak self] urls in
             self?.model.handleDroppedFiles(urls)
         }
+    }
+
+    private func layoutRenderSurface() {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        rootView.layoutSubtreeIfNeeded()
+        renderView.layoutSubtreeIfNeeded()
+        renderView.updateVideoLayerFrame()
     }
 
     private func applyDeviceTitle() {
