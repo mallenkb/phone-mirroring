@@ -60,19 +60,20 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             + (maximumMirrorCornerRadius - minimumMirrorCornerRadius) * cornerScale
     }
 
-    static func onboardingCornerRadius(visibleFrame: NSRect = NSRect(x: 0, y: 0, width: 390, height: 850)) -> CGFloat {
-        let limits = sizeLimits(
-            visibleFrame: visibleFrame,
-            aspect: defaultMirrorAspect,
-            chromeHeight: verticalShellInset,
-            horizontalChromeWidth: horizontalShellInset,
-            maximumHeightBasis: resolutionHeight(for: nil, fallbackVisibleFrame: visibleFrame)
-        )
-        return mirrorCornerRadius(
-            forWindowHeight: AppModel.onboardingWindowSize.height,
-            minHeight: limits.min.height,
-            maxHeight: limits.max.height
-        )
+    nonisolated static func onboardingCornerRadius(
+        visibleFrame: NSRect = NSRect(x: 0, y: 0, width: 390, height: 850)
+    ) -> CGFloat {
+        let minimumWindowHeight: CGFloat = 688
+        let maximumScreenHeightRatio: CGFloat = 0.90
+        let minimumCornerRadius: CGFloat = 24
+        let maximumCornerRadius: CGFloat = 38
+        let windowHeight = min(max(minimumWindowHeight, visibleFrame.height * 0.82), 720)
+        let heightRange = max(1, visibleFrame.height * maximumScreenHeightRatio - minimumWindowHeight)
+        let cornerScale = windowHeight <= minimumWindowHeight + 1
+            ? 0
+            : min(1, max(0, (windowHeight - minimumWindowHeight) / heightRange))
+        return minimumCornerRadius
+            + (maximumCornerRadius - minimumCornerRadius) * cornerScale
     }
 
     /// The detached toolbar floats in its own window above the phone.
