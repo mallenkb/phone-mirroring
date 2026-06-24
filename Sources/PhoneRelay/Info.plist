@@ -2,42 +2,35 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- Embedded into the bare executable (__TEXT,__info_plist) so debug runs
-       from Xcode / `swift run` carry the same identity and local-network
-       usage declarations as the packaged app. When the binary runs inside
-       an .app bundle, the bundle's own Info.plist takes precedence. -->
-  <key>CFBundleIdentifier</key>
-  <string>com.mallenkb.PhoneRelay</string>
-  <key>CFBundleName</key>
-  <string>Phone Relay</string>
-  <key>CFBundleDisplayName</key>
-  <string>Phone Relay</string>
-  <key>CFBundleShortVersionString</key>
-  <string>1.0.13</string>
-  <key>CFBundleVersion</key>
-  <string>20</string>
-  <key>NSLocalNetworkUsageDescription</key>
-  <string>Phone Relay for Android connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
-  <key>NSBonjourServices</key>
-  <array>
-    <string>_adb._tcp</string>
-    <string>_adb-tls-connect._tcp</string>
-    <string>_adb-tls-pairing._tcp</string>
-  </array>
-  <key>SUFeedURL</key>
-  <string>https://phonerelay.mallenkb.com/appcast.xml</string>
-  <key>SUPublicEDKey</key>
-  <string>BRG3UL9d/8qtx7RJdobbGi1q87hpbEflfn1izHj/qgc=</string>
-  <key>SUEnableAutomaticChecks</key>
-  <true/>
-  <key>SUAllowsAutomaticUpdates</key>
-  <true/>
-  <key>SUScheduledCheckInterval</key>
-  <integer>86400</integer>
-  <!-- Keep the pre-macOS-26 ("Liquid Glass") control appearance: rounded
-       segmented controls and no visible card behind grouped content. Building
-       against the macOS 26+ SDK otherwise opts the app into the new design. -->
-  <key>UIDesignRequiresCompatibility</key>
-  <true/>
+	<key>CFBundleDisplayName</key>
+	<string>Phone Relay</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.mallenkb.PhoneRelay</string>
+	<key>CFBundleName</key>
+	<string>Phone Relay</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.14</string>
+	<key>CFBundleVersion</key>
+	<string>21</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_adb._tcp</string>
+		<string>_adb-tls-connect._tcp</string>
+		<string>_adb-tls-pairing._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Phone Relay for Android connects to your phone over your Wi-Fi network for wireless mirroring and automatic reconnect.</string>
+	<key>SUAllowsAutomaticUpdates</key>
+	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://phonerelay.mallenkb.com/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>BRG3UL9d/8qtx7RJdobbGi1q87hpbEflfn1izHj/qgc=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
+	<key>UIDesignRequiresCompatibility</key>
+	<true/>
 </dict>
 </plist>
