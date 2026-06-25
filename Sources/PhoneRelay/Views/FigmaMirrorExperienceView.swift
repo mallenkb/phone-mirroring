@@ -53,7 +53,7 @@ struct FigmaMirrorExperienceView: View {
     }
     private var effectiveWiFiConnectionAvailable: Bool {
         inlineConnectingTransport == nil
-            ? model.isWirelessConnectionAvailable || isCurrentWiFiSessionOnline
+            ? model.isLiveWirelessConnectionAvailable || isCurrentWiFiSessionOnline
             : wifiAvailabilityBeforeConnect
     }
     private var usbChoiceSubtitle: String {
@@ -233,7 +233,7 @@ struct FigmaMirrorExperienceView: View {
                     .foregroundStyle(accent)
                     .frame(width: 61 * scale, height: 40 * scale)
 
-                Text(model.isFirstTimeUSBSetup ? "Set up your Android phone with USB" : "Connect your Android phone")
+                Text(model.isFirstTimeUSBSetup && !effectiveWiFiConnectionAvailable ? "Set up your Android phone with USB" : "Connect your Android phone")
                     .font(.system(size: 16 * scale, weight: .semibold))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
@@ -254,13 +254,13 @@ struct FigmaMirrorExperienceView: View {
                         scale: scale,
                         action: {
                             usbAvailabilityBeforeConnect = model.isUSBConnectionAvailable
-                            wifiAvailabilityBeforeConnect = model.isWirelessConnectionAvailable
+                            wifiAvailabilityBeforeConnect = model.isLiveWirelessConnectionAvailable
                             inlineConnectingTransport = .usb
                             model.connectViaUSB()
                         }
                     )
 
-                    if !model.isFirstTimeUSBSetup {
+                    if !model.isFirstTimeUSBSetup || effectiveWiFiConnectionAvailable {
                         connectionChoiceRow(
                             iconName: "wifi",
                             title: "Connect with Wi-Fi IP",
@@ -272,8 +272,11 @@ struct FigmaMirrorExperienceView: View {
                             scale: scale,
                             action: {
                                 usbAvailabilityBeforeConnect = model.isUSBConnectionAvailable
-                                wifiAvailabilityBeforeConnect = model.isWirelessConnectionAvailable
-                                if model.hasVisibleSavedWirelessConnection {
+                                wifiAvailabilityBeforeConnect = model.isLiveWirelessConnectionAvailable
+                                if model.isLiveWirelessConnectionAvailable {
+                                    inlineConnectingTransport = .wifi
+                                    model.connectViaAvailableWireless()
+                                } else if model.hasVisibleSavedWirelessConnection {
                                     inlineConnectingTransport = .wifi
                                     model.reconnectOverWiFi(inlineUntilConnected: true)
                                 } else if AppModel.normalizedManualADBTarget(model.manualADBTarget) != nil {
@@ -882,9 +885,17 @@ struct FigmaMirrorExperienceView: View {
     private func bottomStatusPill(width: CGFloat, scale: CGFloat) -> some View {
         let state = model.connectionPillState
         let isConnecting = state == .connecting || state == .reconnecting
-        let statusText = isConnecting ? "Connecting to" : model.connectionPillText
+        let transportLabel = state == .online ? model.connectionTransportLabel : nil
+        let statusText = isConnecting
+            ? "Connecting to"
+            : (transportLabel == nil ? model.connectionPillText : "Online via")
         let deviceLabel = state == .noPhone ? "" : model.connectionDeviceLabel
-        let visibleDeviceLabel = isConnecting && !deviceLabel.isEmpty ? "\(deviceLabel)..." : deviceLabel
+        let baseDeviceLabel = transportLabel.map { label in
+            deviceLabel.isEmpty ? label : "\(label) · \(deviceLabel)"
+        } ?? deviceLabel
+        let visibleDeviceLabel = isConnecting && !baseDeviceLabel.isEmpty
+            ? "\(baseDeviceLabel)..."
+            : baseDeviceLabel
         let fontSize = 12 * scale
 
         return HStack(spacing: 4 * scale) {

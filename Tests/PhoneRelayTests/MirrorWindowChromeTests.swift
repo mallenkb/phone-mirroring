@@ -597,6 +597,8 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(source.contains("private var wifiChoiceSubtitle: String"))
         XCTAssertTrue(source.contains("effectiveWiFiConnectionAvailable"))
         XCTAssertTrue(source.contains("\"Phone found on Wi-Fi.\""))
+        XCTAssertTrue(source.contains("!model.isFirstTimeUSBSetup || effectiveWiFiConnectionAvailable"))
+        XCTAssertTrue(source.contains("model.connectViaAvailableWireless()"))
     }
 
     func testConnectionChromeRevealOrdersParentWindowWithToolbar() throws {

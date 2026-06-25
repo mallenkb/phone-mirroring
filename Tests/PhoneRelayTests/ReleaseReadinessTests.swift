@@ -86,7 +86,6 @@ final class ReleaseReadinessTests: XCTestCase {
     func testReviewURLsAreDeclaredForInAppAccess() throws {
         XCTAssertEqual(AppModel.privacyPolicyURL.scheme, "https")
         XCTAssertEqual(AppModel.supportURL.scheme, "https")
-        XCTAssertEqual(AppModel.releaseMetadataURL.scheme, "https")
         XCTAssertEqual(AppModel.latestReleaseURL.scheme, "https")
         XCTAssertTrue(FileManager.default.fileExists(atPath: Self.repoRoot()
             .appendingPathComponent("docs/privacy.html").path))

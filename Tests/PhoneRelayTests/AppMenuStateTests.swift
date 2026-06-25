@@ -239,10 +239,11 @@ final class AppMenuStateTests: XCTestCase {
         XCTAssertTrue(failureBody.contains("self.isRecoveringConnection = false"))
         XCTAssertTrue(failureBody.contains("self.isAwaitingReconnect = false"))
         XCTAssertTrue(failureBody.contains("self.stopQRCodePairingSession()"))
-        XCTAssertTrue(failureBody.contains("self.selectedDevice.adbSerial = candidate.usbSerial"))
+        XCTAssertTrue(failureBody.contains("guard let readyUSB = await self.readyUSBDeviceForMirroring(fallbackUSB) else"))
+        XCTAssertTrue(failureBody.contains("self.selectedDevice.adbSerial = readyUSB.serial"))
         XCTAssertTrue(failureBody.contains("self.selectedDevice.network = \"USB\""))
         XCTAssertTrue(failureBody.contains("keepConnectionWindowVisibleOverride: false"))
-        XCTAssertFalse(failureBody.contains("startDisconnectRecoveryFallback()"))
+        XCTAssertTrue(failureBody.contains("startDisconnectRecoveryFallback()"))
         XCTAssertTrue(takeoverBody.contains("showConnectionWindow(startsQRCodePairing: false)"))
     }
 

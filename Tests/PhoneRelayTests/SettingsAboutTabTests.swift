@@ -104,10 +104,8 @@ final class SettingsAboutTabTests: XCTestCase {
         XCTAssertTrue(source.contains(".frame(height: Self.height)"))
         XCTAssertTrue(rowBody.contains("connectionDetailRow(\"USB\", usbAddress ?? \"N/A\")"))
         XCTAssertTrue(rowBody.contains("connectionDetailRow(\"Wi-Fi\", wifiAddress ?? \"N/A\")"))
-        XCTAssertTrue(source.contains("liveWiFiAddress: liveAddress(for: record)"))
-        XCTAssertTrue(source.contains("liveUSBAddress: liveUSBAddress(for: record)"))
-        XCTAssertTrue(rowBody.contains("return \"Wi-Fi and USB available\""))
-        XCTAssertTrue(rowBody.contains("return \"USB available\""))
+        XCTAssertTrue(source.contains("liveRoutes: liveRoutes(for: record)"))
+        XCTAssertTrue(rowBody.contains("if let status = liveRoutes.statusLabel { return status }"))
         XCTAssertTrue(rowBody.contains("HStack(alignment: .center, spacing: 14) {\n            TemplateResourceIcon"))
         XCTAssertTrue(rowBody.contains("VStack(alignment: .leading, spacing: 8) {\n                Text(record.displayName)"))
         XCTAssertTrue(rowBody.contains("connectionDetails"))
@@ -130,14 +128,13 @@ final class SettingsAboutTabTests: XCTestCase {
             encoding: .utf8
         )
 
-        XCTAssertTrue(source.contains("AppModel.rememberedAuthorizedDevice("))
-        XCTAssertTrue(source.contains("in: model.latestAuthorizedADBDevices"))
-        XCTAssertTrue(source.contains("!device.isUSB"))
-        XCTAssertTrue(source.contains("return device.serial"))
-        XCTAssertTrue(source.contains("private func liveUSBAddress(for record: PairedPhoneRecord) -> String?"))
-        XCTAssertTrue(source.contains("guard device.isUSB else { return false }"))
-        XCTAssertTrue(source.contains("device.serial == record.resolvedUSBSerial"))
-        XCTAssertTrue(source.contains("device.serial == normalizedADBIdentifier(record.id)"))
+        XCTAssertTrue(source.contains("AppModel.liveConnectionRoutes("))
+        XCTAssertTrue(source.contains("authorizedDevices: model.latestAuthorizedADBDevices"))
+        XCTAssertTrue(source.contains("discoveredPhones: model.discoveredPhones"))
+        XCTAssertTrue(source.contains("private func liveRoutes(for record: PairedPhoneRecord) -> AppModel.LiveConnectionRoutes"))
+        XCTAssertTrue(source.contains("liveRoutes.statusLabel"))
+        XCTAssertTrue(source.contains("liveRoutes.wifiAddress ?? record.resolvedWiFiAddress"))
+        XCTAssertTrue(source.contains("liveRoutes.usbSerial ?? record.resolvedUSBSerial"))
     }
 
     func testAboutDocumentsProvideLocalPolicyAndLicenseDetails() throws {

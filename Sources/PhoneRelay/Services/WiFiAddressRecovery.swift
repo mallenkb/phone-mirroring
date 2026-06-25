@@ -7,9 +7,9 @@ import Network
 /// lease, and mDNS only helps when Wireless debugging is advertising. This
 /// recovers the new IP on the local network using a stable anchor:
 ///
-///   1. Sweep the `/24` with short TCP probes to port 5555. This both reveals
-///      which hosts speak adb *and* makes the kernel resolve every reachable
-///      host's MAC into the ARP cache.
+///   1. Sweep the local IPv4 subnet with short TCP probes to port 5555. This
+///      both reveals which hosts speak adb *and* makes the kernel resolve every
+///      reachable host's MAC into the ARP cache.
 ///   2. Primary match: the phone's saved Wi-Fi MAC (persistent per-SSID on
 ///      Android) against the ARP table → its current IP.
 ///   3. Fallback: for hosts with 5555 open, `adb connect` + `getprop` and match
@@ -21,7 +21,15 @@ import Network
 enum WiFiAddressRecovery {
     static let defaultPort = 5555
     static let defaultProbeTimeout: TimeInterval = 0.7
-    static let defaultConcurrency = 32
+    /// Each probe is a single lightweight TCP SYN that spends almost all of its
+    /// life idle-waiting on the 0.7s timeout, so the sweep is I/O-bound, not
+    /// CPU-bound — a high fan-out just shrinks wall-clock time. This matters now
+    /// that recovery expands to the interface's full netmask: a `/22` mesh LAN is
+    /// ~1000 hosts, which at the old fan-out of 32 took ~20s (≈8 timeout waves per
+    /// `/24` × 4 subnets) and routinely blew the reconnect time budget. 128 keeps
+    /// peak open sockets well under the default file-descriptor limit while
+    /// bringing a `/22` down to a few seconds.
+    static let defaultConcurrency = 128
 
     /// What we know about the phone we're hunting for.
     struct Target {
@@ -47,7 +55,7 @@ enum WiFiAddressRecovery {
             localSubnets: (localSubnets ?? Self.localIPv4Subnets)()
         )
         guard !prefixes.isEmpty else {
-            Logger.log("Wi-Fi recovery: no candidate /24 subnet to scan")
+            Logger.log("Wi-Fi recovery: no candidate IPv4 subnet to scan")
             return nil
         }
 
@@ -78,7 +86,8 @@ enum WiFiAddressRecovery {
     // MARK: - Subnet math (pure)
 
     /// Candidate `/24` prefixes to scan, last-known subnet first, then the Mac's
-    /// own LAN subnets. Deduped, preserving priority order.
+    /// own LAN subnets expanded from their real netmasks. Deduped, preserving
+    /// priority order.
     static func subnetPrefixes(lastKnownIP: String?, localSubnets: [String]) -> [String] {
         var prefixes: [String] = []
         func add(_ prefix: String?) {
@@ -100,6 +109,30 @@ enum WiFiAddressRecovery {
     /// All host addresses .1–.254 for a "a.b.c." prefix.
     static func subnetHosts(prefix: String) -> [String] {
         (1...254).map { "\(prefix)\($0)" }
+    }
+
+    /// Expands an interface address/netmask into the `/24` prefixes it covers.
+    /// A common mesh LAN such as `192.168.68.54/22` spans `.68` through `.71`;
+    /// scanning only the host's own `/24` would miss a phone that DHCP moved to
+    /// a neighboring slice of the same LAN.
+    static func subnetPrefixes(forIPv4 ip: String, netmask: String) -> [String] {
+        guard let address = IPv4Address(ip), let mask = IPv4Address(netmask) else { return [] }
+        let maskValue = mask.value
+        let network = address.value & maskValue
+        let broadcast = network | ~maskValue
+        guard broadcast > network else { return [] }
+
+        var prefixes: [String] = []
+        var current = network
+        while current <= broadcast {
+            if let prefix = subnetPrefix(forIPv4: IPv4Address(current).string), !prefixes.contains(prefix) {
+                prefixes.append(prefix)
+            }
+            let next = (current & 0xffff_ff00) + 0x100
+            if next <= current { break }
+            current = next
+        }
+        return prefixes
     }
 
     /// Strips an optional `:port` from an IPv4 address. Returns nil if the host
@@ -182,7 +215,22 @@ enum WiFiAddressRecovery {
                 nil, 0, NI_NUMERICHOST
             )
             guard result == 0 else { continue }
-            if let prefix = subnetPrefix(forIPv4: String(cString: host)), !subnets.contains(prefix) {
+            var maskHost = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let maskResult = interface.pointee.ifa_netmask.map {
+                getnameinfo(
+                    $0, socklen_t($0.pointee.sa_len),
+                    &maskHost, socklen_t(maskHost.count),
+                    nil, 0, NI_NUMERICHOST
+                )
+            } ?? -1
+
+            let prefixes: [String]
+            if maskResult == 0 {
+                prefixes = subnetPrefixes(forIPv4: String(cString: host), netmask: String(cString: maskHost))
+            } else {
+                prefixes = subnetPrefix(forIPv4: String(cString: host)).map { [$0] } ?? []
+            }
+            for prefix in prefixes where !subnets.contains(prefix) {
                 subnets.append(prefix)
             }
         }
@@ -287,6 +335,34 @@ enum WiFiAddressRecovery {
             if matched { return host }
         }
         return nil
+    }
+}
+
+private struct IPv4Address {
+    var value: UInt32
+
+    init?(_ string: String) {
+        let octets = string.split(separator: ".", omittingEmptySubsequences: false)
+        guard octets.count == 4 else { return nil }
+        var value: UInt32 = 0
+        for octet in octets {
+            guard let part = UInt32(octet), part <= 255 else { return nil }
+            value = (value << 8) | part
+        }
+        self.value = value
+    }
+
+    init(_ value: UInt32) {
+        self.value = value
+    }
+
+    var string: String {
+        [
+            (value >> 24) & 0xff,
+            (value >> 16) & 0xff,
+            (value >> 8) & 0xff,
+            value & 0xff,
+        ].map(String.init).joined(separator: ".")
     }
 }
 

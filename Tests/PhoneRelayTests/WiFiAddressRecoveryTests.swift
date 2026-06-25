@@ -75,6 +75,22 @@ final class WiFiAddressRecoveryTests: XCTestCase {
         XCTAssertEqual(hosts.last, "192.168.1.254")
     }
 
+    func testSubnetPrefixesExpandInterfaceNetmask() {
+        let prefixes = WiFiAddressRecovery.subnetPrefixes(
+            forIPv4: "192.168.68.54",
+            netmask: "255.255.252.0"
+        )
+        XCTAssertEqual(prefixes, ["192.168.68.", "192.168.69.", "192.168.70.", "192.168.71."])
+    }
+
+    func testSubnetPrefixesForPlain24() {
+        let prefixes = WiFiAddressRecovery.subnetPrefixes(
+            forIPv4: "10.0.3.42",
+            netmask: "255.255.255.0"
+        )
+        XCTAssertEqual(prefixes, ["10.0.3."])
+    }
+
     func testSubnetPrefixesPrioritizeLastKnownThenDedupe() {
         let prefixes = WiFiAddressRecovery.subnetPrefixes(
             lastKnownIP: "192.168.1.50:5555",

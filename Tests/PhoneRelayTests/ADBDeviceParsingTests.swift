@@ -348,7 +348,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
     }
 
-    func testManualUSBConnectPinsUSBTransport() throws {
+    func testManualUSBConnectRefreshesWiFiHandoff() throws {
         let source = try String(contentsOfFile: "Sources/PhoneRelay/AppModel.swift", encoding: .utf8)
         guard let functionRange = source.range(of: "func connectViaUSB()"),
               let nextFunctionRange = source.range(
@@ -361,8 +361,34 @@ final class ADBDeviceParsingTests: XCTestCase {
         }
 
         let body = String(source[functionRange.lowerBound..<nextFunctionRange.lowerBound])
-        XCTAssertTrue(body.contains("prepareWirelessHandoff: false"))
+        XCTAssertTrue(body.contains("prepareWirelessHandoff: true"))
+        XCTAssertTrue(body.contains("pinManualUSBTransport(serial: liveUSBDevice.serial)"))
         XCTAssertFalse(body.contains("shouldAttemptWirelessHandoff("))
+    }
+
+    func testADBShellReadinessFailureRecognizesStaleUSBTransport() {
+        XCTAssertTrue(AppModel.adbShellReadinessFailed("adb: device 'RFCT10ZLTAJ' not found"))
+        XCTAssertTrue(AppModel.adbShellReadinessFailed("error: device offline"))
+        XCTAssertTrue(AppModel.adbShellReadinessFailed("error: closed"))
+        XCTAssertFalse(AppModel.adbShellReadinessFailed("phone-relay-usb-ok"))
+    }
+
+    func testSavedDeviceAutomaticConnectPrioritizesLiveRoutesBeforeSavedRecovery() throws {
+        let source = try String(contentsOfFile: "Sources/PhoneRelay/AppModel.swift", encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "func connect(record: PairedPhoneRecord, transport: SavedConnectionTransport = .automatic)"))
+        let end = try XCTUnwrap(source.range(of: "private func connectViaSavedUSB(record:", range: start.upperBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        let liveWiFi = try XCTUnwrap(body.range(of: "Self.liveWirelessAuthorizedDevice("))
+        let liveUSB = try XCTUnwrap(body.range(of: "liveUSBDevice(for: record) != nil"))
+        let discoveredWiFi = try XCTUnwrap(body.range(of: "Self.rememberedConnectablePhone(for: record, in: discoveredPhones)"))
+        let savedWiFi = try XCTUnwrap(body.range(of: "reconnectOverWiFi(preferredRecord: record, restrictToPreferredRecord: true)"))
+        let savedUSB = try XCTUnwrap(body.range(of: "startMirroring(manual: true)", range: savedWiFi.upperBound..<body.endIndex))
+
+        XCTAssertLessThan(liveWiFi.lowerBound, liveUSB.lowerBound)
+        XCTAssertLessThan(liveUSB.lowerBound, discoveredWiFi.lowerBound)
+        XCTAssertLessThan(discoveredWiFi.lowerBound, savedWiFi.lowerBound)
+        XCTAssertLessThan(savedWiFi.lowerBound, savedUSB.lowerBound)
     }
 
     func testSettingsViewExposesBackgroundWiFiHandoffToggle() throws {

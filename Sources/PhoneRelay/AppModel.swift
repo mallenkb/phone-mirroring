@@ -58,7 +58,6 @@ final class AppModel: ObservableObject {
     nonisolated static let privacyPolicyURL = URL(string: "https://mallenkb.github.io/phone-mirroring/privacy.html")!
     nonisolated static let supportURL = URL(string: "https://mallenkb.github.io/phone-mirroring/support.html")!
     nonisolated static let latestReleaseURL = URL(string: "https://github.com/mallenkb/phone-mirroring/releases/latest")!
-    nonisolated static let releaseMetadataURL = URL(string: "https://phonerelay.mallenkb.com/downloads/release.json")!
     nonisolated static let mirrorScrollSpeedDefaultsKey = "MirrorBehavior.scrollSpeedPercent"
     nonisolated static let mirrorScrollFeelDefaultsKey = "MirrorBehavior.scrollFeel"
     nonisolated static let backgroundWiFiHandoffDefaultsKey = "MirrorBehavior.backgroundWiFiHandoffEnabled"
@@ -862,6 +861,9 @@ final class AppModel: ObservableObject {
     private var lastMirrorStartAt: Date?
     private var consecutiveQuickMirrorFailures = 0
     private var autoMirrorBackoffUntil: Date?
+    /// Consecutive device-watcher polls where the live mirror's transport was
+    /// missing from `adb devices -l`; debounced by `missingMirrorTransportPollGrace`.
+    private var missingMirrorTransportPollMisses = 0
     private var mirrorStartGeneration = 0
     private var sessionAutoConnectSuspendedRecordIDs = Set<PairedPhoneRecord.ID>()
     private var autoConnectEligiblePairedPhones: [PairedPhoneRecord] {
@@ -875,6 +877,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var connectionWindowNavigationResetID = 0
     /// A session that dies sooner than this counts as a "quick" failure.
     nonisolated static let quickMirrorFailureThreshold: TimeInterval = 12
+
+    /// Consecutive device-watcher polls a live mirror's transport must be absent
+    /// from `adb devices -l` before the backup detector tears it down. At the 2s
+    /// mirroring poll cadence this tolerates a single ~2s blip while still acting
+    /// well inside the time a real loss takes to matter (the stream-death detector
+    /// handles genuine disconnects on its own). Keep ≥ 2.
+    nonisolated static let missingMirrorTransportPollGrace = 2
 
     /// Whether a mirror session lived long enough to count as a genuinely stable
     /// connection (rather than a load-then-bail). Used to decide when a later
@@ -963,10 +972,43 @@ final class AppModel: ObservableObject {
         latestAuthorizedADBDevices.contains(where: \.isUSB)
     }
 
-    var isWirelessConnectionAvailable: Bool {
+    var isLiveWirelessConnectionAvailable: Bool {
         latestAuthorizedADBDevices.contains { !$0.isUSB }
             || discoveredPhones.contains { $0.kind.isConnectable }
+    }
+
+    var isWirelessConnectionAvailable: Bool {
+        isLiveWirelessConnectionAvailable
             || hasRememberedWiFiHandoffRoute
+    }
+
+    var connectionTransportLabel: String? {
+        let hasUSB = isUSBConnectionAvailable || isCurrentSelectedUSBTransport
+        let hasWiFi = isLiveWirelessConnectionAvailable || isCurrentSelectedWiFiTransport
+        if hasUSB, hasWiFi { return "USB + Wi-Fi" }
+        if hasWiFi { return "Wi-Fi" }
+        if hasUSB { return "USB" }
+        return nil
+    }
+
+    private var isCurrentSelectedUSBTransport: Bool {
+        guard isSelectedDeviceOnline || isMirroring,
+              let serial = selectedDevice.adbSerial,
+              !serial.isEmpty else { return false }
+        return !Self.isWirelessADBTarget(serial)
+            || selectedDevice.network.localizedCaseInsensitiveContains("usb")
+    }
+
+    private var isCurrentSelectedWiFiTransport: Bool {
+        guard isSelectedDeviceOnline || isMirroring,
+              let serial = selectedDevice.adbSerial,
+              !serial.isEmpty else {
+            return selectedDevice.network.localizedCaseInsensitiveContains("wi-fi")
+                || selectedDevice.network.localizedCaseInsensitiveContains("wireless")
+        }
+        return Self.isWirelessADBTarget(serial)
+            || selectedDevice.network.localizedCaseInsensitiveContains("wi-fi")
+            || selectedDevice.network.localizedCaseInsensitiveContains("wireless")
     }
 
     var hasSavedWirelessConnection: Bool {
@@ -1857,10 +1899,33 @@ final class AppModel: ObservableObject {
     /// then verifies the result is adb-ready. Throttled per record so a phone
     /// that's merely away can't trigger repeated whole-subnet scans. Returns the
     /// verified `host:port`, or nil.
-    private func recoverChangedWiFiAddress(for record: PairedPhoneRecord) async -> String? {
+    /// True while the user is actively watching the connect screen: the app is
+    /// frontmost and the connection window is on-screen, and we're not already
+    /// mirroring. When backgrounded — the menu-bar-idle case a phone that's away
+    /// would otherwise scan-storm — this is false, so the longer idle cooldown
+    /// applies.
+    private var isConnectionAttemptForegrounded: Bool {
+        guard !isMirroring, NSApp.isActive else { return false }
+        return connectionWindow?.isVisible ?? false
+    }
+
+    private var activeWiFiRecoveryCooldown: TimeInterval {
+        isConnectionAttemptForegrounded
+            ? Self.wifiAddressRecoveryForegroundCooldown
+            : Self.wifiAddressRecoveryCooldown
+    }
+
+    private func recoverChangedWiFiAddress(
+        for record: PairedPhoneRecord,
+        ignoreCooldown: Bool = false
+    ) async -> String? {
         let now = Date()
-        if let last = wifiAddressRecoveryAttemptedAt[record.id],
-           now.timeIntervalSince(last) < Self.wifiAddressRecoveryCooldown {
+        if Self.shouldThrottleWiFiRecovery(
+            lastAttemptAt: wifiAddressRecoveryAttemptedAt[record.id],
+            now: now,
+            cooldown: activeWiFiRecoveryCooldown,
+            ignoreCooldown: ignoreCooldown
+        ) {
             return nil
         }
         wifiAddressRecoveryAttemptedAt[record.id] = now
@@ -1902,11 +1967,15 @@ final class AppModel: ObservableObject {
             // Pinned to Wi-Fi ("move to Wi-Fi and stay"): don't fall back to the
             // still-connected cable while we're pursuing the Wi-Fi route.
             guard !isUSBSuppressedByWirelessPin(device.serial) else { return }
+            guard let readyUSBDevice = await readyUSBDeviceForMirroring(device) else {
+                Logger.log("Skipping USB auto-connect for \(device.serial): USB transport is not ready.")
+                return
+            }
             startMirroringOverUSB(
-                device,
+                readyUSBDevice,
                 manual: false,
                 prepareWirelessHandoff: Self.shouldAttemptWirelessHandoff(
-                    from: device,
+                    from: readyUSBDevice,
                     preferUSBMirroring: preferUSBMirroring,
                     backgroundWiFiHandoffEnabled: backgroundWiFiHandoffEnabled,
                     hasSavedDevices: !pairedPhones.isEmpty
@@ -2195,7 +2264,20 @@ final class AppModel: ObservableObject {
                     pairedPhones: self.pairedPhones,
                     authorizedDevices: authorized
                 ) {
-                    self.recoverMissingMirrorTransport()
+                    // Debounce: `adb devices -l` can momentarily drop a healthy
+                    // wireless device on a single poll. A genuine transport loss
+                    // also kills the scrcpy stream, which the faster keepalive/
+                    // stall detector tears down on its own — so only this backup
+                    // detector needs the grace, and requiring consecutive misses
+                    // stops a one-poll blip from killing a live mirror (a cause of
+                    // connect-then-drop loops).
+                    self.missingMirrorTransportPollMisses += 1
+                    if self.missingMirrorTransportPollMisses >= Self.missingMirrorTransportPollGrace {
+                        self.missingMirrorTransportPollMisses = 0
+                        self.recoverMissingMirrorTransport()
+                    }
+                } else {
+                    self.missingMirrorTransportPollMisses = 0
                 }
 
                 // USB → Wi-Fi handoff: the moment an authorized USB phone shows
@@ -2439,6 +2521,13 @@ final class AppModel: ObservableObject {
     /// Minimum gap between whole-subnet Wi-Fi address recovery sweeps for the
     /// same phone, so a phone that's simply away can't trigger a scan storm.
     nonisolated static let wifiAddressRecoveryCooldown: TimeInterval = 60
+    /// Shorter gap used while the user is actively watching the connect screen
+    /// (app frontmost + connection window up). They're waiting on the result, so
+    /// re-sweep sooner; the moment they tab away or it backgrounds, the storm-safe
+    /// idle cadence above takes over again. (The 20s `autoConnectFailureCooldown`
+    /// on the saved address still paces re-entry, so this won't sweep faster than
+    /// that even at 15s.)
+    nonisolated static let wifiAddressRecoveryForegroundCooldown: TimeInterval = 15
     nonisolated static let presenceAutoConnectThrottle: TimeInterval = 3
 
     nonisolated static func isAutoConnectFailureCoolingDown(
@@ -2447,6 +2536,22 @@ final class AppModel: ObservableObject {
         cooldown: TimeInterval = autoConnectFailureCooldown
     ) -> Bool {
         now.timeIntervalSince(failedAt) < cooldown
+    }
+
+    /// Whether a per-phone Wi-Fi address recovery sweep should be skipped because
+    /// the previous sweep for this phone was too recent. The cooldown stops a
+    /// phone that is merely away from triggering a whole-subnet scan on every
+    /// presence poll. A deliberate, user-initiated reconnect passes
+    /// `ignoreCooldown` so a single button press is never throttled — that's one
+    /// action, not a poll storm.
+    nonisolated static func shouldThrottleWiFiRecovery(
+        lastAttemptAt: Date?,
+        now: Date = Date(),
+        cooldown: TimeInterval = wifiAddressRecoveryCooldown,
+        ignoreCooldown: Bool = false
+    ) -> Bool {
+        guard !ignoreCooldown, let lastAttemptAt else { return false }
+        return now.timeIntervalSince(lastAttemptAt) < cooldown
     }
 
 	    nonisolated static func shouldDelayRememberedAutoConnect(
@@ -3142,8 +3247,8 @@ final class AppModel: ObservableObject {
 
     func connectViaUSB() {
         if let liveUSBDevice = latestAuthorizedADBDevices.first(where: \.isUSB) {
-            pinManualUSBTransport(serial: liveUSBDevice.serial)
             if isMirroring || mirrorLaunchTask != nil {
+                pinManualUSBTransport(serial: liveUSBDevice.serial)
                 if selectedDevice.adbSerial == liveUSBDevice.serial {
                     return
                 }
@@ -3195,16 +3300,41 @@ final class AppModel: ObservableObject {
                 return
             }
 
-            self.pinManualUSBTransport(serial: usbDevice.serial)
-            let wifiAddress = await self.prefillWirelessIPFromUSBDevice(usbDevice)
+            guard let readyUSBDevice = await self.readyUSBDeviceForMirroring(usbDevice) else {
+                self.isPairing = false
+                self.usbConnectTask = nil
+                return
+            }
+
+            let wifiAddress = await self.prefillWirelessIPFromUSBDevice(readyUSBDevice)
             self.usbConnectTask = nil
             self.startMirroringOverUSB(
-                usbDevice,
+                readyUSBDevice,
                 manual: true,
                 wifiAddress: wifiAddress,
-                prepareWirelessHandoff: false
+                prepareWirelessHandoff: true
             )
         }
+    }
+
+    func connectViaAvailableWireless() {
+        guard !isMirroring, !isPairing else { return }
+        manualUSBPinnedSerials.removeAll()
+        resumeDiscoveryAfterManualConnect()
+        stopQRCodePairingSession()
+
+        if let wirelessDevice = latestAuthorizedADBDevices.first(where: { !$0.isUSB }) {
+            select(device: wirelessDevice)
+            startMirroring(manual: true)
+            return
+        }
+
+        if let phone = discoveredPhones.first(where: { $0.kind.isConnectable }) {
+            connectAndMirror(phone: phone)
+            return
+        }
+
+        reconnectOverWiFi(inlineUntilConnected: true)
     }
 
     private func pinManualUSBTransport(serial: String) {
@@ -3239,7 +3369,7 @@ final class AppModel: ObservableObject {
             usbDevice,
             manual: true,
             wifiAddress: pairedPhones.first(where: { $0.resolvedUSBSerial == usbDevice.serial })?.resolvedWiFiAddress,
-            prepareWirelessHandoff: false
+            prepareWirelessHandoff: true
         )
     }
 
@@ -3251,6 +3381,60 @@ final class AppModel: ObservableObject {
         guard let wifiIP = Self.wifiIPAddress(in: routeOutput) else { return nil }
         manualADBTarget = wifiIP
         return "\(wifiIP):\(Self.legacyADBWirelessPort)"
+    }
+
+    private func readyUSBDeviceForMirroring(_ usbDevice: AuthorizedADBDevice) async -> AuthorizedADBDevice? {
+        let adb = self.adb
+        if await Self.isADBDeviceShellReady(adb: adb, serial: usbDevice.serial) {
+            return usbDevice
+        }
+
+        Logger.log("USB device \(usbDevice.serial) appeared in adb devices but was not shell-ready; restarting adb server once before USB launch.")
+        await Task.detached(priority: .userInitiated) {
+            _ = adb.run(["kill-server"], timeout: 3)
+        }.value
+        await adb.ensureServerStarted()
+
+        let refreshedOutput = await Task.detached {
+            adb.run(["devices", "-l"], timeout: Self.adbDeviceListTimeout)
+        }.value
+        let refreshedDevices = Self.authorizedADBDevices(in: refreshedOutput)
+        recordADBHealth(refreshedOutput, authorizedDevices: refreshedDevices)
+        guard let refreshed = refreshedDevices.first(where: { $0.isUSB && $0.serial == usbDevice.serial })
+            ?? refreshedDevices.first(where: \.isUSB)
+        else {
+            Logger.log("USB device \(usbDevice.serial) was not found after adb restart.")
+            return nil
+        }
+
+        guard await Self.isADBDeviceShellReady(adb: adb, serial: refreshed.serial) else {
+            Logger.log("USB device \(refreshed.serial) is still not shell-ready after adb restart.")
+            return nil
+        }
+        return refreshed
+    }
+
+    nonisolated static func isADBDeviceShellReady(
+        adb: ADBController,
+        serial: String,
+        timeout: TimeInterval = 2
+    ) async -> Bool {
+        let output = await Task.detached {
+            adb.run(["-s", serial, "shell", "echo", "phone-relay-usb-ok"], timeout: timeout)
+        }.value
+        return !adbShellReadinessFailed(output)
+    }
+
+    nonisolated static func adbShellReadinessFailed(_ output: String) -> Bool {
+        let lower = output.lowercased()
+        return lower.contains("device '\u{201c}")
+            || lower.contains("device '")
+            || lower.contains("not found")
+            || lower.contains("offline")
+            || lower.contains("unauthorized")
+            || lower.contains("closed")
+            || lower.contains("error:")
+            || lower.contains("failed")
     }
 
     /// The pairing address from "Pair device with pairing code" must include an
@@ -3660,6 +3844,28 @@ final class AppModel: ObservableObject {
             lastSeen: .now,
             states: [.mirroringReady, .companionConnected],
             adbSerial: device.serial
+        )
+    }
+
+    private func select(device: AuthorizedADBDevice, for record: PairedPhoneRecord) {
+        isSelectedDeviceOnline = true
+        selectedDevice = MirrorDevice(
+            id: record.id,
+            name: record.displayName,
+            model: device.product.isEmpty ? "Android" : device.product,
+            battery: selectedDevice.battery,
+            isCharging: selectedDevice.isCharging,
+            network: device.isUSB ? "USB debugging" : "Wi-Fi",
+            lastSeen: .now,
+            states: [.mirroringReady, .companionConnected],
+            adbSerial: device.serial
+        )
+        touchPairedPhone(
+            id: record.id,
+            displayName: record.displayName,
+            address: device.serial,
+            usbSerial: device.isUSB ? device.serial : record.resolvedUSBSerial,
+            wifiAddress: device.isUSB ? record.resolvedWiFiAddress : device.serial
         )
     }
 
@@ -4526,6 +4732,80 @@ final class AppModel: ObservableObject {
             PairedPhoneStore.normalizedDeviceName(device.model) == normalizedName
         }
         return modelMatches.first(where: { !$0.isUSB }) ?? modelMatches.first
+    }
+
+    nonisolated static func liveWirelessAuthorizedDevice(
+        for record: PairedPhoneRecord,
+        in devices: [AuthorizedADBDevice]
+    ) -> AuthorizedADBDevice? {
+        if let device = rememberedAuthorizedDevice(for: record, in: devices),
+           !device.isUSB {
+            return device
+        }
+        return nil
+    }
+
+    nonisolated static func liveUSBAuthorizedDevice(
+        for record: PairedPhoneRecord,
+        in devices: [AuthorizedADBDevice]
+    ) -> AuthorizedADBDevice? {
+        if let usbSerial = record.resolvedUSBSerial,
+           let exact = devices.first(where: { $0.isUSB && $0.serial == usbSerial }) {
+            return exact
+        }
+
+        let normalizedRecordID = normalizedADBSerial(record.id)
+        if let exact = devices.first(where: { device in
+            device.isUSB
+                && (device.serial == record.id
+                    || device.serial == record.lastAddress
+                    || device.serial == normalizedRecordID)
+        }) {
+            return exact
+        }
+
+        guard record.displayName.localizedCaseInsensitiveCompare("Android device") != .orderedSame else {
+            return nil
+        }
+        let normalizedName = PairedPhoneStore.normalizedDeviceName(record.displayName)
+        return devices.first { device in
+            device.isUSB && PairedPhoneStore.normalizedDeviceName(device.model) == normalizedName
+        }
+    }
+
+    struct LiveConnectionRoutes: Equatable {
+        var wifiAddress: String?
+        var usbSerial: String?
+
+        var hasWiFi: Bool { wifiAddress != nil }
+        var hasUSB: Bool { usbSerial != nil }
+
+        var statusLabel: String? {
+            if hasWiFi, hasUSB { return "Wi-Fi and USB available" }
+            if hasWiFi { return "Wi-Fi available" }
+            if hasUSB { return "USB available" }
+            return nil
+        }
+    }
+
+    nonisolated static func liveConnectionRoutes(
+        for record: PairedPhoneRecord,
+        authorizedDevices: [AuthorizedADBDevice],
+        discoveredPhones: [DiscoveredPhone]
+    ) -> LiveConnectionRoutes {
+        let liveWiFiAddress = liveWirelessAuthorizedDevice(
+            for: record,
+            in: authorizedDevices
+        )?.serial ?? rememberedConnectablePhone(for: record, in: discoveredPhones)?.address
+        let liveUSBSerial = liveUSBAuthorizedDevice(
+            for: record,
+            in: authorizedDevices
+        )?.serial
+
+        return LiveConnectionRoutes(
+            wifiAddress: liveWiFiAddress,
+            usbSerial: liveUSBSerial
+        )
     }
 
     nonisolated static func liveSelectedOrRememberedDevice(
@@ -5628,6 +5908,7 @@ final class AppModel: ObservableObject {
         isAwaitingReconnect = false
         selectedDevice.states = [.mirroringReady, .companionConnected]
         lastMirrorStartAt = Date()
+        missingMirrorTransportPollMisses = 0
         if !keepConnectionWindowVisible {
             hideConnectionWindowForNativeMirror()
         }
@@ -5744,14 +6025,28 @@ final class AppModel: ObservableObject {
                 self.isAwaitingReconnect = false
                 self.stopQRCodePairingSession()
                 // The prepared Wi-Fi route never came up; genuinely fall back to
-                // the cable and release the pin so USB works again.
+                // the cable and release the pin so USB works again. First prove
+                // the USB transport is still usable; adb can briefly report a
+                // stale USB serial after tcpip/restart or cable movement.
                 self.wirelessPinnedUSBSerials.remove(candidate.usbSerial)
-                self.selectedDevice.adbSerial = candidate.usbSerial
+                let fallbackUSB = AuthorizedADBDevice(
+                    serial: candidate.usbSerial,
+                    product: "",
+                    model: candidate.displayName,
+                    isUSB: true
+                )
+                guard let readyUSB = await self.readyUSBDeviceForMirroring(fallbackUSB) else {
+                    Logger.log("Skipping USB fallback for \(candidate.usbSerial): USB transport is not ready after failed Wi-Fi handoff.")
+                    self.isSelectedDeviceOnline = false
+                    self.startDisconnectRecoveryFallback()
+                    return
+                }
+                self.selectedDevice.adbSerial = readyUSB.serial
                 self.selectedDevice.name = candidate.displayName
                 self.selectedDevice.network = "USB"
                 self.isSelectedDeviceOnline = true
                 self.launchNativeMirror(
-                    serial: candidate.usbSerial,
+                    serial: readyUSB.serial,
                     keepConnectionWindowVisibleOverride: false
                 )
             }
@@ -5817,6 +6112,10 @@ final class AppModel: ObservableObject {
     /// arm a growing reconnect backoff.
     private func noteMirrorSessionEnded() {
         let lived = lastMirrorStartAt.map { Date().timeIntervalSince($0) } ?? .greatestFiniteMagnitude
+        // One diagnostic line per session end: distinguishes a genuine drop from a
+        // load-then-bail crash-loop and names the transport, so a "connects then
+        // drops" report can be triaged from the log without guessing.
+        Logger.log("Mirror session ended: lived=\(String(format: "%.1f", lived))s serial=\(selectedDevice.adbSerial ?? "default") stable=\(Self.isStableMirrorSession(lived: lived)) priorQuickFailures=\(consecutiveQuickMirrorFailures)")
         guard !Self.isStableMirrorSession(lived: lived) else {
             // Stable session — reset the reconnect backoff, and remember that a
             // real connection was achieved so a *subsequent* drop reads
@@ -6309,6 +6608,21 @@ final class AppModel: ObservableObject {
             return
         }
 
+        if let wirelessDevice = Self.liveWirelessAuthorizedDevice(
+            for: record,
+            in: latestAuthorizedADBDevices
+        ) {
+            stopQRCodePairingSession()
+            select(device: wirelessDevice, for: record)
+            startMirroring(manual: true)
+            return
+        }
+
+        if liveUSBDevice(for: record) != nil {
+            connectViaSavedUSB(record: record)
+            return
+        }
+
         if let phone = Self.rememberedConnectablePhone(for: record, in: discoveredPhones) {
             stopQRCodePairingSession()
             connectAndMirror(phone: phone)
@@ -6332,17 +6646,6 @@ final class AppModel: ObservableObject {
             return
         }
 
-        if let usbDevice = latestAuthorizedADBDevices.first(where: { $0.isUSB && $0.serial == usbSerial }) {
-            stopQRCodePairingSession()
-            startMirroringOverUSB(
-                usbDevice,
-                manual: true,
-                wifiAddress: record.resolvedWiFiAddress,
-                prepareWirelessHandoff: false
-            )
-            return
-        }
-
         selectedDevice = MirrorDevice(
             id: record.id,
             name: record.displayName,
@@ -6356,13 +6659,58 @@ final class AppModel: ObservableObject {
         )
         isSelectedDeviceOnline = false
         stopQRCodePairingSession()
-        startMirroring(manual: true)
+        isPairing = true
+        usbConnectTask?.cancel()
+
+        let adb = self.adb
+        let generation = mirrorStartGeneration
+        usbConnectTask = Task { [weak self] in
+            let output = await Task.detached {
+                adb.run(["devices", "-l"], timeout: Self.adbDeviceListTimeout)
+            }.value
+            guard let self, !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
+            let authorizedDevices = Self.authorizedADBDevices(in: output)
+            self.recordADBHealth(output, authorizedDevices: authorizedDevices)
+            guard let usbDevice = authorizedDevices.first(where: { $0.isUSB && $0.serial == usbSerial }) else {
+                self.isPairing = false
+                self.usbConnectTask = nil
+                self.reportError("USB phone not found", "Connect \(record.displayName) with USB and make sure USB debugging is authorized.")
+                return
+            }
+
+            guard let readyUSBDevice = await self.readyUSBDeviceForMirroring(usbDevice) else {
+                self.isPairing = false
+                self.usbConnectTask = nil
+                self.reportError("USB phone not ready", "Phone Relay found \(record.displayName), but adb could not talk to it. Replug the cable and approve USB debugging on the phone.")
+                return
+            }
+
+            let wifiAddress = await self.prefillWirelessIPFromUSBDevice(readyUSBDevice)
+                ?? record.resolvedWiFiAddress
+            self.usbConnectTask = nil
+            self.startMirroringOverUSB(
+                readyUSBDevice,
+                manual: true,
+                wifiAddress: wifiAddress,
+                prepareWirelessHandoff: true
+            )
+        }
     }
 
     private func connectViaSavedWiFi(record: PairedPhoneRecord) {
         manualUSBPinnedSerials.removeAll()
         guard let wifiAddress = record.resolvedWiFiAddress else {
             reportError("Wi-Fi route unavailable", "Connect the phone with USB once while it is on Wi-Fi so Phone Relay can save its IP address.")
+            return
+        }
+
+        if let wirelessDevice = Self.liveWirelessAuthorizedDevice(
+            for: record,
+            in: latestAuthorizedADBDevices
+        ) {
+            stopQRCodePairingSession()
+            select(device: wirelessDevice, for: record)
+            startMirroring(manual: true)
             return
         }
 
@@ -6378,15 +6726,7 @@ final class AppModel: ObservableObject {
     }
 
     private func liveUSBDevice(for record: PairedPhoneRecord) -> AuthorizedADBDevice? {
-        if let usbSerial = record.resolvedUSBSerial,
-           let exact = latestAuthorizedADBDevices.first(where: { $0.isUSB && $0.serial == usbSerial }) {
-            return exact
-        }
-
-        let normalizedName = PairedPhoneStore.normalizedDeviceName(record.displayName)
-        return latestAuthorizedADBDevices.first { device in
-            device.isUSB && PairedPhoneStore.normalizedDeviceName(device.model) == normalizedName
-        }
+        Self.liveUSBAuthorizedDevice(for: record, in: latestAuthorizedADBDevices)
     }
 
     private func connectSavedWiFiViaUSB(record: PairedPhoneRecord, usbDevice: AuthorizedADBDevice) {
@@ -6508,6 +6848,7 @@ final class AppModel: ObservableObject {
             let deadline = Date().addingTimeInterval(Self.manualReconnectWindow)
             var sawPairingServiceOnly = false
             var round = 0
+            var attemptedWiFiAddressRecovery = false
 
             while Date() < deadline {
                 if Task.isCancelled { return }
@@ -6560,6 +6901,34 @@ final class AppModel: ObservableObject {
                         await self.finishManualReconnect(
                             record: record,
                             connectedAddress: phone.address,
+                            generation: generation,
+                            startedInline: inlineUntilConnected
+                        )
+                        return
+                    }
+                }
+
+                // The saved address is dead and mDNS is silent — the case the
+                // auto-connect path handles but this button historically could
+                // not: a plain `tcpip 5555` phone whose DHCP lease moved. Hunt
+                // for its current IP by MAC once the cheap rounds have had a pass.
+                // A button press is a deliberate action, so it bypasses the
+                // per-phone recovery cooldown that throttles background polling.
+                if !attemptedWiFiAddressRecovery, round >= 1 {
+                    attemptedWiFiAddressRecovery = true
+                    for record in wirelessRecords {
+                        if Task.isCancelled { return }
+                        // Each sweep can take a couple of seconds, so don't keep
+                        // hunting for additional absent phones once the window is
+                        // spent — the lead (most-recent) record gets first crack.
+                        guard Date() < deadline else { break }
+                        guard let recovered = await self.recoverChangedWiFiAddress(
+                            for: record,
+                            ignoreCooldown: true
+                        ) else { continue }
+                        await self.finishManualReconnect(
+                            record: record,
+                            connectedAddress: recovered,
                             generation: generation,
                             startedInline: inlineUntilConnected
                         )

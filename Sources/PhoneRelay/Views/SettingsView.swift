@@ -88,8 +88,7 @@ struct SettingsView: View {
                         isOnline: isOnline(record),
                         isActive: isActive(record),
                         activeADBSerial: model.selectedDevice.adbSerial,
-                        liveWiFiAddress: liveAddress(for: record),
-                        liveUSBAddress: liveUSBAddress(for: record),
+                        liveRoutes: liveRoutes(for: record),
                         onConnect: { transport in model.connect(record: record, transport: transport.modelTransport) },
                         onDisconnect: { model.disconnectFromSettings() },
                         onUpdateWiFiIPAddress: { model.updateWiFiIPAddressFromSettings(for: record) },
@@ -935,36 +934,15 @@ struct SettingsView: View {
             return true
         }
 
-        return liveAddress(for: record) != nil
+        return liveRoutes(for: record).hasWiFi
     }
 
-    private func liveAddress(for record: PairedPhoneRecord) -> String? {
-        if let device = AppModel.rememberedAuthorizedDevice(
+    private func liveRoutes(for record: PairedPhoneRecord) -> AppModel.LiveConnectionRoutes {
+        AppModel.liveConnectionRoutes(
             for: record,
-            in: model.latestAuthorizedADBDevices
-        ), !device.isUSB {
-            return device.serial
-        }
-
-        return AppModel.rememberedConnectablePhone(
-            for: record,
-            in: model.discoveredPhones
-        )?.address
-    }
-
-    private func liveUSBAddress(for record: PairedPhoneRecord) -> String? {
-        model.latestAuthorizedADBDevices.first { device in
-            guard device.isUSB else { return false }
-            return device.serial == record.id
-                || device.serial == record.lastAddress
-                || device.serial == record.resolvedUSBSerial
-                || device.serial == normalizedADBIdentifier(record.id)
-        }?.serial
-    }
-
-    private func normalizedADBIdentifier(_ identifier: String) -> String {
-        guard identifier.hasPrefix("adb-") else { return identifier }
-        return String(identifier.dropFirst(4))
+            authorizedDevices: model.latestAuthorizedADBDevices,
+            discoveredPhones: model.discoveredPhones
+        )
     }
 
     private func recordMatchesSelectedDevice(_ record: PairedPhoneRecord) -> Bool {
@@ -1232,8 +1210,7 @@ private struct PairedPhoneRow: View {
     let isOnline: Bool
     let isActive: Bool
     let activeADBSerial: String?
-    let liveWiFiAddress: String?
-    let liveUSBAddress: String?
+    let liveRoutes: AppModel.LiveConnectionRoutes
     let onConnect: (SettingsDeviceTransport) -> Void
     let onDisconnect: () -> Void
     let onUpdateWiFiIPAddress: () -> Void
@@ -1381,21 +1358,19 @@ private struct PairedPhoneRow: View {
             return "Connected via \(activeTransport.title)"
         }
         if isActive { return "Connected" }
-        if liveWiFiAddress != nil, liveUSBAddress != nil {
-            return "Wi-Fi and USB available"
-        }
-        if liveUSBAddress != nil { return "USB available" }
-        if liveWiFiAddress != nil { return "Wi-Fi available" }
+        if let status = liveRoutes.statusLabel { return status }
         if isOnline { return "Online" }
         return "Last seen"
     }
 
     private var activeTransport: SettingsDeviceTransport? {
         guard isActive, let activeADBSerial else { return nil }
-        if let usbAddress, activeADBSerial == usbAddress {
+        if let usbAddress = liveRoutes.usbSerial ?? record.resolvedUSBSerial,
+           activeADBSerial == usbAddress {
             return .usb
         }
-        if let wifiAddress, activeADBSerial == wifiAddress {
+        if let wifiAddress,
+           activeADBSerial == wifiAddress {
             return .wifi
         }
         if PairedPhoneRecord.isWirelessADBAddress(activeADBSerial) {
@@ -1437,7 +1412,7 @@ private struct PairedPhoneRow: View {
     }
 
     private var wifiAddress: String? {
-        liveWiFiAddress ?? record.resolvedWiFiAddress
+        liveRoutes.wifiAddress ?? record.resolvedWiFiAddress
     }
 
     private var availableTransports: [SettingsDeviceTransport] {

@@ -458,6 +458,80 @@ final class MirrorReconnectBackoffTests: XCTestCase {
 
         XCTAssertTrue(model.isUSBConnectionAvailable)
         XCTAssertTrue(model.isWirelessConnectionAvailable)
+        XCTAssertEqual(model.connectionTransportLabel, "USB + Wi-Fi")
+    }
+
+    func testLiveConnectionRoutesDoNotTreatSavedWiFiAsLive() {
+        let record = PairedPhoneRecord(
+            id: "adb-RFCT10ZLTAJ",
+            displayName: "SM S906B",
+            lastAddress: "RFCT10ZLTAJ",
+            usbSerial: "RFCT10ZLTAJ",
+            wifiAddress: "192.168.68.54:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+
+        let staleSavedRoute = AppModel.liveConnectionRoutes(
+            for: record,
+            authorizedDevices: [],
+            discoveredPhones: []
+        )
+        XCTAssertNil(staleSavedRoute.wifiAddress)
+        XCTAssertNil(staleSavedRoute.usbSerial)
+        XCTAssertNil(staleSavedRoute.statusLabel)
+
+        let usb = AuthorizedADBDevice(
+            serial: "RFCT10ZLTAJ",
+            product: "g0sxxx",
+            model: "SM S906B",
+            isUSB: true
+        )
+        let wifi = AuthorizedADBDevice(
+            serial: "192.168.68.54:5555",
+            product: "g0sxxx",
+            model: "SM S906B",
+            isUSB: false
+        )
+
+        XCTAssertEqual(
+            AppModel.liveConnectionRoutes(
+                for: record,
+                authorizedDevices: [usb],
+                discoveredPhones: []
+            ).statusLabel,
+            "USB available"
+        )
+        XCTAssertEqual(
+            AppModel.liveConnectionRoutes(
+                for: record,
+                authorizedDevices: [wifi],
+                discoveredPhones: []
+            ).statusLabel,
+            "Wi-Fi available"
+        )
+        XCTAssertEqual(
+            AppModel.liveConnectionRoutes(
+                for: record,
+                authorizedDevices: [usb, wifi],
+                discoveredPhones: []
+            ).statusLabel,
+            "Wi-Fi and USB available"
+        )
+    }
+
+    @MainActor
+    func testFirstRunAuthorizedWiFiIsAvailableWithoutSavedUSBSetup() {
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.applyDevicePresence("""
+        List of devices attached
+        192.168.68.67:5555     device product:g0sxxx model:SM_S906B device:g0s transport_id:1
+        """)
+
+        XCTAssertTrue(model.isFirstTimeUSBSetup)
+        XCTAssertFalse(model.isUSBConnectionAvailable)
+        XCTAssertTrue(model.isLiveWirelessConnectionAvailable)
+        XCTAssertEqual(model.connectionTransportLabel, "Wi-Fi")
     }
 
     @MainActor
@@ -755,6 +829,94 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
+    // MARK: - Wi-Fi address recovery throttle
+
+    func testWiFiRecoveryFirstAttemptIsNeverThrottled() {
+        XCTAssertFalse(
+            AppModel.shouldThrottleWiFiRecovery(
+                lastAttemptAt: nil,
+                now: Date(timeIntervalSince1970: 100),
+                cooldown: 60
+            )
+        )
+    }
+
+    func testWiFiRecoveryBackgroundPollIsThrottledWithinCooldown() {
+        XCTAssertTrue(
+            AppModel.shouldThrottleWiFiRecovery(
+                lastAttemptAt: Date(timeIntervalSince1970: 70),
+                now: Date(timeIntervalSince1970: 100),
+                cooldown: 60
+            )
+        )
+    }
+
+    func testWiFiRecoveryBackgroundPollResumesAfterCooldown() {
+        XCTAssertFalse(
+            AppModel.shouldThrottleWiFiRecovery(
+                lastAttemptAt: Date(timeIntervalSince1970: 30),
+                now: Date(timeIntervalSince1970: 100),
+                cooldown: 60
+            )
+        )
+    }
+
+    // A deliberate "Reconnect over Wi-Fi" press is one action, not a poll storm,
+    // so it must sweep immediately even if a background poll just swept.
+    func testUserInitiatedReconnectBypassesWiFiRecoveryCooldown() {
+        XCTAssertFalse(
+            AppModel.shouldThrottleWiFiRecovery(
+                lastAttemptAt: Date(timeIntervalSince1970: 99),
+                now: Date(timeIntervalSince1970: 100),
+                cooldown: 60,
+                ignoreCooldown: true
+            )
+        )
+    }
+
+    func testForegroundRecoveryCooldownIsShorterThanIdle() {
+        XCTAssertLessThan(
+            AppModel.wifiAddressRecoveryForegroundCooldown,
+            AppModel.wifiAddressRecoveryCooldown
+        )
+    }
+
+    // 40s after the last sweep: still throttled at the idle (60s) cadence, but a
+    // watched connect screen (foreground, 15s) is free to re-sweep.
+    func testForegroundCooldownReleasesRecoverySoonerThanIdle() {
+        let lastAttempt = Date(timeIntervalSince1970: 60)
+        let now = Date(timeIntervalSince1970: 100)
+
+        XCTAssertTrue(
+            AppModel.shouldThrottleWiFiRecovery(
+                lastAttemptAt: lastAttempt,
+                now: now,
+                cooldown: AppModel.wifiAddressRecoveryCooldown
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldThrottleWiFiRecovery(
+                lastAttemptAt: lastAttempt,
+                now: now,
+                cooldown: AppModel.wifiAddressRecoveryForegroundCooldown
+            )
+        )
+    }
+
+    // The manual reconnect loop must hunt for a moved DHCP address by MAC (the
+    // case mDNS + the saved address both miss), bypassing the per-phone cooldown.
+    func testManualReconnectLoopRecoversChangedWiFiAddress() throws {
+        let source = try String(
+            contentsOfFile: "Sources/PhoneRelay/AppModel.swift",
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("func reconnectOverWiFi("))
+        XCTAssertTrue(source.contains("recoverChangedWiFiAddress("))
+        // The only caller that bypasses the cooldown is the manual reconnect loop.
+        XCTAssertTrue(source.contains("ignoreCooldown: true"))
+    }
+
     func testMirrorSettingsRestartIsSkippedWhileMirrorLaunches() {
         XCTAssertFalse(
             AppModel.shouldScheduleMirrorSettingsRestart(
@@ -827,6 +989,25 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 authorizedDevices: [device]
             )
         )
+    }
+
+    // A single missed poll must not tear down a live mirror — `adb devices -l`
+    // can momentarily omit a healthy wireless device, and a genuine loss is
+    // caught faster by the stream-death detector anyway.
+    func testMissingMirrorTransportTeardownIsDebouncedAcrossPolls() {
+        XCTAssertGreaterThanOrEqual(AppModel.missingMirrorTransportPollGrace, 2)
+    }
+
+    func testDeviceWatcherDebouncesMissingMirrorTransport() throws {
+        let source = try String(
+            contentsOfFile: "Sources/PhoneRelay/AppModel.swift",
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("missingMirrorTransportPollMisses += 1"))
+        XCTAssertTrue(source.contains("missingMirrorTransportPollMisses >= Self.missingMirrorTransportPollGrace"))
+        // The counter resets when the transport reappears, so only *consecutive*
+        // misses tear down.
+        XCTAssertTrue(source.contains("self.missingMirrorTransportPollMisses = 0"))
     }
 
     func testOnlineIdleSelectedDeviceAutoStartsMirror() {
