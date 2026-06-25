@@ -9,9 +9,9 @@
 	<key>CFBundleName</key>
 	<string>Phone Relay</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.20</string>
+	<string>1.0.21</string>
 	<key>CFBundleVersion</key>
-	<string>25</string>
+	<string>26</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_adb._tcp</string>
@@ -23,6 +23,8 @@
 	<key>SUAllowsAutomaticUpdates</key>
 	<true/>
 	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUEnableInstallerLauncherService</key>
 	<true/>
 	<key>SUFeedURL</key>
 	<string>https://phonerelay.mallenkb.com/appcast.xml</string>
