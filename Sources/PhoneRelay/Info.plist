@@ -9,7 +9,7 @@
 	<key>CFBundleName</key>
 	<string>Phone Relay</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.19</string>
+	<string>1.0.20</string>
 	<key>CFBundleVersion</key>
 	<string>25</string>
 	<key>NSBonjourServices</key>
