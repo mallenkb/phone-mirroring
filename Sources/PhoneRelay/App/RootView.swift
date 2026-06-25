@@ -201,6 +201,7 @@ struct WindowRegistrationView: NSViewRepresentable {
                 backing: .buffered,
                 defer: false
             )
+            toolbar.isReleasedWhenClosed = false
             toolbar.isOpaque = false
             toolbar.backgroundColor = .clear
             toolbar.hasShadow = true
@@ -377,6 +378,14 @@ struct WindowRegistrationView: NSViewRepresentable {
                 toolbarWindow.orderFront(nil)
             } else {
                 toolbarWindow.ignoresMouseEvents = true
+            }
+
+            guard !Logger.isRunningUnderXCTest else {
+                toolbarWindow.alphaValue = visible ? 1 : 0
+                if !chromeVisible {
+                    setOnboardingChromeControlsVisible(false)
+                }
+                return
             }
 
             NSAnimationContext.runAnimationGroup { context in

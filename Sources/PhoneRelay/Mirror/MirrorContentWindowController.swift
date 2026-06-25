@@ -46,6 +46,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     static let chromeHideDelay: TimeInterval = 0.012
     static let chromeHideAnimationDuration: TimeInterval = 0.18
     static let renderCornerRadius: CGFloat = cornerRadius
+    private static var shouldAnimateChromeForCurrentProcess: Bool {
+        !Logger.isRunningUnderXCTest
+    }
 
     static func mirrorCornerRadius(
         forWindowHeight windowHeight: CGFloat,
@@ -143,6 +146,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             backing: .buffered,
             defer: false
         )
+        window.isReleasedWhenClosed = false
         super.init(window: window)
         window.delegate = self
         configure(window: window)
@@ -404,6 +408,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             maxHeight: limits.max.height
         )
 
+        guard Self.shouldAnimateChromeForCurrentProcess else {
+            window.setFrame(targetFrame, display: true, animate: false)
+            return
+        }
+
         NSAnimationContext.runAnimationGroup { context in
             context.duration = scale >= 1 ? 0.18 : 0.14
             context.timingFunction = CAMediaTimingFunction(name: scale >= 1 ? .easeOut : .easeInEaseOut)
@@ -416,6 +425,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         guard !isInFullscreen else { return }
         let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame
         let targetFrame = Self.centeredFrame(size: window.frame.size, in: visible)
+        guard Self.shouldAnimateChromeForCurrentProcess else {
+            window.setFrame(targetFrame, display: true, animate: false)
+            return
+        }
+
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -870,6 +884,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             backing: .buffered,
             defer: false
         )
+        toolbar.isReleasedWhenClosed = false
         toolbar.isOpaque = false
         toolbar.backgroundColor = .clear
         toolbar.hasShadow = true
@@ -1114,10 +1129,18 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         // Geometry springs; opacity eases. Kicking the spring off alongside the
         // fade group (not inside it) keeps the two independent so the motion
         // settles on its own natural clock while the bar is already solid.
-        chromeBar.setBarRevealed(visible, animated: true)
+        chromeBar.setBarRevealed(visible, animated: Self.shouldAnimateChromeForCurrentProcess)
 
         toolbarAnimationGeneration += 1
         let animationGeneration = toolbarAnimationGeneration
+        guard Self.shouldAnimateChromeForCurrentProcess else {
+            toolbar.alphaValue = visible ? 1 : 0
+            if !chromeVisible {
+                chromeBar.setControlsVisible(false)
+            }
+            return
+        }
+
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = visible ? MirrorChromeBar.barRevealDuration : Self.chromeHideAnimationDuration
             context.timingFunction = visible ? MirrorChromeBar.revealTiming : MirrorChromeBar.hideTiming
@@ -1367,7 +1390,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         hideActiveStatusCue()
         stopRevealMonitoring()
         if let window, let toolbar = toolbarWindow {
-            window.removeChildWindow(toolbar)
+            if !Logger.isRunningUnderXCTest {
+                window.removeChildWindow(toolbar)
+            }
             toolbar.orderOut(nil)
         }
     }
