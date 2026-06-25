@@ -7,7 +7,7 @@ PRODUCT_NAME="PhoneRelay"
 # Network and Notification authorization are keyed to the app identity, so the
 # old placeholder id caused duplicate privacy entries and blocked Wi-Fi handoff.
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
-APP_VERSION="${APP_VERSION:-1.0.21}"
+APP_VERSION="${APP_VERSION:-1.0.22}"
 BUILD_NUMBER="${BUILD_NUMBER:-26}"
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://phonerelay.mallenkb.com/appcast.xml}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-BRG3UL9d/8qtx7RJdobbGi1q87hpbEflfn1izHj/qgc=}"
