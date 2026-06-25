@@ -273,15 +273,15 @@ struct FigmaMirrorExperienceView: View {
                             action: {
                                 usbAvailabilityBeforeConnect = model.isUSBConnectionAvailable
                                 wifiAvailabilityBeforeConnect = model.isLiveWirelessConnectionAvailable
-                                if model.isLiveWirelessConnectionAvailable {
-                                    inlineConnectingTransport = .wifi
-                                    model.connectViaAvailableWireless()
-                                } else if model.hasVisibleSavedWirelessConnection {
-                                    inlineConnectingTransport = .wifi
-                                    model.reconnectOverWiFi(inlineUntilConnected: true)
-                                } else if AppModel.normalizedManualADBTarget(model.manualADBTarget) != nil {
-                                    inlineConnectingTransport = .wifi
-                                    model.connectManualADBTarget()
+	                            if model.isLiveWirelessConnectionAvailable {
+	                                inlineConnectingTransport = .wifi
+	                                model.connectViaAvailableWireless()
+	                            } else if model.hasVisibleSavedWirelessConnection {
+	                                inlineConnectingTransport = .wifi
+	                                model.connectViaAvailableWireless()
+	                            } else if AppModel.normalizedManualADBTarget(model.manualADBTarget) != nil {
+	                                inlineConnectingTransport = .wifi
+	                                model.connectManualADBTarget()
                                 } else {
                                     navigate(to: .wirelessPairing)
                                     model.ensureQRCodePairingSession()
@@ -886,11 +886,12 @@ struct FigmaMirrorExperienceView: View {
         let state = model.connectionPillState
         let isConnecting = state == .connecting || state == .reconnecting
         let transportLabel = state == .online ? model.connectionTransportLabel : nil
+        let visibleTransportLabel = transportLabel == "USB + Wi-Fi" ? nil : transportLabel
         let statusText = isConnecting
             ? "Connecting to"
-            : (transportLabel == nil ? model.connectionPillText : "Online via")
+            : (visibleTransportLabel == nil ? model.connectionPillText : "Online via")
         let deviceLabel = state == .noPhone ? "" : model.connectionDeviceLabel
-        let baseDeviceLabel = transportLabel.map { label in
+        let baseDeviceLabel = visibleTransportLabel.map { label in
             deviceLabel.isEmpty ? label : "\(label) · \(deviceLabel)"
         } ?? deviceLabel
         let visibleDeviceLabel = isConnecting && !baseDeviceLabel.isEmpty

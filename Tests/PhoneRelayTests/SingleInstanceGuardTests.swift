@@ -117,6 +117,17 @@ final class SingleInstanceGuardTests: XCTestCase {
         XCTAssertFalse(AppDelegate.isBackgroundLaunch(arguments: []))
     }
 
+    func testLaunchWindowIsExplicitlyBroughtToFront() throws {
+        let source = try String(contentsOfFile: "Sources/PhoneRelay/AppDelegate.swift", encoding: .utf8)
+
+        XCTAssertTrue(source.contains("private func bringLaunchWindowToFront(_ window: NSWindow)"))
+        XCTAssertTrue(source.contains("window.level = .floating"))
+        XCTAssertTrue(source.contains("window.makeKeyAndOrderFront(nil)"))
+        XCTAssertTrue(source.contains("NSApp.activate(ignoringOtherApps: true)"))
+        XCTAssertTrue(source.contains("DispatchQueue.main.async {\n            activate()\n        }"))
+        XCTAssertTrue(source.contains("bringLaunchWindowToFront(window)"))
+    }
+
     // MARK: - Connection window presentation
 
     func testConnectionWindowOnlyTakesFocusWhenAppIsActive() {

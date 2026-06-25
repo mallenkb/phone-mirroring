@@ -348,7 +348,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
     }
 
-    func testManualUSBConnectRefreshesWiFiHandoff() throws {
+    func testManualUSBConnectPinsUSBWithoutChangingAutoPreference() throws {
         let source = try String(contentsOfFile: "Sources/PhoneRelay/AppModel.swift", encoding: .utf8)
         guard let functionRange = source.range(of: "func connectViaUSB()"),
               let nextFunctionRange = source.range(
@@ -361,9 +361,11 @@ final class ADBDeviceParsingTests: XCTestCase {
         }
 
         let body = String(source[functionRange.lowerBound..<nextFunctionRange.lowerBound])
-        XCTAssertTrue(body.contains("prepareWirelessHandoff: true"))
+        XCTAssertTrue(body.contains("pinManualUSBTransport(serial: readyUSBDevice.serial)"))
+        XCTAssertTrue(body.contains("prepareWirelessHandoff: false"))
         XCTAssertTrue(body.contains("pinManualUSBTransport(serial: liveUSBDevice.serial)"))
         XCTAssertFalse(body.contains("shouldAttemptWirelessHandoff("))
+        XCTAssertFalse(body.contains("preferUSBMirroring"))
     }
 
     func testADBShellReadinessFailureRecognizesStaleUSBTransport() {

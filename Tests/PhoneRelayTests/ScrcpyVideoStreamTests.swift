@@ -189,6 +189,25 @@ final class ScrcpyVideoStreamTests: XCTestCase {
         XCTAssertEqual(packets.last?.pts, 7)
     }
 
+    func testStoppingDuringVideoPacketCallbackDoesNotTrapParserCleanup() {
+        let stream = ScrcpyVideoStream(port: 0, expectsAudio: false)
+        var packetCount = 0
+        stream.onPacket = { _ in
+            packetCount += 1
+            stream.stop()
+        }
+
+        var bytes = Data()
+        bytes.append(Self.deviceNameField("StopRace"))
+        bytes.append(contentsOf: [0x68, 0x32, 0x36, 0x34])
+        bytes.append(Self.sessionPacket(width: 100, height: 200))
+        bytes.append(Self.mediaPacket(ptsFlags: 7, payload: Data([1, 2, 3, 4])))
+
+        stream.ingestVideoBytesForTesting(bytes)
+
+        XCTAssertEqual(packetCount, 1)
+    }
+
     // MARK: - Annex-B NAL extraction
 
     func testExtractAnnexBNALUnitsSplitsOnBothStartCodes() {

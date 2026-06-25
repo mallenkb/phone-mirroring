@@ -96,12 +96,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             showFirstRunWindow()
             window.orderOut(nil)
         } else {
-            window.makeKeyAndOrderFront(nil)
+            bringLaunchWindowToFront(window)
         }
 
         installMainMenu()
         installKeyboardScaling()
-        NSApp.activate(ignoringOtherApps: true)
         _ = sparkleUpdaterController
     }
 
@@ -456,6 +455,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         target.makeKeyAndOrderFront(nil)
     }
 
+    /// A user-initiated launch should be assertive: the app card/window comes
+    /// forward and becomes key even if another app was active during startup.
+    /// Borderless SwiftUI windows can miss the first activation pass while their
+    /// content is still settling, so repeat once on the next run loop.
+    private func bringLaunchWindowToFront(_ window: NSWindow) {
+        func activate() {
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
+            window.level = .floating
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            window.level = .normal
+        }
+
+        activate()
+        DispatchQueue.main.async {
+            activate()
+        }
+    }
+
     public func applicationWillTerminate(_ notification: Notification) {
         Logger.log("Application will terminate")
         if let keyMonitor {
@@ -756,7 +776,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         model.setFirstRunOnboardingActive(true)
         if let firstRunWindow {
             centerOnActiveScreen(firstRunWindow)
-            firstRunWindow.makeKeyAndOrderFront(nil)
+            bringLaunchWindowToFront(firstRunWindow)
             recenterAfterLayout(firstRunWindow)
             return
         }
@@ -767,10 +787,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             self?.firstRunWindow = nil
             if let window = self?.window {
                 self?.centerOnActiveScreen(window)
+                self?.bringLaunchWindowToFront(window)
             }
-            self?.window?.makeKeyAndOrderFront(nil)
             self?.model.ensureQRCodePairingSession()
-            NSApp.activate(ignoringOtherApps: true)
         }
         .environmentObject(model)
 
@@ -798,7 +817,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         hosting.view.layoutSubtreeIfNeeded()
         window.setContentSize(hosting.view.fittingSize)
         centerOnActiveScreen(window)
-        window.makeKeyAndOrderFront(nil)
+        bringLaunchWindowToFront(window)
         recenterAfterLayout(window)
         firstRunWindow = window
     }

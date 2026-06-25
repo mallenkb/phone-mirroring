@@ -310,6 +310,49 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         }
     }
 
+    // Disconnect means "stop mirroring", not "stop discovering": the phone must
+    // stay visible/online in the list afterwards (it just won't auto-re-mirror).
+    @MainActor
+    func testManualDisconnectKeepsDiscoveryVisible() {
+        withoutExplicitDeviceSetupRequired {
+            let record = PairedPhoneRecord(
+                id: "adb-RFCT10ZLTAJ",
+                displayName: "SM S906B",
+                lastAddress: "192.168.68.67:5555",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 200)
+            )
+            let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+            model.selectedDevice = MirrorDevice(
+                id: record.id,
+                name: record.displayName,
+                model: "SM S906B",
+                battery: 50,
+                isCharging: false,
+                network: "Wi-Fi",
+                lastSeen: record.lastConnected,
+                states: [.mirroringReady, .companionConnected],
+                adbSerial: record.lastAddress
+            )
+            model.setDiscoveredPhonesForTesting([
+                DiscoveredPhone(
+                    id: "adb-RFCT10ZLTAJ",
+                    address: "192.168.68.67:5555",
+                    kind: .connectable,
+                    lastSeen: Date(timeIntervalSince1970: 210)
+                )
+            ])
+
+            model.stopMirroring()
+
+            // Discovery is NOT torn down — the phone stays in the list…
+            XCTAssertFalse(model.discoveredPhones.isEmpty)
+            // …but auto-re-mirror is suppressed for it.
+            XCTAssertTrue(model.isConnectionDiscoveryPausedForManualDisconnect)
+            XCTAssertTrue(model.isAutoConnectPausedForSession(record: record))
+        }
+    }
+
     @MainActor
     func testSettingsDisconnectKeepsAutoConnectPausedWhileShowingMainConnectionScreen() {
         withoutExplicitDeviceSetupRequired {
@@ -903,6 +946,54 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
+    // MARK: - Local Network permission error surfacing
+
+    // Reopening with only Wi-Fi (cable unplugged): a repeated "No route to host"
+    // must surface as an actionable error, not silently spin (which reads as
+    // "it didn't save / won't reconnect").
+    func testWiFiOnlyNoRouteSurfacesLocalNetworkError() {
+        XCTAssertTrue(
+            AppModel.shouldSurfaceLocalNetworkError(
+                isUSBConnectionAvailable: false,
+                isMirroring: false,
+                currentErrorTitle: nil
+            )
+        )
+    }
+
+    // With USB plugged in, mirroring still works — keep it to the log, don't cover
+    // the screen.
+    func testUSBFallbackSuppressesLocalNetworkError() {
+        XCTAssertFalse(
+            AppModel.shouldSurfaceLocalNetworkError(
+                isUSBConnectionAvailable: true,
+                isMirroring: false,
+                currentErrorTitle: nil
+            )
+        )
+    }
+
+    func testActiveMirrorDoesNotSurfaceLocalNetworkError() {
+        XCTAssertFalse(
+            AppModel.shouldSurfaceLocalNetworkError(
+                isUSBConnectionAvailable: false,
+                isMirroring: true,
+                currentErrorTitle: nil
+            )
+        )
+    }
+
+    // Don't re-report the same error every failed poll.
+    func testLocalNetworkErrorIsNotReReportedWhileAlreadyShown() {
+        XCTAssertFalse(
+            AppModel.shouldSurfaceLocalNetworkError(
+                isUSBConnectionAvailable: false,
+                isMirroring: false,
+                currentErrorTitle: AppModel.localNetworkBlockedErrorTitle
+            )
+        )
+    }
+
     // The manual reconnect loop must hunt for a moved DHCP address by MAC (the
     // case mDNS + the saved address both miss), bypassing the per-phone cooldown.
     func testManualReconnectLoopRecoversChangedWiFiAddress() throws {
@@ -1161,6 +1252,88 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 now: now,
                 throttle: 3,
                 hasLiveRememberedPhone: false
+            )
+        )
+    }
+
+    func testSavedWiFiStatusProbeRunsWhenWirelessRouteIsMissing() {
+        XCTAssertTrue(
+            AppModel.shouldProbeSavedWiFiStatus(
+                hasSavedWiFiRoute: true,
+                hasLiveWirelessDevice: false,
+                isPairing: false,
+                isMirroring: false,
+                hasWirelessWorkInFlight: false,
+                lastProbeAt: nil,
+                now: Date(timeIntervalSince1970: 200),
+                interval: 2
+            )
+        )
+    }
+
+    func testSavedWiFiStatusProbeIsSubtlyPaced() {
+        let now = Date(timeIntervalSince1970: 200)
+
+        XCTAssertFalse(
+            AppModel.shouldProbeSavedWiFiStatus(
+                hasSavedWiFiRoute: true,
+                hasLiveWirelessDevice: false,
+                isPairing: false,
+                isMirroring: false,
+                hasWirelessWorkInFlight: false,
+                lastProbeAt: Date(timeIntervalSince1970: 199),
+                now: now,
+                interval: 2
+            )
+        )
+        XCTAssertTrue(
+            AppModel.shouldProbeSavedWiFiStatus(
+                hasSavedWiFiRoute: true,
+                hasLiveWirelessDevice: false,
+                isPairing: false,
+                isMirroring: false,
+                hasWirelessWorkInFlight: false,
+                lastProbeAt: Date(timeIntervalSince1970: 198),
+                now: now,
+                interval: 2
+            )
+        )
+    }
+
+    func testSavedWiFiStatusProbeSkipsWhenAlreadyOnlineOrBusy() {
+        let now = Date(timeIntervalSince1970: 200)
+
+        XCTAssertFalse(
+            AppModel.shouldProbeSavedWiFiStatus(
+                hasSavedWiFiRoute: true,
+                hasLiveWirelessDevice: true,
+                isPairing: false,
+                isMirroring: false,
+                hasWirelessWorkInFlight: false,
+                lastProbeAt: nil,
+                now: now
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldProbeSavedWiFiStatus(
+                hasSavedWiFiRoute: true,
+                hasLiveWirelessDevice: false,
+                isPairing: false,
+                isMirroring: false,
+                hasWirelessWorkInFlight: true,
+                lastProbeAt: nil,
+                now: now
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldProbeSavedWiFiStatus(
+                hasSavedWiFiRoute: true,
+                hasLiveWirelessDevice: false,
+                isPairing: false,
+                isMirroring: true,
+                hasWirelessWorkInFlight: false,
+                lastProbeAt: nil,
+                now: now
             )
         )
     }
@@ -1513,7 +1686,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         XCTAssertEqual(AppModel.ConnectionPillState.failed.text, "Connection failed")
     }
 
-    func testConnectionPillTextUsesSpecificActionNeededReason() {
+    func testConnectionPillTextKeepsActionNeededCopySimple() {
         XCTAssertEqual(
             AppModel.connectionPillText(
                 state: .actionNeeded,
@@ -1521,7 +1694,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 hasUnauthorizedUSBDevice: false,
                 adbStatusText: "Running"
             ),
-            "Local Network may be blocked"
+            "Connect USB to refresh"
         )
         XCTAssertEqual(
             AppModel.connectionPillText(
@@ -1539,7 +1712,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 hasUnauthorizedUSBDevice: false,
                 adbStatusText: "adb missing"
             ),
-            "adb missing"
+            "ADB unavailable"
         )
     }
 
@@ -1578,6 +1751,81 @@ final class MirrorReconnectBackoffTests: XCTestCase {
             AppModel.rememberedAuthorizedDevice(for: record, in: [wireless]),
             wireless
         )
+    }
+
+    func testDiscoveredWiFiRoutePersistsToSelectedUSBPairedRecord() {
+        let record = PairedPhoneRecord(
+            id: "adb-RFCT10ZLTAJ",
+            displayName: "SM S906B",
+            lastAddress: "RFCT10ZLTAJ",
+            usbSerial: "RFCT10ZLTAJ",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let selected = MirrorDevice(
+            id: record.id,
+            name: record.displayName,
+            model: "SM S906B",
+            battery: 50,
+            isCharging: false,
+            network: "USB debugging",
+            lastSeen: record.lastConnected,
+            states: [.mirroringReady, .companionConnected],
+            adbSerial: "RFCT10ZLTAJ"
+        )
+        let discovered = DiscoveredPhone(
+            id: "adb-wifi-random-service",
+            address: "192.168.68.57:5555",
+            kind: .connectable,
+            lastSeen: Date(timeIntervalSince1970: 300)
+        )
+
+        XCTAssertEqual(
+            AppModel.recordForDiscoveredWiFiRoute(
+                records: [record],
+                selectedDevice: selected,
+                phone: discovered,
+                deviceName: "SM S906B"
+            ),
+            record
+        )
+    }
+
+    func testDiscoveredWiFiRouteDoesNotMergeGenericNameWithoutSelectedRecord() {
+        let record = PairedPhoneRecord(
+            id: "adb-RFCT10ZLTAJ",
+            displayName: "SM S906B",
+            lastAddress: "RFCT10ZLTAJ",
+            usbSerial: "RFCT10ZLTAJ",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let discovered = DiscoveredPhone(
+            id: "adb-wifi-random-service",
+            address: "192.168.68.57:5555",
+            kind: .connectable,
+            lastSeen: Date(timeIntervalSince1970: 300)
+        )
+
+        XCTAssertNil(
+            AppModel.recordForDiscoveredWiFiRoute(
+                records: [record],
+                selectedDevice: .demo,
+                phone: discovered,
+                deviceName: "Android device"
+            )
+        )
+    }
+
+    func testDiscoveredWiFiConnectPersistsWiFiAddressForNextLaunch() throws {
+        let source = try String(contentsOfFile: "Sources/PhoneRelay/AppModel.swift", encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private func connectAndMirror(phone: DiscoveredPhone)"))
+        let end = try XCTUnwrap(source.range(of: "private func connectAndMirror(record:", range: start.upperBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains("recordForDiscoveredWiFiRoute("))
+        XCTAssertTrue(body.contains("usbSerial: matchingRecord?.resolvedUSBSerial"))
+        XCTAssertTrue(body.contains("wifiAddress: mirrorAddress"))
     }
 
     // The core reliability fix: when the phone (paired under its USB serial) is

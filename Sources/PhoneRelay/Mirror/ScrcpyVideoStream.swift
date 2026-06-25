@@ -70,7 +70,9 @@ final class ScrcpyVideoStream {
     private var audioMetaParsed = false
     private var audioDisabled = false
     private var isStopped = false
+    private var stopQueued = false
     private let queue = DispatchQueue(label: "scrcpy.video.stream", qos: .userInteractive)
+    private static let queueKey = DispatchSpecificKey<UInt8>()
 
     /// Stall watchdog: only valid once live audio is confirmed. Video can go
     /// quiet on a static screen, but Opus packets stream continuously when
@@ -89,10 +91,12 @@ final class ScrcpyVideoStream {
     init(port: UInt16, expectsAudio: Bool = false) {
         self.port = port
         self.expectsAudio = expectsAudio
+        queue.setSpecific(key: Self.queueKey, value: 1)
     }
 
     func start() throws {
         isStopped = false
+        stopQueued = false
         let parameters = NWParameters.tcp
         parameters.acceptLocalOnly = true
         if let tcp = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
@@ -122,7 +126,23 @@ final class ScrcpyVideoStream {
     }
 
     func stop() {
+        if DispatchQueue.getSpecific(key: Self.queueKey) != nil {
+            guard !stopQueued else { return }
+            stopQueued = true
+            queue.async { [weak self] in
+                self?.stopOnQueue()
+            }
+            return
+        }
+        queue.sync {
+            stopOnQueue()
+        }
+    }
+
+    private func stopOnQueue() {
+        guard !isStopped || stopQueued else { return }
         isStopped = true
+        stopQueued = false
         stallTimer?.cancel()
         stallTimer = nil
         onHeader = nil
@@ -347,7 +367,11 @@ final class ScrcpyVideoStream {
         }
 
         if consumed > 0 {
-            videoBuffer.removeFirst(consumed)
+            if consumed <= videoBuffer.count {
+                videoBuffer.removeFirst(consumed)
+            } else {
+                videoBuffer.removeAll()
+            }
         }
     }
 

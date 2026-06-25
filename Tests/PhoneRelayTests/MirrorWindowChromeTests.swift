@@ -497,8 +497,9 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(viewSource.contains("isAvailable: effectiveWiFiConnectionAvailable"))
         XCTAssertTrue(viewSource.contains("network.localizedCaseInsensitiveContains(\"wireless\")"))
         XCTAssertTrue(viewSource.contains("Self.connectionOnlineGreen : .white"))
-        XCTAssertTrue(viewSource.contains("if model.hasVisibleSavedWirelessConnection"))
-        XCTAssertTrue(viewSource.contains("model.reconnectOverWiFi(inlineUntilConnected: true)"))
+        XCTAssertTrue(viewSource.contains("model.connectViaAvailableWireless()"))
+        XCTAssertTrue(modelSource.contains("allowAddressRecovery: false"))
+        XCTAssertTrue(modelSource.contains("unavailableTitle: \"Wi-Fi unavailable\""))
         XCTAssertFalse(viewSource.contains("model.isManualUSBConnectDisabled"))
         // Per-row busy state now lives in the view as isUSBButtonBusy /
         // isWirelessButtonBusy (asserted above), not as model vars — the old
@@ -599,6 +600,24 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(source.contains("\"Phone found on Wi-Fi.\""))
         XCTAssertTrue(source.contains("!model.isFirstTimeUSBSetup || effectiveWiFiConnectionAvailable"))
         XCTAssertTrue(source.contains("model.connectViaAvailableWireless()"))
+    }
+
+    func testBottomStatusPillHidesCombinedTransportLabel() throws {
+        let testURL = URL(fileURLWithPath: #filePath)
+        let packageRoot = testURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageRoot
+            .appendingPathComponent("Sources/PhoneRelay/Views/FigmaMirrorExperienceView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        let pillStart = try XCTUnwrap(source.range(of: "private func bottomStatusPill"))
+        let manualADBStart = try XCTUnwrap(source.range(of: "private func manualADBTargetRow"))
+        let pillBody = String(source[pillStart.lowerBound..<manualADBStart.lowerBound])
+
+        XCTAssertTrue(pillBody.contains("visibleTransportLabel = transportLabel == \"USB + Wi-Fi\" ? nil : transportLabel"))
+        XCTAssertTrue(pillBody.contains("visibleTransportLabel == nil ? model.connectionPillText : \"Online via\""))
     }
 
     func testConnectionChromeRevealOrdersParentWindowWithToolbar() throws {
