@@ -1,0 +1,119 @@
+name: Publish Sparkle Assets From Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v1.0.20."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  sparkle:
+    name: Generate Sparkle ZIP and appcast
+    runs-on: macos-14
+    env:
+      WEBSITE_REPO: mallenkb/phonerelay-website
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate tag
+        id: version
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag must match vX.Y.Z; got $TAG" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "dmg_name=PhoneRelay-$VERSION.dmg" >> "$GITHUB_OUTPUT"
+          echo "zip_name=PhoneRelay-$VERSION.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Download release DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "${{ steps.version.outputs.tag }}" \
+            --pattern "${{ steps.version.outputs.dmg_name }}" \
+            --dir dist \
+            --clobber
+          test -f "dist/${{ steps.version.outputs.dmg_name }}"
+
+      - name: Extract app from DMG
+        run: |
+          set -euo pipefail
+          MOUNT_DIR="$(mktemp -d)"
+          hdiutil attach "dist/${{ steps.version.outputs.dmg_name }}" -nobrowse -mountpoint "$MOUNT_DIR"
+          APP_PATH="$(find "$MOUNT_DIR" -maxdepth 1 -name '*.app' -type d | head -1)"
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app bundle found in DMG." >&2
+            hdiutil detach "$MOUNT_DIR" || true
+            exit 1
+          fi
+          rm -rf dist/PhoneRelay.app
+          ditto "$APP_PATH" dist/PhoneRelay.app
+          hdiutil detach "$MOUNT_DIR"
+          rmdir "$MOUNT_DIR"
+
+      - name: Verify extracted app
+        run: |
+          set -euo pipefail
+          APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/PhoneRelay.app/Contents/Info.plist)"
+          if [ "$APP_VERSION" != "${{ steps.version.outputs.version }}" ]; then
+            echo "App version $APP_VERSION does not match ${{ steps.version.outputs.tag }}" >&2
+            exit 1
+          fi
+          codesign --verify --deep --strict --verbose=2 dist/PhoneRelay.app
+          xcrun stapler validate dist/PhoneRelay.app
+
+      - name: Resolve Sparkle tools
+        run: swift build -c release
+
+      - name: Create Sparkle ZIP and appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+          SPARKLE_DOWNLOAD_URL_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/
+          SPARKLE_RELEASE_LINK: https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          : "${SPARKLE_PRIVATE_KEY:?Missing SPARKLE_PRIVATE_ED_KEY secret.}"
+          scripts/make_sparkle_update.sh dist/PhoneRelay.app
+
+      - name: Verify Sparkle appcast
+        run: |
+          set -euo pipefail
+          test -f "dist/sparkle/${{ steps.version.outputs.zip_name }}"
+          test -f dist/sparkle/appcast.xml
+          grep -q "${{ steps.version.outputs.zip_name }}" dist/sparkle/appcast.xml
+          grep -q 'sparkle:edSignature=' dist/sparkle/appcast.xml
+
+      - name: Upload Sparkle release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ steps.version.outputs.tag }}" \
+            "dist/sparkle/${{ steps.version.outputs.zip_name }}" \
+            dist/sparkle/appcast.xml \
+            --clobber
+
+      - name: Dispatch website update
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${GH_TOKEN:?Missing WEBSITE_REPO_TOKEN secret}"
+          gh workflow run update-download.yml \
+            --repo "$WEBSITE_REPO" \
+            --ref main \
+            -f version="${{ steps.version.outputs.version }}" \
+            -f tag="${{ steps.version.outputs.tag }}" \
+            -f download_url="https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/${{ steps.version.outputs.dmg_name }}"
