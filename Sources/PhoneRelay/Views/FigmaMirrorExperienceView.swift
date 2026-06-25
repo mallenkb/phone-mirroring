@@ -276,7 +276,7 @@ struct FigmaMirrorExperienceView: View {
 	                            if model.isLiveWirelessConnectionAvailable {
 	                                inlineConnectingTransport = .wifi
 	                                model.connectViaAvailableWireless()
-	                            } else if model.hasVisibleSavedWirelessConnection {
+	                            } else if model.hasSavedWirelessConnection {
 	                                inlineConnectingTransport = .wifi
 	                                model.connectViaAvailableWireless()
 	                            } else if AppModel.normalizedManualADBTarget(model.manualADBTarget) != nil {
@@ -894,9 +894,14 @@ struct FigmaMirrorExperienceView: View {
         let baseDeviceLabel = visibleTransportLabel.map { label in
             deviceLabel.isEmpty ? label : "\(label) · \(deviceLabel)"
         } ?? deviceLabel
-        let visibleDeviceLabel = isConnecting && !baseDeviceLabel.isEmpty
-            ? "\(baseDeviceLabel)..."
-            : baseDeviceLabel
+        // The Local Network failure is fixable in one place, so make this pill a
+        // shortcut straight there. Only this error state changes; every other pill
+        // looks and behaves exactly as before.
+        let isLocalNetworkBlocked = state == .actionNeeded
+            && model.activeError?.title == AppModel.localNetworkBlockedErrorTitle
+        let visibleDeviceLabel = isLocalNetworkBlocked
+            ? "Open Settings ›"
+            : (isConnecting && !baseDeviceLabel.isEmpty ? "\(baseDeviceLabel)..." : baseDeviceLabel)
         let fontSize = 12 * scale
 
         return HStack(spacing: 4 * scale) {
@@ -910,7 +915,7 @@ struct FigmaMirrorExperienceView: View {
             if !visibleDeviceLabel.isEmpty {
                 Text(visibleDeviceLabel)
                     .font(.system(size: fontSize, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.62))
+                    .foregroundStyle(.white.opacity(isLocalNetworkBlocked ? 0.92 : 0.62))
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
                     .layoutPriority(1)
@@ -927,6 +932,10 @@ struct FigmaMirrorExperienceView: View {
                 )
         )
         .frame(maxWidth: width, alignment: .center)
+        .contentShape(Capsule(style: .continuous))
+        .onTapGesture {
+            if isLocalNetworkBlocked { model.openLocalNetworkSettings() }
+        }
     }
 
     /// Status dot tint per pill state: grey when idle/offline, amber while

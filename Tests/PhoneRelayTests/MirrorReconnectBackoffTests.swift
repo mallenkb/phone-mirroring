@@ -302,11 +302,11 @@ final class MirrorReconnectBackoffTests: XCTestCase {
 
             model.stopMirroring()
 
-            XCTAssertTrue(model.isConnectionDiscoveryPausedForManualDisconnect)
+            XCTAssertTrue(model.isAutoReconnectSuppressedForManualDisconnect)
 
             model.connect(record: record)
 
-            XCTAssertFalse(model.isConnectionDiscoveryPausedForManualDisconnect)
+            XCTAssertFalse(model.isAutoReconnectSuppressedForManualDisconnect)
         }
     }
 
@@ -348,7 +348,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
             // Discovery is NOT torn down — the phone stays in the list…
             XCTAssertFalse(model.discoveredPhones.isEmpty)
             // …but auto-re-mirror is suppressed for it.
-            XCTAssertTrue(model.isConnectionDiscoveryPausedForManualDisconnect)
+            XCTAssertTrue(model.isAutoReconnectSuppressedForManualDisconnect)
             XCTAssertTrue(model.isAutoConnectPausedForSession(record: record))
         }
     }
@@ -378,14 +378,14 @@ final class MirrorReconnectBackoffTests: XCTestCase {
 
             model.disconnectFromSettings()
 
-            XCTAssertTrue(model.isConnectionDiscoveryPausedForManualDisconnect)
+            XCTAssertTrue(model.isAutoReconnectSuppressedForManualDisconnect)
             XCTAssertTrue(model.isAutoConnectPausedForSession(record: record))
             XCTAssertEqual(model.pairedPhones.first?.autoConnectSuspended, false)
             XCTAssertFalse(model.connectionWindowPrefersWirelessDetails)
 
             model.ensureQRCodePairingSession()
 
-            XCTAssertTrue(model.isConnectionDiscoveryPausedForManualDisconnect)
+            XCTAssertTrue(model.isAutoReconnectSuppressedForManualDisconnect)
             XCTAssertTrue(model.isAutoConnectPausedForSession(record: record))
         }
     }
@@ -397,8 +397,8 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
 
         XCTAssertTrue(source.contains("guard backgroundServicesEnabled else { return }"))
-        XCTAssertFalse(source.contains("guard backgroundServicesEnabled, !isConnectionDiscoveryPausedForManualDisconnect else { return }"))
-        XCTAssertTrue(source.contains("if self.isConnectionDiscoveryPausedForManualDisconnect"))
+        XCTAssertFalse(source.contains("guard backgroundServicesEnabled, !isAutoReconnectSuppressedForManualDisconnect else { return }"))
+        XCTAssertTrue(source.contains("if self.isAutoReconnectSuppressedForManualDisconnect"))
         XCTAssertTrue(source.contains("self.applyDevicePresence(output)"))
         XCTAssertTrue(source.contains("self.isAutoConnecting = false"))
     }
@@ -992,6 +992,63 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 currentErrorTitle: AppModel.localNetworkBlockedErrorTitle
             )
         )
+    }
+
+    // The Wi-Fi chooser must reconnect ANY saved wireless device — including a
+    // reopened tcpip:5555 phone that isn't live/discovered yet — so the tap keys
+    // off hasSavedWirelessConnection, not the live-gated hasVisibleSavedWirelessConnection.
+    func testWiFiOptionReconnectsAnySavedWirelessDeviceNotJustVisibleOne() throws {
+        let source = try String(
+            contentsOfFile: "Sources/PhoneRelay/Views/FigmaMirrorExperienceView.swift",
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("else if model.hasSavedWirelessConnection {"))
+        XCTAssertFalse(source.contains("else if model.hasVisibleSavedWirelessConnection {"))
+    }
+
+    // MARK: - Connection-health "Next recommended fix"
+
+    func testHealthyConnectionRecommendsNoAction() {
+        XCTAssertEqual(
+            AppModel.nextRecommendedConnectionFix(
+                isSelectedDeviceOnline: true,
+                isActivelyConnecting: false,
+                hasUnauthorizedUSBDevice: false,
+                hasAuthorizedUSB: false,
+                hasWiFiReachability: true,
+                localNetworkPermissionGranted: true,
+                adbStatusText: "Running",
+                activeErrorMessage: nil
+            ),
+            AppModel.noActionNeededRecommendedFix
+        )
+    }
+
+    // Local Network off with no USB fallback → the actionable Local Network fix
+    // (which the connection-health view renders with a one-tap "Open Local Network").
+    func testLocalNetworkOffRecommendsLocalNetworkFix() {
+        XCTAssertEqual(
+            AppModel.nextRecommendedConnectionFix(
+                isSelectedDeviceOnline: false,
+                isActivelyConnecting: false,
+                hasUnauthorizedUSBDevice: false,
+                hasAuthorizedUSB: false,
+                hasWiFiReachability: true,
+                localNetworkPermissionGranted: false,
+                adbStatusText: "Running",
+                activeErrorMessage: nil
+            ),
+            AppModel.localNetworkRecommendedFix
+        )
+    }
+
+    // The whole "Next recommended fix" row is hidden when the connection is healthy.
+    func testConnectionHealthHidesFixRowWhenNoActionNeeded() throws {
+        let source = try String(
+            contentsOfFile: "Sources/PhoneRelay/Views/SettingsView.swift",
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("snapshot.recommendedFix != AppModel.noActionNeededRecommendedFix"))
     }
 
     // The manual reconnect loop must hunt for a moved DHCP address by MAC (the

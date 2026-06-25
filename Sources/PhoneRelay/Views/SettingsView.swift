@@ -415,30 +415,35 @@ struct SettingsView: View {
                     }
                 }
 
-                Divider()
+                // Only surface the fix row when there's actually something to do.
+                // When the device is reachable it's just noise, so hide it; when
+                // Local Network is the blocker it carries a one-tap CTA to grant it.
+                if snapshot.recommendedFix != AppModel.noActionNeededRecommendedFix {
+                    Divider()
 
-                HStack(alignment: .center, spacing: 12) {
-                    Image(systemName: "wrench.and.screwdriver")
-                        .font(.system(size: 15, weight: .regular))
-                        .foregroundStyle(Color.accentColor)
-                        .frame(width: 22, alignment: .center)
+                    HStack(alignment: .center, spacing: 12) {
+                        Image(systemName: "wrench.and.screwdriver")
+                            .font(.system(size: 15, weight: .regular))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 22, alignment: .center)
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Next recommended fix")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text(snapshot.recommendedFix)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    if snapshot.recommendedFix == AppModel.localNetworkRecommendedFix {
-                        Button("Open Local Network") {
-                            model.openLocalNetworkSettings()
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Next recommended fix")
+                                .font(.system(size: 13, weight: .semibold))
+                            Text(snapshot.recommendedFix)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if snapshot.recommendedFix == AppModel.localNetworkRecommendedFix {
+                            Button("Open Local Network") {
+                                model.openLocalNetworkSettings()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
                     }
                 }
             }

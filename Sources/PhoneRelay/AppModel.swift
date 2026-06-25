@@ -49,6 +49,10 @@ final class AppModel: ObservableObject {
         "Turn on notifications if you want Phone Relay to show unread notifications from your device on this Mac."
     nonisolated static let localNetworkRecommendedFix =
         "Allow Local Network in macOS Settings, or connect the phone over USB."
+    /// Sentinel for the healthy state — the connection-health view hides the
+    /// "Next recommended fix" row entirely when this is the recommendation.
+    nonisolated static let noActionNeededRecommendedFix =
+        "No action needed. The selected device is reachable."
     nonisolated static let notificationForwardingDefaultsKey = "MirrorBehavior.notificationForwardingEnabled"
     nonisolated static let notificationHideBodyDefaultsKey = "Notifications.hideBody"
     nonisolated static let notificationSuppressSecurityCodesDefaultsKey = "Notifications.suppressSecurityCodes"
@@ -787,7 +791,7 @@ final class AppModel: ObservableObject {
     private let backgroundServicesEnabled: Bool
     private var isShuttingDown = false
     private var isRequestingNotificationAuthorization = false
-    private(set) var isConnectionDiscoveryPausedForManualDisconnect = false
+    private(set) var isAutoReconnectSuppressedForManualDisconnect = false
     /// Transports (adb serials) that were already online when the user hit
     /// Disconnect, plus any that have stayed continuously online since. While a
     /// manual disconnect keeps auto-connect paused, only a transport that
@@ -1423,7 +1427,7 @@ final class AppModel: ObservableObject {
             // After a manual Disconnect the phone stays visible/online here, but
             // auto-re-mirror is held until the user reconnects (or replugs) — so
             // Disconnect means "stop mirroring", not "stop discovering".
-            guard !self.isConnectionDiscoveryPausedForManualDisconnect else { return }
+            guard !self.isAutoReconnectSuppressedForManualDisconnect else { return }
             self.autoConnectToAvailableRememberedDevice(livePhones: phones)
         }
     }
@@ -1432,14 +1436,14 @@ final class AppModel: ObservableObject {
         manualDisconnectKnownSerials = nil
         manualDisconnectBaselineSerials = []
         manualDisconnectWiFiProbeInFlight = false
-        guard isConnectionDiscoveryPausedForManualDisconnect else {
+        guard isAutoReconnectSuppressedForManualDisconnect else {
             if backgroundServicesEnabled {
                 startDiscovery()
                 startDeviceWatcher()
             }
             return
         }
-        isConnectionDiscoveryPausedForManualDisconnect = false
+        isAutoReconnectSuppressedForManualDisconnect = false
         if backgroundServicesEnabled {
             startDiscovery()
             startDeviceWatcher()
@@ -1447,14 +1451,13 @@ final class AppModel: ObservableObject {
     }
 
     /// A manual Disconnect just stops the mirror — it must not tear down
-    /// discovery. The phone stays visible/online and one click (or a replug) from
-    /// reconnecting; only *auto-re-mirror* is held for the session, so the button
-    /// isn't immediately undone by the watcher re-mirroring the still-online
-    /// phone. (Name kept for compatibility: despite "PausesDiscovery" the mDNS
-    /// poller stays alive — auto-connect is gated in the discovery callback and
-    /// the device-watcher's paused branch instead.)
-    private func pauseDiscoveryForManualDisconnect() {
-        isConnectionDiscoveryPausedForManualDisconnect = true
+    /// discovery. The mDNS poller and device watcher keep running, so the phone
+    /// stays visible/online and one click (or a replug) from reconnecting; only
+    /// *auto-re-mirror* is held for the session (gated in the discovery callback
+    /// and the device-watcher's suppressed branch), so the button isn't
+    /// immediately undone by the watcher re-mirroring the still-online phone.
+    private func suppressAutoReconnectForManualDisconnect() {
+        isAutoReconnectSuppressedForManualDisconnect = true
         manualDisconnectKnownSerials = nil
         manualDisconnectBaselineSerials = []
         manualDisconnectWiFiProbeInFlight = false
@@ -1739,6 +1742,21 @@ final class AppModel: ObservableObject {
                 if let authorizedDevice {
                     await self.mirrorAuthorizedDevicePreferringWireless(authorizedDevice)
                     return
+                }
+
+                // Nothing in `adb devices` yet. A reopened Wi-Fi phone on a plain
+                // tcpip:5555 port won't appear there until we dial it and won't
+                // advertise over mDNS, so actively dial the most-recent saved
+                // Wi-Fi route here instead of waiting on the 1s background poller.
+                // Keeps the status on "Connecting" rather than flicking to
+                // "Offline"; connectAndMirror(record:) guards its own re-entry and
+                // a failed attempt self-heals via the device watcher.
+                if let wirelessRecord = Self.rememberedWirelessAutoConnectRecord(
+                    in: self.autoConnectEligiblePairedPhones,
+                    failedTargets: self.failedAutoConnectTargets
+                ) {
+                    self.isAutoConnecting = true
+                    self.connectAndMirror(record: wirelessRecord)
                 }
             }
             guard let self else { return }
@@ -2282,7 +2300,7 @@ final class AppModel: ObservableObject {
                 self.applyDevicePresence(output)
                 self.probeSavedWiFiStatusIfNeeded(authorized: authorized)
 
-                if self.isConnectionDiscoveryPausedForManualDisconnect {
+                if self.isAutoReconnectSuppressedForManualDisconnect {
                     self.isAutoConnecting = false
                     await self.handleManualDisconnectPause(authorized: authorized)
                     let interval = Self.deviceWatcherPollInterval(
@@ -5929,7 +5947,7 @@ final class AppModel: ObservableObject {
     func stopMirroring(suspendAutoConnect: Bool = true) {
         if suspendAutoConnect {
             setAutoConnectSuspendedForSelectedDevice(true)
-            pauseDiscoveryForManualDisconnect()
+            suppressAutoReconnectForManualDisconnect()
         }
         mirrorStartGeneration += 1
         mirrorLaunchTask?.cancel()
@@ -6569,7 +6587,7 @@ final class AppModel: ObservableObject {
             return "Keep the phone awake and wait for the current reconnect attempt to finish."
         }
         if isSelectedDeviceOnline {
-            return "No action needed. The selected device is reachable."
+            return noActionNeededRecommendedFix
         }
         if hasAuthorizedUSB {
             return "Use Connect via USB to refresh the session and Wi-Fi handoff."
