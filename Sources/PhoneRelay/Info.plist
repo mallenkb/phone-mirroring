@@ -9,9 +9,9 @@
 	<key>CFBundleName</key>
 	<string>Phone Relay</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.18</string>
+	<string>1.0.19</string>
 	<key>CFBundleVersion</key>
-	<string>24</string>
+	<string>25</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_adb._tcp</string>
