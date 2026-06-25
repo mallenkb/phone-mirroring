@@ -39,6 +39,8 @@ RESOURCES_DIR="$APP/Contents/Resources"
 FRAMEWORKS_DIR="$APP/Contents/Frameworks"
 HELPER_BIN_DIR="$RESOURCES_DIR/bin"
 LICENSES_DIR="$RESOURCES_DIR/LICENSES"
+APP_ENTITLEMENTS="scripts/PhoneRelay.release.entitlements"
+HELPER_ENTITLEMENTS="App/HelperInherit.entitlements"
 
 swift build -c release
 
@@ -181,9 +183,10 @@ if command -v codesign >/dev/null 2>&1; then
     codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework"
   fi
   if [ -f "$HELPER_BIN_DIR/adb" ]; then
-    codesign --force --sign "$SIGNING_IDENTITY" "$HELPER_BIN_DIR/adb"
+    codesign --force --options runtime --entitlements "$HELPER_ENTITLEMENTS" --sign "$SIGNING_IDENTITY" "$HELPER_BIN_DIR/adb"
   fi
-  codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$APP"
+  codesign --force --options runtime --entitlements "$APP_ENTITLEMENTS" --sign "$SIGNING_IDENTITY" "$BIN_DIR/$PRODUCT_NAME"
+  codesign --force --options runtime --entitlements "$APP_ENTITLEMENTS" --sign "$SIGNING_IDENTITY" "$APP"
   codesign --verify --deep --strict --verbose=2 "$APP"
 fi
 

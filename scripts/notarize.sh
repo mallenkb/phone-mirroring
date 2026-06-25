@@ -18,6 +18,7 @@ set -euo pipefail
 APP="${1:-dist/PhoneRelay.app}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENTITLEMENTS="$ROOT_DIR/scripts/PhoneRelay.release.entitlements"
+HELPER_ENTITLEMENTS="$ROOT_DIR/App/HelperInherit.entitlements"
 
 : "${DEVELOPER_ID:?Set DEVELOPER_ID (Developer ID Application identity)}"
 : "${APPLE_ID:?Set APPLE_ID (your Apple ID email)}"
@@ -31,7 +32,12 @@ fi
 
 echo "==> Signing nested helpers (adb, scrcpy-server)"
 while IFS= read -r -d '' bin; do
-  codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID" "$bin"
+  if [[ "$(basename "$bin")" == "adb" ]]; then
+    codesign --force --options runtime --timestamp \
+      --entitlements "$HELPER_ENTITLEMENTS" --sign "$DEVELOPER_ID" "$bin"
+  else
+    codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID" "$bin"
+  fi
 done < <(find "$APP/Contents" -type f \( -name adb -o -name 'scrcpy-server' \) -print0)
 
 echo "==> Signing the main executable + app bundle"
@@ -49,6 +55,27 @@ ENTITLEMENTS_OUT="$(codesign -d --entitlements :- "$APP" 2>/dev/null || true)"
 if printf '%s\n' "$ENTITLEMENTS_OUT" | grep -Eq 'com\.apple\.security\.cs\.(allow-dyld-environment-variables|disable-library-validation)'; then
   echo "Release app contains forbidden hardened-runtime exceptions." >&2
   exit 1
+fi
+for required in \
+  com.apple.security.app-sandbox \
+  com.apple.security.network.client \
+  com.apple.security.network.server \
+  com.apple.security.device.usb \
+  com.apple.security.temporary-exception.files.home-relative-path.read-write
+do
+  if ! printf '%s\n' "$ENTITLEMENTS_OUT" | grep -q "$required"; then
+    echo "Release app is missing required entitlement: $required" >&2
+    exit 1
+  fi
+done
+
+ADB="$APP/Contents/Resources/bin/adb"
+if [[ -f "$ADB" ]]; then
+  ADB_ENTITLEMENTS_OUT="$(codesign -d --entitlements :- "$ADB" 2>/dev/null || true)"
+  if ! printf '%s\n' "$ADB_ENTITLEMENTS_OUT" | grep -q 'com.apple.security.inherit'; then
+    echo "Bundled adb is missing inherited sandbox entitlement." >&2
+    exit 1
+  fi
 fi
 
 echo "==> Submitting to Apple notary service (this can take a few minutes)"

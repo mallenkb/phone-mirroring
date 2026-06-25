@@ -19,6 +19,40 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertEqual(entitlements["com.apple.developer.usernotifications.communication"] as? Bool, true)
     }
 
+    func testScriptPackagedReleasePreservesWiFiEntitlements() throws {
+        let entitlements = try Self.propertyList(at: Self.repoRoot()
+            .appendingPathComponent("scripts/PhoneRelay.release.entitlements"))
+
+        XCTAssertEqual(entitlements["com.apple.security.app-sandbox"] as? Bool, true)
+        XCTAssertEqual(entitlements["com.apple.security.device.usb"] as? Bool, true)
+        XCTAssertEqual(entitlements["com.apple.security.network.client"] as? Bool, true)
+        XCTAssertEqual(entitlements["com.apple.security.network.server"] as? Bool, true)
+        XCTAssertEqual(
+            entitlements["com.apple.security.temporary-exception.files.home-relative-path.read-write"] as? [String],
+            [".android/"]
+        )
+        XCTAssertEqual(
+            entitlements["com.apple.security.temporary-exception.mach-lookup.global-name"] as? [String],
+            ["com.mallenkb.PhoneRelay-spks", "com.mallenkb.PhoneRelay-spki"]
+        )
+
+        let packageScript = try String(
+            contentsOf: Self.repoRoot().appendingPathComponent("scripts/package_app.sh"),
+            encoding: .utf8
+        )
+        let notarizeScript = try String(
+            contentsOf: Self.repoRoot().appendingPathComponent("scripts/notarize.sh"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(packageScript.contains("--entitlements \"$APP_ENTITLEMENTS\""))
+        XCTAssertTrue(packageScript.contains("--entitlements \"$HELPER_ENTITLEMENTS\""))
+        XCTAssertTrue(notarizeScript.contains("--entitlements \"$ENTITLEMENTS\""))
+        XCTAssertTrue(notarizeScript.contains("--entitlements \"$HELPER_ENTITLEMENTS\""))
+        XCTAssertTrue(notarizeScript.contains("com.apple.security.network.client"))
+        XCTAssertTrue(notarizeScript.contains("com.apple.security.inherit"))
+    }
+
     func testBundledADBHelperUsesSandboxInheritanceEntitlements() throws {
         let entitlements = try Self.propertyList(at: Self.repoRoot()
             .appendingPathComponent("App/HelperInherit.entitlements"))
