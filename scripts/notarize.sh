@@ -48,17 +48,7 @@ codesign --force --options runtime --timestamp \
 codesign --verify --deep --strict --verbose=2 "$APP"
 
 echo "==> Verifying release entitlements"
-ENTITLEMENTS_OUT="$(codesign -d --entitlements :- "$APP" 2>/dev/null || true)"
-if printf '%s\n' "$ENTITLEMENTS_OUT" | grep -Eq 'com\.apple\.security\.cs\.(allow-dyld-environment-variables|disable-library-validation)'; then
-  echo "Release app contains forbidden hardened-runtime exceptions." >&2
-  exit 1
-fi
-# The release app must stay UNSANDBOXED: the App Sandbox breaks the adb stack on
-# this machine (Wi-Fi handoff / adb-over-Wi-Fi). Fail the build if it sneaks back.
-if printf '%s\n' "$ENTITLEMENTS_OUT" | grep -q 'com.apple.security.app-sandbox'; then
-  echo "Release app must not be sandboxed (breaks Wi-Fi adb/handoff)." >&2
-  exit 1
-fi
+"$ROOT_DIR/scripts/verify_release_artifact.sh" "$APP"
 
 echo "==> Submitting to Apple notary service (this can take a few minutes)"
 ZIP="${APP%.app}.zip"

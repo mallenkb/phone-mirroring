@@ -103,6 +103,17 @@ jobs:
           set -euo pipefail
           test -f "dist/${{ steps.version.outputs.dmg_name }}"
           hdiutil verify "dist/${{ steps.version.outputs.dmg_name }}"
+          MOUNT_DIR="$(mktemp -d)"
+          hdiutil attach "dist/${{ steps.version.outputs.dmg_name }}" -nobrowse -readonly -mountpoint "$MOUNT_DIR"
+          APP_PATH="$(find "$MOUNT_DIR" -maxdepth 1 -name '*.app' -type d | head -1)"
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app bundle found in DMG." >&2
+            hdiutil detach "$MOUNT_DIR" || true
+            exit 1
+          fi
+          scripts/verify_release_artifact.sh "$APP_PATH"
+          hdiutil detach "$MOUNT_DIR"
+          rmdir "$MOUNT_DIR"
 
       - name: Create Sparkle ZIP and appcast
         env:

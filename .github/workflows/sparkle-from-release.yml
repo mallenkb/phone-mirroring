@@ -71,7 +71,7 @@ jobs:
             echo "App version $APP_VERSION does not match ${{ steps.version.outputs.tag }}" >&2
             exit 1
           fi
-          codesign --verify --deep --strict --verbose=2 dist/PhoneRelay.app
+          scripts/verify_release_artifact.sh dist/PhoneRelay.app
           xcrun stapler validate dist/PhoneRelay.app
 
       - name: Resolve Sparkle tools

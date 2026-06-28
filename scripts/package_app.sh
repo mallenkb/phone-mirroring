@@ -5,8 +5,8 @@ APP="${1:-dist/PhoneRelay.app}"
 APP_NAME="${APP_NAME:-Phone Relay}"
 PRODUCT_NAME="${PRODUCT_NAME:-PhoneRelay}"
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
-APP_VERSION="${APP_VERSION:-1.0.24}"
-BUILD_NUMBER="${BUILD_NUMBER:-28}"
+APP_VERSION="${APP_VERSION:-1.0.25}"
+BUILD_NUMBER="${BUILD_NUMBER:-29}"
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://phonerelay.mallenkb.com/appcast.xml}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-BRG3UL9d/8qtx7RJdobbGi1q87hpbEflfn1izHj/qgc=}"
 # Prefer a real Apple Development identity when one is in the keychain: TCC
@@ -189,6 +189,7 @@ if command -v codesign >/dev/null 2>&1; then
   codesign --force --options runtime --entitlements "$APP_ENTITLEMENTS" --sign "$SIGNING_IDENTITY" "$BIN_DIR/$PRODUCT_NAME"
   codesign --force --options runtime --entitlements "$APP_ENTITLEMENTS" --sign "$SIGNING_IDENTITY" "$APP"
   codesign --verify --deep --strict --verbose=2 "$APP"
+  scripts/verify_release_artifact.sh "$APP"
 fi
 
 if [ "$OPEN_AFTER_PACKAGE" = "1" ]; then

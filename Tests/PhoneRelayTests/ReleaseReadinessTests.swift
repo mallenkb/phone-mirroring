@@ -19,6 +19,19 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertEqual(entitlements["com.apple.developer.usernotifications.communication"] as? Bool, true)
     }
 
+    func testXcodeReleaseUsesDeveloperIDEntitlements() throws {
+        let project = try String(
+            contentsOf: Self.repoRoot()
+                .appendingPathComponent("App/PhoneRelay.xcodeproj/project.pbxproj"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(project.contains("CODE_SIGN_ENTITLEMENTS = ../scripts/PhoneRelay.release.entitlements;"))
+        XCTAssertTrue(project.contains(#"if [ \"${CONFIGURATION:-}\" = \"Release\" ]; then"#))
+        XCTAssertTrue(project.contains(#"codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$ADB\""#))
+        XCTAssertTrue(project.contains(#"--entitlements \"$SRCROOT/HelperInherit.entitlements\""#))
+    }
+
     func testScriptPackagedReleaseStaysUnsandboxed() throws {
         // The script/notarize pipeline must stay UNSANDBOXED: the App Sandbox
         // breaks the adb stack (Wi-Fi handoff / adb-over-Wi-Fi). The Xcode
@@ -38,6 +51,18 @@ final class ReleaseReadinessTests: XCTestCase {
             contentsOf: Self.repoRoot().appendingPathComponent("scripts/notarize.sh"),
             encoding: .utf8
         )
+        let releaseWorkflow = try String(
+            contentsOf: Self.repoRoot().appendingPathComponent(".github/workflows/release.yml"),
+            encoding: .utf8
+        )
+        let sparkleWorkflow = try String(
+            contentsOf: Self.repoRoot().appendingPathComponent(".github/workflows/sparkle-from-release.yml"),
+            encoding: .utf8
+        )
+        let verifier = try String(
+            contentsOf: Self.repoRoot().appendingPathComponent("scripts/verify_release_artifact.sh"),
+            encoding: .utf8
+        )
 
         // Main app is still signed with the release entitlements...
         XCTAssertTrue(packageScript.contains("--entitlements \"$APP_ENTITLEMENTS\""))
@@ -46,8 +71,16 @@ final class ReleaseReadinessTests: XCTestCase {
         // would be killed at exec under a non-sandboxed parent.
         XCTAssertFalse(packageScript.contains("HELPER_ENTITLEMENTS"))
         XCTAssertFalse(notarizeScript.contains("HELPER_ENTITLEMENTS"))
-        // notarize.sh guards against the sandbox sneaking back in.
-        XCTAssertTrue(notarizeScript.contains("com.apple.security.app-sandbox"))
+        // The final artifact is verified at every release boundary, including the
+        // DMG and Sparkle repackage paths that previously let a sandboxed app ship.
+        XCTAssertTrue(packageScript.contains("scripts/verify_release_artifact.sh \"$APP\""))
+        XCTAssertTrue(notarizeScript.contains("\"$ROOT_DIR/scripts/verify_release_artifact.sh\" \"$APP\""))
+        XCTAssertTrue(releaseWorkflow.contains("scripts/verify_release_artifact.sh \"$APP_PATH\""))
+        XCTAssertTrue(sparkleWorkflow.contains("scripts/verify_release_artifact.sh dist/PhoneRelay.app"))
+        XCTAssertTrue(verifier.contains("embedded.provisionprofile"))
+        XCTAssertTrue(verifier.contains("com.apple.security.app-sandbox"))
+        XCTAssertTrue(verifier.contains("com.apple.security.inherit"))
+        XCTAssertTrue(verifier.contains("NSLocalNetworkUsageDescription"))
     }
 
     func testBundledADBHelperUsesSandboxInheritanceEntitlements() throws {
@@ -67,6 +100,7 @@ final class ReleaseReadinessTests: XCTestCase {
         )
         XCTAssertTrue(project.contains("HelperInherit.entitlements"))
         XCTAssertTrue(project.contains(#"--entitlements \"$SRCROOT/HelperInherit.entitlements\""#))
+        XCTAssertTrue(project.contains(#"if [ \"${CONFIGURATION:-}\" = \"Release\" ]; then"#))
     }
 
     @MainActor
