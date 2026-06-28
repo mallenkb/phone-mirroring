@@ -18,7 +18,6 @@ set -euo pipefail
 APP="${1:-dist/PhoneRelay.app}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENTITLEMENTS="$ROOT_DIR/scripts/PhoneRelay.release.entitlements"
-HELPER_ENTITLEMENTS="$ROOT_DIR/App/HelperInherit.entitlements"
 
 : "${DEVELOPER_ID:?Set DEVELOPER_ID (Developer ID Application identity)}"
 : "${APPLE_ID:?Set APPLE_ID (your Apple ID email)}"
@@ -31,13 +30,11 @@ if [[ ! -d "$APP" ]]; then
 fi
 
 echo "==> Signing nested helpers (adb, scrcpy-server)"
+# The app is unsandboxed (Wi-Fi adb/handoff needs it; see app-sandbox notes), so
+# helpers must NOT carry sandbox-inherit entitlements — a sandbox-inherit helper
+# is killed at exec (exit 133) when its parent is not sandboxed.
 while IFS= read -r -d '' bin; do
-  if [[ "$(basename "$bin")" == "adb" ]]; then
-    codesign --force --options runtime --timestamp \
-      --entitlements "$HELPER_ENTITLEMENTS" --sign "$DEVELOPER_ID" "$bin"
-  else
-    codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID" "$bin"
-  fi
+  codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID" "$bin"
 done < <(find "$APP/Contents" -type f \( -name adb -o -name 'scrcpy-server' \) -print0)
 
 echo "==> Signing the main executable + app bundle"
@@ -56,26 +53,11 @@ if printf '%s\n' "$ENTITLEMENTS_OUT" | grep -Eq 'com\.apple\.security\.cs\.(allo
   echo "Release app contains forbidden hardened-runtime exceptions." >&2
   exit 1
 fi
-for required in \
-  com.apple.security.app-sandbox \
-  com.apple.security.network.client \
-  com.apple.security.network.server \
-  com.apple.security.device.usb \
-  com.apple.security.temporary-exception.files.home-relative-path.read-write
-do
-  if ! printf '%s\n' "$ENTITLEMENTS_OUT" | grep -q "$required"; then
-    echo "Release app is missing required entitlement: $required" >&2
-    exit 1
-  fi
-done
-
-ADB="$APP/Contents/Resources/bin/adb"
-if [[ -f "$ADB" ]]; then
-  ADB_ENTITLEMENTS_OUT="$(codesign -d --entitlements :- "$ADB" 2>/dev/null || true)"
-  if ! printf '%s\n' "$ADB_ENTITLEMENTS_OUT" | grep -q 'com.apple.security.inherit'; then
-    echo "Bundled adb is missing inherited sandbox entitlement." >&2
-    exit 1
-  fi
+# The release app must stay UNSANDBOXED: the App Sandbox breaks the adb stack on
+# this machine (Wi-Fi handoff / adb-over-Wi-Fi). Fail the build if it sneaks back.
+if printf '%s\n' "$ENTITLEMENTS_OUT" | grep -q 'com.apple.security.app-sandbox'; then
+  echo "Release app must not be sandboxed (breaks Wi-Fi adb/handoff)." >&2
+  exit 1
 fi
 
 echo "==> Submitting to Apple notary service (this can take a few minutes)"

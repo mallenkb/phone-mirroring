@@ -19,22 +19,16 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertEqual(entitlements["com.apple.developer.usernotifications.communication"] as? Bool, true)
     }
 
-    func testScriptPackagedReleasePreservesWiFiEntitlements() throws {
+    func testScriptPackagedReleaseStaysUnsandboxed() throws {
+        // The script/notarize pipeline must stay UNSANDBOXED: the App Sandbox
+        // breaks the adb stack (Wi-Fi handoff / adb-over-Wi-Fi). The Xcode
+        // build is sandboxed on purpose for MAS/TestFlight; the daily-driver
+        // script build is not. See the app-sandbox-breaks-adb-stack note.
         let entitlements = try Self.propertyList(at: Self.repoRoot()
             .appendingPathComponent("scripts/PhoneRelay.release.entitlements"))
 
-        XCTAssertEqual(entitlements["com.apple.security.app-sandbox"] as? Bool, true)
-        XCTAssertEqual(entitlements["com.apple.security.device.usb"] as? Bool, true)
-        XCTAssertEqual(entitlements["com.apple.security.network.client"] as? Bool, true)
-        XCTAssertEqual(entitlements["com.apple.security.network.server"] as? Bool, true)
-        XCTAssertEqual(
-            entitlements["com.apple.security.temporary-exception.files.home-relative-path.read-write"] as? [String],
-            [".android/"]
-        )
-        XCTAssertEqual(
-            entitlements["com.apple.security.temporary-exception.mach-lookup.global-name"] as? [String],
-            ["com.mallenkb.PhoneRelay-spks", "com.mallenkb.PhoneRelay-spki"]
-        )
+        XCTAssertNil(entitlements["com.apple.security.app-sandbox"],
+                     "Release entitlements must not enable the App Sandbox (breaks Wi-Fi adb).")
 
         let packageScript = try String(
             contentsOf: Self.repoRoot().appendingPathComponent("scripts/package_app.sh"),
@@ -45,12 +39,15 @@ final class ReleaseReadinessTests: XCTestCase {
             encoding: .utf8
         )
 
+        // Main app is still signed with the release entitlements...
         XCTAssertTrue(packageScript.contains("--entitlements \"$APP_ENTITLEMENTS\""))
-        XCTAssertTrue(packageScript.contains("--entitlements \"$HELPER_ENTITLEMENTS\""))
         XCTAssertTrue(notarizeScript.contains("--entitlements \"$ENTITLEMENTS\""))
-        XCTAssertTrue(notarizeScript.contains("--entitlements \"$HELPER_ENTITLEMENTS\""))
-        XCTAssertTrue(notarizeScript.contains("com.apple.security.network.client"))
-        XCTAssertTrue(notarizeScript.contains("com.apple.security.inherit"))
+        // ...but helpers are NOT signed with sandbox-inherit entitlements, which
+        // would be killed at exec under a non-sandboxed parent.
+        XCTAssertFalse(packageScript.contains("HELPER_ENTITLEMENTS"))
+        XCTAssertFalse(notarizeScript.contains("HELPER_ENTITLEMENTS"))
+        // notarize.sh guards against the sandbox sneaking back in.
+        XCTAssertTrue(notarizeScript.contains("com.apple.security.app-sandbox"))
     }
 
     func testBundledADBHelperUsesSandboxInheritanceEntitlements() throws {

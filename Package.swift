@@ -44,9 +44,14 @@ let package = Package(
             ]
         ),
         .target(
+            name: "ObjCSupport",
+            path: "Sources/ObjCSupport"
+        ),
+        .target(
             name: "PhoneRelay",
             dependencies: [
-                .product(name: "Sparkle", package: "Sparkle")
+                .product(name: "Sparkle", package: "Sparkle"),
+                "ObjCSupport"
             ],
             path: "Sources/PhoneRelay",
             exclude: ["Info.plist"],

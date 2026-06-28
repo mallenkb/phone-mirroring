@@ -320,7 +320,7 @@ struct SettingsView: View {
                 scrollingPickerRow(
                     icon: "timer",
                     title: "Recording length",
-                    subtitle: "Maximum length per recording. Phones on Android 11+ honor longer limits; older phones stop at 3 minutes."
+                    subtitle: "Maximum length per recording. Phone Relay records in short segments and saves them as one video."
                 ) {
                     recordingLengthPicker
                 }

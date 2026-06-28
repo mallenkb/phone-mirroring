@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import ObjCSupport
 
 /// Plays the phone's audio on the Mac. scrcpy streams Opus at 16 kbps and the
 /// player decodes each packet to PCM before scheduling it on the audio engine.
@@ -41,7 +42,16 @@ final class MirrorAudioPlayer: @unchecked Sendable {
             do {
                 engine.prepare()
                 try engine.start()
-                player.play()
+                // `AVAudioPlayerNode.play()` raises an uncatchable Objective-C
+                // exception for certain runtime audio-graph/output-device states
+                // (observed crashing the whole app mid-mirror). Audio is a
+                // best-effort, opt-in feature, so trap the exception and disable
+                // audio rather than aborting the mirror session.
+                if let raised = PRRunCatchingObjCException({ self.player.play() }) {
+                    Logger.log("MirrorAudioPlayer: player.play() raised, disabling audio: \(raised.localizedDescription)")
+                    engine.stop()
+                    return
+                }
                 running = true
             } catch {
                 Logger.log("MirrorAudioPlayer: engine start failed: \(error)")

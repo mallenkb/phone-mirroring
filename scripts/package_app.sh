@@ -5,8 +5,8 @@ APP="${1:-dist/PhoneRelay.app}"
 APP_NAME="${APP_NAME:-Phone Relay}"
 PRODUCT_NAME="${PRODUCT_NAME:-PhoneRelay}"
 BUNDLE_ID="${BUNDLE_ID:-com.mallenkb.PhoneRelay}"
-APP_VERSION="${APP_VERSION:-1.0.23}"
-BUILD_NUMBER="${BUILD_NUMBER:-27}"
+APP_VERSION="${APP_VERSION:-1.0.24}"
+BUILD_NUMBER="${BUILD_NUMBER:-28}"
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://phonerelay.mallenkb.com/appcast.xml}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-BRG3UL9d/8qtx7RJdobbGi1q87hpbEflfn1izHj/qgc=}"
 # Prefer a real Apple Development identity when one is in the keychain: TCC
@@ -40,7 +40,6 @@ FRAMEWORKS_DIR="$APP/Contents/Frameworks"
 HELPER_BIN_DIR="$RESOURCES_DIR/bin"
 LICENSES_DIR="$RESOURCES_DIR/LICENSES"
 APP_ENTITLEMENTS="scripts/PhoneRelay.release.entitlements"
-HELPER_ENTITLEMENTS="App/HelperInherit.entitlements"
 
 swift build -c release
 
@@ -183,7 +182,9 @@ if command -v codesign >/dev/null 2>&1; then
     codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework"
   fi
   if [ -f "$HELPER_BIN_DIR/adb" ]; then
-    codesign --force --options runtime --entitlements "$HELPER_ENTITLEMENTS" --sign "$SIGNING_IDENTITY" "$HELPER_BIN_DIR/adb"
+    # No sandbox-inherit entitlements: the app is unsandboxed, and a
+    # sandbox-inherit helper would be killed at exec under a non-sandboxed parent.
+    codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$HELPER_BIN_DIR/adb"
   fi
   codesign --force --options runtime --entitlements "$APP_ENTITLEMENTS" --sign "$SIGNING_IDENTITY" "$BIN_DIR/$PRODUCT_NAME"
   codesign --force --options runtime --entitlements "$APP_ENTITLEMENTS" --sign "$SIGNING_IDENTITY" "$APP"

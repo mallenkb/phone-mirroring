@@ -8,33 +8,14 @@
       which does not require DYLD environment variables or disabled library
       validation in the main app process.
     -->
-    <!-- App Sandbox is required for the production app and for inherited helper entitlements. -->
-    <key>com.apple.security.app-sandbox</key>
-    <true/>
-    <!-- adb connects to Android devices over Wi-Fi and uses local sockets. -->
-    <key>com.apple.security.network.client</key>
-    <true/>
-    <key>com.apple.security.network.server</key>
-    <true/>
-    <!-- USB debugging is used to authorize phones and prepare Wi-Fi handoff. -->
-    <key>com.apple.security.device.usb</key>
-    <true/>
-    <!-- User-selected captures plus the default Downloads location. -->
-    <key>com.apple.security.files.downloads.read-write</key>
-    <true/>
-    <key>com.apple.security.files.user-selected.read-write</key>
-    <true/>
-    <!-- adb needs Android debug keys for both USB and Wi-Fi authenticated targets. -->
-    <key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
-    <array>
-        <string>.android/</string>
-    </array>
-    <!-- Sparkle installer status/connection services for sandboxed updates. -->
-    <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
-    <array>
-        <string>com.mallenkb.PhoneRelay-spks</string>
-        <string>com.mallenkb.PhoneRelay-spki</string>
-    </array>
+    <!--
+      NOT sandboxed, on purpose. The App Sandbox breaks the adb stack on this
+      app: it routes the bundled adb's HOME to the container (foreign adb keys),
+      and gates the LAN sweep + `adb connect <ip>:5555` behind Local Network
+      privacy, which kills Wi-Fi handoff / adb-over-Wi-Fi. The script/notarize
+      pipeline must stay unsandboxed (notarize.sh fails the build if app-sandbox
+      reappears). See the app-sandbox-breaks-adb-stack project note.
+    -->
     <!--
       Communication Notifications: forwarded banners present the source app icon
       as the large left avatar with Phone Relay auto-badged in the corner (the

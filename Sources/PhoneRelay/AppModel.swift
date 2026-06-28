@@ -4,6 +4,7 @@ import Foundation
 import Darwin
 import Network
 import UserNotifications
+import AVFoundation
 
 private final class OneShotCallback: @unchecked Sendable {
     private let lock = NSLock()
@@ -72,13 +73,12 @@ final class AppModel: ObservableObject {
     nonisolated static let recordingFolderPathDefaultsKey = "Capture.recordingFolderPath"
     nonisolated static let recordingFolderBookmarkDefaultsKey = "Capture.recordingFolderBookmark"
     nonisolated static let recordingMaxMinutesDefaultsKey = "Capture.recordingMaxMinutes"
-    /// Default screen-recording length when the user hasn't picked one. Android's
-    /// built-in `screenrecord` defaults to a 3-minute cap when no `--time-limit`
-    /// is passed; we raise that to a friendlier default and let the user change it.
+    /// Default screen-recording length when the user hasn't picked one.
     nonisolated static let recordingMaxMinutesDefault = 30
-    /// Clamp range for the configurable recording cap (minutes). Android 11+
-    /// honors a longer `--time-limit`; older builds cap at 3 minutes regardless.
+    /// Clamp range for the configurable recording cap (minutes).
     nonisolated static let recordingMaxMinutesRange = 1...180
+    /// Keep each Android screenrecord process below the common 180s device cap.
+    nonisolated static let screenRecordingSegmentSeconds = 175
     nonisolated static var canUseUserNotifications: Bool {
         Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app"
     }
@@ -307,8 +307,8 @@ final class AppModel: ObservableObject {
             }
         }
     }
-    /// Maximum screen-recording length in minutes. Passed to Android's
-    /// `screenrecord` as `--time-limit`; without it the OS stops at 3 minutes.
+    /// Maximum screen-recording length in minutes. The recorder splits this into
+    /// short Android `screenrecord` processes so devices with a 3-minute cap keep going.
     @Published var recordingMaxMinutes: Int = AppModel.loadRecordingMaxMinutes() {
         didSet {
             let clamped = Self.clampedRecordingMaxMinutes(recordingMaxMinutes)
@@ -856,6 +856,7 @@ final class AppModel: ObservableObject {
     private var reconnectTask: Task<Void, Never>?
     private var disconnectRecoveryTask: Task<Void, Never>?
     private var screenRecordingMonitorTask: Task<Void, Never>?
+    private var screenRecordingRemotePaths: [String] = []
     private var mirrorLaunchTask: Task<Void, Never>?
     private var mirrorSettingsRestartTask: Task<Void, Never>?
     private var suppressMirrorSettingsRestart = false
@@ -7673,6 +7674,7 @@ final class AppModel: ObservableObject {
     private func startScreenRecording() {
         isRecording = true
         presentCaptureCue(.recordingStarted)
+        screenRecordingRemotePaths = []
         let adb = self.adb
         let serial = selectedDevice.adbSerial
         let timeLimitSeconds = recordingTimeLimitSeconds
@@ -7683,30 +7685,27 @@ final class AppModel: ObservableObject {
 
             guard let self else { return }
             if alreadyRunning {
-                self.startScreenRecordingMonitor()
-                return
-            }
-
-            let output = await Task.detached {
-                adb.run(Self.adbDeviceArguments(serial: serial) + [
-                    "shell",
-                    "rm -f /sdcard/phonerelay-record.mp4; screenrecord --time-limit \(timeLimitSeconds) /sdcard/phonerelay-record.mp4 >/dev/null 2>&1 & echo started"
-                ])
-            }.value
-
-            guard output.lowercased().contains("started") else {
-                self.isRecording = false
-                return
+                _ = await Task.detached {
+                    adb.run(Self.adbDeviceArguments(serial: serial) + [
+                        "shell",
+                        "pkill -2 screenrecord >/dev/null 2>&1"
+                    ])
+                }.value
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
 
             self.isRecording = true
-            self.startScreenRecordingMonitor()
+            self.startScreenRecordingMonitor(totalLimitSeconds: timeLimitSeconds)
         }
     }
 
     private func stopScreenRecordingCleanup() {
         screenRecordingMonitorTask?.cancel()
         screenRecordingMonitorTask = nil
+        let remotePaths = screenRecordingRemotePaths.isEmpty
+            ? ["/sdcard/phonerelay-record.mp4"]
+            : screenRecordingRemotePaths
+        screenRecordingRemotePaths = []
         let adb = self.adb
         let serial = selectedDevice.adbSerial
         let outputDirectory = recordingOutputDirectory()
@@ -7731,16 +7730,36 @@ final class AppModel: ObservableObject {
                         kind: "Screen-Recording",
                         extension: "mp4"
                     ))
-                    let output = adb.run(Self.adbDeviceArguments(serial: serial) + [
-                        "pull", "/sdcard/phonerelay-record.mp4",
-                        url.path
-                    ], timeout: 120)
+                    var pulledSegments: [URL] = []
+                    var pullOutput = ""
+                    for (index, remotePath) in remotePaths.enumerated() {
+                        let destination = remotePaths.count == 1
+                            ? url
+                            : directory.appendingPathComponent("PhoneRelay-recording-segment-\(index).mp4")
+                        pullOutput += adb.run(Self.adbDeviceArguments(serial: serial) + [
+                            "pull", remotePath,
+                            destination.path
+                        ], timeout: 120)
+                        if FileManager.default.fileExists(atPath: destination.path) {
+                            pulledSegments.append(destination)
+                        }
+                    }
+
                     _ = adb.run(Self.adbDeviceArguments(serial: serial) + [
                         "shell",
-                        "rm -f /sdcard/phonerelay-record.mp4 >/dev/null 2>&1"
+                        "rm -f \(remotePaths.joined(separator: " ")) >/dev/null 2>&1"
                     ])
+                    guard !pulledSegments.isEmpty else {
+                        return .failure(.pullFailed(Self.oneLine(pullOutput)))
+                    }
+                    if pulledSegments.count > 1 {
+                        try Self.mergeRecordingSegments(pulledSegments, into: url)
+                        for segment in pulledSegments {
+                            try? FileManager.default.removeItem(at: segment)
+                        }
+                    }
                     guard FileManager.default.fileExists(atPath: url.path) else {
-                        return .failure(.pullFailed(Self.oneLine(output)))
+                        return .failure(.pullFailed(Self.oneLine(pullOutput)))
                     }
                     return .success(url)
                 } catch {
@@ -7763,25 +7782,97 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func startScreenRecordingMonitor() {
+    private func startScreenRecordingMonitor(totalLimitSeconds: Int? = nil) {
         screenRecordingMonitorTask?.cancel()
         let adb = self.adb
         let serial = selectedDevice.adbSerial
         screenRecordingMonitorTask = Task { [weak self] in
+            let startedAt = Date()
+            let maxEndDate = totalLimitSeconds.map { startedAt.addingTimeInterval(TimeInterval($0)) }
+            var segmentIndex = 0
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
-                guard !Task.isCancelled else { return }
-                let running = await Task.detached {
-                    Self.androidScreenRecordingIsRunning(adb: adb, serial: serial)
-                }.value
-                guard let self else { return }
-                if self.isRecording && !running {
+                guard let self, self.isRecording else { return }
+                let remaining = maxEndDate.map { max(1, Int($0.timeIntervalSinceNow.rounded(.down))) }
+                    ?? Self.screenRecordingSegmentSeconds
+                if remaining <= 1 {
                     self.isRecording = false
                     self.screenRecordingMonitorTask = nil
                     self.stopScreenRecordingCleanup()
                     return
                 }
+                let segmentSeconds = min(Self.screenRecordingSegmentSeconds, remaining)
+                let remotePath = "/sdcard/phonerelay-record-\(segmentIndex).mp4"
+                self.screenRecordingRemotePaths.append(remotePath)
+                let output = await Task.detached {
+                    adb.run(Self.adbDeviceArguments(serial: serial) + [
+                        "shell",
+                        "rm -f \(remotePath); screenrecord --time-limit \(segmentSeconds) \(remotePath) >/dev/null 2>&1 & echo started"
+                    ])
+                }.value
+                guard output.lowercased().contains("started") else {
+                    self.isRecording = false
+                    self.screenRecordingMonitorTask = nil
+                    return
+                }
+
+                var waitedSeconds = 0
+                while !Task.isCancelled && waitedSeconds < segmentSeconds {
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    waitedSeconds += 5
+                    guard self.isRecording else { return }
+                    let running = await Task.detached {
+                        Self.androidScreenRecordingIsRunning(adb: adb, serial: serial)
+                    }.value
+                    if !running {
+                        break
+                    }
+                }
+                segmentIndex += 1
             }
+        }
+    }
+
+    nonisolated private static func mergeRecordingSegments(_ segmentURLs: [URL], into outputURL: URL) throws {
+        try? FileManager.default.removeItem(at: outputURL)
+        let composition = AVMutableComposition()
+        guard let compositionVideoTrack = composition.addMutableTrack(
+            withMediaType: .video,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ) else {
+            throw RecordingError.runtime("Could not prepare video track.")
+        }
+        let compositionAudioTrack = composition.addMutableTrack(
+            withMediaType: .audio,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        )
+        var cursor = CMTime.zero
+        for segmentURL in segmentURLs {
+            let asset = AVURLAsset(url: segmentURL)
+            let range = CMTimeRange(start: .zero, duration: asset.duration)
+            if let videoTrack = asset.tracks(withMediaType: .video).first {
+                try compositionVideoTrack.insertTimeRange(range, of: videoTrack, at: cursor)
+            }
+            if let audioTrack = asset.tracks(withMediaType: .audio).first,
+               let compositionAudioTrack {
+                try compositionAudioTrack.insertTimeRange(range, of: audioTrack, at: cursor)
+            }
+            cursor = CMTimeAdd(cursor, range.duration)
+        }
+        guard let export = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
+            throw RecordingError.runtime("Could not prepare recording export.")
+        }
+        export.outputURL = outputURL
+        export.outputFileType = .mp4
+        let semaphore = DispatchSemaphore(value: 0)
+        export.exportAsynchronously {
+            semaphore.signal()
+        }
+        semaphore.wait()
+        if let error = export.error {
+            throw RecordingError.runtime(error.localizedDescription)
+        }
+        guard export.status == .completed else {
+            throw RecordingError.runtime("Recording export ended with status \(export.status.rawValue).")
         }
     }
 
