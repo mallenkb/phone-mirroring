@@ -73,6 +73,7 @@ final class AppModel: ObservableObject {
     nonisolated static let recordingFolderPathDefaultsKey = "Capture.recordingFolderPath"
     nonisolated static let recordingFolderBookmarkDefaultsKey = "Capture.recordingFolderBookmark"
     nonisolated static let recordingMaxMinutesDefaultsKey = "Capture.recordingMaxMinutes"
+    nonisolated static let diagnosticsEnabledDefaultsKey = DiagnosticsService.diagnosticsEnabledDefaultsKey
     /// Default screen-recording length when the user hasn't picked one.
     nonisolated static let recordingMaxMinutesDefault = 30
     /// Clamp range for the configurable recording cap (minutes).
@@ -260,6 +261,12 @@ final class AppModel: ObservableObject {
         (UserDefaults.standard.object(forKey: AppModel.notificationPauseWhileRecordingDefaultsKey) as? Bool) ?? false {
         didSet {
             UserDefaults.standard.set(notificationPauseWhileRecordingEnabled, forKey: Self.notificationPauseWhileRecordingDefaultsKey)
+        }
+    }
+    @Published var anonymousDiagnosticsEnabled: Bool =
+        UserDefaults.standard.bool(forKey: AppModel.diagnosticsEnabledDefaultsKey) {
+        didSet {
+            DiagnosticsService.shared.setEnabled(anonymousDiagnosticsEnabled)
         }
     }
     /// Packages the user has muted; their notifications are tracked (so they stay
@@ -903,7 +910,11 @@ final class AppModel: ObservableObject {
     }
     nonisolated static let disconnectRecoveryGracePeriod: TimeInterval = 5
     nonisolated static let wirelessHandoffReadinessAttempts = 8
-    nonisolated static let wirelessHandoffMaxDuration: TimeInterval = 5
+    /// Whole-handoff ceiling. It must absorb the route/MAC reads over USB
+    /// (up to ~4s on a busy phone) *and* the 1–4s adbd takes to come back
+    /// up after `adb tcpip` — a 5s budget regularly expired mid-restart and
+    /// misfiled healthy phones as "blocks adb-over-Wi-Fi".
+    nonisolated static let wirelessHandoffMaxDuration: TimeInterval = 10
     nonisolated static let wirelessHandoffRetryDelayNanoseconds: UInt64 = 250_000_000
     nonisolated static let wirelessHandoffConnectTimeout: TimeInterval = 2
     nonisolated static let wirelessHandoffShellTimeout: TimeInterval = 2
@@ -912,8 +923,12 @@ final class AppModel: ObservableObject {
     nonisolated static let wirelessHandoffTCPIPTimeout: TimeInterval = 3
     nonisolated static let wirelessHandoffPreflightTimeoutNanoseconds: UInt64 = 1_200_000_000
     nonisolated static let wirelessHandoffTCPProbeTimeoutNanoseconds: UInt64 = 450_000_000
-    nonisolated static let wirelessHandoffTakeoverAttempts = 10
-    nonisolated static let wirelessHandoffTakeoverMaxDuration: TimeInterval = 6
+    /// The takeover wait runs right after `adb tcpip` dropped the USB mirror,
+    /// so it races the phone's adbd restart (1–4s) plus the first TLS-probe /
+    /// connect round-trips. Sized so the attempts cap never binds before the
+    /// duration does.
+    nonisolated static let wirelessHandoffTakeoverAttempts = 16
+    nonisolated static let wirelessHandoffTakeoverMaxDuration: TimeInterval = 10
     nonisolated(unsafe) static var adbTCPPortProbe: @Sendable (String) async -> Bool = { address in
         await AppModel.adbTCPPortAcceptsConnection(address)
     }
@@ -1148,6 +1163,8 @@ final class AppModel: ObservableObject {
         self.notificationSettingsOpener = notificationSettingsOpener
         self.localNetworkPermissionPrompter = localNetworkPermissionPrompter
         self.backgroundServicesEnabled = startBackgroundServices
+        DiagnosticsService.shared.configure()
+        DiagnosticsService.shared.capture(.appLaunched)
         explicitDeviceSetupRequired = Self.explicitDeviceSetupRequiredPreference()
         if explicitDeviceSetupRequired {
             store.clearAll()
@@ -1848,15 +1865,39 @@ final class AppModel: ObservableObject {
             if ready {
                 guard !self.explicitDeviceSetupRequired else { return }
                 var mirrorAddress = address
-                if Self.shouldPromoteToLegacyTCPIP(connectedAddress: address),
-                   let promotedAddress = await Self.promoteToLegacyTCPIP(
-                    adb: adb,
-                    sourceSerial: address,
-                    preflightLocalNetworkAccess: { address in
-                        await Self.preflightLocalNetworkAccess(address: address)
+                if Self.shouldPromoteToLegacyTCPIP(connectedAddress: address) {
+                    switch await Self.promoteToLegacyTCPIP(
+                        adb: adb,
+                        sourceSerial: address,
+                        preflightLocalNetworkAccess: { address in
+                            await Self.preflightLocalNetworkAccess(address: address)
+                        }
+                    ) {
+                    case .promoted(let promotedAddress):
+                        mirrorAddress = promotedAddress
+                    case .unavailable:
+                        break
+                    case .transportLost(let legacyAddress):
+                        // The promotion's adbd restart killed the transport we
+                        // just verified. Give the 5555 listener one more pass;
+                        // if it still isn't up, fail cleanly instead of
+                        // launching a mirror against a dead address.
+                        let retry = await Self.connectToRememberedWirelessReadiness(
+                            adb: adb,
+                            savedAddress: legacyAddress,
+                            readinessAttempts: 2,
+                            preflightLocalNetworkAccess: { address in
+                                await Self.preflightLocalNetworkAccess(address: address)
+                            }
+                        )
+                        guard let recoveredAddress = retry.connectedAddress else {
+                            Logger.log("Legacy tcpip promotion lost transport \(address); \(legacyAddress) not ready yet")
+                            self.noteAutoConnectFailure(for: phone)
+                            self.isAutoConnecting = false
+                            return
+                        }
+                        mirrorAddress = recoveredAddress
                     }
-                   ) {
-                    mirrorAddress = promotedAddress
                 }
                 self.failedAutoConnectTargets.removeValue(forKey: address)
                 self.failedAutoConnectTargets.removeValue(forKey: mirrorAddress)
@@ -2883,7 +2924,7 @@ final class AppModel: ObservableObject {
                 Logger.log("Skipped QR Wi-Fi reconnect route preparation while mirror is active address=\(phone.address)")
                 return
             }
-            guard let legacyAddress = await Self.promoteToLegacyTCPIP(
+            guard case .promoted(let legacyAddress) = await Self.promoteToLegacyTCPIP(
                 adb: adb,
                 sourceSerial: phone.address,
                 preflightLocalNetworkAccess: { address in
@@ -2909,6 +2950,14 @@ final class AppModel: ObservableObject {
     ) async -> Bool {
         let adb = self.adb
         let handoffStartedAt = Date()
+        let handoffAttempt = DiagnosticsConnectionAttempt(
+            attemptNumber: reconnectAttemptCount + 1,
+            isRetry: reconnectAttemptCount > 0
+        )
+        DiagnosticsService.shared.capture(
+            handoffAttempt.isRetry ? .wifiRetryStarted : .wifiHandoffStarted,
+            properties: DiagnosticsService.shared.propertiesForAttempt(handoffAttempt, transport: "wifi")
+        )
         func remainingBudget() -> TimeInterval {
             Self.remainingWirelessHandoffBudget(startedAt: handoffStartedAt)
         }
@@ -2928,10 +2977,21 @@ final class AppModel: ObservableObject {
 
         // Learn the Wi-Fi MAC over USB so recovery can find the phone after its
         // IP changes. Best-effort: a nil MAC just means recovery falls back to
-        // the port-5555 + getprop sweep later.
-        let wifiMACAddress = await Task.detached {
-            Self.resolveWiFiMACAddress(adb: adb, serial: usbDevice.serial, routeOutput: routeOutput)
-        }.value
+        // the port-5555 + getprop sweep later. Bounded by the remaining budget
+        // so two slow shell reads can't starve the readiness wait that follows.
+        let wifiMACAddress: String?
+        if let macReadTimeout = boundedTimeout(Self.wirelessHandoffRouteQueryTimeout) {
+            wifiMACAddress = await Task.detached {
+                Self.resolveWiFiMACAddress(
+                    adb: adb,
+                    serial: usbDevice.serial,
+                    routeOutput: routeOutput,
+                    timeout: macReadTimeout
+                )
+            }.value
+        } else {
+            wifiMACAddress = nil
+        }
 
         // Prefer the legacy `adb tcpip 5555` listener. It's the only wireless
         // adb path that stays reachable without the phone's Wireless debugging
@@ -2980,7 +3040,6 @@ final class AppModel: ObservableObject {
                 var tcpipFailed = false
                 if mayRunTCPIP {
                     guard let tcpipTimeout = boundedTimeout(Self.wirelessHandoffTCPIPTimeout) else {
-                        isPairing = false
                         return false
                     }
                     let tcpipOutput = await Task.detached {
@@ -3017,12 +3076,16 @@ final class AppModel: ObservableObject {
                         },
                         maximumDuration: remainingBudget(),
                         connectTimeout: Self.wirelessHandoffConnectTimeout,
-                        shellTimeout: Self.wirelessHandoffShellTimeout
+                        shellTimeout: Self.wirelessHandoffShellTimeout,
+                        allowADBServerRestart: false
                     )
                     connectAttempts += readiness.connectAttempts
                     noRouteToHostFailures += readiness.noRouteToHostFailures
                     if readiness.isReady {
-                        isPairing = false
+                        DiagnosticsService.shared.capture(
+                            handoffAttempt.isRetry ? .wifiRetrySucceeded : .wifiHandoffSucceeded,
+                            properties: DiagnosticsService.shared.propertiesForCompletedAttempt(handoffAttempt, transport: "wifi")
+                        )
                         let deviceName = await Self.connectedDeviceName(
                             adb: adb,
                             serial: legacyAddress,
@@ -3050,6 +3113,14 @@ final class AppModel: ObservableObject {
                         }
                         return true
                     }
+                    // A cancelled probe is not a verdict: `adb tcpip` drops the
+                    // USB mirror, whose session-end starts the takeover — and
+                    // the takeover cancels this task. Marking the serial failed
+                    // here would disable tcpip for the whole session on a phone
+                    // that is actually mid-restart and about to come up.
+                    if Task.isCancelled {
+                        return false
+                    }
                     // Wireless adb is on but unreachable from the Mac; don't keep
                     // restarting adbd (and killing the USB mirror) next time.
                     if mayRunTCPIP {
@@ -3068,7 +3139,6 @@ final class AppModel: ObservableObject {
         }
 
         guard remainingBudget() > 0.05 else {
-            isPairing = false
             if connectAttempts > 0, connectAttempts == noRouteToHostFailures {
                 presentLocalNetworkPermissionHint()
             }
@@ -3078,14 +3148,12 @@ final class AppModel: ObservableObject {
         // 11 Wireless debugging. Its random TLS port stops answering once the
         // toggle is turned off, so we only reach for it if 5555 didn't take.
         guard let tlsPortTimeout = boundedTimeout(Self.wirelessHandoffRouteQueryTimeout) else {
-            isPairing = false
             return false
         }
         let tlsPortOutput = await Task.detached {
             adb.run(["-s", usbDevice.serial, "shell", "getprop", "service.adb.tls.port"], timeout: tlsPortTimeout)
         }.value
         guard let tcpPortTimeout = boundedTimeout(Self.wirelessHandoffRouteQueryTimeout) else {
-            isPairing = false
             return false
         }
         let tcpPortOutput = await Task.detached {
@@ -3127,12 +3195,16 @@ final class AppModel: ObservableObject {
                 },
                 maximumDuration: remainingBudget(),
                 connectTimeout: Self.wirelessHandoffConnectTimeout,
-                shellTimeout: Self.wirelessHandoffShellTimeout
+                shellTimeout: Self.wirelessHandoffShellTimeout,
+                allowADBServerRestart: false
             )
             connectAttempts += readiness.connectAttempts
             noRouteToHostFailures += readiness.noRouteToHostFailures
             if readiness.isReady {
-                isPairing = false
+                DiagnosticsService.shared.capture(
+                    handoffAttempt.isRetry ? .wifiRetrySucceeded : .wifiHandoffSucceeded,
+                    properties: DiagnosticsService.shared.propertiesForCompletedAttempt(handoffAttempt, transport: "wifi")
+                )
                 let deviceName = await Self.connectedDeviceName(
                     adb: adb,
                     serial: tlsAddress,
@@ -3151,7 +3223,6 @@ final class AppModel: ObservableObject {
         }
 
         guard remainingBudget() > 0.05 else {
-            isPairing = false
             if connectAttempts > 0, connectAttempts == noRouteToHostFailures {
                 presentLocalNetworkPermissionHint()
             }
@@ -3195,12 +3266,16 @@ final class AppModel: ObservableObject {
                 },
                 maximumDuration: remainingBudget(),
                 connectTimeout: Self.wirelessHandoffConnectTimeout,
-                shellTimeout: Self.wirelessHandoffShellTimeout
+                shellTimeout: Self.wirelessHandoffShellTimeout,
+                allowADBServerRestart: false
             )
             connectAttempts += readiness.connectAttempts
             noRouteToHostFailures += readiness.noRouteToHostFailures
             if readiness.isReady {
-                isPairing = false
+                DiagnosticsService.shared.capture(
+                    handoffAttempt.isRetry ? .wifiRetrySucceeded : .wifiHandoffSucceeded,
+                    properties: DiagnosticsService.shared.propertiesForCompletedAttempt(handoffAttempt, transport: "wifi")
+                )
                 let deviceName = await Self.connectedDeviceName(
                     adb: adb,
                     serial: wirelessPhone.address,
@@ -3218,10 +3293,21 @@ final class AppModel: ObservableObject {
 
         }
 
-        isPairing = false
         if connectAttempts > 0, connectAttempts == noRouteToHostFailures {
             presentLocalNetworkPermissionHint()
         }
+        DiagnosticsService.shared.capture(
+            handoffAttempt.isRetry ? .wifiRetryFailed : .wifiHandoffFailed,
+            properties: DiagnosticsService.shared.propertiesForCompletedAttempt(
+                handoffAttempt,
+                transport: "wifi",
+                extra: [
+                    "failure_reason": connectAttempts > 0 && connectAttempts == noRouteToHostFailures
+                        ? DiagnosticsFailureReason.noRouteToHost.rawValue
+                        : DiagnosticsFailureReason.timeout.rawValue
+                ]
+            )
+        )
         return false
     }
 
@@ -4799,22 +4885,38 @@ final class AppModel: ObservableObject {
         !connectedAddress.hasSuffix(":\(legacyADBWirelessPort)")
     }
 
+    /// Outcome of a legacy `tcpip 5555` promotion. The distinction matters
+    /// because `adb tcpip` restarts the phone's adbd: once it has run, the
+    /// caller's original transport is gone whether or not `host:5555` came up.
+    enum LegacyTCPIPPromotion: Equatable {
+        /// The phone now listens on `host:5555`, verified adb-ready.
+        case promoted(String)
+        /// Promotion never restarted adbd (no Wi-Fi route, tcpip refused, or
+        /// already on 5555 handled by the caller) — the original transport is
+        /// untouched and safe to keep using.
+        case unavailable
+        /// `adb tcpip` restarted adbd but `host:5555` never came ready within
+        /// budget. The original transport died with the restart — the caller
+        /// must not mirror against it. Carries the legacy address where the
+        /// phone will appear once adbd finishes coming up.
+        case transportLost(legacyAddress: String)
+    }
+
     /// Promotes an already-connected wireless adb device (e.g. one reached via
     /// Android 11 Wireless debugging on a random TLS port) to a plain `tcpip
     /// 5555` listener, so later reconnects work on the same Wi-Fi without the
     /// Wireless-debugging toggle. `adb tcpip` works over any transport, so the
-    /// source can itself be a wireless address — no USB cable required. Returns
-    /// `host:5555` on success, or nil to keep using the original target.
+    /// source can itself be a wireless address — no USB cable required.
     nonisolated static func promoteToLegacyTCPIP(
         adb: ADBController,
         sourceSerial: String,
         preflightLocalNetworkAccess: ((String) async -> Void)? = nil
-    ) async -> String? {
+    ) async -> LegacyTCPIPPromotion {
         let handoffStartedAt = Date()
         func remainingBudget() -> TimeInterval {
             remainingWirelessHandoffBudget(startedAt: handoffStartedAt)
         }
-        guard remainingBudget() > 0.05 else { return nil }
+        guard remainingBudget() > 0.05 else { return .unavailable }
         let routeOutput = await Task.detached {
             adb.run(
                 ["-s", sourceSerial, "shell", "ip", "route"],
@@ -4822,20 +4924,20 @@ final class AppModel: ObservableObject {
             )
         }.value
         guard let legacyAddress = legacyTCPIPDebuggingAddress(routeOutput: routeOutput) else {
-            return nil
+            return .unavailable
         }
         if legacyAddress == sourceSerial {
-            return legacyAddress
+            return .promoted(legacyAddress)
         }
 
-        guard remainingBudget() > 0.05 else { return nil }
+        guard remainingBudget() > 0.05 else { return .unavailable }
         let tcpipOutput = await Task.detached {
             adb.run(
                 ["-s", sourceSerial, "tcpip", "\(legacyADBWirelessPort)"],
                 timeout: min(wirelessHandoffTCPIPTimeout, remainingBudget())
             )
         }.value
-        guard adbTCPIPSucceeded(tcpipOutput) else { return nil }
+        guard adbTCPIPSucceeded(tcpipOutput) else { return .unavailable }
 
         // adbd restarts on 5555; the old transport drops, so retry connect.
         let ready = await waitForADBWirelessTargetReady(
@@ -4851,7 +4953,7 @@ final class AppModel: ObservableObject {
             connectTimeout: wirelessHandoffConnectTimeout,
             shellTimeout: wirelessHandoffShellTimeout
         )
-        return ready ? legacyAddress : nil
+        return ready ? .promoted(legacyAddress) : .transportLost(legacyAddress: legacyAddress)
     }
 
     nonisolated static func adbPairSucceeded(_ output: String) -> Bool {
@@ -5274,10 +5376,18 @@ final class AppModel: ObservableObject {
             && candidateParts.port == addressParts.port
     }
 
+    /// Set once a preflight dial reaches `.ready`: Local Network permission is
+    /// proven granted for this process, so later preflights would only add
+    /// latency (their sole job is to trigger and wait out the TCC prompt).
+    /// Benign race — the worst case is one redundant preflight. Never set on
+    /// failure, so a revoked permission keeps getting fresh dials.
+    private nonisolated(unsafe) static var hasVerifiedLocalNetworkAccess = false
+
     nonisolated static func preflightLocalNetworkAccess(
         address: String,
         timeoutNanoseconds: UInt64 = 1_200_000_000
     ) async {
+        guard !hasVerifiedLocalNetworkAccess else { return }
         guard let endpoint = localNetworkEndpointParts(from: address),
               let port = NWEndpoint.Port(rawValue: endpoint.port)
         else { return }
@@ -5301,7 +5411,10 @@ final class AppModel: ObservableObject {
 
             connection.stateUpdateHandler = { state in
                 switch state {
-                case .ready, .failed, .cancelled:
+                case .ready:
+                    Self.hasVerifiedLocalNetworkAccess = true
+                    finish()
+                case .failed, .cancelled:
                     finish()
                 default:
                     break
@@ -5387,7 +5500,8 @@ final class AppModel: ObservableObject {
         tcpPortProbe: ((String) async -> Bool)? = nil,
         maximumDuration: TimeInterval? = nil,
         connectTimeout: TimeInterval = 5,
-        shellTimeout: TimeInterval = 2
+        shellTimeout: TimeInterval = 2,
+        allowADBServerRestart: Bool = true
     ) async -> Bool {
         await waitForADBWirelessTargetReadiness(
             adb: adb,
@@ -5399,10 +5513,15 @@ final class AppModel: ObservableObject {
             tcpPortProbe: tcpPortProbe,
             maximumDuration: maximumDuration,
             connectTimeout: connectTimeout,
-            shellTimeout: shellTimeout
+            shellTimeout: shellTimeout,
+            allowADBServerRestart: allowADBServerRestart
         ).isReady
     }
 
+    /// `allowADBServerRestart` gates the one-shot `adb kill-server` escalation:
+    /// it clears stale daemon state, but it also drops *every* adb transport —
+    /// pass `false` whenever a live mirror session could be riding on another
+    /// transport (e.g. the background USB→Wi-Fi handoff).
     nonisolated static func waitForADBWirelessTargetReadiness(
         adb: ADBController,
         address: String,
@@ -5413,7 +5532,8 @@ final class AppModel: ObservableObject {
         tcpPortProbe: ((String) async -> Bool)? = nil,
         maximumDuration: TimeInterval? = nil,
         connectTimeout: TimeInterval = 5,
-        shellTimeout: TimeInterval = 2
+        shellTimeout: TimeInterval = 2,
+        allowADBServerRestart: Bool = true
     ) async -> WirelessTargetReadiness {
         guard !Task.isCancelled else {
             return WirelessTargetReadiness(
@@ -5439,6 +5559,7 @@ final class AppModel: ObservableObject {
 
         var connectAttempts = 0
         var noRouteToHostFailures = 0
+        var restartedADBServerAfterReachableNoRoute = false
         for attempt in 0..<attempts {
             if let remaining = remainingBudget(), remaining <= 0 {
                 return WirelessTargetReadiness(
@@ -5497,9 +5618,17 @@ final class AppModel: ObservableObject {
 
             if let tcpPortProbe {
                 let portAcceptsConnection = await tcpPortProbe(address)
-                guard portAcceptsConnection else {
+                if !portAcceptsConnection {
                     Logger.log("ADB Wi-Fi handoff TCP probe attempt \(attempt + 1)/\(attempts) address=\(address) output=port not ready")
-                    continue
+                    // A dead probe usually means a dead port, so skip the
+                    // expensive `adb connect`. But a phone in Wi-Fi power-save
+                    // can drop the short probe while adb would still get
+                    // through, so the last attempt (by count or by budget)
+                    // dials regardless — otherwise a sleeping-but-reachable
+                    // phone fails readiness without one real connect try.
+                    let canAffordAnotherAttempt = attempt + 1 < attempts
+                        && (remainingBudget().map { $0 > 1.5 } ?? true)
+                    if canAffordAnotherAttempt { continue }
                 }
             }
 
@@ -5516,6 +5645,17 @@ final class AppModel: ObservableObject {
             Logger.log("ADB Wi-Fi handoff connect attempt \(attempt + 1)/\(attempts) address=\(address) output=\(connectOutput.trimmingCharacters(in: .whitespacesAndNewlines))")
             if outputIndicatesLocalNetworkBlocked(connectOutput) {
                 noRouteToHostFailures += 1
+                if allowADBServerRestart,
+                   tcpPortProbe != nil,
+                   !restartedADBServerAfterReachableNoRoute,
+                   attempt + 1 < attempts {
+                    restartedADBServerAfterReachableNoRoute = true
+                    Logger.log("ADB Wi-Fi handoff connect saw 'No route to host' after TCP probe accepted \(address); restarting adb server once to clear stale daemon state.")
+                    await Task.detached(priority: .userInitiated) {
+                        _ = adb.run(["kill-server"], timeout: 3)
+                    }.value
+                    await adb.ensureServerStarted()
+                }
             }
             connectAttempts += 1
             guard adbConnectSucceeded(connectOutput) else {
@@ -6043,6 +6183,9 @@ final class AppModel: ObservableObject {
         }
 
         Logger.log("Launching native mirror serial=\(serial ?? "default")")
+        DiagnosticsService.shared.capture(.mirrorStarted, properties: [
+            "transport": DiagnosticsService.transportValue(serial: serial, network: selectedDevice.network)
+        ])
         let launchFrame = connectionWindow?.frame ?? lastMirrorWindowFrame
         let keepConnectionWindowVisible = keepConnectionWindowVisibleOverride
             ?? Self.shouldKeepConnectionWindowVisibleDuringMirrorLaunch(
@@ -6116,6 +6259,10 @@ final class AppModel: ObservableObject {
                 Logger.log("Mirror launch failed: \(error)")
                 let detail = Self.mirrorFailureDetail(for: error)
                 let message = Self.mirrorFailureMessage(for: error)
+                DiagnosticsService.shared.capture(.mirrorFailed, properties: [
+                    "transport": DiagnosticsService.transportValue(serial: serial, network: self.selectedDevice.network),
+                    "failure_reason": DiagnosticsService.failureReason(for: detail).rawValue
+                ])
                 if self.recoverUSBLaunchFailureOverWireless(serial: serial, detail: detail) {
                     return
                 }
@@ -6144,6 +6291,14 @@ final class AppModel: ObservableObject {
         else { return false }
 
         Logger.log("USB mirror ended; attempting prepared Wi-Fi handoff address=\(candidate.address)")
+        let takeoverAttempt = DiagnosticsConnectionAttempt(attemptNumber: reconnectAttemptCount + 1, isRetry: reconnectAttemptCount > 0)
+        DiagnosticsService.shared.capture(.usbRecoveryStarted, properties: [
+            "recovery_method": "usb_reset"
+        ])
+        DiagnosticsService.shared.capture(
+            takeoverAttempt.isRetry ? .wifiRetryStarted : .wifiHandoffStarted,
+            properties: DiagnosticsService.shared.propertiesForAttempt(takeoverAttempt, transport: "wifi")
+        )
         if let finalMirrorFrame {
             lastMirrorWindowFrame = finalMirrorFrame
             connectionWindow?.setFrame(finalMirrorFrame, display: false)
@@ -6183,6 +6338,16 @@ final class AppModel: ObservableObject {
             guard let self, !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
             self.usbWiFiTakeoverTask = nil
             if readiness.isReady {
+                DiagnosticsService.shared.capture(
+                    takeoverAttempt.isRetry ? .wifiRetrySucceeded : .wifiHandoffSucceeded,
+                    properties: DiagnosticsService.shared.propertiesForCompletedAttempt(takeoverAttempt, transport: "wifi")
+                )
+                DiagnosticsService.shared.capture(.usbRecoverySucceeded, properties: [
+                    "recovery_method": "usb_reset"
+                ])
+                // The Wi-Fi route came up after all — undo any "blocks
+                // adb-over-Wi-Fi" verdict a racing handoff attempt recorded.
+                self.failedLegacyHandoffSerials.remove(candidate.usbSerial)
                 self.wirelessPinnedUSBSerials.insert(candidate.usbSerial)
                 self.touchPairedPhone(
                     id: candidate.usbSerial,
@@ -6199,6 +6364,18 @@ final class AppModel: ObservableObject {
                 self.activeError = nil
                 self.launchNativeMirror(serial: candidate.address)
             } else {
+                DiagnosticsService.shared.capture(
+                    takeoverAttempt.isRetry ? .wifiRetryFailed : .wifiHandoffFailed,
+                    properties: DiagnosticsService.shared.propertiesForCompletedAttempt(
+                        takeoverAttempt,
+                        transport: "wifi",
+                        extra: [
+                            "failure_reason": readiness.sawNoRouteToHost
+                                ? DiagnosticsFailureReason.noRouteToHost.rawValue
+                                : DiagnosticsFailureReason.timeout.rawValue
+                        ]
+                    )
+                )
                 if readiness.sawNoRouteToHost {
                     self.presentLocalNetworkPermissionHint()
                 }
@@ -6223,12 +6400,19 @@ final class AppModel: ObservableObject {
                     isUSB: true
                 )
                 guard let readyUSB = await self.readyUSBDeviceForMirroring(fallbackUSB) else {
+                    DiagnosticsService.shared.capture(.usbRecoveryFailed, properties: [
+                        "recovery_method": "usb_reset",
+                        "failure_reason": DiagnosticsFailureReason.adbOffline.rawValue
+                    ])
                     Logger.log("Skipping USB fallback for \(candidate.usbSerial): USB transport is not ready after failed Wi-Fi handoff.")
                     self.isSelectedDeviceOnline = false
                     self.startDisconnectRecoveryFallback()
                     return
                 }
                 self.selectedDevice.adbSerial = readyUSB.serial
+                DiagnosticsService.shared.capture(.usbRecoverySucceeded, properties: [
+                    "recovery_method": "usb_reset"
+                ])
                 self.selectedDevice.name = candidate.displayName
                 self.selectedDevice.network = "USB"
                 self.isSelectedDeviceOnline = true
@@ -6303,6 +6487,10 @@ final class AppModel: ObservableObject {
         // load-then-bail crash-loop and names the transport, so a "connects then
         // drops" report can be triaged from the log without guessing.
         Logger.log("Mirror session ended: lived=\(String(format: "%.1f", lived))s serial=\(selectedDevice.adbSerial ?? "default") stable=\(Self.isStableMirrorSession(lived: lived)) priorQuickFailures=\(consecutiveQuickMirrorFailures)")
+        DiagnosticsService.shared.capture(.mirrorSessionEnded, properties: [
+            "transport": DiagnosticsService.transportValue(serial: selectedDevice.adbSerial, network: selectedDevice.network),
+            "duration_ms": max(0, Int(lived * 1000))
+        ])
         guard !Self.isStableMirrorSession(lived: lived) else {
             // Stable session — reset the reconnect backoff, and remember that a
             // real connection was achieved so a *subsequent* drop reads
@@ -7161,15 +7349,35 @@ final class AppModel: ObservableObject {
         // Promote a random Wireless-debugging TLS port to a plain `tcpip 5555`
         // listener so the next reconnect works without the toggle (no-op on :5555).
         var address = connectedAddress
-        if Self.shouldPromoteToLegacyTCPIP(connectedAddress: connectedAddress),
-           let promoted = await Self.promoteToLegacyTCPIP(
-               adb: adb,
-               sourceSerial: connectedAddress,
-               preflightLocalNetworkAccess: { address in
-                   await Self.preflightLocalNetworkAccess(address: address)
-               }
-           ) {
-            address = promoted
+        if Self.shouldPromoteToLegacyTCPIP(connectedAddress: connectedAddress) {
+            switch await Self.promoteToLegacyTCPIP(
+                adb: adb,
+                sourceSerial: connectedAddress,
+                preflightLocalNetworkAccess: { address in
+                    await Self.preflightLocalNetworkAccess(address: address)
+                }
+            ) {
+            case .promoted(let promoted):
+                address = promoted
+            case .unavailable:
+                break
+            case .transportLost(let legacyAddress):
+                // adbd restarted mid-promotion, so the TLS transport we just
+                // verified is gone. Retry the 5555 listener before falling
+                // back to the original address (whose mirror launch would
+                // otherwise fail and re-enter recovery).
+                let retry = await Self.connectToRememberedWirelessReadiness(
+                    adb: adb,
+                    savedAddress: legacyAddress,
+                    readinessAttempts: 2,
+                    preflightLocalNetworkAccess: { address in
+                        await Self.preflightLocalNetworkAccess(address: address)
+                    }
+                )
+                if let recoveredAddress = retry.connectedAddress {
+                    address = recoveredAddress
+                }
+            }
         }
         let deviceName = await Self.connectedDeviceName(adb: adb, serial: address, fallback: record.displayName)
 
@@ -7665,6 +7873,7 @@ final class AppModel: ObservableObject {
     func toggleScreenRecording() {
         if isRecording {
             isRecording = false
+            DiagnosticsService.shared.capture(.recordingStopped)
             stopScreenRecordingCleanup()
         } else {
             startScreenRecording()
@@ -7673,6 +7882,7 @@ final class AppModel: ObservableObject {
 
     private func startScreenRecording() {
         isRecording = true
+        DiagnosticsService.shared.capture(.recordingStarted)
         presentCaptureCue(.recordingStarted)
         screenRecordingRemotePaths = []
         let adb = self.adb
@@ -7772,11 +7982,18 @@ final class AppModel: ObservableObject {
                 Logger.log("Saved screen recording: \(url.path)")
                 self?.lastCaptureURL = url
                 self?.presentCaptureCue(.recordingStopped)
+                DiagnosticsService.shared.capture(.recordingSaved)
             case .failure(.pullFailed(let message)):
                 Logger.log("Screen recording pull failed: \(message)")
+                DiagnosticsService.shared.capture(.recordingFailed, properties: [
+                    "failure_reason": DiagnosticsService.failureReason(for: message).rawValue
+                ])
                 self?.reportError("Recording didn’t save", "Couldn’t copy the recording off the phone. Keep it connected until the save finishes.")
             case .failure(.runtime(let message)):
                 Logger.log("Screen recording save failed: \(message)")
+                DiagnosticsService.shared.capture(.recordingFailed, properties: [
+                    "failure_reason": DiagnosticsService.failureReason(for: message).rawValue
+                ])
                 self?.reportError("Recording didn’t save", Self.mirrorFailureMessage(for: NSError(domain: "recording", code: 0, userInfo: [NSLocalizedDescriptionKey: message])))
             }
         }

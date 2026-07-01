@@ -1725,7 +1725,7 @@ final class ADBDeviceParsingTests: XCTestCase {
             sourceSerial: "192.0.2.44:42111"
         )
 
-        XCTAssertEqual(promoted, "192.0.2.44:5555")
+        XCTAssertEqual(promoted, .promoted("192.0.2.44:5555"))
         let calls = try String(contentsOf: log, encoding: .utf8)
             .split(whereSeparator: \.isNewline)
             .map(String.init)
@@ -1733,7 +1733,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
     }
 
-    func testPromoteToLegacyTCPIPReturnsNilWhenDeviceRefusesTCPIP() async throws {
+    func testPromoteToLegacyTCPIPKeepsOriginalWhenDeviceRefusesTCPIP() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PhoneRelayTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1771,7 +1771,9 @@ final class ADBDeviceParsingTests: XCTestCase {
             sourceSerial: "192.0.2.44:42111"
         )
 
-        XCTAssertNil(promoted)
+        // A refused `tcpip` never restarts adbd, so the caller's original
+        // transport stays valid — not a transport loss.
+        XCTAssertEqual(promoted, .unavailable)
     }
 
     func testADBTCPIPResultParsing() {
@@ -2595,6 +2597,52 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         XCTAssertEqual(result.connectedAddress, "192.0.2.44:42111")
         XCTAssertFalse(result.sawNoRouteToHost)
+    }
+
+    func testWirelessReadinessRestartsADBWhenTCPIsReachableButConnectReportsNoRoute() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        STATE="$ADB_FAKE_LOG.state"
+        if [ "$1" = "connect" ]; then
+          if [ -f "$STATE" ]; then
+            echo "connected to $2"
+          else
+            echo "failed to connect to '$2': No route to host"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "kill-server" ]; then
+          echo "killed"
+          exit 0
+        fi
+        if [ "$1" = "start-server" ]; then
+          touch "$STATE"
+          echo "started"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let readiness = await AppModel.waitForADBWirelessTargetReadiness(
+            adb: ADBController(),
+            address: "192.0.2.57:5555",
+            attempts: 3,
+            delayNanoseconds: 1,
+            tcpPortProbe: { _ in true }
+        )
+
+        XCTAssertTrue(readiness.isReady)
+        let calls = loggedCalls(fake.log)
+        XCTAssertTrue(calls.contains("connect 192.0.2.57:5555"))
+        XCTAssertTrue(calls.contains("kill-server"))
+        XCTAssertTrue(calls.contains("start-server"))
+        XCTAssertEqual(calls.filter { $0 == "connect 192.0.2.57:5555" }.count, 2)
     }
 
     func testConnectToUSBDeviceOverCurrentWiFiUsesExistingLegacyListener() async throws {

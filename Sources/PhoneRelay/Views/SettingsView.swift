@@ -11,6 +11,7 @@ struct SettingsView: View {
         case sharing = "Sharing"
         case shortcuts = "Shortcuts"
         case connection = "Connection"
+        case privacy = "Privacy"
         case about = "About"
 
         var id: String { rawValue }
@@ -68,6 +69,8 @@ struct SettingsView: View {
             shortcutsTab
         case .connection:
             connectionTab
+        case .privacy:
+            privacyTab
         case .about:
             aboutTab
         }
@@ -518,6 +521,76 @@ struct SettingsView: View {
             return .red
         case .neutral:
             return .secondary
+        }
+    }
+
+    // MARK: - Privacy
+
+    private var privacyTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            SettingsGroup(
+                title: "Anonymous diagnostics",
+                footnote: "Diagnostics are technical health events only. Phone Relay does not identify you or collect phone content."
+            ) {
+                toggleRow(
+                    icon: "waveform.path.ecg",
+                    isOn: $model.anonymousDiagnosticsEnabled,
+                    title: "Share anonymous diagnostics",
+                    subtitle: "Help improve setup, Wi-Fi handoff, mirroring, and recording reliability."
+                )
+            }
+
+            SettingsGroup(title: "Information we collect") {
+                privacyList([
+                    "App version and build number",
+                    "macOS major version, such as 15.x or 26.x",
+                    "Mac architecture, such as arm64 or x86_64",
+                    "Connection type, such as USB or Wi-Fi",
+                    "Setup, connection, mirroring, recording, retry, and recovery success/failure events",
+                    "Non-personal failure reasons, such as timeout, adb offline, unauthorized, or no route to host",
+                    "Connection duration and retry counts"
+                ])
+                .padding(14)
+            }
+
+            SettingsGroup(title: "Information we do not collect") {
+                privacyList([
+                    "Name, email, Apple ID, account details, or computer name",
+                    "Screen contents, recordings, files, photos, clipboard, or window titles",
+                    "Phone contents, messages, contacts, apps, or notifications",
+                    "Device serial numbers, phone identifiers, Wi-Fi network names, IP addresses, or location",
+                    "Activity history tied to a person"
+                ], icon: "xmark.circle.fill", iconColor: .red)
+                .padding(14)
+            }
+
+            SettingsGroup(title: "Why we collect it") {
+                Text("We use anonymous diagnostics to find reliability issues, measure setup and Wi-Fi handoff success, understand recording failures, and see which app versions or macOS releases need fixes.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(14)
+            }
+        }
+    }
+
+    private func privacyList(
+        _ items: [String],
+        icon: String = "checkmark.circle.fill",
+        iconColor: Color = .accentColor
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(items, id: \.self) { item in
+                HStack(alignment: .center, spacing: 9) {
+                    Image(systemName: icon)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(iconColor)
+                    Text(item)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 

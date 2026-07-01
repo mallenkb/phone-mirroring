@@ -60,7 +60,35 @@ struct ADBController: Sendable {
     func mdnsServices() -> [DiscoveredPhone] {
         let adbPhones = Self.parseMDNSServices(run(["mdns", "services"]))
         guard adbPhones.isEmpty else { return adbPhones }
-        return Self.dnsServiceDiscoveredPhones()
+        return Self.rateLimitedDNSServiceDiscoveredPhones()
+    }
+
+    /// The `dns-sd` fallback spawns (and timeout-kills) one process per service
+    /// type plus one per resolve — ~3s of process churn per call. The discovery
+    /// poller calls every second whenever `adb mdns services` comes back empty
+    /// (the idle no-phone state), so cache the fallback result briefly instead
+    /// of re-browsing the network on every poll.
+    nonisolated static let dnsSDFallbackCacheWindow: TimeInterval = 4
+    private static let dnsSDFallbackLock = NSLock()
+    nonisolated(unsafe) private static var dnsSDFallbackFetchedAt: Date?
+    nonisolated(unsafe) private static var dnsSDFallbackPhones: [DiscoveredPhone] = []
+
+    static func rateLimitedDNSServiceDiscoveredPhones(now: Date = Date()) -> [DiscoveredPhone] {
+        dnsSDFallbackLock.lock()
+        if let fetchedAt = dnsSDFallbackFetchedAt,
+           now.timeIntervalSince(fetchedAt) < dnsSDFallbackCacheWindow {
+            let cached = dnsSDFallbackPhones
+            dnsSDFallbackLock.unlock()
+            return cached
+        }
+        dnsSDFallbackLock.unlock()
+
+        let phones = dnsServiceDiscoveredPhones()
+        dnsSDFallbackLock.lock()
+        dnsSDFallbackFetchedAt = now
+        dnsSDFallbackPhones = phones
+        dnsSDFallbackLock.unlock()
+        return phones
     }
 
     func connectableMDNSTargets() -> [DiscoveredPhone] {

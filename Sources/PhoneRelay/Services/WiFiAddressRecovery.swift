@@ -30,6 +30,17 @@ enum WiFiAddressRecovery {
     /// peak open sockets well under the default file-descriptor limit while
     /// bringing a `/22` down to a few seconds.
     static let defaultConcurrency = 128
+    /// Caps how many `/24` slices one interface's netmask may expand to. The
+    /// mesh-LAN `/22` (4 slices) is the intended worst case; anything larger —
+    /// a corporate `/16`, or the self-assigned `169.254/16` a Mac puts on idle
+    /// bridge/Ethernet interfaces — would mean tens of thousands of probes and
+    /// a sweep measured in minutes, so those interfaces fall back to their own
+    /// `/24` instead.
+    static let maxPrefixesPerInterface = 8
+    /// Hard ceiling on `/24` prefixes per recovery run across all interfaces
+    /// (priority order keeps the last-known subnet first), bounding a full
+    /// sweep to ~2k hosts ≈ a few seconds at the default fan-out.
+    static let maxTotalPrefixes = 8
 
     /// What we know about the phone we're hunting for.
     struct Target {
@@ -50,28 +61,39 @@ enum WiFiAddressRecovery {
         readARP: (() -> [String: String])? = nil,
         localSubnets: (() -> [String])? = nil
     ) async -> String? {
-        let prefixes = subnetPrefixes(
-            lastKnownIP: target.lastKnownIP,
-            localSubnets: (localSubnets ?? Self.localIPv4Subnets)()
+        let prefixes = Array(
+            subnetPrefixes(
+                lastKnownIP: target.lastKnownIP,
+                localSubnets: (localSubnets ?? Self.localIPv4Subnets)()
+            ).prefix(maxTotalPrefixes)
         )
         guard !prefixes.isEmpty else {
             Logger.log("Wi-Fi recovery: no candidate IPv4 subnet to scan")
             return nil
         }
 
-        let hosts = prefixes.flatMap(subnetHosts(prefix:))
         let runSweep = sweep ?? { hostList in
             await sweepForOpenPort(hostList, port: port)
         }
-        let openHosts = await runSweep(hosts)
-        let arp = (readARP ?? Self.readARPTable)()
-        Logger.log("Wi-Fi recovery: scanned \(hosts.count) hosts across \(prefixes.count) subnet(s); \(openHosts.count) with :\(port) open, \(arp.count) ARP entries")
+        let readARPTable = readARP ?? Self.readARPTable
 
-        // Primary: the stable MAC anchor.
-        if let ip = matchIP(forMAC: target.macAddress, in: arp, preferring: Set(openHosts)) {
-            Logger.log("Wi-Fi recovery: MAC \(target.macAddress ?? "?") resolved to \(ip)")
-            return "\(ip):\(port)"
+        // Sweep one prefix at a time, last-known subnet first, checking the
+        // stable MAC anchor after each slice — the phone usually keeps its
+        // old /24, so this returns in one slice instead of paying for the
+        // whole LAN before the first ARP lookup.
+        var openHosts: [String] = []
+        var scannedHosts = 0
+        for (index, prefix) in prefixes.enumerated() {
+            let hosts = subnetHosts(prefix: prefix)
+            scannedHosts += hosts.count
+            openHosts.append(contentsOf: await runSweep(hosts))
+            let arp = readARPTable()
+            if let ip = matchIP(forMAC: target.macAddress, in: arp, preferring: Set(openHosts)) {
+                Logger.log("Wi-Fi recovery: MAC \(target.macAddress ?? "?") resolved to \(ip) after \(index + 1)/\(prefixes.count) subnet(s)")
+                return "\(ip):\(port)"
+            }
         }
+        Logger.log("Wi-Fi recovery: scanned \(scannedHosts) hosts across \(prefixes.count) subnet(s); \(openHosts.count) with :\(port) open, no MAC match")
 
         // Fallback: confirm by adb identity on the hosts that answer on 5555.
         if let ip = await matchByADBIdentity(adb: adb, openHosts: openHosts, target: target, port: port) {
@@ -215,6 +237,11 @@ enum WiFiAddressRecovery {
                 nil, 0, NI_NUMERICHOST
             )
             guard result == 0 else { continue }
+            let hostAddress = String(cString: host)
+            // Self-assigned link-local (Thunderbolt bridge, idle Ethernet):
+            // a phone's adb listener never lives there, and its /16 netmask
+            // would expand to a 65k-host sweep.
+            guard !hostAddress.hasPrefix("169.254.") else { continue }
             var maskHost = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             let maskResult = interface.pointee.ifa_netmask.map {
                 getnameinfo(
@@ -224,11 +251,17 @@ enum WiFiAddressRecovery {
                 )
             } ?? -1
 
-            let prefixes: [String]
+            var prefixes: [String]
             if maskResult == 0 {
-                prefixes = subnetPrefixes(forIPv4: String(cString: host), netmask: String(cString: maskHost))
+                prefixes = subnetPrefixes(forIPv4: hostAddress, netmask: String(cString: maskHost))
             } else {
-                prefixes = subnetPrefix(forIPv4: String(cString: host)).map { [$0] } ?? []
+                prefixes = subnetPrefix(forIPv4: hostAddress).map { [$0] } ?? []
+            }
+            // A netmask wider than the mesh-LAN case can't be swept in useful
+            // time — keep just the interface's own /24, where DHCP is most
+            // likely to have kept the phone anyway.
+            if prefixes.count > maxPrefixesPerInterface {
+                prefixes = subnetPrefix(forIPv4: hostAddress).map { [$0] } ?? []
             }
             for prefix in prefixes where !subnets.contains(prefix) {
                 subnets.append(prefix)

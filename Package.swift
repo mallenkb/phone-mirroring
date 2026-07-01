@@ -23,7 +23,8 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.3")
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.3"),
+        .package(url: "https://github.com/PostHog/posthog-ios.git", from: "3.59.3")
     ],
     targets: [
         .executableTarget(
@@ -51,6 +52,7 @@ let package = Package(
             name: "PhoneRelay",
             dependencies: [
                 .product(name: "Sparkle", package: "Sparkle"),
+                .product(name: "PostHog", package: "posthog-ios"),
                 "ObjCSupport"
             ],
             path: "Sources/PhoneRelay",
