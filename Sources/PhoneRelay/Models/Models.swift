@@ -32,7 +32,7 @@ enum MirrorProfile: String, CaseIterable, Identifiable {
     var maxSize: Int {
         switch self {
         case .lowLatency: return 1280
-        case .smooth: return 1600
+        case .smooth: return 1080
         case .highQuality: return 2560
         case .recording: return 1920
         case .batteryFriendly: return 1080

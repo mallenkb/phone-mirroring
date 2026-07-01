@@ -108,7 +108,7 @@
 				AA00000000000000000C0007 /* Copy themed app icon into Resources */,
 				AA00000000000000000C0008 /* Copy legal resources */,
 				AA00000000000000000C0009 /* Generate adb dSYM */,
-				AA00000000000000000C0006 /* Sign adb with inherited sandbox */,
+				AA00000000000000000C0006 /* Sign adb for configuration */,
 			);
 			buildRules = (
 			);
@@ -169,23 +169,23 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		AA00000000000000000C0006 /* Sign adb with inherited sandbox */ = {
+		AA00000000000000000C0006 /* Sign adb for configuration */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
-				inputPaths = (
-					"$(TARGET_BUILD_DIR)/$(FULL_PRODUCT_NAME)/Contents/Resources/bin/adb",
-					"$(SRCROOT)/HelperInherit.entitlements",
-					"$(SRCROOT)/../scripts/PhoneRelay.release.entitlements",
-				);
-				name = "Sign adb for configuration";
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(FULL_PRODUCT_NAME)/Contents/Resources/bin/adb",
+				"$(SRCROOT)/HelperInherit.entitlements",
+				"$(SRCROOT)/../scripts/PhoneRelay.release.entitlements",
+			);
+			name = "Sign adb for configuration";
 			outputPaths = (
 				"$(DERIVED_FILE_DIR)/sign-adb-with-inherited-sandbox.stamp",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-				shellScript = "set -eu\nADB=\"$CODESIGNING_FOLDER_PATH/Contents/Resources/bin/adb\"\nif [ -f \"$ADB\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  if [ \"${CONFIGURATION:-}\" = \"Release\" ]; then\n    codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$ADB\"\n  else\n    codesign --force --options runtime --entitlements \"$SRCROOT/HelperInherit.entitlements\" --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$ADB\"\n  fi\nfi\nif [ -n \"$SCRIPT_OUTPUT_FILE_0\" ]; then\n  touch \"$SCRIPT_OUTPUT_FILE_0\"\nfi\n";
+			shellScript = "set -eu\nADB=\"$CODESIGNING_FOLDER_PATH/Contents/Resources/bin/adb\"\nif [ -f \"$ADB\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  if [ \"${CONFIGURATION:-}\" = \"Release\" ]; then\n    codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$ADB\"\n  else\n    codesign --force --options runtime --entitlements \"$SRCROOT/HelperInherit.entitlements\" --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$ADB\"\n  fi\nfi\nif [ -n \"$SCRIPT_OUTPUT_FILE_0\" ]; then\n  touch \"$SCRIPT_OUTPUT_FILE_0\"\nfi\n";
 		};
 		AA00000000000000000C0008 /* Copy legal resources */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -279,7 +279,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
-					CODE_SIGN_ENTITLEMENTS = PhoneRelay.entitlements;
+				CODE_SIGN_ENTITLEMENTS = PhoneRelay.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 29;
@@ -294,7 +294,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.25;
+				MARKETING_VERSION = 1.0.26;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mallenkb.PhoneRelay;
 				PRODUCT_MODULE_NAME = PhoneRelayApp;
 				PRODUCT_NAME = PhoneRelay;
@@ -307,7 +307,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
-					CODE_SIGN_ENTITLEMENTS = ../scripts/PhoneRelay.release.entitlements;
+				CODE_SIGN_ENTITLEMENTS = ../scripts/PhoneRelay.release.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 29;
@@ -322,7 +322,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.25;
+				MARKETING_VERSION = 1.0.26;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mallenkb.PhoneRelay;
 				PRODUCT_MODULE_NAME = PhoneRelayApp;
 				PRODUCT_NAME = PhoneRelay;

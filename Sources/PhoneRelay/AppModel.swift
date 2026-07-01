@@ -93,14 +93,14 @@ final class AppModel: ObservableObject {
     }
 
     nonisolated static func defaultMirrorScrollSpeedPercent(storedValue: Any?) -> Int {
-        let value = (storedValue as? Int) ?? 20
+        let value = (storedValue as? Int) ?? 10
         return min(100, max(10, value))
     }
 
     nonisolated static func defaultMirrorScrollFeel(storedValue: Any?) -> MirrorScrollFeel {
         guard let rawValue = storedValue as? String,
               let feel = MirrorScrollFeel(rawValue: rawValue) else {
-            return .balanced
+            return .smooth
         }
         return feel
     }
@@ -555,6 +555,15 @@ final class AppModel: ObservableObject {
         scheduleMirrorSettingsRestart()
     }
 
+    func selectMirrorProfile(_ profile: MirrorProfile) {
+        if selectedMirrorProfile != profile {
+            selectedMirrorProfile = profile
+        } else {
+            UserDefaults.standard.set(profile.rawValue, forKey: Self.mirrorProfileDefaultsKey)
+            applyMirrorProfile(profile)
+        }
+    }
+
     /// Reveals the most recently saved screenshot or recording in Finder.
     func revealLastCapture() {
         guard let url = lastCaptureURL,
@@ -848,12 +857,20 @@ final class AppModel: ObservableObject {
     /// In-flight automatic USB->Wi-Fi handoff work must not override that choice.
     private var manualUSBPinnedSerials: Set<String> = []
     private var lastUSBWiFiAddressPrefillSerial: String?
+    private var lastUSBWiFiAddressPrefillAt: Date?
     /// On launch we keep the status indicator on "Connecting" until this moment,
     /// so opening the app reads as "finding your last device" rather than
     /// "Offline" while the first reconnect attempts run.
     private var launchReconnectDeadline: Date?
     private var hasCompletedSuccessfulMirrorConnection = false
     private var deviceWatcherTask: Task<Void, Never>?
+    /// Event-driven reconnect state: fires an immediate auto-connect attempt on
+    /// Mac wake / network-path restore instead of waiting out the watcher's
+    /// poll interval and failure cooldowns.
+    private var networkPathMonitor: NWPathMonitor?
+    private var lastNetworkPathWasSatisfied: Bool?
+    private var didWakeObserver: NSObjectProtocol?
+    private var lastSystemEventReconnectNudgeAt: Date?
     private var qrPairingTask: Task<Void, Never>?
     private var usbConnectTask: Task<Void, Never>?
     private var usbWiFiAddressPrefillTask: Task<Void, Never>?
@@ -1181,6 +1198,7 @@ final class AppModel: ObservableObject {
 
         startDiscovery()
         startDeviceWatcher()
+        startSystemEventReconnectTriggers()
         attemptAutoReconnect()
         updateNotificationForwarding()
     }
@@ -1363,6 +1381,10 @@ final class AppModel: ObservableObject {
     }
 
     deinit {
+        networkPathMonitor?.cancel()
+        if let didWakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(didWakeObserver)
+        }
         deviceWatcherTask?.cancel()
         qrPairingTask?.cancel()
         usbConnectTask?.cancel()
@@ -1384,6 +1406,7 @@ final class AppModel: ObservableObject {
         discovery.stop()
         notificationForwarder.stop()
         stopQRCodePairingSession()
+        stopSystemEventReconnectTriggers()
         deviceWatcherTask?.cancel()
         deviceWatcherTask = nil
         qrPairingTask?.cancel()
@@ -2510,6 +2533,111 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - Event-driven reconnect (Mac wake / network-path restore)
+
+    /// Debounce for system-event reconnect nudges — wake and path-change
+    /// callbacks arrive in bursts of several within a couple of seconds.
+    nonisolated static let systemEventReconnectDebounce: TimeInterval = 3
+
+    /// Whether a wake/path event should trigger an immediate auto-connect
+    /// attempt. A live mirror needs no nudge, a manual Disconnect stays sticky
+    /// (system events are not the cable re-plug / phone Wi-Fi re-toggle that
+    /// ends the pause), and with no saved wireless route there is nothing to
+    /// dial.
+    nonisolated static func shouldNudgeReconnectForSystemEvent(
+        lastNudgeAt: Date?,
+        now: Date,
+        debounce: TimeInterval = systemEventReconnectDebounce,
+        isMirroring: Bool,
+        isSuppressedForManualDisconnect: Bool,
+        hasSavedWirelessRoute: Bool
+    ) -> Bool {
+        guard hasSavedWirelessRoute, !isMirroring, !isSuppressedForManualDisconnect else {
+            return false
+        }
+        guard let lastNudgeAt else { return true }
+        return now.timeIntervalSince(lastNudgeAt) >= debounce
+    }
+
+    /// Only a transition *to* a usable network is reconnect-worthy. The path
+    /// monitor fires once with the current state right after `start()`
+    /// (previous == nil) — that must not dial on launch, where
+    /// `attemptAutoReconnect` already runs.
+    nonisolated static func isReconnectWorthyPathTransition(
+        previousSatisfied: Bool?,
+        nowSatisfied: Bool
+    ) -> Bool {
+        nowSatisfied && previousSatisfied == false
+    }
+
+    /// Wires the Mac-side events that predict "the phone is reachable again" —
+    /// wake from sleep and the network path coming back up — to an immediate
+    /// auto-connect attempt. Without these, a lid-open reconnect waits for the
+    /// next watcher poll *plus* whatever failure cooldowns accrued while the
+    /// network was down; with them it starts the moment the route exists.
+    /// Same flows, same guards as the poll path — only the trigger is new.
+    private func startSystemEventReconnectTriggers() {
+        guard backgroundServicesEnabled, networkPathMonitor == nil else { return }
+
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let satisfied = path.status == .satisfied
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let previous = self.lastNetworkPathWasSatisfied
+                self.lastNetworkPathWasSatisfied = satisfied
+                guard Self.isReconnectWorthyPathTransition(
+                    previousSatisfied: previous,
+                    nowSatisfied: satisfied
+                ) else { return }
+                self.nudgeAutoReconnectAfterSystemEvent(reason: "network path restored")
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "PhoneRelay.network-path-monitor"))
+        networkPathMonitor = monitor
+
+        didWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.nudgeAutoReconnectAfterSystemEvent(reason: "mac woke from sleep")
+            }
+        }
+    }
+
+    private func stopSystemEventReconnectTriggers() {
+        networkPathMonitor?.cancel()
+        networkPathMonitor = nil
+        if let didWakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(didWakeObserver)
+            self.didWakeObserver = nil
+        }
+    }
+
+    private func nudgeAutoReconnectAfterSystemEvent(reason: String) {
+        guard Self.shouldNudgeReconnectForSystemEvent(
+            lastNudgeAt: lastSystemEventReconnectNudgeAt,
+            now: Date(),
+            isMirroring: isMirroring,
+            isSuppressedForManualDisconnect: isAutoReconnectSuppressedForManualDisconnect,
+            hasSavedWirelessRoute: autoConnectEligiblePairedPhones.contains(where: Self.isWirelessRecord)
+        ) else { return }
+        lastSystemEventReconnectNudgeAt = Date()
+        Logger.log("System event (\(reason)); clearing reconnect throttles and attempting auto-connect now")
+        // The event predicts a route change, so past failures are stale
+        // evidence — forget them and let the normal presence auto-connect
+        // (with all its onboarding / in-flight / pin guards) act this instant.
+        failedAutoConnectTargets.removeAll()
+        wifiAddressRecoveryAttemptedAt.removeAll()
+        lastPresenceAutoConnectAttemptAt = nil
+        autoConnectToAvailableRememberedDevice(
+            authorizedDevices: latestAuthorizedADBDevices,
+            livePhones: discoveredPhones
+        )
+    }
+
     /// Keeps `isAutoConnecting` in step with whether a connect target is actually
     /// present, so the status indicator reads "Connecting" the moment a saved
     /// phone shows up (USB or wireless) and clears once we're online or it's gone.
@@ -2662,6 +2790,13 @@ final class AppModel: ObservableObject {
     /// on the saved address still paces re-entry, so this won't sweep faster than
     /// that even at 15s.)
     nonisolated static let wifiAddressRecoveryForegroundCooldown: TimeInterval = 15
+    /// How often the per-cable Wi-Fi address prefill re-reads `ip route` while
+    /// the same phone stays plugged in. Once per plug-in used to be the rule,
+    /// but a mid-session DHCP change then left the stored Wi-Fi route stale
+    /// until the next replug, costing a whole-subnet recovery sweep on the next
+    /// reconnect. A periodic re-read keeps the saved route current for the
+    /// price of one `ip route` over USB.
+    nonisolated static let usbWiFiAddressPrefillRefreshInterval: TimeInterval = 180
     nonisolated static let presenceAutoConnectThrottle: TimeInterval = 3
     nonisolated static let savedWiFiStatusProbeInterval: TimeInterval = 2
 
@@ -2687,6 +2822,20 @@ final class AppModel: ObservableObject {
     ) -> Bool {
         guard !ignoreCooldown, let lastAttemptAt else { return false }
         return now.timeIntervalSince(lastAttemptAt) < cooldown
+    }
+
+    /// Whether the USB Wi-Fi address prefill should run: a newly plugged serial
+    /// always qualifies; the same cable re-qualifies once the refresh interval
+    /// elapses so a mid-session DHCP change is picked up without a replug.
+    nonisolated static func shouldRefreshUSBWiFiAddressPrefill(
+        lastSerial: String?,
+        currentSerial: String,
+        lastPrefillAt: Date?,
+        now: Date = Date(),
+        refreshInterval: TimeInterval = usbWiFiAddressPrefillRefreshInterval
+    ) -> Bool {
+        guard lastSerial == currentSerial, let lastPrefillAt else { return true }
+        return now.timeIntervalSince(lastPrefillAt) >= refreshInterval
     }
 
     nonisolated static func shouldDelayRememberedAutoConnect(
@@ -3800,14 +3949,36 @@ final class AppModel: ObservableObject {
                 fallback: "Android device"
             )
             guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
+            let pairedPhone: DiscoveredPhone
+            switch await Self.promoteToLegacyTCPIP(
+                adb: adb,
+                sourceSerial: connectablePhone.address,
+                preflightLocalNetworkAccess: { address in
+                    await Self.preflightLocalNetworkAccess(address: address)
+                }
+            ) {
+            case .promoted(let legacyAddress):
+                pairedPhone = DiscoveredPhone(
+                    id: legacyAddress,
+                    address: legacyAddress,
+                    kind: .connectable,
+                    lastSeen: .now
+                )
+                self.manualADBTarget = Self.host(in: legacyAddress) ?? legacyAddress
+            case .transportLost(let legacyAddress):
+                self.failManualWirelessPairing(
+                    "Paired, but Wi-Fi is still starting",
+                    "Pairing succeeded and Phone Relay prepared \(legacyAddress), but Android has not finished restarting wireless debugging. Wait a moment and try Wi-Fi again."
+                )
+                return
+            case .unavailable:
+                pairedPhone = connectablePhone
+                self.manualADBTarget = connectablePhone.address
+            }
+
             self.reconnectTask = nil
             self.isManualWirelessPairing = false
-            self.manualADBTarget = connectablePhone.address
-            self.finishQRCodePairing(with: connectablePhone, displayName: deviceName)
-            self.prepareQRCodePairingLegacyTCPIPInBackground(
-                phone: connectablePhone,
-                displayName: deviceName
-            )
+            self.finishQRCodePairing(with: pairedPhone, displayName: deviceName)
         }
     }
 
@@ -4207,12 +4378,19 @@ final class AppModel: ObservableObject {
             usbWiFiAddressPrefillTask?.cancel()
             usbWiFiAddressPrefillTask = nil
             lastUSBWiFiAddressPrefillSerial = nil
+            lastUSBWiFiAddressPrefillAt = nil
             return
         }
         guard usbWiFiAddressPrefillTask == nil else { return }
-        guard lastUSBWiFiAddressPrefillSerial != usbDevice.serial else { return }
+        guard Self.shouldRefreshUSBWiFiAddressPrefill(
+            lastSerial: lastUSBWiFiAddressPrefillSerial,
+            currentSerial: usbDevice.serial,
+            lastPrefillAt: lastUSBWiFiAddressPrefillAt
+        ) else { return }
 
+        let isRefresh = lastUSBWiFiAddressPrefillSerial == usbDevice.serial
         lastUSBWiFiAddressPrefillSerial = usbDevice.serial
+        lastUSBWiFiAddressPrefillAt = Date()
         let adb = self.adb
         usbWiFiAddressPrefillTask = Task { [weak self] in
             let routeOutput = await Task.detached {
@@ -4223,9 +4401,26 @@ final class AppModel: ObservableObject {
 
             guard let wifiIP = Self.wifiIPAddress(in: routeOutput) else {
                 self.lastUSBWiFiAddressPrefillSerial = nil
+                self.lastUSBWiFiAddressPrefillAt = nil
                 return
             }
             let wifiAddress = "\(wifiIP):\(Self.legacyADBWirelessPort)"
+
+            let matchingRecord = self.pairedPhones.first {
+                Self.recordMatchesSelectedADBSerial($0, selectedSerial: usbDevice.serial)
+                    || PairedPhoneStore.normalizedDeviceName($0.displayName)
+                        == PairedPhoneStore.normalizedDeviceName(usbDevice.model)
+            }
+            // A same-cable refresh that learned nothing new ends here, so the
+            // periodic re-read doesn't clobber the manual-target field or
+            // rewrite the store every interval. A missing MAC still falls
+            // through: it's the anchor recovery needs, worth re-resolving.
+            if isRefresh,
+               let matchingRecord,
+               matchingRecord.wifiAddress == wifiAddress,
+               matchingRecord.wifiMACAddress != nil {
+                return
+            }
             self.manualADBTarget = wifiIP
 
             // Learn the Wi-Fi MAC while we have the cable — it's the anchor that
@@ -4235,11 +4430,6 @@ final class AppModel: ObservableObject {
             }.value
             guard !Task.isCancelled else { return }
 
-            let matchingRecord = self.pairedPhones.first {
-                Self.recordMatchesSelectedADBSerial($0, selectedSerial: usbDevice.serial)
-                    || PairedPhoneStore.normalizedDeviceName($0.displayName)
-                        == PairedPhoneStore.normalizedDeviceName(usbDevice.model)
-            }
             self.touchPairedPhone(
                 id: matchingRecord?.id ?? usbDevice.serial,
                 displayName: matchingRecord?.displayName ?? self.selectedDisplayName(for: usbDevice.model),
@@ -4698,6 +4888,20 @@ final class AppModel: ObservableObject {
         return candidates
     }
 
+    /// Stable partition of reconnect candidates: hosts whose port answered a
+    /// probe first, everything else after, preserving the preference order
+    /// within each group. Returns the input unchanged when the probe result
+    /// carries no signal (nothing reachable, or everything reachable), so the
+    /// savedAddress-before-legacy-5555 preference is never disturbed.
+    nonisolated static func orderedByReachability(
+        _ candidates: [String],
+        reachable: Set<String>
+    ) -> [String] {
+        guard !reachable.isEmpty, reachable.count < candidates.count else { return candidates }
+        return candidates.filter(reachable.contains)
+            + candidates.filter { !reachable.contains($0) }
+    }
+
     /// Tries each candidate address for a remembered phone and returns the first
     /// one that's actually usable, or nil. Needs no phone interaction and no
     /// Wireless debugging toggle — just reachability on the current network.
@@ -4739,7 +4943,26 @@ final class AppModel: ObservableObject {
 
         var connectAttempts = 0
         var noRouteToHostFailures = 0
-        for candidate in candidateAddresses ?? reconnectCandidateAddresses(for: savedAddress) {
+        var candidates = candidateAddresses ?? reconnectCandidateAddresses(for: savedAddress)
+        if candidates.count > 1 {
+            // One concurrent TCP probe round (~0.45s) so the candidate that is
+            // actually alive gets dialed first — otherwise a stale saved
+            // Wireless-debugging port costs a full serialized `adb connect`
+            // timeout before the live `:5555` fallback ever gets its turn.
+            // Preference order within alive/dead groups is preserved, so a
+            // live saved address still beats the legacy fallback.
+            var reachable: Set<String> = []
+            await withTaskGroup(of: (String, Bool).self) { group in
+                for candidate in candidates {
+                    group.addTask { (candidate, await adbTCPPortProbe(candidate)) }
+                }
+                for await (candidate, isOpen) in group where isOpen {
+                    reachable.insert(candidate)
+                }
+            }
+            candidates = orderedByReachability(candidates, reachable: reachable)
+        }
+        for candidate in candidates {
             let readiness = await waitForADBWirelessTargetReadiness(
                 adb: adb,
                 address: candidate,

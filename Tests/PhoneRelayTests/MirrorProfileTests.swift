@@ -36,6 +36,35 @@ final class MirrorProfileTests: XCTestCase {
         XCTAssertTrue(model.mirrorAudioEnabled)
     }
 
+    func testSelectingPresetFromCustomQualityAppliesPresetValues() {
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.mirrorMaxSize = 1920
+        model.mirrorBitRateMbps = 8
+        model.mirrorMaxFps = 120
+
+        model.selectMirrorProfile(.highQuality)
+
+        XCTAssertEqual(model.mirrorMaxSize, 2560)
+        XCTAssertEqual(model.mirrorBitRateMbps, 16)
+        XCTAssertEqual(model.mirrorMaxFps, 0)
+        XCTAssertTrue(model.mirrorAudioEnabled)
+    }
+
+    func testSelectingSamePresetFromCustomQualityReappliesPresetValues() {
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.selectedMirrorProfile = .smooth
+        model.mirrorMaxSize = 1920
+        model.mirrorBitRateMbps = 8
+        model.mirrorMaxFps = 120
+
+        model.selectMirrorProfile(.smooth)
+
+        XCTAssertEqual(model.mirrorMaxSize, 1080)
+        XCTAssertEqual(model.mirrorBitRateMbps, 8)
+        XCTAssertEqual(model.mirrorMaxFps, 120)
+        XCTAssertTrue(model.mirrorAudioEnabled)
+    }
+
     func testBatteryFriendlyProfileReducesFrameRateBitrateAndAudioLoad() {
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
 
@@ -52,11 +81,11 @@ final class MirrorProfileTests: XCTestCase {
 
         model.applyMirrorProfile(.smooth)
 
-        XCTAssertEqual(model.mirrorMaxSize, 1600)
+        XCTAssertEqual(model.mirrorMaxSize, 1080)
         XCTAssertEqual(model.mirrorBitRateMbps, 8)
         XCTAssertEqual(model.mirrorMaxFps, 120)
         XCTAssertTrue(model.mirrorAudioEnabled)
-        XCTAssertEqual(MirrorProfile.smooth.detail, "1600p · 8 Mbps · 120 Hz")
+        XCTAssertEqual(MirrorProfile.smooth.detail, "1080p · 8 Mbps · 120 Hz")
     }
 
     func testSettingsViewExposesMirrorProfilesControl() throws {
@@ -65,6 +94,13 @@ final class MirrorProfileTests: XCTestCase {
         XCTAssertTrue(source.contains("Mirror profiles"))
         XCTAssertTrue(source.contains("mirrorProfileCard"))
         XCTAssertTrue(source.contains("ForEach(MirrorProfile.allCases)"))
+        XCTAssertTrue(source.contains("model.selectMirrorProfile(profile)"))
+        XCTAssertTrue(source.contains("customMirrorProfileCard"))
+        XCTAssertTrue(source.contains("activeMirrorProfile"))
+        XCTAssertTrue(source.contains("isCustomQualityEditing"))
+        XCTAssertTrue(source.contains("shouldShowCustomQualityControls"))
+        XCTAssertTrue(source.contains("if shouldShowCustomQualityControls"))
+        XCTAssertTrue(source.contains("Custom"))
         XCTAssertTrue(source.contains("profile.detail"))
         XCTAssertTrue(source.contains("checkmark.circle.fill"))
     }

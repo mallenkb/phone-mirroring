@@ -18,8 +18,8 @@ final class MirrorScrollSpeedTests: XCTestCase {
         super.tearDown()
     }
 
-    func testMirrorScrollSpeedDefaultsToReadableNormalSpeed() {
-        XCTAssertEqual(AppModel.defaultMirrorScrollSpeedPercent(storedValue: nil), 20)
+    func testMirrorScrollSpeedDefaultsToSlowSpeed() {
+        XCTAssertEqual(AppModel.defaultMirrorScrollSpeedPercent(storedValue: nil), 10)
     }
 
     func testMirrorScrollSpeedPreferencePersists() {
@@ -30,9 +30,9 @@ final class MirrorScrollSpeedTests: XCTestCase {
         XCTAssertEqual(UserDefaults.standard.integer(forKey: speedDefaultsKey), 65)
     }
 
-    func testMirrorScrollFeelDefaultsToBalanced() {
-        XCTAssertEqual(AppModel.defaultMirrorScrollFeel(storedValue: nil), .balanced)
-        XCTAssertEqual(AppModel.defaultMirrorScrollFeel(storedValue: "unknown"), .balanced)
+    func testMirrorScrollFeelDefaultsToSmooth() {
+        XCTAssertEqual(AppModel.defaultMirrorScrollFeel(storedValue: nil), .smooth)
+        XCTAssertEqual(AppModel.defaultMirrorScrollFeel(storedValue: "unknown"), .smooth)
         XCTAssertEqual(AppModel.defaultMirrorScrollFeel(storedValue: "smooth"), .smooth)
     }
 

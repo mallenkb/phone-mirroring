@@ -917,6 +917,51 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
+    // MARK: - USB Wi-Fi address prefill refresh
+
+    func testUSBPrefillAlwaysRunsForNewlyPluggedSerial() {
+        XCTAssertTrue(
+            AppModel.shouldRefreshUSBWiFiAddressPrefill(
+                lastSerial: "OLD-SERIAL",
+                currentSerial: "NEW-SERIAL",
+                lastPrefillAt: Date(timeIntervalSince1970: 100),
+                now: Date(timeIntervalSince1970: 101)
+            )
+        )
+        XCTAssertTrue(
+            AppModel.shouldRefreshUSBWiFiAddressPrefill(
+                lastSerial: nil,
+                currentSerial: "NEW-SERIAL",
+                lastPrefillAt: nil,
+                now: Date(timeIntervalSince1970: 101)
+            )
+        )
+    }
+
+    // The same cable re-qualifies only once the refresh interval elapses, so a
+    // mid-session DHCP change is picked up without hammering `ip route`.
+    func testUSBPrefillSameCableWaitsForRefreshInterval() {
+        let prefillAt = Date(timeIntervalSince1970: 100)
+        XCTAssertFalse(
+            AppModel.shouldRefreshUSBWiFiAddressPrefill(
+                lastSerial: "SAME-SERIAL",
+                currentSerial: "SAME-SERIAL",
+                lastPrefillAt: prefillAt,
+                now: prefillAt.addingTimeInterval(179),
+                refreshInterval: 180
+            )
+        )
+        XCTAssertTrue(
+            AppModel.shouldRefreshUSBWiFiAddressPrefill(
+                lastSerial: "SAME-SERIAL",
+                currentSerial: "SAME-SERIAL",
+                lastPrefillAt: prefillAt,
+                now: prefillAt.addingTimeInterval(180),
+                refreshInterval: 180
+            )
+        )
+    }
+
     func testForegroundRecoveryCooldownIsShorterThanIdle() {
         XCTAssertLessThan(
             AppModel.wifiAddressRecoveryForegroundCooldown,

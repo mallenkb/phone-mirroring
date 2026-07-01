@@ -4,6 +4,7 @@ import AppKit
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @State private var selectedTab: SettingsTab = .devices
+    @State private var isCustomQualityEditing = false
 
     private enum SettingsTab: String, CaseIterable, Identifiable {
         case devices = "Devices"
@@ -181,21 +182,23 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 mirrorProfilePicker
 
-                Divider()
+                if shouldShowCustomQualityControls {
+                    Divider()
 
-                HStack(alignment: .top, spacing: 16) {
-                    qualityPicker(
-                        "Resolution", suffix: "px",
-                        selection: $model.mirrorMaxSize,
-                        options: [1080, 1280, 1600, 1920, 2560]
-                    )
-                    qualityPicker(
-                        "Bitrate", suffix: "Mbps",
-                        selection: $model.mirrorBitRateMbps,
-                        options: [2, 4, 8, 16, 24]
-                    )
-                    frameRatePicker
-                    Spacer(minLength: 0)
+                    HStack(alignment: .top, spacing: 16) {
+                        qualityPicker(
+                            "Resolution", suffix: "px",
+                            selection: $model.mirrorMaxSize,
+                            options: [1080, 1280, 1600, 1920, 2560]
+                        )
+                        qualityPicker(
+                            "Bitrate", suffix: "Mbps",
+                            selection: $model.mirrorBitRateMbps,
+                            options: [2, 4, 8, 16, 24]
+                        )
+                        frameRatePicker
+                        Spacer(minLength: 0)
+                    }
                 }
             }
             .padding(14)
@@ -847,18 +850,70 @@ struct SettingsView: View {
                 ForEach(MirrorProfile.allCases) { profile in
                     mirrorProfileCard(profile)
                 }
+                customMirrorProfileCard
             }
         }
     }
 
+    private var activeMirrorProfile: MirrorProfile? {
+        MirrorProfile.allCases.first { profile in
+            model.mirrorMaxSize == profile.maxSize
+                && model.mirrorBitRateMbps == profile.bitRateMbps
+                && model.mirrorMaxFps == profile.maxFps
+                && model.mirrorAudioEnabled == profile.audioEnabled
+        }
+    }
+
+    private var isCustomMirrorProfileActive: Bool {
+        isCustomQualityEditing || activeMirrorProfile == nil
+    }
+
+    private var shouldShowCustomQualityControls: Bool {
+        isCustomMirrorProfileActive
+    }
+
+    private var customMirrorProfileDetail: String? {
+        guard isCustomMirrorProfileActive else { return nil }
+        let fps = model.mirrorMaxFps == 0 ? "Auto FPS" : "\(model.mirrorMaxFps) Hz"
+        return "\(model.mirrorMaxSize)p · \(model.mirrorBitRateMbps) Mbps · \(fps)"
+    }
+
     private func mirrorProfileCard(_ profile: MirrorProfile) -> some View {
-        let isSelected = model.selectedMirrorProfile == profile
-        return Button {
-            model.selectedMirrorProfile = profile
-        } label: {
+        let isSelected = !isCustomMirrorProfileActive && activeMirrorProfile == profile
+        return profileCard(
+            title: profile.title,
+            summary: profile.summary,
+            detail: profile.detail,
+            isSelected: isSelected
+        ) {
+            isCustomQualityEditing = false
+            model.selectMirrorProfile(profile)
+        }
+    }
+
+    private var customMirrorProfileCard: some View {
+        profileCard(
+            title: "Custom",
+            summary: "Choose resolution, bitrate, frame rate, and audio manually.",
+            detail: customMirrorProfileDetail,
+            isSelected: isCustomMirrorProfileActive,
+            action: {
+                isCustomQualityEditing = true
+            }
+        )
+    }
+
+    private func profileCard(
+        title: String,
+        summary: String,
+        detail: String?,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(alignment: .center, spacing: 6) {
-                    Text(profile.title)
+                    Text(title)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
@@ -870,17 +925,19 @@ struct SettingsView: View {
                     }
                 }
 
-                Text(profile.summary)
+                Text(summary)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text(profile.detail)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.9)
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.9)
+                }
             }
             .padding(10)
             .frame(maxWidth: .infinity, minHeight: 104, alignment: .topLeading)

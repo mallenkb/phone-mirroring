@@ -3287,6 +3287,58 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(tcpipAfterSecond, 1)
     }
 
+    func testOrderedByReachabilityDialsLiveCandidateFirstButKeepsPreferenceOrder() {
+        let candidates = ["192.0.2.44:40123", "192.0.2.44:5555"]
+        // Only the legacy listener answers → it must be dialed first.
+        XCTAssertEqual(
+            AppModel.orderedByReachability(candidates, reachable: ["192.0.2.44:5555"]),
+            ["192.0.2.44:5555", "192.0.2.44:40123"]
+        )
+        // No signal (nothing / everything reachable) → preference order untouched.
+        XCTAssertEqual(AppModel.orderedByReachability(candidates, reachable: []), candidates)
+        XCTAssertEqual(AppModel.orderedByReachability(candidates, reachable: Set(candidates)), candidates)
+    }
+
+    func testSystemEventReconnectNudgeDecision() {
+        let now = Date()
+        XCTAssertTrue(AppModel.shouldNudgeReconnectForSystemEvent(
+            lastNudgeAt: nil, now: now,
+            isMirroring: false, isSuppressedForManualDisconnect: false, hasSavedWirelessRoute: true
+        ))
+        // Bursty callbacks are debounced, then allowed again.
+        XCTAssertFalse(AppModel.shouldNudgeReconnectForSystemEvent(
+            lastNudgeAt: now.addingTimeInterval(-1), now: now,
+            isMirroring: false, isSuppressedForManualDisconnect: false, hasSavedWirelessRoute: true
+        ))
+        XCTAssertTrue(AppModel.shouldNudgeReconnectForSystemEvent(
+            lastNudgeAt: now.addingTimeInterval(-10), now: now,
+            isMirroring: false, isSuppressedForManualDisconnect: false, hasSavedWirelessRoute: true
+        ))
+        // Manual Disconnect stays sticky across wake/path events; a live
+        // mirror needs no nudge; no saved wireless route → nothing to dial.
+        XCTAssertFalse(AppModel.shouldNudgeReconnectForSystemEvent(
+            lastNudgeAt: nil, now: now,
+            isMirroring: false, isSuppressedForManualDisconnect: true, hasSavedWirelessRoute: true
+        ))
+        XCTAssertFalse(AppModel.shouldNudgeReconnectForSystemEvent(
+            lastNudgeAt: nil, now: now,
+            isMirroring: true, isSuppressedForManualDisconnect: false, hasSavedWirelessRoute: true
+        ))
+        XCTAssertFalse(AppModel.shouldNudgeReconnectForSystemEvent(
+            lastNudgeAt: nil, now: now,
+            isMirroring: false, isSuppressedForManualDisconnect: false, hasSavedWirelessRoute: false
+        ))
+    }
+
+    func testReconnectWorthyPathTransitionFiresOnlyOnRestore() {
+        XCTAssertTrue(AppModel.isReconnectWorthyPathTransition(previousSatisfied: false, nowSatisfied: true))
+        // The monitor's initial callback right after start() must not dial —
+        // launch reconnect is attemptAutoReconnect's job.
+        XCTAssertFalse(AppModel.isReconnectWorthyPathTransition(previousSatisfied: nil, nowSatisfied: true))
+        XCTAssertFalse(AppModel.isReconnectWorthyPathTransition(previousSatisfied: true, nowSatisfied: true))
+        XCTAssertFalse(AppModel.isReconnectWorthyPathTransition(previousSatisfied: true, nowSatisfied: false))
+    }
+
     func testShouldPromoteToLegacyTCPIPSkipsAddressesAlreadyOnPort5555() {
         XCTAssertFalse(AppModel.shouldPromoteToLegacyTCPIP(connectedAddress: "192.0.2.44:5555"))
         XCTAssertTrue(AppModel.shouldPromoteToLegacyTCPIP(connectedAddress: "192.0.2.44:42111"))
@@ -3339,6 +3391,14 @@ final class ADBDeviceParsingTests: XCTestCase {
         fi
         if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
           echo "wifi-adb-ok"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ] && [ "$5" = "route" ]; then
+          echo "192.168.68.0/24 dev wlan0 proto kernel scope link src 192.168.68.67"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "tcpip" ] && [ "$4" = "5555" ]; then
+          echo "restarting in TCP mode port: 5555"
           exit 0
         fi
         if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then

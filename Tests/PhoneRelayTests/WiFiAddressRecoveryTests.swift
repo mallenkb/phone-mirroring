@@ -123,6 +123,93 @@ final class WiFiAddressRecoveryTests: XCTestCase {
         XCTAssertNil(WiFiAddressRecovery.matchIP(forMAC: nil, in: arp, preferring: []))
     }
 
+    // MARK: - Identity fallback
+
+    func testPrioritizedIdentityCandidatesDialNearestFirst() {
+        let hosts = ["10.0.0.9", "192.168.1.7", "192.168.1.42", "192.168.2.3"]
+        XCTAssertEqual(
+            WiFiAddressRecovery.prioritizedIdentityCandidates(hosts, lastKnownIP: "192.168.1.42:5555"),
+            ["192.168.1.42", "192.168.1.7", "10.0.0.9", "192.168.2.3"]
+        )
+        XCTAssertEqual(
+            WiFiAddressRecovery.prioritizedIdentityCandidates(hosts, lastKnownIP: nil),
+            hosts
+        )
+    }
+
+    func testMatchByADBIdentityMatchesSerialWithoutDialingFarHosts() async {
+        let dialed = CommandRecorder()
+        let match = await WiFiAddressRecovery.matchByADBIdentity(
+            openHosts: ["192.168.1.4", "192.168.1.9"],
+            target: .init(
+                macAddress: nil,
+                usbSerial: "R5CT1234",
+                displayName: "Android device",
+                lastKnownIP: "192.168.1.9:5555"
+            ),
+            port: 5555,
+            runADB: { arguments, _ in
+                dialed.record(arguments)
+                if arguments.first == "connect" { return "connected to 192.168.1.9:5555" }
+                if arguments.contains("ro.serialno") { return "R5CT1234\n" }
+                return "SM-S906B\n"
+            }
+        )
+        XCTAssertEqual(match, "192.168.1.9")
+        // Last-known-first ordering matched on the first dial, so the other
+        // open host was never touched.
+        XCTAssertFalse(dialed.all.contains { $0.contains { $0.contains("192.168.1.4") } })
+    }
+
+    func testMatchByADBIdentityDisconnectsNonMatches() async {
+        let dialed = CommandRecorder()
+        let match = await WiFiAddressRecovery.matchByADBIdentity(
+            openHosts: ["192.168.1.4"],
+            target: .init(
+                macAddress: nil,
+                usbSerial: "R5CT1234",
+                displayName: "Android device",
+                lastKnownIP: nil
+            ),
+            port: 5555,
+            runADB: { arguments, _ in
+                dialed.record(arguments)
+                if arguments.first == "connect" { return "connected to 192.168.1.4:5555" }
+                if arguments.contains("ro.serialno") { return "SOMEONE-ELSE\n" }
+                return "SHIELD Android TV\n"
+            }
+        )
+        XCTAssertNil(match)
+        XCTAssertTrue(dialed.all.contains(["disconnect", "192.168.1.4:5555"]))
+    }
+
+    func testMatchByADBIdentityStopsAtTimeBudget() async {
+        let dialed = CommandRecorder()
+        let start = Date(timeIntervalSince1970: 0)
+        let match = await WiFiAddressRecovery.matchByADBIdentity(
+            openHosts: ["192.168.1.4", "192.168.1.9"],
+            target: .init(
+                macAddress: nil,
+                usbSerial: "R5CT1234",
+                displayName: "Android device",
+                lastKnownIP: "192.168.1.4:5555"
+            ),
+            port: 5555,
+            timeBudget: 12,
+            // The clock jumps past the deadline as soon as the first host has
+            // been dialed, so the walk must stop before the second.
+            now: { dialed.all.isEmpty ? start : start.addingTimeInterval(30) },
+            runADB: { arguments, _ in
+                dialed.record(arguments)
+                if arguments.first == "connect" { return "connected to 192.168.1.4:5555" }
+                if arguments.contains("ro.serialno") { return "SOMEONE-ELSE\n" }
+                return "SHIELD Android TV\n"
+            }
+        )
+        XCTAssertNil(match)
+        XCTAssertFalse(dialed.all.contains { $0.contains { $0.contains("192.168.1.9") } })
+    }
+
     // MARK: - recover() driver (MAC path is adb-free)
 
     func testRecoverResolvesViaMACMatch() async {
@@ -166,5 +253,24 @@ final class WiFiAddressRecoveryTests: XCTestCase {
             localSubnets: { [] }
         )
         XCTAssertNil(resolved)
+    }
+}
+
+/// Thread-safe recorder for the adb commands a fake `runADB` closure receives —
+/// the closure runs inside `Task.detached`, so plain test-case state won't do.
+private final class CommandRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var commands: [[String]] = []
+
+    func record(_ arguments: [String]) {
+        lock.lock()
+        defer { lock.unlock() }
+        commands.append(arguments)
+    }
+
+    var all: [[String]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return commands
     }
 }

@@ -41,6 +41,12 @@ enum WiFiAddressRecovery {
     /// (priority order keeps the last-known subnet first), bounding a full
     /// sweep to ~2k hosts ≈ a few seconds at the default fan-out.
     static let maxTotalPrefixes = 8
+    /// Wall-clock cap on the adb-identity fallback as a whole. Each candidate
+    /// host costs up to ~10s of adb round-trips (connect + two getprops), so an
+    /// unbounded walk of a busy LAN's open-5555 hosts could stall a reconnect
+    /// pass for minutes. The nearest candidate is always dialed; the deadline
+    /// applies between hosts, and the recovery cooldown retries later anyway.
+    static let identityFallbackTimeBudget: TimeInterval = 12
 
     /// What we know about the phone we're hunting for.
     struct Target {
@@ -96,7 +102,12 @@ enum WiFiAddressRecovery {
         Logger.log("Wi-Fi recovery: scanned \(scannedHosts) hosts across \(prefixes.count) subnet(s); \(openHosts.count) with :\(port) open, no MAC match")
 
         // Fallback: confirm by adb identity on the hosts that answer on 5555.
-        if let ip = await matchByADBIdentity(adb: adb, openHosts: openHosts, target: target, port: port) {
+        if let ip = await matchByADBIdentity(
+            openHosts: openHosts,
+            target: target,
+            port: port,
+            runADB: { arguments, timeout in adb.run(arguments, timeout: timeout) }
+        ) {
             Logger.log("Wi-Fi recovery: adb identity matched \(target.displayName) at \(ip)")
             return "\(ip):\(port)"
         }
@@ -183,6 +194,29 @@ enum WiFiAddressRecovery {
         let matches = arp.filter { $0.value == mac }.map(\.key)
         guard !matches.isEmpty else { return nil }
         return matches.first(where: openHosts.contains) ?? matches.sorted().first
+    }
+
+    /// Orders identity-fallback candidates most-likely-first: the exact
+    /// last-known IP, then its /24 neighbors, then the rest, each group in
+    /// sweep order — so the budgeted walk spends its dials where the phone
+    /// probably is instead of on unrelated 5555 listeners across the LAN.
+    static func prioritizedIdentityCandidates(_ hosts: [String], lastKnownIP: String?) -> [String] {
+        guard let lastIP = lastKnownIP.flatMap(ipv4Host(in:)),
+              let prefix = subnetPrefix(forIPv4: lastIP)
+        else { return hosts }
+        var exact: [String] = []
+        var sameSubnet: [String] = []
+        var rest: [String] = []
+        for host in hosts {
+            if host == lastIP {
+                exact.append(host)
+            } else if host.hasPrefix(prefix) {
+                sameSubnet.append(host)
+            } else {
+                rest.append(host)
+            }
+        }
+        return exact + sameSubnet + rest
     }
 
     /// Parses `arp -a -n` into an ip→mac map, skipping incomplete entries.
@@ -330,12 +364,18 @@ enum WiFiAddressRecovery {
     }
 
     /// Connects to each open host and matches its adb identity to the target.
-    /// Non-matches are disconnected so we don't leave stray transports behind.
-    private static func matchByADBIdentity(
-        adb: ADBController,
+    /// Candidates are dialed nearest-to-last-known first, and the walk stops at
+    /// `timeBudget` (the first candidate is always dialed). Non-matches are
+    /// disconnected so we don't leave stray transports behind. `runADB` and
+    /// `now` are injectable so the walk is unit-testable; production passes
+    /// `adb.run`.
+    static func matchByADBIdentity(
         openHosts: [String],
         target: Target,
-        port: Int
+        port: Int,
+        timeBudget: TimeInterval = identityFallbackTimeBudget,
+        now: @escaping @Sendable () -> Date = { Date() },
+        runADB: @escaping @Sendable ([String], TimeInterval) -> String
     ) async -> String? {
         // The hardware serial (`ro.serialno`) is the reliable anchor — it equals
         // the USB serial. A device *name* only disambiguates when it's specific,
@@ -346,23 +386,29 @@ enum WiFiAddressRecovery {
             : nil
         guard wantedSerial != nil || wantedName != nil else { return nil }
 
-        for host in openHosts {
+        let candidates = prioritizedIdentityCandidates(openHosts, lastKnownIP: target.lastKnownIP)
+        let deadline = now().addingTimeInterval(timeBudget)
+        for (index, host) in candidates.enumerated() {
+            if index > 0, now() >= deadline {
+                Logger.log("Wi-Fi recovery: identity fallback stopped by \(Int(timeBudget))s budget after \(index)/\(candidates.count) host(s)")
+                return nil
+            }
             let address = "\(host):\(port)"
             let matched = await Task.detached(priority: .utility) { () -> Bool in
-                let connectOutput = adb.run(["connect", address], timeout: 4)
+                let connectOutput = runADB(["connect", address], 4)
                 guard AppModel.adbConnectSucceeded(connectOutput) else {
-                    adb.run(["disconnect", address], timeout: 2)
+                    _ = runADB(["disconnect", address], 2)
                     return false
                 }
-                let serial = adb.run(["-s", address, "shell", "getprop", "ro.serialno"], timeout: 3)
+                let serial = runADB(["-s", address, "shell", "getprop", "ro.serialno"], 3)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                let model = adb.run(["-s", address, "shell", "getprop", "ro.product.model"], timeout: 3)
+                let model = runADB(["-s", address, "shell", "getprop", "ro.product.model"], 3)
                 let serialMatches = wantedSerial.map { $0 == serial } ?? false
                 let nameMatches = wantedName.map { PairedPhoneStore.normalizedDeviceName(model) == $0 } ?? false
                 if serialMatches || nameMatches {
                     return true
                 }
-                adb.run(["disconnect", address], timeout: 2)
+                _ = runADB(["disconnect", address], 2)
                 return false
             }.value
             if matched { return host }
