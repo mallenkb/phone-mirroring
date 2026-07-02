@@ -31,6 +31,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private var firstRunWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var shortcutsWindow: NSWindow?
+    private var filesWindow: NSWindow?
+    private var filesModel: FileBrowserModel?
     private let model = AppModel()
     private var keyMonitor: Any?
     private var launchedInBackground = false
@@ -618,6 +620,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                 keyEquivalent: ""
             )
         )
+        viewMenu.addItem(
+            NSMenuItem(
+                title: "Phone Files",
+                action: #selector(showPhoneFiles(_:)),
+                keyEquivalent: "F"
+            )
+        )
         viewMenu.addItem(.separator())
         viewMenu.addItem(
             NSMenuItem(
@@ -910,6 +919,34 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow = window
+    }
+
+    @objc private func showPhoneFiles(_ sender: Any?) {
+        if let filesWindow {
+            filesWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            filesModel?.refresh()
+            return
+        }
+
+        let browserModel = FileBrowserModel(serialProvider: { [weak model = self.model] in
+            model?.selectedDevice.adbSerial
+        })
+        filesModel = browserModel
+        let hostingView = NSHostingView(rootView: FileBrowserView(model: browserModel))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 460),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Phone Files"
+        window.contentView = hostingView
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        filesWindow = window
     }
 
     @objc private func revealLastCapture(_ sender: Any?) {
