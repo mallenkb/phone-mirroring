@@ -45,6 +45,40 @@ final class FileBrowserModel: ObservableObject {
 
     var isBusy: Bool { activityText != nil }
 
+    enum SortField {
+        case name, size, modified
+    }
+
+    @Published private(set) var sortField: SortField = .name
+    @Published private(set) var sortAscending = true
+
+    /// Folders always group above files (like Finder's folders-first
+    /// preference); the chosen field orders within each group.
+    var sortedEntries: [PhoneFileEntry] {
+        entries.sorted { a, b in
+            if a.isNavigable != b.isNavigable { return a.isNavigable }
+            let ordered: Bool
+            switch sortField {
+            case .name:
+                ordered = a.name.localizedStandardCompare(b.name) == .orderedAscending
+            case .size:
+                ordered = (a.sizeBytes ?? -1) < (b.sizeBytes ?? -1)
+            case .modified:
+                ordered = a.modifiedText < b.modifiedText
+            }
+            return sortAscending ? ordered : !ordered
+        }
+    }
+
+    func toggleSort(_ field: SortField) {
+        if sortField == field {
+            sortAscending.toggle()
+        } else {
+            sortField = field
+            sortAscending = field == .name
+        }
+    }
+
     private var serialOrExplain: String? {
         guard let serial = serialProvider(), !serial.isEmpty else {
             entries = []
@@ -276,6 +310,8 @@ struct FileBrowserView: View {
             if let message = model.errorMessage {
                 errorBanner(message)
             }
+            columnHeaders
+            Divider()
             content
             Divider()
             footer
@@ -380,7 +416,7 @@ struct FileBrowserView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(model.entries) { entry in
+                List(model.sortedEntries) { entry in
                     FileBrowserRow(entry: entry)
                         .contentShape(Rectangle())
                         .onTapGesture(count: 2) { model.open(entry) }
@@ -424,6 +460,37 @@ struct FileBrowserView: View {
                     .padding(4)
             }
         }
+    }
+
+    private var columnHeaders: some View {
+        HStack(spacing: 8) {
+            sortHeader("Name", field: .name)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 34)
+            sortHeader("Size", field: .size)
+                .frame(width: 90, alignment: .trailing)
+            sortHeader("Modified", field: .modified)
+                .frame(width: 130, alignment: .trailing)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+    }
+
+    private func sortHeader(_ title: String, field: FileBrowserModel.SortField) -> some View {
+        Button {
+            model.toggleSort(field)
+        } label: {
+            HStack(spacing: 3) {
+                Text(title)
+                if model.sortField == field {
+                    Image(systemName: model.sortAscending ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                }
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(model.sortField == field ? Color.primary : Color.secondary)
+        }
+        .buttonStyle(.plain)
     }
 
     private var footer: some View {

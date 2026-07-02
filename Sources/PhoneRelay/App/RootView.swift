@@ -156,7 +156,9 @@ struct WindowRegistrationView: NSViewRepresentable {
             chromeBar.configure(
                 deviceName: model.connectionWindowTitle,
                 onHome: { model.sendAndroidKey("KEYCODE_HOME") },
-                onRecentApps: { model.sendAndroidKey("KEYCODE_APP_SWITCH") },
+                onPhoneFiles: {
+                    NSApp.sendAction(#selector(AppDelegate.showPhoneFiles(_:)), to: nil, from: nil)
+                },
                 onScreenshot: { model.takeScreenshot() },
                 onStopRecording: { model.toggleScreenRecording() }
             )

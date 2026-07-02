@@ -1219,7 +1219,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertEqual(chromeBar.alwaysOnTopIconNameForTesting, "pin.fill")
         chromeBar.setAlwaysOnTopEnabled(true)
         XCTAssertEqual(chromeBar.alwaysOnTopIconNameForTesting, "pin.slash.fill")
-        XCTAssertEqual(chromeBar.recentAppsIconNameForTesting, "rectangle.stack.fill")
+        XCTAssertEqual(chromeBar.recentAppsIconNameForTesting, "folder.fill")
         XCTAssertEqual(
             chromeBar.rightActionHoverCornerRadiiForTesting,
             [6, 6, 6, 18],
@@ -1380,7 +1380,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         chromeBar.configure(
             deviceName: "SM S906B",
             onHome: {},
-            onRecentApps: {},
+            onPhoneFiles: {},
             onScreenshot: {},
             onStopRecording: { didStopRecording = true }
         )

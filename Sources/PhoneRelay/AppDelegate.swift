@@ -921,7 +921,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         settingsWindow = window
     }
 
-    @objc private func showPhoneFiles(_ sender: Any?) {
+    @objc func showPhoneFiles(_ sender: Any?) {
         if let filesWindow {
             filesWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)

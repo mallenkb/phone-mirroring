@@ -658,7 +658,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         chromeBar.configure(
             deviceName: model.mirrorWindowDeviceTitle,
             onHome: { [weak self] in self?.model.sendAndroidKey("KEYCODE_HOME") },
-            onRecentApps: { [weak self] in self?.model.sendAndroidKey("KEYCODE_APP_SWITCH") },
+            onPhoneFiles: {
+                NSApp.sendAction(#selector(AppDelegate.showPhoneFiles(_:)), to: nil, from: nil)
+            },
             onScreenshot: { [weak self] in self?.model.takeScreenshot() },
             onStopRecording: { [weak self] in self?.model.toggleScreenRecording() }
         )
@@ -1692,8 +1694,8 @@ final class MirrorChromeBar: NSView {
         accessibilityDescription: "Home"
     )
     private let recentAppsBtn = MirrorChromeOutlineButton(
-        symbol: "rectangle.stack.fill",
-        accessibilityDescription: "Recent apps",
+        symbol: "folder.fill",
+        accessibilityDescription: "Phone files",
         hoverCornerRadius: MirrorChromeBar.controlHoverCornerRadius,
         hoverLeadingCornerRadius: MirrorChromeOutlineButton.defaultHoverCornerRadius
     )
@@ -1735,7 +1737,7 @@ final class MirrorChromeBar: NSView {
     func configure(
         deviceName: String,
         onHome: @escaping () -> Void,
-        onRecentApps: @escaping () -> Void,
+        onPhoneFiles: @escaping () -> Void,
         onScreenshot: @escaping () -> Void,
         onStopRecording: @escaping () -> Void
     ) {
@@ -1743,8 +1745,8 @@ final class MirrorChromeBar: NSView {
         homeBtn.toolTip = "Go to Android home"
         homeBtn.action = onHome
         homeBtn.minimumActionInterval = 0.35
-        recentAppsBtn.toolTip = "Show Android recent apps"
-        recentAppsBtn.action = onRecentApps
+        recentAppsBtn.toolTip = "Browse phone files"
+        recentAppsBtn.action = onPhoneFiles
         recentAppsBtn.minimumActionInterval = 0.35
         screenshotBtn.toolTip = "Save screenshot to Downloads"
         screenshotBtn.action = onScreenshot
