@@ -1,6 +1,5 @@
 import AppKit
 import Combine
-import NetFS
 import Sparkle
 import SwiftUI
 import UserNotifications
@@ -37,6 +36,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private var webDAVServer: PhoneWebDAVServer?
     private var webDAVServerSerial: String?
     private var finderMountPoint: URL?
+    private var statusItem: NSStatusItem?
     private let model = AppModel()
     private var keyMonitor: Any?
     private var launchedInBackground = false
@@ -106,8 +106,61 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         }
 
         installMainMenu()
+        installStatusItem()
         installKeyboardScaling()
         _ = sparkleUpdaterController
+    }
+
+    /// Menu bar extra: quick access to the app, Phone Files, and the Finder
+    /// mount without hunting for a window.
+    private func installStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        if let image = NSImage(
+            systemSymbolName: "iphone.gen3", accessibilityDescription: "Phone Relay"
+        ) {
+            image.isTemplate = true
+            item.button?.image = image
+        } else {
+            item.button?.title = "PR"
+        }
+
+        let menu = NSMenu()
+        let open = NSMenuItem(
+            title: "Open Phone Relay",
+            action: #selector(statusItemOpenApp(_:)),
+            keyEquivalent: ""
+        )
+        open.target = self
+        menu.addItem(open)
+        menu.addItem(.separator())
+        let files = NSMenuItem(
+            title: "Phone Files",
+            action: #selector(showPhoneFiles(_:)),
+            keyEquivalent: ""
+        )
+        files.target = self
+        menu.addItem(files)
+        let finder = NSMenuItem(
+            title: "Open in Finder",
+            action: #selector(openDeviceInFinder(_:)),
+            keyEquivalent: ""
+        )
+        finder.target = self
+        menu.addItem(finder)
+        menu.addItem(.separator())
+        let quit = NSMenuItem(
+            title: "Quit Phone Relay",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: ""
+        )
+        quit.target = NSApp
+        menu.addItem(quit)
+        item.menu = menu
+        statusItem = item
+    }
+
+    @objc private func statusItemOpenApp(_ sender: Any?) {
+        _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
     }
 
     // MARK: - Single-instance guard
@@ -498,7 +551,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         webDAVServer = nil
         webDAVServerSerial = nil
         guard let finderMountPoint else { return }
-        try? NSWorkspace.shared.unmountAndEjectDevice(at: finderMountPoint)
+        if Self.isMountedVolume(finderMountPoint) {
+            try? NSWorkspace.shared.unmountAndEjectDevice(at: finderMountPoint)
+        }
         self.finderMountPoint = nil
     }
 
@@ -981,8 +1036,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
         if let mountPoint = finderMountPoint,
            webDAVServerSerial == serial,
-           FileManager.default.fileExists(atPath: mountPoint.path) {
-            NSWorkspace.shared.open(mountPoint)
+           Self.isMountedVolume(mountPoint) {
+            Self.openFinderVolume(mountPoint)
             return
         }
         unmountFinderVolume()
@@ -1016,7 +1071,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                 if let icon = NSImage(named: "AppIcon") {
                     NSWorkspace.shared.setIcon(icon, forFile: mountPoint.path)
                 }
-                NSWorkspace.shared.open(mountPoint)
+                Self.openFinderVolume(mountPoint)
             }
         }
     }
@@ -1025,42 +1080,76 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         model.reportError("Open in Finder", message)
     }
 
-    /// Blocking NetFS mount; runs detached. Returns the mount point or nil.
+    /// Blocking mount via /sbin/mount_webdav (the same kernel client Finder
+    /// uses; NetFSMountURLSync failed silently for guest loopback mounts).
+    /// Runs detached. Returns the mount point or nil.
     nonisolated private static func mountWebDAVVolume(
         at url: URL, preferredName: String
     ) -> URL? {
         let sanitized = preferredName
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
-        var mountPath: URL?
-        let candidate = URL(fileURLWithPath: "/Volumes/\(sanitized)", isDirectory: true)
-        if !FileManager.default.fileExists(atPath: candidate.path),
-           (try? FileManager.default.createDirectory(
-               at: candidate, withIntermediateDirectories: false
-           )) != nil {
-            mountPath = candidate
+        let mountRoot = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent("Phone Relay", isDirectory: true)
+            .appendingPathComponent("Finder Mounts", isDirectory: true)
+            ?? FileManager.default.temporaryDirectory
+                .appendingPathComponent("Phone Relay Finder Mounts", isDirectory: true)
+        try? FileManager.default.createDirectory(at: mountRoot, withIntermediateDirectories: true)
+        var mountPath = mountRoot.appendingPathComponent(sanitized, isDirectory: true)
+        if FileManager.default.fileExists(atPath: mountPath.path) {
+            mountPath = mountRoot.appendingPathComponent(
+                "\(sanitized) \(Int.random(in: 2...99))",
+                isDirectory: true
+            )
+        }
+        do {
+            try FileManager.default.createDirectory(at: mountPath, withIntermediateDirectories: false)
+        } catch {
+            Logger.log("Finder mount: couldn't create \(mountPath.path): \(error)")
+            return nil
         }
 
-        let openOptions = NSMutableDictionary()
-        openOptions[kNAUIOptionKey as String] = kNAUIOptionNoUI
-        openOptions[kNetFSUseGuestKey as String] = true
-        var mountPoints: Unmanaged<CFArray>?
-        let status = NetFSMountURLSync(
-            url as CFURL,
-            mountPath as CFURL?,
-            nil,
-            nil,
-            openOptions,
-            nil,
-            &mountPoints
-        )
-        // A failed pre-created mount dir must not linger in /Volumes.
-        if status != 0, let mountPath {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/sbin/mount_webdav")
+        process.arguments = ["-S", "-v", sanitized, url.absoluteString, mountPath.path]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+        } catch {
+            Logger.log("Finder mount: mount_webdav failed to launch: \(error)")
             try? FileManager.default.removeItem(at: mountPath)
+            return nil
         }
-        guard status == 0 else { return nil }
-        let mounted = (mountPoints?.takeRetainedValue() as? [String])?.first
-        return (mounted ?? mountPath?.path).map { URL(fileURLWithPath: $0, isDirectory: true) }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let output = String(
+                data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8
+            ) ?? ""
+            Logger.log("Finder mount: mount_webdav exited \(process.terminationStatus): \(output)")
+            try? FileManager.default.removeItem(at: mountPath)
+            return nil
+        }
+        guard isMountedVolume(mountPath) else {
+            Logger.log("Finder mount: mount_webdav exited 0 but \(mountPath.path) is not mounted")
+            try? FileManager.default.removeItem(at: mountPath)
+            return nil
+        }
+        return mountPath
+    }
+
+    nonisolated private static func isMountedVolume(_ url: URL) -> Bool {
+        let targetPath = url.standardizedFileURL.path
+        return FileManager.default
+            .mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [])?
+            .contains { $0.standardizedFileURL.path == targetPath } == true
+    }
+
+    nonisolated private static func openFinderVolume(_ url: URL) {
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: url.path)
     }
 
     @objc private func revealLastCapture(_ sender: Any?) {
