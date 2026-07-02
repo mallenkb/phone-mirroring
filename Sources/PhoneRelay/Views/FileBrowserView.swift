@@ -1,6 +1,45 @@
 import AppKit
+import CoreTransferable
 import SwiftUI
 import UniformTypeIdentifiers
+
+extension UTType {
+    /// Internal pasteboard type for drags between Phone Files rows.
+    static let phoneRelayEntry = UTType(exportedAs: "com.phonerelay.phone-entry")
+}
+
+/// Drag payload for a phone entry. The codable form powers in-window moves;
+/// the file representation lazily pulls the entry so drags into Finder (or
+/// any app) receive a real file promise.
+struct PhoneEntryTransfer: Codable, Transferable {
+    var serial: String
+    var remotePath: String
+    var isDirectory: Bool
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .phoneRelayEntry)
+        FileRepresentation(exportedContentType: .item) { transfer in
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("PhoneRelay Files", isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true
+            )
+            switch PhoneFileBrowserService.pull(
+                serial: transfer.serial,
+                remotePath: transfer.remotePath,
+                localDirectory: directory
+            ) {
+            case .success(let url):
+                return SentTransferredFile(url, allowAccessingOriginalFile: true)
+            case .failure(let error):
+                throw NSError(domain: "PhoneEntryTransfer", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: error.message
+                ])
+            }
+        }
+    }
+}
 
 /// State for the Phone Files window. All PhoneFileBrowserService calls are
 /// blocking adb invocations and run through detached Tasks; results hop back
@@ -47,6 +86,24 @@ final class FileBrowserModel: ObservableObject {
 
     enum SortField {
         case name, size, modified
+    }
+
+    enum ViewMode {
+        case list, gallery
+    }
+
+    @Published var viewMode: ViewMode = .list
+
+    /// Blocking thumbnail fetch for gallery cells; call from a detached task.
+    nonisolated func loadThumbnail(directory: String, entry: PhoneFileEntry, serial: String) -> NSImage? {
+        PhoneThumbnailStore.shared.thumbnail(
+            serial: serial, directory: directory, entry: entry
+        )
+    }
+
+    var thumbnailContext: (serial: String, directory: String)? {
+        guard let serial = serialProvider(), !serial.isEmpty else { return nil }
+        return (serial, path)
     }
 
     @Published private(set) var sortField: SortField = .name
@@ -199,7 +256,10 @@ final class FileBrowserModel: ObservableObject {
     func pushFiles(_ urls: [URL]) {
         let fileURLs = urls.filter { $0.isFileURL }
         guard let serial = serialOrExplain, !fileURLs.isEmpty, !isBusy else { return }
-        let destination = path
+        pushFiles(fileURLs, serial: serial, destination: path)
+    }
+
+    private func pushFiles(_ fileURLs: [URL], serial: String, destination: String) {
         Task { [weak self] in
             var failure: String?
             for (index, url) in fileURLs.enumerated() where failure == nil {
@@ -224,6 +284,52 @@ final class FileBrowserModel: ObservableObject {
             }
             self.refresh()
         }
+    }
+
+    func dragPayload(for entry: PhoneFileEntry) -> PhoneEntryTransfer {
+        PhoneEntryTransfer(
+            serial: serialProvider() ?? "",
+            remotePath: PhoneFileBrowserService.joined(path, entry.name),
+            isDirectory: entry.isNavigable
+        )
+    }
+
+    /// In-window drop of a row onto a folder row: move, or copy with option.
+    func relocate(_ transfer: PhoneEntryTransfer, into folder: PhoneFileEntry, copy: Bool) {
+        guard let serial = serialOrExplain, !isBusy else { return }
+        let destination = PhoneFileBrowserService.joined(path, folder.name)
+        guard destination != (transfer.remotePath as NSString).deletingLastPathComponent
+            || copy
+        else { return }
+        let name = (transfer.remotePath as NSString).lastPathComponent
+        activityText = copy ? "Copying — \(name)" : "Moving — \(name)"
+        Task.detached { [weak self] in
+            let outcome = PhoneFileBrowserService.relocate(
+                serial: serial,
+                remotePath: transfer.remotePath,
+                intoDirectory: destination,
+                copy: copy
+            )
+            if outcome.succeeded {
+                PhoneFileBrowserService.requestMediaScan(serial: serial, remotePath: destination)
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.activityText = nil
+                if !outcome.succeeded {
+                    self.errorMessage = "Couldn't \(copy ? "copy" : "move") \(name): \(outcome.message)"
+                }
+                self.refresh()
+            }
+        }
+    }
+
+    /// External files dropped directly onto a folder row.
+    func pushFiles(_ urls: [URL], intoSubfolder folder: PhoneFileEntry) {
+        let fileURLs = urls.filter { $0.isFileURL }
+        guard let serial = serialOrExplain, !fileURLs.isEmpty, !isBusy else { return }
+        let destination = PhoneFileBrowserService.joined(path, folder.name)
+        pushFiles(fileURLs, serial: serial, destination: destination)
     }
 
     func delete(_ entry: PhoneFileEntry) {
@@ -383,6 +489,14 @@ struct FileBrowserView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Picker("", selection: $model.viewMode) {
+                Image(systemName: "list.bullet").tag(FileBrowserModel.ViewMode.list)
+                Image(systemName: "square.grid.2x2").tag(FileBrowserModel.ViewMode.gallery)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 70)
+            .help("List or gallery view")
+
             Button {
                 NSApp.sendAction(#selector(AppDelegate.openDeviceInFinder(_:)), to: nil, from: nil)
             } label: {
@@ -423,29 +537,21 @@ struct FileBrowserView: View {
                 Text(model.errorMessage == nil ? "This folder is empty." : "")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.viewMode == .gallery {
+                ScrollView {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 110), spacing: 12)],
+                        spacing: 12
+                    ) {
+                        ForEach(model.sortedEntries) { entry in
+                            galleryCell(entry)
+                        }
+                    }
+                    .padding(12)
+                }
             } else {
                 List(model.sortedEntries) { entry in
-                    FileBrowserRow(entry: entry)
-                        .contentShape(Rectangle())
-                        .onTapGesture(count: 2) { model.open(entry) }
-                        .contextMenu {
-                            Button("Open") { model.open(entry) }
-                            Button("Save to Mac") { model.download(entry) }
-                            Button("Rename…") {
-                                renameText = entry.name
-                                entryToRename = entry
-                            }
-                            Divider()
-                            Button(role: .destructive) {
-                                entryToDelete = entry
-                            } label: {
-                                // Plain foregroundColor is stripped inside
-                                // menus; the attributed color survives, so
-                                // Delete reads red even where the destructive
-                                // role isn't tinted.
-                                Text(redMenuTitle("Delete…"))
-                            }
-                        }
+                    rowView(entry)
                 }
                 .listStyle(.inset)
             }
@@ -529,6 +635,94 @@ struct FileBrowserView: View {
         .background(Color.yellow.opacity(0.12))
     }
 
+    @ViewBuilder
+    private func rowView(_ entry: PhoneFileEntry) -> some View {
+        interactive(entry: entry, base: FileBrowserRow(entry: entry))
+    }
+
+    @ViewBuilder
+    private func galleryCell(_ entry: PhoneFileEntry) -> some View {
+        interactive(entry: entry, base: FileBrowserGalleryCell(entry: entry, model: model))
+    }
+
+    /// Shared gestures for list rows and gallery cells: double-click opens,
+    /// rows drag as phone entries, folder targets accept drops.
+    @ViewBuilder
+    private func interactive(entry: PhoneFileEntry, base: some View) -> some View {
+        let decorated = base
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { model.open(entry) }
+            .draggable(model.dragPayload(for: entry))
+            .contextMenu {
+                Button("Open") { model.open(entry) }
+                Button("Save to Mac") { model.download(entry) }
+                Button("Rename…") {
+                    renameText = entry.name
+                    entryToRename = entry
+                }
+                Divider()
+                Button(role: .destructive) {
+                    entryToDelete = entry
+                } label: {
+                    // Plain foregroundColor is stripped inside menus; the
+                    // attributed color survives, so Delete reads red even
+                    // where the destructive role isn't tinted.
+                    Text(redMenuTitle("Delete…"))
+                }
+            }
+        if entry.isNavigable {
+            decorated.onDrop(of: [.phoneRelayEntry, .fileURL], isTargeted: nil) { providers in
+                handleRowDrop(providers, folder: entry)
+            }
+        } else {
+            decorated
+        }
+    }
+
+    /// Drop onto a folder row: internal drags move (option copies); external
+    /// files copy straight into that folder.
+    private func handleRowDrop(_ providers: [NSItemProvider], folder: PhoneFileEntry) -> Bool {
+        let copy = NSEvent.modifierFlags.contains(.option)
+        if let internalProvider = providers.first(where: {
+            $0.hasItemConformingToTypeIdentifier(UTType.phoneRelayEntry.identifier)
+        }) {
+            _ = internalProvider.loadDataRepresentation(
+                forTypeIdentifier: UTType.phoneRelayEntry.identifier
+            ) { data, _ in
+                guard let data,
+                      let transfer = try? JSONDecoder().decode(PhoneEntryTransfer.self, from: data)
+                else { return }
+                DispatchQueue.main.async { [weak model] in
+                    model?.relocate(transfer, into: folder, copy: copy)
+                }
+            }
+            return true
+        }
+
+        let fileProviders = providers.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        }
+        guard !fileProviders.isEmpty else { return false }
+        let group = DispatchGroup()
+        let collector = DroppedURLCollector()
+        for provider in fileProviders {
+            group.enter()
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                if let data = item as? Data,
+                   let url = URL(dataRepresentation: data, relativeTo: nil) {
+                    collector.append(url)
+                } else if let url = item as? URL {
+                    collector.append(url)
+                }
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) { [weak model] in
+            model?.pushFiles(collector.urls, intoSubfolder: folder)
+        }
+        return true
+    }
+
     private func redMenuTitle(_ title: String) -> AttributedString {
         var text = AttributedString(title)
         text.foregroundColor = .red
@@ -577,6 +771,73 @@ private final class DroppedURLCollector: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return storage
+    }
+}
+
+private struct FileBrowserGalleryCell: View {
+    let entry: PhoneFileEntry
+    let model: FileBrowserModel
+
+    @State private var thumbnail: NSImage?
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.secondary.opacity(0.08))
+                if let thumbnail {
+                    Image(nsImage: thumbnail)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 96, height: 96)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else {
+                    Image(systemName: entry.isNavigable ? "folder.fill" : fallbackIcon)
+                        .font(.system(size: 34))
+                        .foregroundStyle(
+                            entry.isNavigable ? Color.accentColor : Color.secondary
+                        )
+                }
+            }
+            .frame(width: 96, height: 96)
+            Text(entry.name)
+                .font(.system(size: 11))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .truncationMode(.middle)
+        }
+        .frame(width: 110)
+        .task(id: entry.id) {
+            guard thumbnail == nil,
+                  PhoneThumbnailStore.isThumbnailable(entry),
+                  let context = model.thumbnailContext
+            else { return }
+            let loaded = await Task.detached(priority: .utility) {
+                model.loadThumbnail(
+                    directory: context.directory, entry: entry, serial: context.serial
+                )
+            }.value
+            if !Task.isCancelled { thumbnail = loaded }
+        }
+    }
+
+    private var fallbackIcon: String {
+        switch (entry.name as NSString).pathExtension.lowercased() {
+        case "jpg", "jpeg", "png", "gif", "heic", "webp", "bmp":
+            return "photo"
+        case "mp4", "mov", "mkv", "webm", "3gp", "m4v":
+            return "film"
+        case "mp3", "m4a", "ogg", "opus", "flac", "wav", "aac":
+            return "music.note"
+        case "pdf":
+            return "doc.richtext"
+        case "zip", "rar", "7z", "tar", "gz":
+            return "doc.zipper"
+        case "apk":
+            return "shippingbox"
+        default:
+            return "doc"
+        }
     }
 }
 

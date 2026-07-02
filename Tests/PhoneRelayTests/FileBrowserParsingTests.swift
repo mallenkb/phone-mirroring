@@ -200,6 +200,21 @@ final class FileBrowserParsingTests: XCTestCase {
         XCTAssertEqual(noExtension.lastPathComponent, "README")
     }
 
+    // MARK: - relocate guards (pure paths only — no adb reaches these cases)
+
+    func testRelocateRefusesDisallowedPathsAndNoOpsOnSamePlace() {
+        let outside = PhoneFileBrowserService.relocate(
+            serial: "X", remotePath: "/data/x", intoDirectory: "/sdcard", copy: false
+        )
+        XCTAssertFalse(outside.succeeded)
+
+        let samePlace = PhoneFileBrowserService.relocate(
+            serial: "X", remotePath: "/sdcard/Download/a.txt",
+            intoDirectory: "/sdcard/Download", copy: false
+        )
+        XCTAssertTrue(samePlace.succeeded)
+    }
+
     // MARK: - oneLine
 
     func testOneLineKeepsLastNonEmptyLine() {

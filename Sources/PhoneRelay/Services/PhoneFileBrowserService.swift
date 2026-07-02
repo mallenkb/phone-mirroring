@@ -344,6 +344,33 @@ enum PhoneFileBrowserService {
         return OperationOutcome(succeeded: result.succeeded, message: oneLine(result.output))
     }
 
+    /// Moves (or copies) a phone file/folder into another phone directory,
+    /// keeping its name. Backs the in-window drag-and-drop.
+    nonisolated static func relocate(
+        serial: String,
+        remotePath: String,
+        intoDirectory directory: String,
+        copy: Bool
+    ) -> OperationOutcome {
+        let name = (remotePath as NSString).lastPathComponent
+        let destination = joined(directory, name)
+        guard isPathAllowed(remotePath), isPathAllowed(destination) else {
+            return OperationOutcome(succeeded: false, message: "Path not allowed")
+        }
+        guard destination != remotePath else {
+            return OperationOutcome(succeeded: true, message: "")
+        }
+        let command = copy ? ["cp", "-r"] : ["mv"]
+        let result = Tooling.runResult(
+            "adb",
+            arguments: ["-s", serial, "shell"] + command + [
+                shellQuoted(remotePath), shellQuoted(destination)
+            ],
+            timeout: 300
+        )
+        return OperationOutcome(succeeded: result.succeeded, message: oneLine(result.output))
+    }
+
     /// Best-effort media rescan so pushed/deleted files show up in the
     /// phone's Gallery. Tries the Android 11+ volume scan first, then the
     /// legacy broadcast; both failing is harmless (files still transferred).
