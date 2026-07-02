@@ -84,13 +84,29 @@
 		<data>
 		JP26omB7S/Pm2JVAB+jZ/8gNwCU=
 		</data>
+		<key>Resources/PostHog_PHPLCrashReporter.bundle/Contents/Info.plist</key>
+		<data>
+		PjUH03Iy94NSqOWjsp4kFPGyjRc=
+		</data>
+		<key>Resources/PostHog_PHPLCrashReporter.bundle/Contents/Resources/PrivacyInfo.xcprivacy</key>
+		<data>
+		O3Zhkkf3uaxqyTk0D3zchR8Gees=
+		</data>
+		<key>Resources/PostHog_PostHog.bundle/Contents/Info.plist</key>
+		<data>
+		Vc8+sIYhUGOEdtwoLkT2Ee5EvbA=
+		</data>
+		<key>Resources/PostHog_PostHog.bundle/Contents/Resources/PrivacyInfo.xcprivacy</key>
+		<data>
+		XdwEI7KKJu2gxulf6d+8+2HpdjQ=
+		</data>
 		<key>Resources/THIRD_PARTY_NOTICES.md</key>
 		<data>
 		u+ZCp03hhvV7HcrCwTQeNyudSO8=
 		</data>
 		<key>Resources/bin/adb</key>
 		<data>
-		qA0hdBfY6jWJLMkkSMQxNwosil0=
+		M7S7Q3wWGVdMNdZko/B0SkSSMgo=
 		</data>
 		<key>Resources/scrcpy-server</key>
 		<data>
@@ -248,6 +264,34 @@
 			upEVKADen7rygtZafThL+4YnQ7hz5St85+Dvh++tTD0=
 			</data>
 		</dict>
+		<key>Resources/PostHog_PHPLCrashReporter.bundle/Contents/Info.plist</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			GN2kqodMSnb0Yi8LG4CfvzZ68eBDjUPRujwKi7GyYGQ=
+			</data>
+		</dict>
+		<key>Resources/PostHog_PHPLCrashReporter.bundle/Contents/Resources/PrivacyInfo.xcprivacy</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			WdWnMSNl52vRPwKNpI8BQV9PUBP0rC8ybQKoTQJKewI=
+			</data>
+		</dict>
+		<key>Resources/PostHog_PostHog.bundle/Contents/Info.plist</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			sJ1lf1rC7Mb/9F+9dm8CRFeByW3baoxRLCbvnQozsfE=
+			</data>
+		</dict>
+		<key>Resources/PostHog_PostHog.bundle/Contents/Resources/PrivacyInfo.xcprivacy</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			ThroJG4j7f39WdC+6WBpRWJsEMg+Vaf1rz8E3yX6db0=
+			</data>
+		</dict>
 		<key>Resources/THIRD_PARTY_NOTICES.md</key>
 		<dict>
 			<key>hash2</key>
@@ -259,7 +303,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			TScWjrKeI4rlaJ1ZV9/1cLm0Pwxm/9Q1N5+G4Hj983g=
+			peBT8PHjpOGLlGTvj5RSLrgXmvWPAV5BgZswSn2/Dlg=
 			</data>
 		</dict>
 		<key>Resources/scrcpy-server</key>
