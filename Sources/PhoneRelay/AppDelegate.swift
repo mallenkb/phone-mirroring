@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import NetFS
 import Sparkle
 import SwiftUI
 import UserNotifications
@@ -33,6 +34,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private var shortcutsWindow: NSWindow?
     private var filesWindow: NSWindow?
     private var filesModel: FileBrowserModel?
+    private var webDAVServer: PhoneWebDAVServer?
+    private var webDAVServerSerial: String?
+    private var finderMountPoint: URL?
     private let model = AppModel()
     private var keyMonitor: Any?
     private var launchedInBackground = false
@@ -485,7 +489,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             self.keyMonitor = nil
         }
         model.shutdown()
+        unmountFinderVolume()
         closeAllAppWindows()
+    }
+
+    private func unmountFinderVolume() {
+        webDAVServer?.stop()
+        webDAVServer = nil
+        webDAVServerSerial = nil
+        guard let finderMountPoint else { return }
+        try? NSWorkspace.shared.unmountAndEjectDevice(at: finderMountPoint)
+        self.finderMountPoint = nil
     }
 
     private func closeAllAppWindows() {
@@ -625,6 +639,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                 title: "Phone Files",
                 action: #selector(showPhoneFiles(_:)),
                 keyEquivalent: "F"
+            )
+        )
+        viewMenu.addItem(
+            NSMenuItem(
+                title: "Open Connected Device in Finder",
+                action: #selector(openDeviceInFinder(_:)),
+                keyEquivalent: ""
             )
         )
         viewMenu.addItem(.separator())
@@ -947,6 +968,99 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         filesWindow = window
+    }
+
+    /// Mounts the connected phone's shared storage as a local WebDAV volume
+    /// and opens it in Finder. The server only ever binds 127.0.0.1. Reuses
+    /// the existing mount while the same device stays connected.
+    @objc func openDeviceInFinder(_ sender: Any?) {
+        guard let serial = model.selectedDevice.adbSerial else {
+            reportFinderMountError("Connect a phone before opening it in Finder.")
+            return
+        }
+
+        if let mountPoint = finderMountPoint,
+           webDAVServerSerial == serial,
+           FileManager.default.fileExists(atPath: mountPoint.path) {
+            NSWorkspace.shared.open(mountPoint)
+            return
+        }
+        unmountFinderVolume()
+
+        let server = PhoneWebDAVServer(serial: serial)
+        let baseURL: URL
+        do {
+            baseURL = try server.start()
+        } catch {
+            reportFinderMountError(error.localizedDescription)
+            return
+        }
+        webDAVServer = server
+        webDAVServerSerial = serial
+
+        let volumeName = model.selectedDevice.name.isEmpty
+            ? "Phone"
+            : model.selectedDevice.name
+        Task.detached { [weak self] in
+            let mountPoint = Self.mountWebDAVVolume(at: baseURL, preferredName: volumeName)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                guard let mountPoint else {
+                    self.webDAVServer?.stop()
+                    self.webDAVServer = nil
+                    self.webDAVServerSerial = nil
+                    self.reportFinderMountError("Couldn't mount the phone as a volume.")
+                    return
+                }
+                self.finderMountPoint = mountPoint
+                if let icon = NSImage(named: "AppIcon") {
+                    NSWorkspace.shared.setIcon(icon, forFile: mountPoint.path)
+                }
+                NSWorkspace.shared.open(mountPoint)
+            }
+        }
+    }
+
+    private func reportFinderMountError(_ message: String) {
+        model.reportError("Open in Finder", message)
+    }
+
+    /// Blocking NetFS mount; runs detached. Returns the mount point or nil.
+    nonisolated private static func mountWebDAVVolume(
+        at url: URL, preferredName: String
+    ) -> URL? {
+        let sanitized = preferredName
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        var mountPath: URL?
+        let candidate = URL(fileURLWithPath: "/Volumes/\(sanitized)", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: candidate.path),
+           (try? FileManager.default.createDirectory(
+               at: candidate, withIntermediateDirectories: false
+           )) != nil {
+            mountPath = candidate
+        }
+
+        let openOptions = NSMutableDictionary()
+        openOptions[kNAUIOptionKey as String] = kNAUIOptionNoUI
+        openOptions[kNetFSUseGuestKey as String] = true
+        var mountPoints: Unmanaged<CFArray>?
+        let status = NetFSMountURLSync(
+            url as CFURL,
+            mountPath as CFURL?,
+            nil,
+            nil,
+            openOptions,
+            nil,
+            &mountPoints
+        )
+        // A failed pre-created mount dir must not linger in /Volumes.
+        if status != 0, let mountPath {
+            try? FileManager.default.removeItem(at: mountPath)
+        }
+        guard status == 0 else { return nil }
+        let mounted = (mountPoints?.takeRetainedValue() as? [String])?.first
+        return (mounted ?? mountPath?.path).map { URL(fileURLWithPath: $0, isDirectory: true) }
     }
 
     @objc private func revealLastCapture(_ sender: Any?) {

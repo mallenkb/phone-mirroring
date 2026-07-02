@@ -183,6 +183,22 @@ enum PhoneFileBrowserService {
         return .success(parseListing(result.output))
     }
 
+    /// Stats a single path via `ls -l -d` (one listing row, same parser).
+    /// Returns nil when the path doesn't exist or isn't readable.
+    nonisolated static func statPath(serial: String, path: String) -> PhoneFileEntry? {
+        guard isPathAllowed(path) else { return nil }
+        let result = Tooling.runResult(
+            "adb",
+            arguments: ["-s", serial, "shell", "ls", "-l", "-d", shellQuoted(path)],
+            timeout: 10
+        )
+        guard result.succeeded else { return nil }
+        guard var entry = parseListing(result.output).entries.first else { return nil }
+        // `ls -d` echoes the full path as the name; callers want the leaf.
+        entry.name = (entry.name as NSString).lastPathComponent
+        return entry
+    }
+
     // MARK: - Storage info
 
     /// Parses `df -k <path>` output (1K blocks). Returns nil rather than

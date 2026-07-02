@@ -384,6 +384,14 @@ struct FileBrowserView: View {
             }
 
             Button {
+                NSApp.sendAction(#selector(AppDelegate.openDeviceInFinder(_:)), to: nil, from: nil)
+            } label: {
+                Label("Open in Finder", systemImage: "arrow.up.forward.square")
+                    .font(.system(size: 11))
+            }
+            .help("Browse this phone in Finder")
+
+            Button {
                 newFolderText = ""
                 isNamingFolder = true
             } label: {
@@ -574,6 +582,7 @@ private final class DroppedURLCollector: @unchecked Sendable {
 
 private struct FileBrowserRow: View {
     let entry: PhoneFileEntry
+    @State private var isHovering = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -595,7 +604,18 @@ private struct FileBrowserRow: View {
                 .frame(width: 130, alignment: .trailing)
         }
         .font(.system(size: 13))
-        .padding(.vertical, 2)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background {
+            RoundedRectangle(cornerRadius: 5)
+                .fill(isHovering ? Color.accentColor.opacity(0.16) : Color.clear)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 5)
+                .strokeBorder(isHovering ? Color.accentColor.opacity(0.32) : Color.clear, lineWidth: 1)
+        }
+        .animation(.easeOut(duration: 0.08), value: isHovering)
+        .onHover { isHovering = $0 }
     }
 
     private var iconName: String {
