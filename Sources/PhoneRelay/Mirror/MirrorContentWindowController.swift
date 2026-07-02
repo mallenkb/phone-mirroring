@@ -960,12 +960,21 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         return zone.contains(point) || toolbarVisibleFrame(for: window).contains(point)
     }
 
+    private var isMirrorWindowActiveForChrome: Bool {
+        guard NSApp.isActive else { return false }
+        return window?.isKeyWindow == true || toolbarWindow?.isKeyWindow == true
+    }
+
     private func evaluateRevealZone() {
         guard window?.isMiniaturized != true, window?.isVisible == true else {
             hideChromeImmediately(orderOutToolbar: true)
             return
         }
         guard NSApp.isActive else {
+            hideChromeImmediately(orderOutToolbar: true)
+            return
+        }
+        guard isMirrorWindowActiveForChrome else {
             hideChromeImmediately(orderOutToolbar: true)
             return
         }
@@ -1048,15 +1057,23 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         if inside {
             isPointerInTopZone = true
             hideWorkItem?.cancel()
-            setChromeVisible(true)
+            setChromeVisible(true, requireActiveMirrorWindow: false)
         } else {
             isPointerInTopZone = false
-            setChromeVisible(false)
+            setChromeVisible(false, requireActiveMirrorWindow: false)
         }
     }
 
     func simulateAppResignActiveForTesting() {
         hideChromeImmediately(orderOutToolbar: true)
+    }
+
+    func simulateMirrorWindowResignKeyForTesting() {
+        windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: window))
+    }
+
+    func simulateMirrorWindowBecomeKeyForTesting() {
+        windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
     }
 
     func simulateWindowWillMiniaturizeForTesting() {
@@ -1094,8 +1111,12 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.chromeHideDelay, execute: workItem)
     }
 
-    private func setChromeVisible(_ visible: Bool) {
+    private func setChromeVisible(_ visible: Bool, requireActiveMirrorWindow: Bool = true) {
         guard !visible || (window?.isMiniaturized != true && window?.isVisible == true) else {
+            hideChromeImmediately(orderOutToolbar: true)
+            return
+        }
+        guard !visible || !requireActiveMirrorWindow || isMirrorWindowActiveForChrome else {
             hideChromeImmediately(orderOutToolbar: true)
             return
         }
@@ -1368,6 +1389,23 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
     func windowWillMiniaturize(_ notification: Notification) {
         prepareForMiniaturize()
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.isMirrorWindowActiveForChrome else { return }
+            self.hideChromeImmediately(orderOutToolbar: true)
+        }
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard !isInFullscreen, window?.isMiniaturized != true else { return }
+        if let window, let toolbar = toolbarWindow {
+            window.addChildWindow(toolbar, ordered: .above)
+        }
+        repositionToolbarWindow()
+        startRevealMonitoring()
+        evaluateRevealZone()
     }
 
     func windowDidMiniaturize(_ notification: Notification) {
@@ -1726,7 +1764,7 @@ final class MirrorChromeBar: NSView {
     }
 
     override init(frame frameRect: NSRect) {
-        rightStack = NSStackView(views: [alwaysOnTopBtn, screenshotBtn, recordingPill, homeBtn, recentAppsBtn])
+        rightStack = NSStackView(views: [alwaysOnTopBtn, screenshotBtn, recordingPill, recentAppsBtn, homeBtn])
         super.init(frame: frameRect)
         setup()
     }
@@ -1907,7 +1945,7 @@ final class MirrorChromeBar: NSView {
     }
 
     private func updateTrailingActionHoverCorners() {
-        let actionButtons = [alwaysOnTopBtn, screenshotBtn, homeBtn, recentAppsBtn]
+        let actionButtons = [alwaysOnTopBtn, screenshotBtn, recentAppsBtn, homeBtn]
         for button in actionButtons {
             button.setHoverCornerRadius(MirrorChromeOutlineButton.defaultHoverCornerRadius)
         }
@@ -1924,7 +1962,7 @@ final class MirrorChromeBar: NSView {
         case .alwaysOnTopOnly:
             return alwaysOnTopBtn
         case .full:
-            return recordingActive ? homeBtn : recentAppsBtn
+            return homeBtn
         }
     }
 
@@ -2028,8 +2066,8 @@ final class MirrorChromeBar: NSView {
             !alwaysOnTopBtn.isHidden,
             !screenshotBtn.isHidden,
             !recordingPill.isHidden,
-            !homeBtn.isHidden,
             !recentAppsBtn.isHidden,
+            !homeBtn.isHidden,
         ]
     }
 
@@ -2041,8 +2079,8 @@ final class MirrorChromeBar: NSView {
         [
             alwaysOnTopBtn.hoverCornerRadiusForTesting,
             screenshotBtn.hoverCornerRadiusForTesting,
-            homeBtn.hoverCornerRadiusForTesting,
             recentAppsBtn.hoverCornerRadiusForTesting,
+            homeBtn.hoverCornerRadiusForTesting,
         ]
     }
 
@@ -2050,8 +2088,8 @@ final class MirrorChromeBar: NSView {
         [
             alwaysOnTopBtn.hoverLeadingCornerRadiusForTesting,
             screenshotBtn.hoverLeadingCornerRadiusForTesting,
-            homeBtn.hoverLeadingCornerRadiusForTesting,
             recentAppsBtn.hoverLeadingCornerRadiusForTesting,
+            homeBtn.hoverLeadingCornerRadiusForTesting,
         ]
     }
 
@@ -2059,8 +2097,8 @@ final class MirrorChromeBar: NSView {
         [
             alwaysOnTopBtn.hoverRoundedCornersForTesting,
             screenshotBtn.hoverRoundedCornersForTesting,
-            homeBtn.hoverRoundedCornersForTesting,
             recentAppsBtn.hoverRoundedCornersForTesting,
+            homeBtn.hoverRoundedCornersForTesting,
         ]
     }
 
@@ -2068,8 +2106,8 @@ final class MirrorChromeBar: NSView {
         [
             alwaysOnTopBtn.hoverHeightForTesting,
             screenshotBtn.hoverHeightForTesting,
-            homeBtn.hoverHeightForTesting,
             recentAppsBtn.hoverHeightForTesting,
+            homeBtn.hoverHeightForTesting,
         ]
     }
 

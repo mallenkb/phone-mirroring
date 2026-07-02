@@ -1,5 +1,6 @@
 import AppKit
 import CoreTransferable
+import Quartz
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -41,6 +42,12 @@ struct PhoneEntryTransfer: Codable, Transferable {
     }
 }
 
+struct FileTransferActivity: Equatable {
+    var title: String
+    var detail: String
+    var progress: Double?
+}
+
 /// State for the Phone Files window. All PhoneFileBrowserService calls are
 /// blocking adb invocations and run through detached Tasks; results hop back
 /// to the main actor and are dropped if the user has navigated away since.
@@ -50,15 +57,16 @@ final class FileBrowserModel: ObservableObject {
     @Published private(set) var entries: [PhoneFileEntry] = []
     @Published private(set) var isLoading = false
     @Published private(set) var storage: PhoneStorageInfo?
-    /// Non-nil while a push/pull/delete runs; the UI overlays this label and
+    /// Non-nil while a push/pull/delete runs; the UI overlays progress and
     /// blocks further operations so transfers stay strictly sequential.
-    @Published private(set) var activityText: String?
+    @Published private(set) var activity: FileTransferActivity?
     @Published var errorMessage: String?
 
     /// Called on the main actor only; AppDelegate injects the live AppModel
     /// serial so the window always follows the currently connected phone.
     private let serialProvider: () -> String?
     private var loadGeneration = 0
+    private var quickLookController: FileQuickLookController?
 
     init(serialProvider: @escaping () -> String?) {
         self.serialProvider = serialProvider
@@ -82,7 +90,7 @@ final class FileBrowserModel: ObservableObject {
         return "\(free) free of \(total)"
     }
 
-    var isBusy: Bool { activityText != nil }
+    var isBusy: Bool { activity != nil }
 
     enum SortField {
         case name, size, modified
@@ -146,6 +154,21 @@ final class FileBrowserModel: ObservableObject {
         return serial
     }
 
+    private func beginActivity(title: String, detail: String, progress: Double? = nil) {
+        activity = FileTransferActivity(title: title, detail: detail, progress: progress)
+    }
+
+    private func updateActivity(detail: String, progress: Double? = nil) {
+        guard var current = activity else { return }
+        current.detail = detail
+        current.progress = progress
+        activity = current
+    }
+
+    private func finishActivity() {
+        activity = nil
+    }
+
     func refresh() {
         guard let serial = serialOrExplain else { return }
         errorMessage = nil
@@ -182,31 +205,37 @@ final class FileBrowserModel: ObservableObject {
         refresh()
     }
 
+    func preview(_ entry: PhoneFileEntry) {
+        guard let serial = serialOrExplain, !isBusy else { return }
+        let remotePath = PhoneFileBrowserService.joined(path, entry.name)
+        beginActivity(title: "Preparing preview", detail: entry.name)
+        Task.detached { [weak self] in
+            let result = Self.pullToTemporaryURL(serial: serial, remotePath: remotePath)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.finishActivity()
+                switch result {
+                case .success(let localURL):
+                    self.showQuickLook(url: localURL)
+                case .failure(let error):
+                    self.errorMessage = "Couldn't preview \(entry.name): \(error.message)"
+                }
+            }
+        }
+    }
+
     /// Pulls a file into a throwaway temp folder and hands it to the default
     /// app. Each open gets a fresh UUID directory so stale copies of a
     /// changed phone file can't shadow the new pull.
     private func openFile(_ entry: PhoneFileEntry) {
         guard let serial = serialOrExplain else { return }
         let remotePath = PhoneFileBrowserService.joined(path, entry.name)
-        activityText = "Opening — \(entry.name)"
+        beginActivity(title: "Opening from phone", detail: entry.name)
         Task.detached { [weak self] in
-            let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("PhoneRelay Files", isDirectory: true)
-                .appendingPathComponent(UUID().uuidString, isDirectory: true)
-            let result: Result<URL, PhoneFileBrowserService.ServiceError>
-            do {
-                try FileManager.default.createDirectory(
-                    at: directory, withIntermediateDirectories: true
-                )
-                result = PhoneFileBrowserService.pull(
-                    serial: serial, remotePath: remotePath, localDirectory: directory
-                )
-            } catch {
-                result = .failure(.operationFailed(error.localizedDescription))
-            }
+            let result = Self.pullToTemporaryURL(serial: serial, remotePath: remotePath)
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.activityText = nil
+                self.finishActivity()
                 switch result {
                 case .success(let localURL):
                     NSWorkspace.shared.open(localURL)
@@ -215,6 +244,38 @@ final class FileBrowserModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private nonisolated static func pullToTemporaryURL(
+        serial: String,
+        remotePath: String
+    ) -> Result<URL, PhoneFileBrowserService.ServiceError> {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhoneRelay Files", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true
+            )
+            return PhoneFileBrowserService.pull(
+                serial: serial, remotePath: remotePath, localDirectory: directory
+            )
+        } catch {
+            return .failure(.operationFailed(error.localizedDescription))
+        }
+    }
+
+    private func showQuickLook(url: URL) {
+        let controller = FileQuickLookController(url: url)
+        quickLookController = controller
+        guard let panel = QLPreviewPanel.shared() else {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        panel.dataSource = controller
+        panel.delegate = controller
+        panel.reloadData()
+        panel.makeKeyAndOrderFront(nil)
     }
 
     func goBack() {
@@ -234,14 +295,14 @@ final class FileBrowserModel: ObservableObject {
             return
         }
         let remotePath = PhoneFileBrowserService.joined(path, entry.name)
-        activityText = "Copying to Mac — \(entry.name)"
+        beginActivity(title: "Copying from phone", detail: entry.name)
         Task.detached { [weak self] in
             let result = PhoneFileBrowserService.pull(
                 serial: serial, remotePath: remotePath, localDirectory: downloads
             )
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.activityText = nil
+                self.finishActivity()
                 switch result {
                 case .success(let localURL):
                     NSWorkspace.shared.activateFileViewerSelecting([localURL])
@@ -262,23 +323,35 @@ final class FileBrowserModel: ObservableObject {
     private func pushFiles(_ fileURLs: [URL], serial: String, destination: String) {
         Task { [weak self] in
             var failure: String?
+            let total = fileURLs.count
             for (index, url) in fileURLs.enumerated() where failure == nil {
                 let name = url.lastPathComponent
-                self?.activityText = fileURLs.count == 1
-                    ? "Copying to phone — \(name)"
-                    : "Copying to phone — \(index + 1) of \(fileURLs.count) · \(name)"
+                let detail = total == 1
+                    ? name
+                    : "\(index + 1) of \(total) - \(name)"
+                self?.beginActivity(
+                    title: "Copying to phone",
+                    detail: detail,
+                    progress: total == 1 ? nil : Double(index) / Double(total)
+                )
                 let outcome = await Task.detached {
                     PhoneFileBrowserService.push(
                         serial: serial, localPath: url.path, remoteDirectory: destination
                     )
                 }.value
                 if !outcome.succeeded { failure = outcome.message }
+                if failure == nil, total > 1 {
+                    self?.updateActivity(
+                        detail: detail,
+                        progress: Double(index + 1) / Double(total)
+                    )
+                }
             }
             await Task.detached {
                 PhoneFileBrowserService.requestMediaScan(serial: serial, remotePath: destination)
             }.value
             guard let self else { return }
-            self.activityText = nil
+            self.finishActivity()
             if let failure {
                 self.errorMessage = "Couldn't copy to the phone: \(failure)"
             }
@@ -294,6 +367,51 @@ final class FileBrowserModel: ObservableObject {
         )
     }
 
+    func dragItemProvider(for entry: PhoneFileEntry) -> NSItemProvider {
+        let transfer = dragPayload(for: entry)
+        let provider = NSItemProvider()
+        if let data = try? JSONEncoder().encode(transfer) {
+            provider.registerDataRepresentation(
+                forTypeIdentifier: UTType.phoneRelayEntry.identifier,
+                visibility: .ownProcess
+            ) { completion in
+                completion(data, nil)
+                return nil
+            }
+        }
+        provider.suggestedName = entry.name
+        provider.registerFileRepresentation(
+            forTypeIdentifier: UTType.item.identifier,
+            fileOptions: entry.isNavigable ? [.openInPlace] : [],
+            visibility: .all
+        ) { completion in
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("PhoneRelay Files", isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(
+                    at: directory, withIntermediateDirectories: true
+                )
+                switch PhoneFileBrowserService.pull(
+                    serial: transfer.serial,
+                    remotePath: transfer.remotePath,
+                    localDirectory: directory
+                ) {
+                case .success(let url):
+                    completion(url, true, nil)
+                case .failure(let error):
+                    completion(nil, false, NSError(domain: "PhoneEntryTransfer", code: 1, userInfo: [
+                        NSLocalizedDescriptionKey: error.message
+                    ]))
+                }
+            } catch {
+                completion(nil, false, error)
+            }
+            return nil
+        }
+        return provider
+    }
+
     /// In-window drop of a row onto a folder row: move, or copy with option.
     func relocate(_ transfer: PhoneEntryTransfer, into folder: PhoneFileEntry, copy: Bool) {
         guard let serial = serialOrExplain, !isBusy else { return }
@@ -302,7 +420,10 @@ final class FileBrowserModel: ObservableObject {
             || copy
         else { return }
         let name = (transfer.remotePath as NSString).lastPathComponent
-        activityText = copy ? "Copying — \(name)" : "Moving — \(name)"
+        beginActivity(
+            title: copy ? "Copying on phone" : "Moving on phone",
+            detail: name
+        )
         Task.detached { [weak self] in
             let outcome = PhoneFileBrowserService.relocate(
                 serial: serial,
@@ -315,7 +436,7 @@ final class FileBrowserModel: ObservableObject {
             }
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.activityText = nil
+                self.finishActivity()
                 if !outcome.succeeded {
                     self.errorMessage = "Couldn't \(copy ? "copy" : "move") \(name): \(outcome.message)"
                 }
@@ -336,7 +457,7 @@ final class FileBrowserModel: ObservableObject {
         guard let serial = serialOrExplain, !isBusy else { return }
         let remotePath = PhoneFileBrowserService.joined(path, entry.name)
         let isDirectory = entry.isNavigable
-        activityText = "Deleting — \(entry.name)"
+        beginActivity(title: "Deleting from phone", detail: entry.name)
         Task.detached { [weak self] in
             let outcome = PhoneFileBrowserService.delete(
                 serial: serial, remotePath: remotePath, isDirectory: isDirectory
@@ -346,7 +467,7 @@ final class FileBrowserModel: ObservableObject {
             }
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.activityText = nil
+                self.finishActivity()
                 if !outcome.succeeded {
                     self.errorMessage = "Couldn't delete \(entry.name): \(outcome.message)"
                 }
@@ -361,14 +482,14 @@ final class FileBrowserModel: ObservableObject {
               !trimmed.isEmpty, trimmed != entry.name
         else { return }
         let remotePath = PhoneFileBrowserService.joined(path, entry.name)
-        activityText = "Renaming — \(entry.name)"
+        beginActivity(title: "Renaming on phone", detail: entry.name)
         Task.detached { [weak self] in
             let outcome = PhoneFileBrowserService.rename(
                 serial: serial, remotePath: remotePath, to: trimmed
             )
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.activityText = nil
+                self.finishActivity()
                 if !outcome.succeeded {
                     self.errorMessage = "Couldn't rename \(entry.name): \(outcome.message)"
                 }
@@ -381,14 +502,14 @@ final class FileBrowserModel: ObservableObject {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard let serial = serialOrExplain, !isBusy, !trimmed.isEmpty else { return }
         let parentPath = path
-        activityText = "Creating folder — \(trimmed)"
+        beginActivity(title: "Creating folder", detail: trimmed)
         Task.detached { [weak self] in
             let outcome = PhoneFileBrowserService.makeDirectory(
                 serial: serial, parentPath: parentPath, name: trimmed
             )
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.activityText = nil
+                self.finishActivity()
                 if !outcome.succeeded {
                     self.errorMessage = "Couldn't create the folder: \(outcome.message)"
                 }
@@ -408,6 +529,10 @@ struct FileBrowserView: View {
     @State private var renameText = ""
     @State private var isNamingFolder = false
     @State private var newFolderText = ""
+    @State private var selectedEntryIDs: Set<PhoneFileEntry.ID> = []
+    @State private var selectionAnchorID: PhoneFileEntry.ID?
+    @State private var clickTracker = FileBrowserClickTracker()
+    @State private var keyMonitor: Any?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -423,7 +548,35 @@ struct FileBrowserView: View {
             footer
         }
         .frame(minWidth: 560, minHeight: 360)
-        .onAppear { model.refresh() }
+        .background {
+            FileBrowserDropCaptureView(
+                isTargeted: $isDropTargeted,
+                onDrop: model.pushFiles
+            )
+        }
+        .onAppear {
+            model.refresh()
+            installKeyMonitor()
+        }
+        .onDisappear {
+            removeKeyMonitor()
+        }
+        .onChange(of: model.path) { _ in
+            clearSelection()
+        }
+        .onChange(of: model.entries.map(\.id)) { ids in
+            selectedEntryIDs = selectedEntryIDs.intersection(ids)
+            if let selectionAnchorID, !ids.contains(selectionAnchorID) {
+                self.selectionAnchorID = selectedEntryIDs.first
+            }
+        }
+        .onChange(of: selectedEntryIDs) { ids in
+            if ids.isEmpty {
+                selectionAnchorID = nil
+            } else if selectionAnchorID == nil || !ids.contains(selectionAnchorID!) {
+                selectionAnchorID = ids.first
+            }
+        }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             handleDrop(providers)
         }
@@ -498,14 +651,6 @@ struct FileBrowserView: View {
             .help("List or gallery view")
 
             Button {
-                NSApp.sendAction(#selector(AppDelegate.openDeviceInFinder(_:)), to: nil, from: nil)
-            } label: {
-                Label("Open in Finder", systemImage: "arrow.up.forward.square")
-                    .font(.system(size: 11))
-            }
-            .help("Browse this phone in Finder")
-
-            Button {
                 newFolderText = ""
                 isNamingFolder = true
             } label: {
@@ -550,21 +695,19 @@ struct FileBrowserView: View {
                     .padding(12)
                 }
             } else {
-                List(model.sortedEntries) { entry in
-                    rowView(entry)
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(model.sortedEntries) { entry in
+                            rowView(entry)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
                 }
-                .listStyle(.inset)
             }
 
-            if let activity = model.activityText {
-                VStack(spacing: 10) {
-                    ProgressView()
-                    Text(activity)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(20)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+            if let activity = model.activity {
+                transferActivityPanel(activity)
             }
         }
         .overlay {
@@ -608,11 +751,106 @@ struct FileBrowserView: View {
     }
 
     private var footer: some View {
-        Text("Drop files here to copy them to this folder")
-            .font(.system(size: 11))
-            .foregroundStyle(.tertiary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
+        HStack(spacing: 10) {
+            if let summary = selectionFooterSummary {
+                Text(summary)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            } else {
+                Text("Drop files here to copy them to this folder")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private var selectedEntries: [PhoneFileEntry] {
+        model.sortedEntries.filter { selectedEntryIDs.contains($0.id) }
+    }
+
+    private var selectionFooterSummary: String? {
+        let entries = selectedEntries
+        guard !entries.isEmpty else { return nil }
+        if entries.count == 1, let entry = entries.first {
+            return "\(entry.name) · \(typeDescription(for: entry)) · \(sizeDescription(for: entry))"
+        }
+
+        let folderCount = entries.filter(\.isNavigable).count
+        let fileCount = entries.count - folderCount
+        let knownFileBytes = entries.reduce(Int64(0)) { total, entry in
+            entry.isNavigable ? total : total + (entry.sizeBytes ?? 0)
+        }
+        let typeText: String
+        switch (fileCount, folderCount) {
+        case (0, let folders):
+            typeText = "\(folders) \(folders == 1 ? "folder" : "folders")"
+        case (let files, 0):
+            typeText = "\(files) \(files == 1 ? "file" : "files")"
+        default:
+            typeText = "\(fileCount) \(fileCount == 1 ? "file" : "files"), \(folderCount) \(folderCount == 1 ? "folder" : "folders")"
+        }
+        let size = knownFileBytes > 0
+            ? PhoneFileBrowserService.formattedSize(knownFileBytes)
+            : "Folder size not calculated"
+        return "\(entries.count) selected · \(typeText) · \(size)"
+    }
+
+    private func typeDescription(for entry: PhoneFileEntry) -> String {
+        switch entry.kind {
+        case .directory:
+            return "Folder"
+        case .symlink:
+            return "Linked folder"
+        case .file:
+            let ext = (entry.name as NSString).pathExtension.uppercased()
+            return ext.isEmpty ? "File" : "\(ext) file"
+        case .other:
+            return "Item"
+        }
+    }
+
+    private func sizeDescription(for entry: PhoneFileEntry) -> String {
+        entry.isNavigable
+            ? "Folder size not calculated"
+            : PhoneFileBrowserService.formattedSize(entry.sizeBytes)
+    }
+
+    private func transferActivityPanel(_ activity: FileTransferActivity) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(activity.title)
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 0)
+            }
+            Text(activity.detail)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if let progress = activity.progress {
+                ProgressView(value: min(max(progress, 0), 1))
+                    .progressViewStyle(.linear)
+            } else {
+                ProgressView()
+                    .progressViewStyle(.linear)
+            }
+        }
+        .frame(width: 320)
+        .padding(18)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.18), radius: 18, x: 0, y: 10)
     }
 
     private func errorBanner(_ message: String) -> some View {
@@ -637,12 +875,22 @@ struct FileBrowserView: View {
 
     @ViewBuilder
     private func rowView(_ entry: PhoneFileEntry) -> some View {
-        interactive(entry: entry, base: FileBrowserRow(entry: entry))
+        interactive(
+            entry: entry,
+            base: FileBrowserRow(entry: entry, isSelected: selectedEntryIDs.contains(entry.id))
+        )
     }
 
     @ViewBuilder
     private func galleryCell(_ entry: PhoneFileEntry) -> some View {
-        interactive(entry: entry, base: FileBrowserGalleryCell(entry: entry, model: model))
+        interactive(
+            entry: entry,
+            base: FileBrowserGalleryCell(
+                entry: entry,
+                model: model,
+                isSelected: selectedEntryIDs.contains(entry.id)
+            )
+        )
     }
 
     /// Shared gestures for list rows and gallery cells: double-click opens,
@@ -651,9 +899,12 @@ struct FileBrowserView: View {
     private func interactive(entry: PhoneFileEntry, base: some View) -> some View {
         let decorated = base
             .contentShape(Rectangle())
-            .onTapGesture(count: 2) { model.open(entry) }
-            .draggable(model.dragPayload(for: entry))
+            .modifier(FileBrowserClickModifier { event in
+                handleClick(event, entry: entry)
+            })
+            .onDrag { model.dragItemProvider(for: entry) }
             .contextMenu {
+                Button("Preview") { model.preview(entry) }
                 Button("Open") { model.open(entry) }
                 Button("Save to Mac") { model.download(entry) }
                 Button("Rename…") {
@@ -671,12 +922,66 @@ struct FileBrowserView: View {
                 }
             }
         if entry.isNavigable {
-            decorated.onDrop(of: [.phoneRelayEntry, .fileURL], isTargeted: nil) { providers in
-                handleRowDrop(providers, folder: entry)
-            }
+            decorated.modifier(FolderDropTargetModifier(entry: entry, onDrop: handleRowDrop))
         } else {
             decorated
         }
+    }
+
+    private func handleClick(_ event: FileBrowserClickEvent, entry: PhoneFileEntry) {
+        let flags = event.modifiers.intersection(.deviceIndependentFlagsMask)
+        if clickTracker.registerClick(
+            entryID: entry.id,
+            clickCount: event.clickCount,
+            timestamp: event.timestamp,
+            modifiers: flags
+        ) {
+            selectedEntryIDs = [entry.id]
+            selectionAnchorID = entry.id
+            model.open(entry)
+            return
+        }
+        select(entry, modifiers: flags)
+    }
+
+    private func select(_ entry: PhoneFileEntry, modifiers: NSEvent.ModifierFlags) {
+        let flags = modifiers.intersection(.deviceIndependentFlagsMask)
+        if flags.contains(.shift), let anchorID = selectionAnchorID {
+            selectRange(from: anchorID, to: entry.id)
+        } else if flags.contains(.command) {
+            if selectedEntryIDs.contains(entry.id) {
+                selectedEntryIDs.remove(entry.id)
+            } else {
+                selectedEntryIDs.insert(entry.id)
+                selectionAnchorID = entry.id
+            }
+            if selectedEntryIDs.isEmpty {
+                selectionAnchorID = nil
+            }
+        } else {
+            selectedEntryIDs = [entry.id]
+            selectionAnchorID = entry.id
+        }
+    }
+
+    private func selectRange(from anchorID: PhoneFileEntry.ID, to targetID: PhoneFileEntry.ID) {
+        let ids = model.sortedEntries.map(\.id)
+        guard let anchorIndex = ids.firstIndex(of: anchorID),
+              let targetIndex = ids.firstIndex(of: targetID)
+        else {
+            selectedEntryIDs = [targetID]
+            selectionAnchorID = targetID
+            return
+        }
+        let range = anchorIndex <= targetIndex
+            ? anchorIndex...targetIndex
+            : targetIndex...anchorIndex
+        selectedEntryIDs = Set(ids[range])
+    }
+
+    private func clearSelection() {
+        selectedEntryIDs.removeAll()
+        selectionAnchorID = nil
     }
 
     /// Drop onto a folder row: internal drags move (option copies); external
@@ -688,7 +993,7 @@ struct FileBrowserView: View {
         }) {
             _ = internalProvider.loadDataRepresentation(
                 forTypeIdentifier: UTType.phoneRelayEntry.identifier
-            ) { data, _ in
+            ) { [model] data, _ in
                 guard let data,
                       let transfer = try? JSONDecoder().decode(PhoneEntryTransfer.self, from: data)
                 else { return }
@@ -723,6 +1028,54 @@ struct FileBrowserView: View {
         return true
     }
 
+    private func previewSelectedEntry() {
+        guard selectedEntryIDs.count == 1,
+              let selectedEntryID = selectedEntryIDs.first,
+              let entry = model.sortedEntries.first(where: { $0.id == selectedEntryID })
+        else { return }
+        model.preview(entry)
+    }
+
+    private func openSelectedEntry() {
+        guard selectedEntryIDs.count == 1,
+              let selectedEntryID = selectedEntryIDs.first,
+              let entry = model.sortedEntries.first(where: { $0.id == selectedEntryID })
+        else { return }
+        model.open(entry)
+    }
+
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard NSApp.keyWindow?.title == "Phone Files",
+                  event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+                  !isTextEditingFirstResponder
+            else { return event }
+            switch event.keyCode {
+            case 36:
+                openSelectedEntry()
+                return nil
+            case 49:
+                previewSelectedEntry()
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
+    }
+
+    private var isTextEditingFirstResponder: Bool {
+        guard let responder = NSApp.keyWindow?.firstResponder else { return false }
+        return responder is NSTextView || responder is NSTextField
+    }
+
     private func redMenuTitle(_ title: String) -> AttributedString {
         var text = AttributedString(title)
         text.foregroundColor = .red
@@ -755,6 +1108,182 @@ struct FileBrowserView: View {
     }
 }
 
+private final class FileQuickLookController: NSObject, QLPreviewPanelDataSource, QLPreviewPanelDelegate {
+    private let url: URL
+
+    init(url: URL) {
+        self.url = url
+    }
+
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        1
+    }
+
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
+        url as NSURL
+    }
+}
+
+private struct FileBrowserDropCaptureView: NSViewRepresentable {
+    @Binding var isTargeted: Bool
+    let onDrop: ([URL]) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isTargeted: $isTargeted, onDrop: onDrop)
+    }
+
+    func makeNSView(context: Context) -> DropCaptureNSView {
+        let view = DropCaptureNSView()
+        view.coordinator = context.coordinator
+        view.registerForDraggedTypes([.fileURL])
+        return view
+    }
+
+    func updateNSView(_ nsView: DropCaptureNSView, context: Context) {
+        context.coordinator.isTargeted = $isTargeted
+        context.coordinator.onDrop = onDrop
+        nsView.coordinator = context.coordinator
+    }
+
+    final class Coordinator {
+        var isTargeted: Binding<Bool>
+        var onDrop: ([URL]) -> Void
+
+        init(isTargeted: Binding<Bool>, onDrop: @escaping ([URL]) -> Void) {
+            self.isTargeted = isTargeted
+            self.onDrop = onDrop
+        }
+    }
+
+    final class DropCaptureNSView: NSView {
+        weak var coordinator: Coordinator?
+
+        override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+            guard droppedFileURLs(from: sender).isEmpty == false else { return [] }
+            coordinator?.isTargeted.wrappedValue = true
+            return .copy
+        }
+
+        override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+            droppedFileURLs(from: sender).isEmpty ? [] : .copy
+        }
+
+        override func draggingExited(_ sender: NSDraggingInfo?) {
+            coordinator?.isTargeted.wrappedValue = false
+        }
+
+        override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+            coordinator?.isTargeted.wrappedValue = false
+            let urls = droppedFileURLs(from: sender)
+            guard !urls.isEmpty else { return false }
+            coordinator?.onDrop(urls)
+            return true
+        }
+
+        private func droppedFileURLs(from sender: NSDraggingInfo) -> [URL] {
+            let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+            return sender.draggingPasteboard.readObjects(
+                forClasses: [NSURL.self],
+                options: options
+            ) as? [URL] ?? []
+        }
+    }
+}
+
+private struct FolderDropTargetModifier: ViewModifier {
+    let entry: PhoneFileEntry
+    let onDrop: ([NSItemProvider], PhoneFileEntry) -> Bool
+
+    @State private var isTargeted = false
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if isTargeted {
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(Color.accentColor, lineWidth: 2)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(Color.accentColor.opacity(0.08))
+                        )
+                }
+            }
+            .onDrop(of: [.phoneRelayEntry, .fileURL], isTargeted: $isTargeted) { providers in
+                onDrop(providers, entry)
+            }
+    }
+}
+
+private struct FileBrowserClickEvent {
+    var clickCount: Int
+    var modifiers: NSEvent.ModifierFlags
+    var timestamp: TimeInterval
+}
+
+private final class FileBrowserClickTracker {
+    private var lastEntryID: PhoneFileEntry.ID?
+    private var lastClickTime: TimeInterval = 0
+
+    func registerClick(
+        entryID: PhoneFileEntry.ID,
+        clickCount: Int,
+        timestamp: TimeInterval,
+        modifiers: NSEvent.ModifierFlags
+    ) -> Bool {
+        lastEntryID = entryID
+        lastClickTime = timestamp
+
+        if clickCount >= 2 {
+            lastEntryID = nil
+            lastClickTime = 0
+            return true
+        }
+        return false
+    }
+}
+
+private struct FileBrowserClickModifier: ViewModifier {
+    let onClick: (FileBrowserClickEvent) -> Void
+
+    func body(content: Content) -> some View {
+        content.overlay {
+            FileBrowserClickCaptureView(onClick: onClick)
+        }
+    }
+}
+
+private struct FileBrowserClickCaptureView: NSViewRepresentable {
+    let onClick: (FileBrowserClickEvent) -> Void
+
+    func makeNSView(context: Context) -> ClickCaptureNSView {
+        let view = ClickCaptureNSView()
+        view.onClick = onClick
+        return view
+    }
+
+    func updateNSView(_ nsView: ClickCaptureNSView, context: Context) {
+        nsView.onClick = onClick
+    }
+
+    final class ClickCaptureNSView: NSView {
+        var onClick: ((FileBrowserClickEvent) -> Void)?
+
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+            true
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            onClick?(
+                FileBrowserClickEvent(
+                    clickCount: event.clickCount,
+                    modifiers: event.modifierFlags,
+                    timestamp: event.timestamp
+                )
+            )
+        }
+    }
+}
+
 /// NSItemProvider completion handlers arrive on arbitrary queues; this box
 /// serializes the collected URLs until the DispatchGroup drains.
 private final class DroppedURLCollector: @unchecked Sendable {
@@ -777,14 +1306,16 @@ private final class DroppedURLCollector: @unchecked Sendable {
 private struct FileBrowserGalleryCell: View {
     let entry: PhoneFileEntry
     let model: FileBrowserModel
+    let isSelected: Bool
 
     @State private var thumbnail: NSImage?
+    @State private var isHovering = false
 
     var body: some View {
         VStack(spacing: 6) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.secondary.opacity(0.08))
+                    .fill(tileFill)
                 if let thumbnail {
                     Image(nsImage: thumbnail)
                         .resizable()
@@ -800,13 +1331,30 @@ private struct FileBrowserGalleryCell: View {
                 }
             }
             .frame(width: 96, height: 96)
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(tileStroke, lineWidth: isSelected ? 1.5 : 1)
+            }
             Text(entry.name)
                 .font(.system(size: 11))
+                .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(0.92))
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
                 .truncationMode(.middle)
         }
         .frame(width: 110)
+        .padding(.vertical, 7)
+        .background {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(cellFill)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(cellStroke, lineWidth: isSelected ? 1.5 : 1)
+        }
+        .animation(.easeOut(duration: 0.08), value: isHovering)
+        .animation(.easeOut(duration: 0.08), value: isSelected)
+        .onHover { isHovering = $0 }
         .task(id: entry.id) {
             guard thumbnail == nil,
                   PhoneThumbnailStore.isThumbnailable(entry),
@@ -819,6 +1367,46 @@ private struct FileBrowserGalleryCell: View {
             }.value
             if !Task.isCancelled { thumbnail = loaded }
         }
+    }
+
+    private var cellFill: Color {
+        if isSelected {
+            return Color.accentColor.opacity(0.20)
+        }
+        if isHovering {
+            return Color.accentColor.opacity(0.10)
+        }
+        return .clear
+    }
+
+    private var cellStroke: Color {
+        if isSelected {
+            return Color.accentColor.opacity(0.62)
+        }
+        if isHovering {
+            return Color.accentColor.opacity(0.28)
+        }
+        return .clear
+    }
+
+    private var tileFill: Color {
+        if isSelected {
+            return Color.accentColor.opacity(0.16)
+        }
+        if isHovering {
+            return Color.secondary.opacity(0.14)
+        }
+        return Color.secondary.opacity(0.08)
+    }
+
+    private var tileStroke: Color {
+        if isSelected {
+            return Color.accentColor.opacity(0.78)
+        }
+        if isHovering {
+            return Color.secondary.opacity(0.24)
+        }
+        return .clear
     }
 
     private var fallbackIcon: String {
@@ -843,6 +1431,7 @@ private struct FileBrowserGalleryCell: View {
 
 private struct FileBrowserRow: View {
     let entry: PhoneFileEntry
+    let isSelected: Bool
     @State private var isHovering = false
 
     var body: some View {
@@ -869,14 +1458,35 @@ private struct FileBrowserRow: View {
         .padding(.vertical, 4)
         .background {
             RoundedRectangle(cornerRadius: 5)
-                .fill(isHovering ? Color.accentColor.opacity(0.16) : Color.clear)
+                .fill(rowFill)
         }
         .overlay {
             RoundedRectangle(cornerRadius: 5)
-                .strokeBorder(isHovering ? Color.accentColor.opacity(0.32) : Color.clear, lineWidth: 1)
+                .strokeBorder(rowStroke, lineWidth: isSelected ? 1.5 : 1)
         }
         .animation(.easeOut(duration: 0.08), value: isHovering)
+        .animation(.easeOut(duration: 0.08), value: isSelected)
         .onHover { isHovering = $0 }
+    }
+
+    private var rowFill: Color {
+        if isSelected {
+            return Color.accentColor.opacity(0.20)
+        }
+        if isHovering {
+            return Color.accentColor.opacity(0.12)
+        }
+        return .clear
+    }
+
+    private var rowStroke: Color {
+        if isSelected {
+            return Color.accentColor.opacity(0.62)
+        }
+        if isHovering {
+            return Color.accentColor.opacity(0.28)
+        }
+        return .clear
     }
 
     private var iconName: String {

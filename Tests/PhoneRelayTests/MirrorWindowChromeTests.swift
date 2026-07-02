@@ -1276,12 +1276,12 @@ final class MirrorWindowChromeTests: XCTestCase {
         chromeBar.setRecordingActive(true)
         XCTAssertEqual(
             chromeBar.rightActionVisibilityForTesting,
-            [false, false, true, true, false],
+            [false, false, true, false, true],
             "Recording mode should hide pin, screenshot, and recents while keeping the timer pill and Home."
         )
         XCTAssertEqual(
             chromeBar.rightActionHoverCornerRadiiForTesting,
-            [6, 6, 18, 6],
+            [6, 6, 6, 18],
             "When recording, Home becomes the visible trailing action and should get the rounded right hover cap."
         )
         XCTAssertEqual(
@@ -1565,6 +1565,8 @@ final class MirrorWindowChromeTests: XCTestCase {
         let controller = MirrorContentWindowController(model: model, session: session)
         controller.show()
         try requireVisibleWindow(controller.window)
+        controller.window?.makeKeyAndOrderFront(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 
         controller.simulateRevealZoneHover(true)
 
@@ -1628,6 +1630,26 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(controller.isChromeVisibleForTesting)
 
         controller.simulateAppResignActiveForTesting()
+
+        XCTAssertFalse(controller.isChromeVisibleForTesting)
+        XCTAssertTrue(controller.toolbarIgnoresMouseEventsForTesting)
+        XCTAssertFalse(controller.toolbarIsVisibleForTesting)
+    }
+
+    @MainActor
+    func testFloatingToolbarOrdersOutWhenMirrorWindowResignsKey() throws {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+        controller.show()
+        try requireVisibleWindow(controller.window)
+
+        controller.simulateRevealZoneHover(true)
+        XCTAssertTrue(controller.isChromeVisibleForTesting)
+        XCTAssertTrue(controller.toolbarIsVisibleForTesting)
+
+        controller.simulateMirrorWindowResignKeyForTesting()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 
         XCTAssertFalse(controller.isChromeVisibleForTesting)
         XCTAssertTrue(controller.toolbarIgnoresMouseEventsForTesting)
