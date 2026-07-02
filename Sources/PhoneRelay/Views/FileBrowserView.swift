@@ -81,10 +81,49 @@ final class FileBrowserModel: ObservableObject {
     }
 
     func open(_ entry: PhoneFileEntry) {
-        guard entry.isNavigable, !isBusy else { return }
+        guard !isBusy else { return }
+        guard entry.isNavigable else {
+            openFile(entry)
+            return
+        }
         path = PhoneFileBrowserService.joined(path, entry.name)
         entries = []
         refresh()
+    }
+
+    /// Pulls a file into a throwaway temp folder and hands it to the default
+    /// app. Each open gets a fresh UUID directory so stale copies of a
+    /// changed phone file can't shadow the new pull.
+    private func openFile(_ entry: PhoneFileEntry) {
+        guard let serial = serialOrExplain else { return }
+        let remotePath = PhoneFileBrowserService.joined(path, entry.name)
+        activityText = "Opening — \(entry.name)"
+        Task.detached { [weak self] in
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("PhoneRelay Files", isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            let result: Result<URL, PhoneFileBrowserService.ServiceError>
+            do {
+                try FileManager.default.createDirectory(
+                    at: directory, withIntermediateDirectories: true
+                )
+                result = PhoneFileBrowserService.pull(
+                    serial: serial, remotePath: remotePath, localDirectory: directory
+                )
+            } catch {
+                result = .failure(.operationFailed(error.localizedDescription))
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.activityText = nil
+                switch result {
+                case .success(let localURL):
+                    NSWorkspace.shared.open(localURL)
+                case .failure(let error):
+                    self.errorMessage = "Couldn't open \(entry.name): \(error.message)"
+                }
+            }
+        }
     }
 
     func goBack() {
@@ -346,17 +385,21 @@ struct FileBrowserView: View {
                         .contentShape(Rectangle())
                         .onTapGesture(count: 2) { model.open(entry) }
                         .contextMenu {
-                            if entry.isNavigable {
-                                Button("Open") { model.open(entry) }
-                            }
+                            Button("Open") { model.open(entry) }
                             Button("Save to Mac") { model.download(entry) }
                             Button("Rename…") {
                                 renameText = entry.name
                                 entryToRename = entry
                             }
                             Divider()
-                            Button("Delete…", role: .destructive) {
+                            Button(role: .destructive) {
                                 entryToDelete = entry
+                            } label: {
+                                // Plain foregroundColor is stripped inside
+                                // menus; the attributed color survives, so
+                                // Delete reads red even where the destructive
+                                // role isn't tinted.
+                                Text(redMenuTitle("Delete…"))
                             }
                         }
                 }
@@ -409,6 +452,12 @@ struct FileBrowserView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(Color.yellow.opacity(0.12))
+    }
+
+    private func redMenuTitle(_ title: String) -> AttributedString {
+        var text = AttributedString(title)
+        text.foregroundColor = .red
+        return text
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
