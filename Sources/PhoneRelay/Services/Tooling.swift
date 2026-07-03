@@ -118,6 +118,14 @@ enum Tooling {
     /// back across the semaphore without tripping concurrency checks.
     private final class DataBox: @unchecked Sendable { var data = Data() }
 
+    private static func readAvailableData(from handle: FileHandle) -> Data {
+        do {
+            return try handle.readToEnd() ?? Data()
+        } catch {
+            return Data()
+        }
+    }
+
     /// Runs a tool, draining stdout+stderr on a background queue (so a child
     /// that writes more than the pipe buffer can't deadlock against us while we
     /// wait for it to exit) and enforcing a hard timeout. Returns the captured
@@ -145,7 +153,7 @@ enum Tooling {
         let box = DataBox()
         let readDone = DispatchSemaphore(value: 0)
         processOutputQueue.async {
-            box.data = handle.readDataToEndOfFile()
+            box.data = readAvailableData(from: handle)
             readDone.signal()
         }
 
@@ -222,12 +230,12 @@ enum Tooling {
         let box = DataBox()
         let readDone = DispatchSemaphore(value: 0)
         processOutputQueue.async {
-            box.data = stdoutHandle.readDataToEndOfFile()
+            box.data = readAvailableData(from: stdoutHandle)
             readDone.signal()
         }
         // stderr must be drained too, or a chatty child deadlocks on a full pipe.
         processOutputQueue.async {
-            _ = stderrHandle.readDataToEndOfFile()
+            _ = readAvailableData(from: stderrHandle)
         }
 
         do {
