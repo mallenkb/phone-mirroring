@@ -8,12 +8,6 @@ if [[ ! -d "$APP" ]]; then
   exit 1
 fi
 
-if [[ -f "$APP/Contents/embedded.provisionprofile" ]]; then
-  echo "error: release app must not embed a provisioning profile." >&2
-  echo "Developer ID releases should be signed directly; embedded profiles can pull in App Store-style capabilities." >&2
-  exit 1
-fi
-
 INFO="$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Print :NSLocalNetworkUsageDescription" "$INFO" >/dev/null
 bonjour_services="$(/usr/libexec/PlistBuddy -c "Print :NSBonjourServices" "$INFO")"
@@ -35,6 +29,27 @@ codesign -d --entitlements :- "$APP" >"$app_entitlements" 2>/dev/null || {
   echo "error: could not read app entitlements from $APP" >&2
   exit 1
 }
+
+if [[ -f "$APP/Contents/embedded.provisionprofile" ]]; then
+  profile_plist="$tmpdir/embedded-profile.plist"
+  security cms -D -i "$APP/Contents/embedded.provisionprofile" >"$profile_plist" 2>/dev/null || {
+    echo "error: could not decode embedded provisioning profile." >&2
+    exit 1
+  }
+
+  provisions_all_devices="$(/usr/libexec/PlistBuddy -c "Print :ProvisionsAllDevices" "$profile_plist" 2>/dev/null || true)"
+  if [[ "$provisions_all_devices" != "true" ]]; then
+    echo "error: embedded provisioning profile is not a direct-distribution profile." >&2
+    exit 1
+  fi
+
+  profile_app_id="$(/usr/libexec/PlistBuddy -c "Print :Entitlements:com.apple.application-identifier" "$profile_plist" 2>/dev/null || true)"
+  signed_app_id="$(/usr/libexec/PlistBuddy -c "Print :com.apple.application-identifier" "$app_entitlements" 2>/dev/null || true)"
+  if [[ -n "$profile_app_id" && -n "$signed_app_id" && "$profile_app_id" != "$signed_app_id" ]]; then
+    echo "error: embedded provisioning profile does not match the signed app identifier." >&2
+    exit 1
+  fi
+fi
 
 if plutil -extract com.apple.security.app-sandbox raw "$app_entitlements" -o - >/dev/null 2>&1; then
   echo "error: release app must not be sandboxed; App Sandbox breaks adb Wi-Fi handoff." >&2
