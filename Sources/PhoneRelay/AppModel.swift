@@ -1130,12 +1130,14 @@ final class AppModel: ObservableObject {
     }
 
     var connectionChoiceTitle: String {
-        Self.connectionChoiceTitle(
-            deviceLabel: connectionDeviceLabel,
+        let deviceLabel = connectionDeviceLabel
+        let isDeviceConnected = isSelectedDeviceOnline
+            || isMirroring
+            || !latestAuthorizedADBDevices.isEmpty
+        return Self.connectionChoiceTitle(
+            deviceLabel: deviceLabel,
             state: connectionPillState,
-            isDeviceConnected: isSelectedDeviceOnline
-                || isMirroring
-                || !latestAuthorizedADBDevices.isEmpty,
+            isDeviceConnected: isDeviceConnected,
             isFirstTimeUSBSetup: isFirstTimeUSBSetup,
             isWiFiConnectionAvailable: isWirelessConnectionAvailable
         )
@@ -6418,6 +6420,7 @@ final class AppModel: ObservableObject {
         return mirrorWindowDeviceTitle(name: name)
     }
 
+    @inline(never)
     nonisolated static func connectionChoiceTitle(
         deviceLabel: String,
         state: ConnectionPillState,
@@ -6426,8 +6429,10 @@ final class AppModel: ObservableObject {
         isWiFiConnectionAvailable: Bool
     ) -> String {
         if isDeviceConnected {
-            let label = deviceLabel.isEmpty ? "Android Device" : deviceLabel
-            return "\(label) is connected"
+            if deviceLabel.isEmpty {
+                return "Android Device is connected"
+            }
+            return deviceLabel + " is connected"
         }
         if isFirstTimeUSBSetup && !isWiFiConnectionAvailable {
             return "Set up your Android phone with USB"
@@ -8354,7 +8359,7 @@ final class AppModel: ObservableObject {
             return
         }
 
-        NotificationTapService.tapQueue.async {
+        NotificationTapService.tapQueue.async { [weak self] in
             if NotificationTapService.replyToForwardedNotificationInShade(
                 serial: serial,
                 notificationKey: notificationKey,
