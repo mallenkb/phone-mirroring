@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build, for example v1.0.27."
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -11,7 +17,7 @@ permissions:
 jobs:
   release:
     name: Build, notarize, and publish
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       APP_NAME: PhoneRelay
       WEBSITE_REPO: mallenkb/phonerelay-website
@@ -20,9 +26,11 @@ jobs:
 
       - name: Validate tag
         id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
+          TAG="$RELEASE_TAG"
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Tag must match vX.Y.Z; got $TAG" >&2
             exit 1
@@ -39,12 +47,9 @@ jobs:
           echo "zip_name=PhoneRelay-$VERSION.zip" >> "$GITHUB_OUTPUT"
 
       - name: Select Xcode
-        run: |
-          if [ -d /Applications/Xcode_15.4.app ]; then
-            sudo xcode-select -s /Applications/Xcode_15.4.app
-          else
-            echo "Xcode 15.4 not present; using preinstalled default" >&2
-          fi
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
 
       - name: Run tests
         run: swift test --filter ReleaseReadinessTests
@@ -137,12 +142,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "${{ steps.version.outputs.tag }}" \
-            "dist/${{ steps.version.outputs.dmg_name }}" \
-            "dist/sparkle/${{ steps.version.outputs.zip_name }}" \
-            "dist/sparkle/appcast.xml" \
-            --title "PhoneRelay ${{ steps.version.outputs.tag }}" \
-            --notes "PhoneRelay ${{ steps.version.outputs.version }}"
+          if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            gh release upload "${{ steps.version.outputs.tag }}" \
+              "dist/${{ steps.version.outputs.dmg_name }}" \
+              "dist/sparkle/${{ steps.version.outputs.zip_name }}" \
+              "dist/sparkle/appcast.xml" \
+              --clobber
+            gh release edit "${{ steps.version.outputs.tag }}" \
+              --title "PhoneRelay ${{ steps.version.outputs.tag }}" \
+              --notes "PhoneRelay ${{ steps.version.outputs.version }}"
+          else
+            gh release create "${{ steps.version.outputs.tag }}" \
+              "dist/${{ steps.version.outputs.dmg_name }}" \
+              "dist/sparkle/${{ steps.version.outputs.zip_name }}" \
+              "dist/sparkle/appcast.xml" \
+              --title "PhoneRelay ${{ steps.version.outputs.tag }}" \
+              --notes "PhoneRelay ${{ steps.version.outputs.version }}"
+          fi
 
       - name: Expose release asset URL
         id: asset

@@ -14,11 +14,16 @@ permissions:
 jobs:
   sparkle:
     name: Generate Sparkle ZIP and appcast
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       WEBSITE_REPO: mallenkb/phonerelay-website
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
 
       - name: Validate tag
         id: version
