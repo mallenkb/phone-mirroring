@@ -21,7 +21,6 @@ final class H264VideoToolboxDecoder {
     private var spsData: Data?
     private var ppsData: Data?
     private var pendingConfigNALUnits: [Data] = []
-    private var presentationTimeScale: CMTimeScale = 1_000_000
     private var loggedPacketCount = 0
     private var totalSampleCount = 0
 
@@ -81,7 +80,7 @@ final class H264VideoToolboxDecoder {
             }
         }
         guard !slices.isEmpty, let formatDescription else { return }
-        guard let sample = buildSampleBuffer(slices: slices, pts: packet.pts,
+        guard let sample = buildSampleBuffer(slices: slices,
                                              isKeyFrame: packet.isKeyFrame,
                                              format: formatDescription) else {
             return
@@ -126,7 +125,7 @@ final class H264VideoToolboxDecoder {
         }
     }
 
-    private func buildSampleBuffer(slices: [Data], pts: UInt64?, isKeyFrame: Bool,
+    private func buildSampleBuffer(slices: [Data], isKeyFrame: Bool,
                                    format: CMVideoFormatDescription) -> CMSampleBuffer? {
         var avcc = Data()
         avcc.reserveCapacity(slices.reduce(0) { $0 + 4 + $1.count })
@@ -161,22 +160,14 @@ final class H264VideoToolboxDecoder {
         }
 
         var sampleSizes = [bufferSize]
-        var timingInfo: CMSampleTimingInfo = .invalid
-        if let pts {
-            let cmPts = CMTime(value: CMTimeValue(pts), timescale: presentationTimeScale)
-            timingInfo = CMSampleTimingInfo(duration: .invalid,
-                                            presentationTimeStamp: cmPts,
-                                            decodeTimeStamp: .invalid)
-        }
-
         var sample: CMSampleBuffer?
         let sampleStatus = CMSampleBufferCreateReady(
             allocator: kCFAllocatorDefault,
             dataBuffer: blockBuffer,
             formatDescription: format,
             sampleCount: 1,
-            sampleTimingEntryCount: pts != nil ? 1 : 0,
-            sampleTimingArray: pts != nil ? [timingInfo] : nil,
+            sampleTimingEntryCount: 0,
+            sampleTimingArray: nil,
             sampleSizeEntryCount: 1,
             sampleSizeArray: &sampleSizes,
             sampleBufferOut: &sample

@@ -6737,7 +6737,7 @@ final class AppModel: ObservableObject {
         DiagnosticsService.shared.capture(.mirrorStarted, properties: [
             "transport": DiagnosticsService.transportValue(serial: serial, network: selectedDevice.network)
         ])
-        let launchFrame = connectionWindow?.frame ?? lastMirrorWindowFrame
+        let launchFrame = mirrorLaunchFrameForNextSession()
         let keepConnectionWindowVisible = keepConnectionWindowVisibleOverride
             ?? (shouldAssertForegroundPresentation
                 || Self.shouldKeepConnectionWindowVisibleDuringMirrorLaunch(
@@ -6836,6 +6836,21 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private func mirrorLaunchFrameForNextSession() -> NSRect? {
+        let candidate = connectionWindow?.frame ?? lastMirrorWindowFrame
+        guard shouldAssertForegroundPresentation,
+              let activeScreen = Self.screenContainingPointer() ?? NSScreen.main,
+              let candidate else {
+            return candidate
+        }
+        return activeScreen.frame.intersects(candidate) ? candidate : nil
+    }
+
+    private nonisolated static func screenContainingPointer() -> NSScreen? {
+        let pointer = NSEvent.mouseLocation
+        return NSScreen.screens.first { $0.frame.contains(pointer) }
     }
 
     @discardableResult

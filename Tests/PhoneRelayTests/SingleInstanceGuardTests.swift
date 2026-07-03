@@ -2,7 +2,7 @@ import XCTest
 @testable import PhoneRelay
 
 /// Covers the duplicate-instance guard (only one Phone Relay may run at a time;
-/// a fresh launch evicts stale older copies) and the connection-window presentation policy
+/// a fresh launch yields to the already-running copy) and the connection-window presentation policy
 /// (automatic reconnect cycles must not steal focus from other apps).
 final class SingleInstanceGuardTests: XCTestCase {
     func testAppDelegateExplicitlySupportsSecureRestorableState() {
@@ -31,14 +31,14 @@ final class SingleInstanceGuardTests: XCTestCase {
 
     // MARK: - Duplicate detection
 
-    func testNewerLaunchTargetsOlderInstanceForEviction() {
+    func testNewerLaunchFindsOlderInstanceToYieldTo() {
         let older = instance(pid: 100, launchedAt: 100)
         let newer = instance(pid: 200, launchedAt: 200)
 
         XCTAssertEqual(AppDelegate.olderDuplicateInstances(candidates: [older, newer], current: newer).map(\.pid), [100])
     }
 
-    func testOlderLaunchDoesNotTargetNewerInstanceForEviction() {
+    func testOlderLaunchDoesNotYieldToNewerInstance() {
         let older = instance(pid: 100, launchedAt: 100)
         let newer = instance(pid: 200, launchedAt: 200)
 
@@ -157,7 +157,11 @@ final class SingleInstanceGuardTests: XCTestCase {
         XCTAssertTrue(source.contains("private var foregroundExitMonitor: Any?"))
         XCTAssertTrue(source.contains("private func installForegroundPresentationExitMonitor()"))
         XCTAssertTrue(source.contains("matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]"))
-        XCTAssertTrue(source.contains("self?.model.endForegroundLaunchPresentation()"))
+        XCTAssertTrue(source.contains("guard !self.pointerIsInsideVisibleAppWindow() else { return }"))
+        XCTAssertTrue(source.contains("private func pointerIsInsideVisibleAppWindow() -> Bool"))
+        XCTAssertTrue(source.contains("let point = NSEvent.mouseLocation"))
+        XCTAssertTrue(source.contains("window.isVisible && window.frame.contains(point)"))
+        XCTAssertTrue(source.contains("self.model.endForegroundLaunchPresentation()"))
         XCTAssertTrue(source.contains("NSEvent.removeMonitor(foregroundExitMonitor)"))
     }
 
@@ -180,6 +184,9 @@ final class SingleInstanceGuardTests: XCTestCase {
         XCTAssertTrue(modelSource.contains("foregroundLaunchPresentationActive\n    }\n\n    var shouldAssertForegroundPresentation"))
         XCTAssertTrue(modelSource.contains("var shouldAssertForegroundPresentation: Bool"))
         XCTAssertTrue(modelSource.contains("foregroundLaunchPresentationActive || NSApp?.isActive == true"))
+        XCTAssertTrue(modelSource.contains("let launchFrame = mirrorLaunchFrameForNextSession()"))
+        XCTAssertTrue(modelSource.contains("private func mirrorLaunchFrameForNextSession() -> NSRect?"))
+        XCTAssertTrue(modelSource.contains("return activeScreen.frame.intersects(candidate) ? candidate : nil"))
         XCTAssertTrue(modelSource.contains("?? (shouldAssertForegroundPresentation"))
         XCTAssertTrue(modelSource.contains("connectionWindowPresentation(appIsActive: shouldAssertForegroundPresentation)"))
         XCTAssertTrue(modelSource.contains("if shouldAssertForegroundPresentation {\n            NSApp?.activate(ignoringOtherApps: true)\n        }"))

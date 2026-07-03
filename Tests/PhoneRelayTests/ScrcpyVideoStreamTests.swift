@@ -230,6 +230,18 @@ final class ScrcpyVideoStreamTests: XCTestCase {
         XCTAssertTrue(H264VideoToolboxDecoder.extractAnnexBNALUnits(Data()).isEmpty)
     }
 
+    func testLiveMirrorSamplesUseImmediateDisplayInsteadOfStreamPTS() throws {
+        let source = try String(
+            contentsOfFile: "Sources/PhoneRelay/Mirror/H264VideoToolboxDecoder.swift",
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("sampleTimingEntryCount: 0"))
+        XCTAssertTrue(source.contains("sampleTimingArray: nil"))
+        XCTAssertTrue(source.contains("kCMSampleAttachmentKey_DisplayImmediately"))
+        XCTAssertFalse(source.contains("presentationTimeStamp:"))
+    }
+
     // MARK: - Synthetic wire-format builders
 
     private static func deviceNameField(_ name: String) -> Data {

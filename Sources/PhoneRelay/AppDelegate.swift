@@ -164,11 +164,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
     // MARK: - Single-instance guard
 
-    /// How long a fresh launch waits for an older instance to exit before
-    /// concluding it is a duplicate. Sized for the restart-onboarding relaunch,
-    /// where the old process quits moments after the new one starts.
-    nonisolated static let duplicateInstanceExitGracePeriod: TimeInterval = 2.5
-
     /// Executables that count as "this app": the bundled binary and the bare
     /// SwiftPM debug binary.
     nonisolated static let phoneRelayExecutableNames: Set<String> = ["PhoneRelay", "PhoneRelayBinary"]
@@ -223,7 +218,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         }
     }
 
-    /// Older siblings that should be evicted before this launch continues.
+    /// Older siblings that should own the app session while this duplicate launch exits.
     nonisolated static func olderDuplicateInstances(
         candidates: [AppInstanceDescriptor],
         current: AppInstanceDescriptor
@@ -238,52 +233,33 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
     /// Phone Relay owns exclusive resources — the adb server, scrcpy sessions,
     /// and the connection window — so concurrent copies fight over the phone
-    /// and flood the screen with duplicate "Connecting…" windows. A fresh
-    /// launch is the user's explicit recovery action, so it evicts any older
-    /// siblings and continues as the one clean owner.
+    /// and flood the screen with duplicate "Connecting…" windows. A second
+    /// launch should behave like a normal app reopen: bring the existing
+    /// instance forward and quit this short-lived duplicate without tearing
+    /// down the active mirror.
     private func yieldToExistingInstanceIfNeeded() -> Bool {
         let current = Self.descriptor(for: .current)
-        let deadline = Date().addingTimeInterval(Self.duplicateInstanceExitGracePeriod)
-        var requestedTerminationForPIDs = Set<Int32>()
-        while true {
-            // NSWorkspace's list only refreshes when the run loop turns, which
-            // it can't while this wait blocks — re-verify liveness via signal 0
-            // so an already-exited sibling never strands or kills this launch.
-            let runningApps = NSWorkspace.shared.runningApplications
-            let candidates = runningApps.map { app in
-                var descriptor = Self.descriptor(for: app)
-                if !descriptor.isTerminated, !Self.isProcessAlive(descriptor.pid) {
-                    descriptor.isTerminated = true
-                }
-                return descriptor
+        let runningApps = NSWorkspace.shared.runningApplications
+        let candidates = runningApps.map { app in
+            var descriptor = Self.descriptor(for: app)
+            if !descriptor.isTerminated, !Self.isProcessAlive(descriptor.pid) {
+                descriptor.isTerminated = true
             }
-            let blockers = Self.olderDuplicateInstances(candidates: candidates, current: current)
-            guard !blockers.isEmpty else {
-                return false
-            }
-
-            for blocker in blockers {
-                guard let app = runningApps.first(where: { $0.processIdentifier == blocker.pid }) else { continue }
-                if !requestedTerminationForPIDs.contains(blocker.pid) {
-                    requestedTerminationForPIDs.insert(blocker.pid)
-                    Logger.log("Terminating older Phone Relay instance pid=\(blocker.pid) before continuing launch.")
-                    app.terminate()
-                }
-            }
-
-            // NEVER escalate to forceTerminate()/SIGKILL here. On this Mac,
-            // SIGKILLing an `open`-launched (LaunchServices-managed) GUI app
-            // makes LaunchServices treat it as a failed launch and relaunch it
-            // ~1×/sec — an endless kill→relaunch cascade that floods the screen.
-            // If an older instance ignores the graceful quit, we yield THIS
-            // launch instead (below) rather than force-killing the sibling.
-            if Date() >= deadline.addingTimeInterval(1.0) {
-                Logger.log("Older Phone Relay instance did not exit; terminating this launch to avoid duplicate windows.")
-                NSApp.terminate(nil)
-                return true
-            }
-            Thread.sleep(forTimeInterval: 0.1)
+            return descriptor
         }
+        let blockers = Self.olderDuplicateInstances(candidates: candidates, current: current)
+        guard let existing = blockers
+            .compactMap({ blocker in runningApps.first { $0.processIdentifier == blocker.pid } })
+            .min(by: { Self.instancePrecedes(Self.descriptor(for: $0), Self.descriptor(for: $1)) })
+        else {
+            return false
+        }
+
+        Logger.log("Yielding duplicate Phone Relay launch to existing instance pid=\(existing.processIdentifier).")
+        existing.unhide()
+        existing.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        NSApp.terminate(nil)
+        return true
     }
 
     private nonisolated static func descriptor(for app: NSRunningApplication) -> AppInstanceDescriptor {
@@ -336,8 +312,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.model.endForegroundLaunchPresentation()
+                guard let self else { return }
+                guard !self.pointerIsInsideVisibleAppWindow() else { return }
+                self.model.endForegroundLaunchPresentation()
             }
+        }
+    }
+
+    private func pointerIsInsideVisibleAppWindow() -> Bool {
+        let point = NSEvent.mouseLocation
+        return NSApp.windows.contains { window in
+            window.isVisible && window.frame.contains(point)
         }
     }
 
