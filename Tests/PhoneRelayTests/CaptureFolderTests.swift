@@ -3,13 +3,35 @@ import XCTest
 
 @MainActor
 final class CaptureFolderTests: XCTestCase {
+    /// Snapshot of the shared-defaults keys this suite mutates, restored in
+    /// tearDown so the tests can't bleed state into other suites (or wipe a
+    /// value the test-runner domain already had).
+    private var savedCaptureDefaults: [String: Any] = [:]
+
+    private static let captureDefaultsKeys = [
+        AppModel.screenshotFolderPathDefaultsKey,
+        AppModel.screenshotFolderBookmarkDefaultsKey,
+        AppModel.recordingFolderPathDefaultsKey,
+        AppModel.recordingFolderBookmarkDefaultsKey,
+        AppModel.recordingMaxMinutesDefaultsKey
+    ]
+
     override func setUp() {
         super.setUp()
+        savedCaptureDefaults = [:]
+        for key in Self.captureDefaultsKeys {
+            if let value = UserDefaults.standard.object(forKey: key) {
+                savedCaptureDefaults[key] = value
+            }
+        }
         clearCaptureDefaults()
     }
 
     override func tearDown() {
         clearCaptureDefaults()
+        for (key, value) in savedCaptureDefaults {
+            UserDefaults.standard.set(value, forKey: key)
+        }
         unsetenv("ANDROID_MIRROR_ADB_PATH")
         super.tearDown()
     }
@@ -121,10 +143,8 @@ final class CaptureFolderTests: XCTestCase {
     }
 
     private func clearCaptureDefaults() {
-        UserDefaults.standard.removeObject(forKey: AppModel.screenshotFolderPathDefaultsKey)
-        UserDefaults.standard.removeObject(forKey: AppModel.screenshotFolderBookmarkDefaultsKey)
-        UserDefaults.standard.removeObject(forKey: AppModel.recordingFolderPathDefaultsKey)
-        UserDefaults.standard.removeObject(forKey: AppModel.recordingFolderBookmarkDefaultsKey)
-        UserDefaults.standard.removeObject(forKey: AppModel.recordingMaxMinutesDefaultsKey)
+        for key in Self.captureDefaultsKeys {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
     }
 }

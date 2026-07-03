@@ -48,6 +48,13 @@ enum PhoneFileBrowserService {
         }
     }
 
+    /// A single path component the user typed (new folder / rename). `.` and
+    /// `..` would resolve to a different directory than the one shown, so a
+    /// rename to ".." could move the entry out of the allowed roots.
+    nonisolated static func isValidEntryName(_ name: String) -> Bool {
+        !name.isEmpty && !name.contains("/") && name != "." && name != ".."
+    }
+
     // MARK: - Shell quoting
 
     /// Wraps a remote path for the phone-side shell. adb passes `shell`
@@ -261,6 +268,7 @@ enum PhoneFileBrowserService {
         remotePath: String,
         localDirectory: URL
     ) -> Result<URL, ServiceError> {
+        guard isPathAllowed(remotePath) else { return .failure(.pathNotAllowed) }
         let name = (remotePath as NSString).lastPathComponent
         let destination = availableDestination(for: name, in: localDirectory)
         let result = Tooling.runResult(
@@ -307,7 +315,7 @@ enum PhoneFileBrowserService {
         parentPath: String,
         name: String
     ) -> OperationOutcome {
-        guard !name.isEmpty, !name.contains("/") else {
+        guard isValidEntryName(name) else {
             return OperationOutcome(succeeded: false, message: "Invalid folder name")
         }
         let path = joined(parentPath, name)
@@ -327,7 +335,7 @@ enum PhoneFileBrowserService {
         remotePath: String,
         to newName: String
     ) -> OperationOutcome {
-        guard !newName.isEmpty, !newName.contains("/"),
+        guard isValidEntryName(newName),
               let directory = parent(of: remotePath)
         else {
             return OperationOutcome(succeeded: false, message: "Invalid name")
@@ -358,6 +366,11 @@ enum PhoneFileBrowserService {
             return OperationOutcome(succeeded: false, message: "Path not allowed")
         }
         guard destination != remotePath else {
+            return OperationOutcome(succeeded: true, message: "")
+        }
+        // A folder dropped onto its own row would otherwise run
+        // `mv <A> <A>/<A>` and surface a confusing shell error.
+        guard directory != remotePath else {
             return OperationOutcome(succeeded: true, message: "")
         }
         let command = copy ? ["cp", "-r"] : ["mv"]
@@ -394,6 +407,46 @@ enum PhoneFileBrowserService {
             ],
             timeout: 10
         )
+    }
+
+    // MARK: - Local temp pulls
+
+    /// Root under the user temp dir where opens/previews/drags pull phone
+    /// files. Each pull gets a fresh UUID subdirectory.
+    nonisolated static let temporaryPullRootName = "PhoneRelay Files"
+
+    nonisolated static func makeTemporaryPullDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(temporaryPullRootName, isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    /// Deletes pulled copies left behind by earlier sessions — every open,
+    /// preview, and drag pulls the full file here and nothing removed them, so
+    /// browsing videos could park gigabytes until macOS purged the temp dir.
+    /// Only entries older than `maxAge` go, so a file the user still has open
+    /// in another app from a recent session is left alone. Blocking; call off
+    /// the main thread, once per launch.
+    nonisolated static func cleanUpStaleTemporaryPulls(
+        maxAge: TimeInterval = 24 * 60 * 60,
+        now: Date = Date()
+    ) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(temporaryPullRootName, isDirectory: true)
+        guard let children = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else { return }
+        for child in children {
+            guard let modified = (try? child.resourceValues(
+                forKeys: [.contentModificationDateKey]
+            ))?.contentModificationDate,
+                now.timeIntervalSince(modified) > maxAge
+            else { continue }
+            try? FileManager.default.removeItem(at: child)
+        }
     }
 
     // MARK: - Formatting

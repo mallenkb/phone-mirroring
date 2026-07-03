@@ -311,19 +311,21 @@ final class NotificationForwarder {
         let content = UNMutableNotificationContent()
         let sourceApp = appLabel(for: entry.pkg)
         content.title = notificationTitle(sourceApp: sourceApp, entryTitle: entry.title)
-        // Body is hidden for privacy when requested; the real text still rides in
-        // userInfo below so click-to-open can still locate the row on the phone.
         if !entry.text.isEmpty, !hideBody { content.body = entry.text }
         // Group banners by source app in Notification Center.
         content.threadIdentifier = entry.pkg
         // Carry the originating notification's identity so a click or reply can
         // act on it back on the phone, and pick the category that decides which
-        // actions (Open, or Open + inline Reply) the banner offers.
+        // actions (Open, or Open + inline Reply) the banner offers. When the
+        // body is hidden for privacy the text is not stored either — macOS
+        // persists userInfo in the notification store, so "hidden" must mean
+        // hidden on disk too. Click-to-open then locates the row by title
+        // alone, or falls back to launching the source app.
         var userInfo: [String: String] = [
             UserInfoKey.sourcePackage: entry.pkg,
             UserInfoKey.notificationKey: entry.key,
             UserInfoKey.notificationTitle: entry.title,
-            UserInfoKey.notificationText: entry.text
+            UserInfoKey.notificationText: hideBody ? "" : entry.text
         ]
         if let serial, !serial.isEmpty {
             userInfo[UserInfoKey.deviceSerial] = serial
@@ -414,6 +416,10 @@ final class NotificationForwarder {
 
         for (index, apkPath) in apkPaths.enumerated() {
             let apkURL = workDir.appendingPathComponent("package-\(index).apk")
+            // The APK is only needed within this iteration; the extracted
+            // `source-icon` next to it is the cache. APKs run tens of
+            // megabytes and nothing else ever removed the pulled copies.
+            defer { try? FileManager.default.removeItem(at: apkURL) }
             let pull = Tooling.runResult("adb", arguments: ["-s", serial, "pull", apkPath, apkURL.path], timeout: 8)
             guard pull.succeeded else { continue }
             guard let iconPath = launcherIconPath(in: apkURL) else { continue }

@@ -9,6 +9,7 @@ Package.resolved
 build/
 dist/
 scrcpy-source/
+PhoneRelay.app/
 
 # Local environment and credentials
 .env

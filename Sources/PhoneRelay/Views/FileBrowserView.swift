@@ -20,12 +20,7 @@ struct PhoneEntryTransfer: Codable, Transferable {
     static var transferRepresentation: some TransferRepresentation {
         CodableRepresentation(contentType: .phoneRelayEntry)
         FileRepresentation(exportedContentType: .item) { transfer in
-            let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("PhoneRelay Files", isDirectory: true)
-                .appendingPathComponent(UUID().uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(
-                at: directory, withIntermediateDirectories: true
-            )
+            let directory = try PhoneFileBrowserService.makeTemporaryPullDirectory()
             switch PhoneFileBrowserService.pull(
                 serial: transfer.serial,
                 remotePath: transfer.remotePath,
@@ -250,13 +245,8 @@ final class FileBrowserModel: ObservableObject {
         serial: String,
         remotePath: String
     ) -> Result<URL, PhoneFileBrowserService.ServiceError> {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("PhoneRelay Files", isDirectory: true)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
         do {
-            try FileManager.default.createDirectory(
-                at: directory, withIntermediateDirectories: true
-            )
+            let directory = try PhoneFileBrowserService.makeTemporaryPullDirectory()
             return PhoneFileBrowserService.pull(
                 serial: serial, remotePath: remotePath, localDirectory: directory
             )
@@ -285,30 +275,54 @@ final class FileBrowserModel: ObservableObject {
         refresh()
     }
 
-    /// Pulls a file or folder into ~/Downloads and reveals it in Finder.
     func download(_ entry: PhoneFileEntry) {
-        guard let serial = serialOrExplain, !isBusy else { return }
+        download([entry])
+    }
+
+    /// Pulls files or folders into ~/Downloads, one at a time, then reveals
+    /// them in Finder. Stops at the first failure but still reveals whatever
+    /// already copied.
+    func download(_ entriesToDownload: [PhoneFileEntry]) {
+        guard let serial = serialOrExplain, !isBusy, !entriesToDownload.isEmpty else { return }
         guard let downloads = FileManager.default.urls(
             for: .downloadsDirectory, in: .userDomainMask
         ).first else {
             errorMessage = "Couldn't find your Downloads folder."
             return
         }
-        let remotePath = PhoneFileBrowserService.joined(path, entry.name)
-        beginActivity(title: "Copying from phone", detail: entry.name)
-        Task.detached { [weak self] in
-            let result = PhoneFileBrowserService.pull(
-                serial: serial, remotePath: remotePath, localDirectory: downloads
-            )
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                self.finishActivity()
+        let directory = path
+        let items = entriesToDownload.map { entry in
+            (name: entry.name, remotePath: PhoneFileBrowserService.joined(directory, entry.name))
+        }
+        Task { [weak self] in
+            var savedURLs: [URL] = []
+            var failure: String?
+            let total = items.count
+            for (index, item) in items.enumerated() where failure == nil {
+                self?.beginActivity(
+                    title: "Copying from phone",
+                    detail: total == 1 ? item.name : "\(index + 1) of \(total) - \(item.name)",
+                    progress: total == 1 ? nil : Double(index) / Double(total)
+                )
+                let result = await Task.detached {
+                    PhoneFileBrowserService.pull(
+                        serial: serial, remotePath: item.remotePath, localDirectory: downloads
+                    )
+                }.value
                 switch result {
                 case .success(let localURL):
-                    NSWorkspace.shared.activateFileViewerSelecting([localURL])
+                    savedURLs.append(localURL)
                 case .failure(let error):
-                    self.errorMessage = "Couldn't copy \(entry.name): \(error.message)"
+                    failure = "Couldn't copy \(item.name): \(error.message)"
                 }
+            }
+            guard let self else { return }
+            self.finishActivity()
+            if let failure {
+                self.errorMessage = failure
+            }
+            if !savedURLs.isEmpty {
+                NSWorkspace.shared.activateFileViewerSelecting(savedURLs)
             }
         }
     }
@@ -385,13 +399,8 @@ final class FileBrowserModel: ObservableObject {
             fileOptions: entry.isNavigable ? [.openInPlace] : [],
             visibility: .all
         ) { completion in
-            let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("PhoneRelay Files", isDirectory: true)
-                .appendingPathComponent(UUID().uuidString, isDirectory: true)
             do {
-                try FileManager.default.createDirectory(
-                    at: directory, withIntermediateDirectories: true
-                )
+                let directory = try PhoneFileBrowserService.makeTemporaryPullDirectory()
                 switch PhoneFileBrowserService.pull(
                     serial: transfer.serial,
                     remotePath: transfer.remotePath,
@@ -454,25 +463,49 @@ final class FileBrowserModel: ObservableObject {
     }
 
     func delete(_ entry: PhoneFileEntry) {
-        guard let serial = serialOrExplain, !isBusy else { return }
-        let remotePath = PhoneFileBrowserService.joined(path, entry.name)
-        let isDirectory = entry.isNavigable
-        beginActivity(title: "Deleting from phone", detail: entry.name)
-        Task.detached { [weak self] in
-            let outcome = PhoneFileBrowserService.delete(
-                serial: serial, remotePath: remotePath, isDirectory: isDirectory
+        delete([entry])
+    }
+
+    /// Deletes entries one at a time behind a single activity overlay,
+    /// stopping at the first failure, then refreshes once.
+    func delete(_ entriesToDelete: [PhoneFileEntry]) {
+        guard let serial = serialOrExplain, !isBusy, !entriesToDelete.isEmpty else { return }
+        let directory = path
+        let items = entriesToDelete.map { entry in
+            (
+                name: entry.name,
+                remotePath: PhoneFileBrowserService.joined(directory, entry.name),
+                isDirectory: entry.isNavigable
             )
-            if outcome.succeeded {
-                PhoneFileBrowserService.requestMediaScan(serial: serial, remotePath: remotePath)
-            }
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                self.finishActivity()
+        }
+        Task { [weak self] in
+            var failure: String?
+            let total = items.count
+            for (index, item) in items.enumerated() where failure == nil {
+                self?.beginActivity(
+                    title: "Deleting from phone",
+                    detail: total == 1 ? item.name : "\(index + 1) of \(total) - \(item.name)",
+                    progress: total == 1 ? nil : Double(index) / Double(total)
+                )
+                let outcome = await Task.detached {
+                    let outcome = PhoneFileBrowserService.delete(
+                        serial: serial, remotePath: item.remotePath, isDirectory: item.isDirectory
+                    )
+                    if outcome.succeeded {
+                        PhoneFileBrowserService.requestMediaScan(serial: serial, remotePath: item.remotePath)
+                    }
+                    return outcome
+                }.value
                 if !outcome.succeeded {
-                    self.errorMessage = "Couldn't delete \(entry.name): \(outcome.message)"
+                    failure = "Couldn't delete \(item.name): \(outcome.message)"
                 }
-                self.refresh()
             }
+            guard let self else { return }
+            self.finishActivity()
+            if let failure {
+                self.errorMessage = failure
+            }
+            self.refresh()
         }
     }
 
@@ -521,17 +554,20 @@ final class FileBrowserModel: ObservableObject {
 
 /// Finder-style browser for the connected phone's shared storage.
 struct FileBrowserView: View {
+    /// Set on the hosting window by AppDelegate; the key monitor matches on
+    /// this instead of the (display-facing, changeable) window title.
+    static let windowIdentifier = NSUserInterfaceItemIdentifier("phone-files-window")
+
     @ObservedObject var model: FileBrowserModel
 
     @State private var isDropTargeted = false
-    @State private var entryToDelete: PhoneFileEntry?
+    @State private var entriesToDelete: [PhoneFileEntry]?
     @State private var entryToRename: PhoneFileEntry?
     @State private var renameText = ""
     @State private var isNamingFolder = false
     @State private var newFolderText = ""
     @State private var selectedEntryIDs: Set<PhoneFileEntry.ID> = []
     @State private var selectionAnchorID: PhoneFileEntry.ID?
-    @State private var clickTracker = FileBrowserClickTracker()
     @State private var keyMonitor: Any?
 
     var body: some View {
@@ -581,19 +617,23 @@ struct FileBrowserView: View {
             handleDrop(providers)
         }
         .alert(
-            "Delete \"\(entryToDelete?.name ?? "")\"?",
+            deleteAlertTitle,
             isPresented: Binding(
-                get: { entryToDelete != nil },
-                set: { if !$0 { entryToDelete = nil } }
+                get: { entriesToDelete != nil },
+                set: { if !$0 { entriesToDelete = nil } }
             )
         ) {
             Button("Delete", role: .destructive) {
-                if let entry = entryToDelete { model.delete(entry) }
-                entryToDelete = nil
+                if let entries = entriesToDelete { model.delete(entries) }
+                entriesToDelete = nil
             }
-            Button("Cancel", role: .cancel) { entryToDelete = nil }
+            Button("Cancel", role: .cancel) { entriesToDelete = nil }
         } message: {
-            Text("This removes it from the phone. You can't undo this.")
+            Text(
+                (entriesToDelete?.count ?? 0) > 1
+                    ? "This removes them from the phone. You can't undo this."
+                    : "This removes it from the phone. You can't undo this."
+            )
         }
         .alert(
             "Rename \"\(entryToRename?.name ?? "")\"",
@@ -904,22 +944,7 @@ struct FileBrowserView: View {
             })
             .onDrag { model.dragItemProvider(for: entry) }
             .contextMenu {
-                Button("Preview") { model.preview(entry) }
-                Button("Open") { model.open(entry) }
-                Button("Save to Mac") { model.download(entry) }
-                Button("Rename…") {
-                    renameText = entry.name
-                    entryToRename = entry
-                }
-                Divider()
-                Button(role: .destructive) {
-                    entryToDelete = entry
-                } label: {
-                    // Plain foregroundColor is stripped inside menus; the
-                    // attributed color survives, so Delete reads red even
-                    // where the destructive role isn't tinted.
-                    Text(redMenuTitle("Delete…"))
-                }
+                contextMenuItems(for: entry)
             }
         if entry.isNavigable {
             decorated.modifier(FolderDropTargetModifier(entry: entry, onDrop: handleRowDrop))
@@ -928,14 +953,58 @@ struct FileBrowserView: View {
         }
     }
 
+    /// Rows the context menu on `entry` should act on: the whole selection
+    /// when the row is part of a multi-selection (like Finder), otherwise just
+    /// the clicked row.
+    private func contextMenuTargets(for entry: PhoneFileEntry) -> [PhoneFileEntry] {
+        if selectedEntryIDs.count > 1, selectedEntryIDs.contains(entry.id) {
+            return selectedEntries
+        }
+        return [entry]
+    }
+
+    @ViewBuilder
+    private func contextMenuItems(for entry: PhoneFileEntry) -> some View {
+        let targets = contextMenuTargets(for: entry)
+        if targets.count > 1 {
+            Button("Save \(targets.count) Items to Mac") { model.download(targets) }
+            Divider()
+            Button(role: .destructive) {
+                entriesToDelete = targets
+            } label: {
+                Text(redMenuTitle("Delete \(targets.count) Items…"))
+            }
+        } else {
+            Button("Preview") { model.preview(entry) }
+            Button("Open") { model.open(entry) }
+            Button("Save to Mac") { model.download(entry) }
+            Button("Rename…") {
+                renameText = entry.name
+                entryToRename = entry
+            }
+            Divider()
+            Button(role: .destructive) {
+                entriesToDelete = [entry]
+            } label: {
+                // Plain foregroundColor is stripped inside menus; the
+                // attributed color survives, so Delete reads red even
+                // where the destructive role isn't tinted.
+                Text(redMenuTitle("Delete…"))
+            }
+        }
+    }
+
+    private var deleteAlertTitle: String {
+        guard let entries = entriesToDelete else { return "" }
+        if entries.count == 1, let entry = entries.first {
+            return "Delete \"\(entry.name)\"?"
+        }
+        return "Delete \(entries.count) items?"
+    }
+
     private func handleClick(_ event: FileBrowserClickEvent, entry: PhoneFileEntry) {
         let flags = event.modifiers.intersection(.deviceIndependentFlagsMask)
-        if clickTracker.registerClick(
-            entryID: entry.id,
-            clickCount: event.clickCount,
-            timestamp: event.timestamp,
-            modifiers: flags
-        ) {
+        if event.clickCount >= 2 {
             selectedEntryIDs = [entry.id]
             selectionAnchorID = entry.id
             model.open(entry)
@@ -1047,7 +1116,7 @@ struct FileBrowserView: View {
     private func installKeyMonitor() {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard NSApp.keyWindow?.title == "Phone Files",
+            guard NSApp.keyWindow?.identifier == Self.windowIdentifier,
                   event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
                   !isTextEditingFirstResponder
             else { return event }
@@ -1218,28 +1287,6 @@ private struct FileBrowserClickEvent {
     var clickCount: Int
     var modifiers: NSEvent.ModifierFlags
     var timestamp: TimeInterval
-}
-
-private final class FileBrowserClickTracker {
-    private var lastEntryID: PhoneFileEntry.ID?
-    private var lastClickTime: TimeInterval = 0
-
-    func registerClick(
-        entryID: PhoneFileEntry.ID,
-        clickCount: Int,
-        timestamp: TimeInterval,
-        modifiers: NSEvent.ModifierFlags
-    ) -> Bool {
-        lastEntryID = entryID
-        lastClickTime = timestamp
-
-        if clickCount >= 2 {
-            lastEntryID = nil
-            lastClickTime = 0
-            return true
-        }
-        return false
-    }
 }
 
 private struct FileBrowserClickModifier: ViewModifier {

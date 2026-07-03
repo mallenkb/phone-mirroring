@@ -74,6 +74,16 @@ struct ADBController: Sendable {
     nonisolated(unsafe) private static var dnsSDFallbackPhones: [DiscoveredPhone] = []
 
     static func rateLimitedDNSServiceDiscoveredPhones(now: Date = Date()) -> [DiscoveredPhone] {
+        // Fast path: the persistent Bonjour browsers already know what's
+        // advertised, so a newly appearing phone is seen on the next 1s poll
+        // instead of after the legacy sweep's 4s cache + ~4s browse windows.
+        // Only *resolution* to host:port may still shell out, once per newly
+        // seen service.
+        if let services = BonjourServiceMonitor.shared.currentServices() {
+            return resolvedPhones(for: services, now: now)
+        }
+
+        // Legacy sweep — only when a persistent browser failed outright.
         dnsSDFallbackLock.lock()
         if let fetchedAt = dnsSDFallbackFetchedAt,
            now.timeIntervalSince(fetchedAt) < dnsSDFallbackCacheWindow {
@@ -90,6 +100,83 @@ struct ADBController: Sendable {
         dnsSDFallbackLock.unlock()
         return phones
     }
+
+    // MARK: - Browser-backed resolve cache
+
+    /// Resolved `host:port` per advertised service, kept until the service
+    /// stops advertising — so steady state costs zero process spawns per poll.
+    /// Dropping the entry on disappearance means a phone that comes back on a
+    /// new IP re-resolves fresh.
+    private static let resolveCacheLock = NSLock()
+    nonisolated(unsafe) private static var resolvedPhonesByService: [DNSService: DiscoveredPhone] = [:]
+    nonisolated(unsafe) private static var failedResolveAt: [DNSService: Date] = [:]
+    /// Failed resolves retry on this cadence rather than every 1s poll.
+    nonisolated static let resolveRetryInterval: TimeInterval = 5
+
+    nonisolated static func defaultServiceResolver(_ service: DNSService) -> DiscoveredPhone? {
+        let resolved = Tooling.runResult(
+            "dns-sd",
+            arguments: ["-L", service.instance, service.serviceType, "local"],
+            timeout: 1
+        )
+        return parseDNSServiceResolveOutput(
+            resolved.output,
+            instance: service.instance,
+            serviceType: service.serviceType
+        )
+    }
+
+    static func resolvedPhones(
+        for services: [DNSService],
+        now: Date = Date(),
+        resolve: (DNSService) -> DiscoveredPhone? = defaultServiceResolver
+    ) -> [DiscoveredPhone] {
+        var phones: [DiscoveredPhone] = []
+        for service in services {
+            resolveCacheLock.lock()
+            let cached = resolvedPhonesByService[service]
+            let lastFailure = failedResolveAt[service]
+            resolveCacheLock.unlock()
+
+            if var phone = cached {
+                phone.lastSeen = now
+                phones.append(phone)
+                continue
+            }
+            if let lastFailure, now.timeIntervalSince(lastFailure) < resolveRetryInterval {
+                continue
+            }
+            if let phone = resolve(service) {
+                resolveCacheLock.lock()
+                resolvedPhonesByService[service] = phone
+                failedResolveAt.removeValue(forKey: service)
+                resolveCacheLock.unlock()
+                phones.append(phone)
+            } else {
+                resolveCacheLock.lock()
+                failedResolveAt[service] = now
+                resolveCacheLock.unlock()
+            }
+        }
+
+        // Forget services that stopped advertising so their return re-resolves.
+        let current = Set(services)
+        resolveCacheLock.lock()
+        resolvedPhonesByService = resolvedPhonesByService.filter { current.contains($0.key) }
+        failedResolveAt = failedResolveAt.filter { current.contains($0.key) }
+        resolveCacheLock.unlock()
+
+        return dedupeMDNSPhones(phones)
+    }
+
+    #if DEBUG
+    static func resetResolveCacheForTesting() {
+        resolveCacheLock.lock()
+        resolvedPhonesByService = [:]
+        failedResolveAt = [:]
+        resolveCacheLock.unlock()
+    }
+    #endif
 
     func connectableMDNSTargets() -> [DiscoveredPhone] {
         mdnsServices().filter { $0.kind.isConnectable }

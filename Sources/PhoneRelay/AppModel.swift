@@ -411,6 +411,12 @@ final class AppModel: ObservableObject {
         var message: String
     }
 
+    struct MacUSBDeviceDiagnostic: Equatable, Sendable {
+        var hasAnyUSBDevice: Bool
+        var hasAndroidLikeDevice: Bool
+        var deviceName: String?
+    }
+
     func reportError(_ title: String, _ message: String) {
         Logger.log("User-facing error: \(title) — \(message)")
         activeError = UserFacingError(title: title, message: message)
@@ -856,12 +862,16 @@ final class AppModel: ObservableObject {
     /// Physical USB serials the user explicitly chose for this active session.
     /// In-flight automatic USB->Wi-Fi handoff work must not override that choice.
     private var manualUSBPinnedSerials: Set<String> = []
+    /// Set during an explicit Wi-Fi/manual-IP attempt. USB may stay available,
+    /// but it must not replace the connection method the user just chose.
+    private var manualWirelessConnectDisallowsUSBFallback = false
     private var lastUSBWiFiAddressPrefillSerial: String?
     private var lastUSBWiFiAddressPrefillAt: Date?
     /// On launch we keep the status indicator on "Connecting" until this moment,
     /// so opening the app reads as "finding your last device" rather than
     /// "Offline" while the first reconnect attempts run.
     private var launchReconnectDeadline: Date?
+    private var foregroundLaunchPresentationActive = false
     private var hasCompletedSuccessfulMirrorConnection = false
     private var deviceWatcherTask: Task<Void, Never>?
     /// Event-driven reconnect state: fires an immediate auto-connect attempt on
@@ -871,6 +881,12 @@ final class AppModel: ObservableObject {
     private var lastNetworkPathWasSatisfied: Bool?
     private var didWakeObserver: NSObjectProtocol?
     private var lastSystemEventReconnectNudgeAt: Date?
+    /// Kernel USB-attach events cut the device watcher's sleep short so a
+    /// freshly plugged cable is scanned immediately (poll cadence unchanged).
+    private var usbAttachMonitor: USBAttachMonitor?
+    private var lastUSBAttachNudgeAt: Date?
+    private var deviceWatcherWakeContinuation: CheckedContinuation<Void, Never>?
+    private var deviceWatcherSleepGeneration = 0
     private var qrPairingTask: Task<Void, Never>?
     private var usbConnectTask: Task<Void, Never>?
     private var usbWiFiAddressPrefillTask: Task<Void, Never>?
@@ -881,6 +897,9 @@ final class AppModel: ObservableObject {
     private var disconnectRecoveryTask: Task<Void, Never>?
     private var screenRecordingMonitorTask: Task<Void, Never>?
     private var screenRecordingRemotePaths: [String] = []
+    /// Per-session token in the on-phone segment filenames, so starting a new
+    /// recording can never `rm -f` a previous session's not-yet-pulled file.
+    private var screenRecordingSessionToken = ""
     private var mirrorLaunchTask: Task<Void, Never>?
     private var mirrorSettingsRestartTask: Task<Void, Never>?
     private var suppressMirrorSettingsRestart = false
@@ -1079,7 +1098,18 @@ final class AppModel: ObservableObject {
     }
 
     var connectionDeviceLabel: String {
-        Self.connectionDeviceLabel(
+        if selectedDevice.adbSerial == nil,
+           !isSelectedDeviceOnline,
+           let liveDevice = latestAuthorizedADBDevices.first {
+            return Self.connectionDeviceLabel(
+                name: liveDevice.model,
+                id: liveDevice.serial,
+                serial: liveDevice.serial,
+                network: liveDevice.isUSB ? "USB debugging" : "Wi-Fi"
+            )
+        }
+
+        return Self.connectionDeviceLabel(
             name: selectedDevice.name,
             id: selectedDevice.id,
             serial: selectedDevice.adbSerial,
@@ -1096,6 +1126,18 @@ final class AppModel: ObservableObject {
             name: selectedDevice.name,
             isOnline: isSelectedDeviceOnline,
             isMirroring: isMirroring
+        )
+    }
+
+    var connectionChoiceTitle: String {
+        Self.connectionChoiceTitle(
+            deviceLabel: connectionDeviceLabel,
+            state: connectionPillState,
+            isDeviceConnected: isSelectedDeviceOnline
+                || isMirroring
+                || !latestAuthorizedADBDevices.isEmpty,
+            isFirstTimeUSBSetup: isFirstTimeUSBSetup,
+            isWiFiConnectionAvailable: isWirelessConnectionAvailable
         )
     }
 
@@ -1382,6 +1424,7 @@ final class AppModel: ObservableObject {
 
     deinit {
         networkPathMonitor?.cancel()
+        usbAttachMonitor?.stop()
         if let didWakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(didWakeObserver)
         }
@@ -1651,6 +1694,22 @@ final class AppModel: ObservableObject {
         if isFirstRunOnboardingActive {
             hideConnectionWindow()
         }
+    }
+
+    func beginForegroundLaunchPresentation() {
+        foregroundLaunchPresentationActive = true
+    }
+
+    func endForegroundLaunchPresentation() {
+        foregroundLaunchPresentationActive = false
+    }
+
+    var shouldPreserveForegroundLaunchPresentationAfterResign: Bool {
+        foregroundLaunchPresentationActive
+    }
+
+    var shouldAssertForegroundPresentation: Bool {
+        foregroundLaunchPresentationActive || NSApp?.isActive == true
     }
 
     func resetFirstTimeUserOnboardingState() {
@@ -2375,7 +2434,7 @@ final class AppModel: ObservableObject {
                         hasSavedDevices: !self.pairedPhones.isEmpty,
                         isActivelyConnecting: self.isActivelyConnecting
                     )
-                    try? await Task.sleep(nanoseconds: interval)
+                    await self.deviceWatcherSleep(nanoseconds: interval)
                     continue
                 }
 
@@ -2391,7 +2450,8 @@ final class AppModel: ObservableObject {
                     isAwaitingReconnect: self.isAwaitingReconnect,
                     hasReconnectTask: self.reconnectTask != nil,
                     hasWirelessStartTask: self.wirelessStartTask != nil,
-                    hasUSBWiFiTakeoverTask: self.usbWiFiTakeoverTask != nil
+                    hasUSBWiFiTakeoverTask: self.usbWiFiTakeoverTask != nil,
+                    disallowUSBFallback: self.manualWirelessConnectDisallowsUSBFallback
                 ) {
                     Logger.log("USB device interrupted wireless reconnect; cancelling stale reconnect work")
                     self.cancelWirelessReconnectWork()
@@ -2463,7 +2523,7 @@ final class AppModel: ObservableObject {
                             hasSavedDevices: !self.pairedPhones.isEmpty,
                             isActivelyConnecting: self.isActivelyConnecting
                         )
-                        try? await Task.sleep(nanoseconds: interval)
+                        await self.deviceWatcherSleep(nanoseconds: interval)
                         continue
                     } else if authorized.first(where: \.isUSB) == nil {
                         self.lastUSBHandoffSerial = nil
@@ -2503,7 +2563,7 @@ final class AppModel: ObservableObject {
                         hasSavedDevices: !self.pairedPhones.isEmpty,
                         isActivelyConnecting: self.isActivelyConnecting
                     )
-                    try? await Task.sleep(nanoseconds: interval)
+                    await self.deviceWatcherSleep(nanoseconds: interval)
                     continue
                 }
 
@@ -2528,7 +2588,7 @@ final class AppModel: ObservableObject {
                     hasSavedDevices: !self.pairedPhones.isEmpty,
                     isActivelyConnecting: self.isActivelyConnecting
                 )
-                try? await Task.sleep(nanoseconds: interval)
+                await self.deviceWatcherSleep(nanoseconds: interval)
             }
         }
     }
@@ -2596,6 +2656,17 @@ final class AppModel: ObservableObject {
         monitor.start(queue: DispatchQueue(label: "PhoneRelay.network-path-monitor"))
         networkPathMonitor = monitor
 
+        // A plugged cable is the strongest "scan now" signal there is: wake
+        // the watcher instead of letting the plug-in wait out the remaining
+        // poll interval. Event-driven, so idle cost stays zero.
+        let attachMonitor = USBAttachMonitor { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.handleUSBDeviceAttached()
+            }
+        }
+        attachMonitor.start()
+        usbAttachMonitor = attachMonitor
+
         didWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
@@ -2610,10 +2681,58 @@ final class AppModel: ObservableObject {
     private func stopSystemEventReconnectTriggers() {
         networkPathMonitor?.cancel()
         networkPathMonitor = nil
+        usbAttachMonitor?.stop()
+        usbAttachMonitor = nil
         if let didWakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(didWakeObserver)
             self.didWakeObserver = nil
         }
+    }
+
+    // MARK: - USB attach → immediate scan
+
+    /// Attach events arrive in bursts (one phone enumerates several USB
+    /// interfaces); one immediate scan per plug-in is enough.
+    nonisolated static let usbAttachNudgeDebounce: TimeInterval = 1
+
+    nonisolated static func shouldNudgeForUSBAttach(
+        lastNudgeAt: Date?,
+        now: Date = Date(),
+        debounce: TimeInterval = usbAttachNudgeDebounce
+    ) -> Bool {
+        guard let lastNudgeAt else { return true }
+        return now.timeIntervalSince(lastNudgeAt) >= debounce
+    }
+
+    private func handleUSBDeviceAttached() {
+        guard Self.shouldNudgeForUSBAttach(lastNudgeAt: lastUSBAttachNudgeAt) else { return }
+        lastUSBAttachNudgeAt = Date()
+        Logger.log("USB device attached; scanning now instead of waiting out the poll interval")
+        // Fresh physical evidence — let the presence auto-connect act on the
+        // very next poll instead of the 3s throttle window.
+        lastPresenceAutoConnectAttemptAt = nil
+        wakeDeviceWatcher()
+    }
+
+    /// Device-watcher sleep that external events can cut short. All watcher
+    /// decisions (manual-disconnect stickiness, pins, cooldowns) stay in the
+    /// loop itself — waking early only changes *when* the next poll runs.
+    private func deviceWatcherSleep(nanoseconds: UInt64) async {
+        deviceWatcherSleepGeneration += 1
+        let generation = deviceWatcherSleepGeneration
+        await withCheckedContinuation { continuation in
+            deviceWatcherWakeContinuation = continuation
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: nanoseconds)
+                guard let self, self.deviceWatcherSleepGeneration == generation else { return }
+                self.wakeDeviceWatcher()
+            }
+        }
+    }
+
+    private func wakeDeviceWatcher() {
+        deviceWatcherWakeContinuation?.resume()
+        deviceWatcherWakeContinuation = nil
     }
 
     private func nudgeAutoReconnectAfterSystemEvent(reason: String) {
@@ -3472,7 +3591,8 @@ final class AppModel: ObservableObject {
         )
     }
 
-    static let localNetworkBlockedErrorTitle = "Local Network may be blocked"
+    nonisolated static let localNetworkBlockedErrorTitle = "Local Network may be blocked"
+    nonisolated static let usbPhoneNotFoundErrorTitle = "USB phone not found"
 
     /// "No route to host" on every attempt — while the phone can reach the Mac
     /// — is usually macOS denying this app's Local Network permission, which can
@@ -3627,6 +3747,7 @@ final class AppModel: ObservableObject {
     }
 
     func connectViaUSB() {
+        manualWirelessConnectDisallowsUSBFallback = false
         if let liveUSBDevice = latestAuthorizedADBDevices.first(where: \.isUSB) {
             if isMirroring || mirrorLaunchTask != nil {
                 pinManualUSBTransport(serial: liveUSBDevice.serial)
@@ -3654,34 +3775,66 @@ final class AppModel: ObservableObject {
 
         let adb = self.adb
         usbConnectTask = Task { [weak self] in
-            let output = await Task.detached {
+            var output = await Task.detached {
                 adb.run(["devices", "-l"], timeout: Self.adbDeviceListTimeout)
             }.value
             guard !Task.isCancelled else { return }
-            let authorizedDevices = Self.authorizedADBDevices(in: output)
-            let usbDevice = authorizedDevices.first(where: \.isUSB)
-            let hasUnauthorizedUSB = output
-                .split(whereSeparator: \.isNewline)
-                .map(String.init)
-                .contains { $0.contains("unauthorized") && $0.contains("usb:") }
+            var authorizedDevices = Self.authorizedADBDevices(in: output)
+            var usbDevice = authorizedDevices.first(where: \.isUSB)
+            var hasUnauthorizedUSB = Self.hasUnauthorizedUSBDevice(in: output)
 
             guard let self else { return }
             guard self.mirrorStartGeneration == generation else { return }
             self.recordADBHealth(output, authorizedDevices: authorizedDevices)
             self.updateUSBAuthorizationHint(from: output, authorizedDevices: authorizedDevices)
             if hasUnauthorizedUSB {
+                self.reportUSBNotAuthorized()
                 self.isPairing = false
                 self.usbConnectTask = nil
                 return
             }
 
+            if usbDevice == nil {
+                Logger.log("Manual USB connect found no USB device; restarting adb server once before giving up.")
+                // Release the pairing indicator before the restart retry: a
+                // stalled adb daemon costs two full scan timeouts, and the UI
+                // must not read "pairing" that long. `usbConnectTask` stays
+                // set, so the status pill still shows the attempt as active
+                // and auto-connect flows stay blocked while the retry runs.
+                self.isPairing = false
+                let retry = await Self.usbDevicesAfterADBServerRestart(adb: adb)
+                guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
+                output = retry.output
+                authorizedDevices = retry.authorizedDevices
+                usbDevice = retry.usbDevice
+                hasUnauthorizedUSB = Self.hasUnauthorizedUSBDevice(in: output)
+                self.recordADBHealth(output, authorizedDevices: authorizedDevices)
+                self.updateUSBAuthorizationHint(from: output, authorizedDevices: authorizedDevices)
+                if hasUnauthorizedUSB {
+                    self.reportUSBNotAuthorized()
+                    self.isPairing = false
+                    self.usbConnectTask = nil
+                    return
+                }
+            }
+
             guard let usbDevice else {
+                let diagnostic = await Self.currentMacUSBDeviceDiagnostic()
+                guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
+                self.reportError(
+                    Self.usbPhoneNotFoundErrorTitle,
+                    Self.usbPhoneNotFoundMessage(for: diagnostic)
+                )
                 self.isPairing = false
                 self.usbConnectTask = nil
                 return
             }
 
             guard let readyUSBDevice = await self.readyUSBDeviceForMirroring(usbDevice) else {
+                self.reportError(
+                    "USB phone not ready",
+                    "Phone Relay found the USB device, but adb could not talk to it yet. Keep the phone unlocked, replug the cable, and approve USB debugging on the phone."
+                )
                 self.isPairing = false
                 self.usbConnectTask = nil
                 return
@@ -3699,9 +3852,123 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private nonisolated static func usbDevicesAfterADBServerRestart(
+        adb: ADBController
+    ) async -> (output: String, authorizedDevices: [AuthorizedADBDevice], usbDevice: AuthorizedADBDevice?) {
+        await Task.detached(priority: .userInitiated) {
+            _ = adb.run(["kill-server"], timeout: 3)
+        }.value
+        await adb.ensureServerStarted()
+        let output = await Task.detached {
+            adb.run(["devices", "-l"], timeout: Self.adbDeviceListTimeout)
+        }.value
+        let devices = Self.authorizedADBDevices(in: output)
+        return (output, devices, devices.first(where: \.isUSB))
+    }
+
+    nonisolated static func usbPhoneNotFoundMessage(for diagnostic: MacUSBDeviceDiagnostic) -> String {
+        if diagnostic.hasAndroidLikeDevice {
+            let device = diagnostic.deviceName.map { " (\($0))" } ?? ""
+            return "macOS can see an Android USB device\(device), but adb cannot see a USB debugging transport yet. Unlock the phone, set USB mode to File Transfer, turn USB debugging off and back on, then tap Allow if Android shows the prompt."
+        }
+        if diagnostic.hasAnyUSBDevice {
+            return "adb did not find a USB debugging phone. If the phone is plugged in, unlock it, choose File Transfer instead of charge-only, enable USB debugging, and use a data-capable cable or direct USB-C port."
+        }
+        return "macOS is not seeing the phone on USB at all. Use a data-capable cable, plug directly into this Mac, unlock the phone, set USB mode to File Transfer, then enable USB debugging and tap Allow."
+    }
+
+    nonisolated static func macUSBDeviceDiagnostic(from ioregOutput: String) -> MacUSBDeviceDiagnostic {
+        let lines = ioregOutput.split(whereSeparator: \.isNewline).map(String.init)
+        let hasAnyUSBDevice = lines.contains { line in
+            line.contains("<class IOUSBHostDevice") || line.contains("\"idVendor\"")
+        }
+        let androidVendorIDs: Set<Int> = [
+            0x04e8, // Samsung
+            0x0bb4, // HTC
+            0x0fce, // Sony
+            0x1004, // LG
+            0x12d1, // Huawei
+            0x18d1, // Google
+            0x22b8, // Motorola
+            0x22d9, // Oppo
+            0x2717, // Xiaomi
+            0x2a70, // OnePlus
+            0x2d95  // Vivo
+        ]
+        let vendorID = lines
+            .first { $0.contains("\"idVendor\"") }
+            .flatMap(Self.integerValueAfterEquals)
+        let deviceName = Self.usbRegistryDeviceName(from: lines)
+        let keywords = [
+            "android", "adb", "mtp", "samsung", "google", "pixel",
+            "galaxy", "oneplus", "xiaomi", "huawei", "motorola",
+            "sony", "oppo", "vivo", "nothing phone", "lg "
+        ]
+        let searchable = ([deviceName].compactMap { $0 } + lines).joined(separator: "\n").lowercased()
+        let hasAndroidLikeDevice = vendorID.map(androidVendorIDs.contains) == true
+            || keywords.contains { searchable.contains($0) }
+        return MacUSBDeviceDiagnostic(
+            hasAnyUSBDevice: hasAnyUSBDevice,
+            hasAndroidLikeDevice: hasAndroidLikeDevice,
+            deviceName: deviceName
+        )
+    }
+
+    private nonisolated static func currentMacUSBDeviceDiagnostic() async -> MacUSBDeviceDiagnostic {
+        await Task.detached(priority: .utility) {
+            let output = Tooling.run(
+                "ioreg",
+                arguments: ["-p", "IOUSB", "-r", "-c", "IOUSBHostDevice", "-l", "-w", "0"],
+                timeout: 2
+            )
+            return macUSBDeviceDiagnostic(from: output)
+        }.value
+    }
+
+    private nonisolated static func usbRegistryDeviceName(from lines: [String]) -> String? {
+        let preferredKeys = [
+            "\"USB Product Name\"",
+            "\"Product Name\"",
+            "\"kUSBProductString\"",
+            "\"USB Vendor Name\"",
+            "\"kUSBVendorString\""
+        ]
+        for key in preferredKeys {
+            if let line = lines.first(where: { $0.contains(key) }),
+               let value = quotedValueAfterEquals(line),
+               !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private nonisolated static func quotedValueAfterEquals(_ line: String) -> String? {
+        guard let equals = line.range(of: "=") else { return nil }
+        let value = line[equals.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let firstQuote = value.firstIndex(of: "\"") else { return nil }
+        let remainder = value[value.index(after: firstQuote)...]
+        guard let secondQuote = remainder.firstIndex(of: "\"") else { return nil }
+        return String(remainder[..<secondQuote])
+    }
+
+    private nonisolated static func integerValueAfterEquals(_ line: String) -> Int? {
+        guard let equals = line.range(of: "=") else { return nil }
+        let raw = line[equals.upperBound...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if raw.hasPrefix("0x") {
+            let hex = raw.dropFirst(2).prefix { $0.isHexDigit }
+            return Int(hex, radix: 16)
+        }
+        let decimal = raw.prefix { $0.isNumber }
+        return Int(decimal)
+    }
+
     func connectViaAvailableWireless() {
         guard !isMirroring, !isPairing else { return }
         manualUSBPinnedSerials.removeAll()
+        manualWirelessConnectDisallowsUSBFallback = true
         resumeDiscoveryAfterManualConnect()
         stopQRCodePairingSession()
 
@@ -3732,9 +3999,11 @@ final class AppModel: ObservableObject {
             "Wi-Fi unavailable",
             "Phone Relay could not find a saved or live Wi-Fi route for this phone. Keep the phone awake, make sure both devices are on the same Wi-Fi, then try Wi-Fi again."
         )
+        manualWirelessConnectDisallowsUSBFallback = false
     }
 
     private func pinManualUSBTransport(serial: String) {
+        manualWirelessConnectDisallowsUSBFallback = false
         manualUSBPinnedSerials.insert(serial)
         usbWiFiHandoffTask?.cancel()
         usbWiFiHandoffTask = nil
@@ -3997,6 +4266,7 @@ final class AppModel: ObservableObject {
             return
         }
         manualUSBPinnedSerials.removeAll()
+        manualWirelessConnectDisallowsUSBFallback = true
         let initialCandidateAddresses = Self.manualADBTargetCandidateAddresses(
             normalizedAddress: address,
             discoveredPhones: discoveredPhones,
@@ -4091,6 +4361,7 @@ final class AppModel: ObservableObject {
                 self.isManualADBTargetConnecting = false
                 self.isRecoveringConnection = false
                 self.isAwaitingReconnect = false
+                self.manualWirelessConnectDisallowsUSBFallback = false
                 if result.sawNoRouteToHost {
                     self.presentLocalNetworkPermissionHint()
                     self.reportError(
@@ -4229,6 +4500,10 @@ final class AppModel: ObservableObject {
               !isMirroring
         else { return }
         hasShownUSBAuthorizationHint = true
+        reportUSBNotAuthorized()
+    }
+
+    private func reportUSBNotAuthorized() {
         reportError(
             "Authorize USB debugging",
             "The phone is plugged in, but Android has not authorized this Mac yet. Unlock the phone and tap Allow on the USB debugging prompt, or use Wi-Fi debugging if it is already enabled."
@@ -4331,6 +4606,7 @@ final class AppModel: ObservableObject {
             // first-run instead of leaving it pinned to the onboarding window.
             if let liveDevice = devices.first {
                 select(device: liveDevice)
+                rememberLiveAuthorizedDeviceIfNeeded(liveDevice)
                 return
             }
             selectedDevice = .demo
@@ -4362,6 +4638,7 @@ final class AppModel: ObservableObject {
             states: [.mirroringReady, .companionConnected],
             adbSerial: liveDevice.serial
         )
+        rememberLiveAuthorizedDeviceIfNeeded(liveDevice)
 
         // The phone is live on Wi-Fi — remember that address as the saved route.
         // Without this, a phone paired over USB keeps `lastAddress` = its USB
@@ -4423,18 +4700,33 @@ final class AppModel: ObservableObject {
             }
             self.manualADBTarget = wifiIP
 
+            // Persist the fresh IP right away — reconnects only need the
+            // address, and the MAC read below costs extra shell round-trips.
+            // `touch` preserves a stored MAC when none is supplied, so this
+            // never erases the recovery anchor.
+            let recordID = matchingRecord?.id ?? usbDevice.serial
+            let recordDisplayName = matchingRecord?.displayName ?? self.selectedDisplayName(for: usbDevice.model)
+            let recordUSBSerial = matchingRecord?.resolvedUSBSerial ?? usbDevice.serial
+            self.touchPairedPhone(
+                id: recordID,
+                displayName: recordDisplayName,
+                address: wifiAddress,
+                usbSerial: recordUSBSerial,
+                wifiAddress: wifiAddress
+            )
+
             // Learn the Wi-Fi MAC while we have the cable — it's the anchor that
             // lets recovery find the phone after its IP changes.
             let wifiMAC = await Task.detached {
                 Self.resolveWiFiMACAddress(adb: adb, serial: usbDevice.serial, routeOutput: routeOutput)
             }.value
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, let wifiMAC else { return }
 
             self.touchPairedPhone(
-                id: matchingRecord?.id ?? usbDevice.serial,
-                displayName: matchingRecord?.displayName ?? self.selectedDisplayName(for: usbDevice.model),
+                id: recordID,
+                displayName: recordDisplayName,
                 address: wifiAddress,
-                usbSerial: matchingRecord?.resolvedUSBSerial ?? usbDevice.serial,
+                usbSerial: recordUSBSerial,
                 wifiAddress: wifiAddress,
                 wifiMACAddress: wifiMAC
             )
@@ -4457,6 +4749,23 @@ final class AppModel: ObservableObject {
             address: address,
             usbSerial: record.resolvedUSBSerial,
             wifiAddress: address
+        )
+    }
+
+    private func rememberLiveAuthorizedDeviceIfNeeded(_ device: AuthorizedADBDevice) {
+        guard !explicitDeviceSetupRequired else { return }
+        let alreadyRemembered = pairedPhones.contains { record in
+            Self.recordMatchesSelectedADBSerial(record, selectedSerial: device.serial)
+                || Self.rememberedAuthorizedDevice(for: record, in: [device]) != nil
+        }
+        guard !alreadyRemembered else { return }
+
+        touchPairedPhone(
+            id: device.serial,
+            displayName: selectedDisplayName(for: device.model),
+            address: device.serial,
+            usbSerial: device.isUSB ? device.serial : nil,
+            wifiAddress: device.isUSB ? nil : device.serial
         )
     }
 
@@ -4843,8 +5152,10 @@ final class AppModel: ObservableObject {
         isAwaitingReconnect: Bool,
         hasReconnectTask: Bool,
         hasWirelessStartTask: Bool,
-        hasUSBWiFiTakeoverTask: Bool = false
+        hasUSBWiFiTakeoverTask: Bool = false,
+        disallowUSBFallback: Bool = false
     ) -> Bool {
+        guard !disallowUSBFallback else { return false }
         guard !hasUSBWiFiTakeoverTask else { return false }
         guard authorizedDevices.contains(where: \.isUSB) else { return false }
         return isRecoveringConnection
@@ -6107,6 +6418,23 @@ final class AppModel: ObservableObject {
         return mirrorWindowDeviceTitle(name: name)
     }
 
+    nonisolated static func connectionChoiceTitle(
+        deviceLabel: String,
+        state: ConnectionPillState,
+        isDeviceConnected: Bool,
+        isFirstTimeUSBSetup: Bool,
+        isWiFiConnectionAvailable: Bool
+    ) -> String {
+        if isDeviceConnected {
+            let label = deviceLabel.isEmpty ? "Android Device" : deviceLabel
+            return "\(label) is connected"
+        }
+        if isFirstTimeUSBSetup && !isWiFiConnectionAvailable {
+            return "Set up your Android phone with USB"
+        }
+        return "Connect your Android phone"
+    }
+
     nonisolated static func mirrorLoadingStatusText(name: String) -> String {
         "Connecting to"
     }
@@ -6411,10 +6739,11 @@ final class AppModel: ObservableObject {
         ])
         let launchFrame = connectionWindow?.frame ?? lastMirrorWindowFrame
         let keepConnectionWindowVisible = keepConnectionWindowVisibleOverride
-            ?? Self.shouldKeepConnectionWindowVisibleDuringMirrorLaunch(
-                isRecoveringConnection: isRecoveringConnection,
-                isAwaitingReconnect: isAwaitingReconnect
-            )
+            ?? (shouldAssertForegroundPresentation
+                || Self.shouldKeepConnectionWindowVisibleDuringMirrorLaunch(
+                    isRecoveringConnection: isRecoveringConnection,
+                    isAwaitingReconnect: isAwaitingReconnect
+                ))
         let session = MirrorSession(model: self, serial: serial, launchFrame: launchFrame)
         session.onSessionEnded = { [weak self, weak session] finalMirrorFrame in
             guard let self else { return }
@@ -6450,6 +6779,7 @@ final class AppModel: ObservableObject {
             // is set in noteMirrorSessionEnded only once a session proves stable.
             self.stopDisconnectRecovery()
             self.activeError = nil
+            self.manualWirelessConnectDisallowsUSBFallback = false
             self.isRecoveringConnection = false
             self.isAwaitingReconnect = false
             self.hideConnectionWindowForNativeMirror()
@@ -6489,6 +6819,12 @@ final class AppModel: ObservableObject {
                 if self.recoverUSBLaunchFailureOverWireless(serial: serial, detail: detail) {
                     return
                 }
+                if self.manualWirelessConnectDisallowsUSBFallback {
+                    self.manualWirelessConnectDisallowsUSBFallback = false
+                    self.reportError("Couldn’t start Wi-Fi mirroring", message)
+                    self.showConnectionWindow(startsQRCodePairing: false)
+                    return
+                }
                 if Self.shouldKeepRetryingMirrorLaunchFailure(message) {
                     Logger.log("Mirror launch will keep retrying without showing connection failure badge: \(message)")
                     self.activeError = nil
@@ -6510,7 +6846,8 @@ final class AppModel: ObservableObject {
         guard let usbSerial,
               let candidate = usbWiFiHandoffCandidate,
               candidate.usbSerial == usbSerial,
-              !manualUSBPinnedSerials.contains(usbSerial)
+              !manualUSBPinnedSerials.contains(usbSerial),
+              !manualWirelessConnectDisallowsUSBFallback
         else { return false }
 
         Logger.log("USB mirror ended; attempting prepared Wi-Fi handoff address=\(candidate.address)")
@@ -6783,13 +7120,14 @@ final class AppModel: ObservableObject {
         hasError: Bool,
         needsUserAction: Bool,
         isOnline: Bool,
+        hasLivePhone: Bool,
         hasSavedDevice: Bool,
         isActivelyConnecting: Bool,
         isReconnecting: Bool
     ) -> ConnectionPillState {
         if needsUserAction { return .actionNeeded }
         if hasError { return .failed }
-        if isOnline { return .online }
+        if isOnline || hasLivePhone { return .online }
         if isActivelyConnecting { return isReconnecting ? .reconnecting : .connecting }
         if hasSavedDevice { return .offline }
         return .noPhone
@@ -6806,6 +7144,8 @@ final class AppModel: ObservableObject {
                 || latestHasUnauthorizedUSBDevice
                 || latestADBStatusText == "adb missing",
             isOnline: isSelectedDeviceOnline || hasRememberedWiFiHandoffRoute,
+            hasLivePhone: !latestAuthorizedADBDevices.isEmpty
+                || discoveredPhones.contains { $0.kind.isConnectable },
             hasSavedDevice: !pairedPhones.isEmpty,
             isActivelyConnecting: isActivelyConnecting,
             isReconnecting: hasCompletedSuccessfulMirrorConnection
@@ -6830,6 +7170,9 @@ final class AppModel: ObservableObject {
     ) -> String {
         if state == .actionNeeded {
             if let activeErrorTitle, !activeErrorTitle.isEmpty {
+                if activeErrorTitle == Self.usbPhoneNotFoundErrorTitle {
+                    return "Mac can't see USB"
+                }
                 return "Connect USB to refresh"
             }
             if hasUnauthorizedUSBDevice {
@@ -7038,7 +7381,7 @@ final class AppModel: ObservableObject {
 
     private func hideConnectionWindowForNativeMirror() {
         hideConnectionWindow()
-        if NSApp?.isActive == true {
+        if shouldAssertForegroundPresentation {
             NSApp?.activate(ignoringOtherApps: true)
         }
     }
@@ -7052,7 +7395,7 @@ final class AppModel: ObservableObject {
             return
         }
         guard let connectionWindow, !isMirroring, mirrorSession == nil else { return }
-        switch Self.connectionWindowPresentation(appIsActive: NSApp?.isActive == true) {
+        switch Self.connectionWindowPresentation(appIsActive: shouldAssertForegroundPresentation) {
         case .activateAndMakeKey:
             connectionWindow.makeKeyAndOrderFront(nil)
             NSApp?.activate(ignoringOtherApps: true)
@@ -7116,11 +7459,12 @@ final class AppModel: ObservableObject {
             namedFallbacks = ["Glass", "Submarine"]
         }
 
-        for file in fileCandidates {
-            let path = Self.systemSoundsDirectory + file
-            if let sound = NSSound(contentsOfFile: path, byReference: true), sound.play() {
-                retainedCaptureSound = sound
-                return
+        for directory in Self.systemSoundsDirectories {
+            for file in fileCandidates {
+                if let sound = NSSound(contentsOfFile: directory + file, byReference: true), sound.play() {
+                    retainedCaptureSound = sound
+                    return
+                }
             }
         }
         for name in namedFallbacks {
@@ -7132,8 +7476,14 @@ final class AppModel: ObservableObject {
         NSSound.beep()
     }
 
-    private static let systemSoundsDirectory =
-        "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/"
+    /// Known homes of the capture cue sounds, most likely first. Apple has
+    /// relocated system sounds between releases; a miss in every directory
+    /// falls through to the named-sound / beep fallbacks above, so a future
+    /// move degrades the cue rather than silencing it.
+    private static let systemSoundsDirectories = [
+        "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/",
+        "/System/Library/Sounds/"
+    ]
 
     // MARK: - Resize
 
@@ -7302,6 +7652,7 @@ final class AppModel: ObservableObject {
             reportError("Wi-Fi route unavailable", "Connect the phone with USB once while it is on Wi-Fi so Phone Relay can save its IP address.")
             return
         }
+        manualWirelessConnectDisallowsUSBFallback = true
 
         if let wirelessDevice = Self.liveWirelessAuthorizedDevice(
             for: record,
@@ -7409,6 +7760,7 @@ final class AppModel: ObservableObject {
     ) {
         guard !isMirroring, !isPairing else { return }
         manualUSBPinnedSerials.removeAll()
+        manualWirelessConnectDisallowsUSBFallback = true
         resumeDiscoveryAfterManualConnect()
 
         let ordered = Self.recordsByMostRecent(pairedPhones).filter(Self.isWirelessRecord)
@@ -7637,6 +7989,7 @@ final class AppModel: ObservableObject {
         isManualADBTargetConnecting = false
         isRecoveringConnection = false
         isAwaitingReconnect = false
+        manualWirelessConnectDisallowsUSBFallback = false
         if sawPairingServiceOnly {
             reportError(
                 "Pair this phone again",
@@ -8108,9 +8461,19 @@ final class AppModel: ObservableObject {
         DiagnosticsService.shared.capture(.recordingStarted)
         presentCaptureCue(.recordingStarted)
         screenRecordingRemotePaths = []
+        screenRecordingSessionToken = String(UUID().uuidString.prefix(8)).lowercased()
         let adb = self.adb
         let serial = selectedDevice.adbSerial
         let timeLimitSeconds = recordingTimeLimitSeconds
+        // Sweep segments orphaned by crashed sessions — their session-scoped
+        // names mean nothing else ever deletes them. Age-gated (>24h) so a
+        // just-recorded file that hasn't been pulled yet is never touched.
+        Task.detached(priority: .utility) {
+            _ = adb.run(Self.adbDeviceArguments(serial: serial) + [
+                "shell",
+                "find /sdcard -maxdepth 1 -name 'phonerelay-record-*.mp4' -mtime +0 -delete 2>/dev/null"
+            ], timeout: 10)
+        }
         Task { [weak self] in
             let alreadyRunning = await Task.detached {
                 Self.androidScreenRecordingIsRunning(adb: adb, serial: serial)
@@ -8136,7 +8499,7 @@ final class AppModel: ObservableObject {
         screenRecordingMonitorTask?.cancel()
         screenRecordingMonitorTask = nil
         let remotePaths = screenRecordingRemotePaths.isEmpty
-            ? ["/sdcard/phonerelay-record.mp4"]
+            ? ["/sdcard/phonerelay-record-\(screenRecordingSessionToken)-0.mp4"]
             : screenRecordingRemotePaths
         screenRecordingRemotePaths = []
         let adb = self.adb
@@ -8150,7 +8513,7 @@ final class AppModel: ObservableObject {
                 ])
             }.value
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-            let result = await Task.detached { () -> Result<URL, RecordingError> in
+            let result = await Task.detached { () async -> Result<URL, RecordingError> in
                 let didAccess = outputDirectory?.startAccessingSecurityScopedResource() ?? false
                 defer {
                     if didAccess {
@@ -8186,7 +8549,7 @@ final class AppModel: ObservableObject {
                         return .failure(.pullFailed(Self.oneLine(pullOutput)))
                     }
                     if pulledSegments.count > 1 {
-                        try Self.mergeRecordingSegments(pulledSegments, into: url)
+                        try await Self.mergeRecordingSegments(pulledSegments, into: url)
                         for segment in pulledSegments {
                             try? FileManager.default.removeItem(at: segment)
                         }
@@ -8226,6 +8589,7 @@ final class AppModel: ObservableObject {
         screenRecordingMonitorTask?.cancel()
         let adb = self.adb
         let serial = selectedDevice.adbSerial
+        let sessionToken = screenRecordingSessionToken
         screenRecordingMonitorTask = Task { [weak self] in
             let startedAt = Date()
             let maxEndDate = totalLimitSeconds.map { startedAt.addingTimeInterval(TimeInterval($0)) }
@@ -8241,7 +8605,7 @@ final class AppModel: ObservableObject {
                     return
                 }
                 let segmentSeconds = min(Self.screenRecordingSegmentSeconds, remaining)
-                let remotePath = "/sdcard/phonerelay-record-\(segmentIndex).mp4"
+                let remotePath = "/sdcard/phonerelay-record-\(sessionToken)-\(segmentIndex).mp4"
                 self.screenRecordingRemotePaths.append(remotePath)
                 let output = await Task.detached {
                     adb.run(Self.adbDeviceArguments(serial: serial) + [
@@ -8272,7 +8636,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    nonisolated private static func mergeRecordingSegments(_ segmentURLs: [URL], into outputURL: URL) throws {
+    nonisolated private static func mergeRecordingSegments(_ segmentURLs: [URL], into outputURL: URL) async throws {
         try? FileManager.default.removeItem(at: outputURL)
         let composition = AVMutableComposition()
         guard let compositionVideoTrack = composition.addMutableTrack(
@@ -8288,11 +8652,11 @@ final class AppModel: ObservableObject {
         var cursor = CMTime.zero
         for segmentURL in segmentURLs {
             let asset = AVURLAsset(url: segmentURL)
-            let range = CMTimeRange(start: .zero, duration: asset.duration)
-            if let videoTrack = asset.tracks(withMediaType: .video).first {
+            let range = CMTimeRange(start: .zero, duration: try await asset.load(.duration))
+            if let videoTrack = try await asset.loadTracks(withMediaType: .video).first {
                 try compositionVideoTrack.insertTimeRange(range, of: videoTrack, at: cursor)
             }
-            if let audioTrack = asset.tracks(withMediaType: .audio).first,
+            if let audioTrack = try await asset.loadTracks(withMediaType: .audio).first,
                let compositionAudioTrack {
                 try compositionAudioTrack.insertTimeRange(range, of: audioTrack, at: cursor)
             }
@@ -8303,11 +8667,11 @@ final class AppModel: ObservableObject {
         }
         export.outputURL = outputURL
         export.outputFileType = .mp4
-        let semaphore = DispatchSemaphore(value: 0)
-        export.exportAsynchronously {
-            semaphore.signal()
+        await withCheckedContinuation { continuation in
+            export.exportAsynchronously {
+                continuation.resume()
+            }
         }
-        semaphore.wait()
         if let error = export.error {
             throw RecordingError.runtime(error.localizedDescription)
         }

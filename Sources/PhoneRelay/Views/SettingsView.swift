@@ -271,7 +271,7 @@ struct SettingsView: View {
                         icon: "eye.slash",
                         isOn: $model.notificationHideBodyEnabled,
                         title: "Hide message previews",
-                        subtitle: "Show the app and sender, but not the message text."
+                        subtitle: "Show the app and sender, but never store or show the message text. Clicking a banner then opens the app, not the exact notification."
                     )
                     rowDivider
                     toggleRow(

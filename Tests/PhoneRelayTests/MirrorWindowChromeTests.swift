@@ -1657,6 +1657,50 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
+    func testFloatingToolbarRevealsOnTopZoneHoverAfterMirrorWindowResignsKey() throws {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+        controller.show()
+        try requireVisibleWindow(controller.window)
+
+        controller.simulateRevealZoneHover(true)
+        XCTAssertTrue(controller.isChromeVisibleForTesting)
+
+        controller.simulateMirrorWindowResignKeyForTesting()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertFalse(controller.isChromeVisibleForTesting)
+
+        controller.simulateRootTopZoneHoverForTesting(true)
+
+        XCTAssertTrue(controller.isChromeVisibleForTesting)
+        XCTAssertFalse(controller.toolbarIgnoresMouseEventsForTesting)
+        XCTAssertTrue(controller.toolbarIsVisibleForTesting)
+    }
+
+    @MainActor
+    func testFloatingToolbarDoesNotRevealFromDetachedZoneAfterMirrorWindowResignsKey() throws {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+        controller.show()
+        try requireVisibleWindow(controller.window)
+
+        controller.simulateRevealZoneHover(true)
+        XCTAssertTrue(controller.isChromeVisibleForTesting)
+
+        controller.simulateMirrorWindowResignKeyForTesting()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertFalse(controller.isChromeVisibleForTesting)
+
+        controller.simulateRevealZoneMouseMoveForTesting(true)
+
+        XCTAssertFalse(controller.isChromeVisibleForTesting)
+        XCTAssertTrue(controller.toolbarIgnoresMouseEventsForTesting)
+        XCTAssertFalse(controller.toolbarIsVisibleForTesting)
+    }
+
+    @MainActor
     func testFloatingToolbarOrdersOutBeforeMirrorMinimizes() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)

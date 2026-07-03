@@ -46,6 +46,30 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertFalse(devices[1].isUSB)
     }
 
+    @MainActor
+    func testPresenceOfFreshWirelessADBDeviceCreatesRememberedPhone() async throws {
+        await withoutExplicitDeviceSetupRequired {
+            let isolated = isolatedPairedPhoneStore()
+            defer { isolated.cleanup() }
+            let model = AppModel(startBackgroundServices: false, pairedPhones: [], store: isolated.store)
+            let output = """
+            List of devices attached
+            192.168.68.54:5555 device product:g0sxxx model:SM_S906B device:g0s transport_id:1
+            """
+
+            model.applyDevicePresence(output)
+
+            XCTAssertEqual(model.selectedDevice.adbSerial, "192.168.68.54:5555")
+            XCTAssertEqual(model.connectionPillState, .online)
+            XCTAssertEqual(model.connectionDeviceLabel, "SM S906B")
+            XCTAssertEqual(model.connectionChoiceTitle, "SM S906B is connected")
+            XCTAssertEqual(model.pairedPhones.count, 1)
+            XCTAssertEqual(model.pairedPhones.first?.displayName, "SM S906B")
+            XCTAssertEqual(model.pairedPhones.first?.wifiAddress, "192.168.68.54:5555")
+            XCTAssertEqual(model.pairedPhones.first?.lastAddress, "192.168.68.54:5555")
+        }
+    }
+
     func testAuthorizedADBDevicesExcludesUnauthorizedAndOfflineDevices() {
         let output = """
         List of devices attached
@@ -368,11 +392,148 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertFalse(body.contains("preferUSBMirroring"))
     }
 
+    @MainActor
+    func testManualUSBConnectReportsWhenNoUSBDeviceIsFound() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "devices" ]; then
+          echo "List of devices attached"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+
+        model.connectViaUSB()
+        let startedAt = Date()
+        while model.activeError == nil,
+              Date().timeIntervalSince(startedAt) < 3 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertEqual(model.activeError?.title, "USB phone not found")
+        XCTAssertFalse(model.isPairing)
+    }
+
+    @MainActor
+    func testManualUSBConnectRestartsADBWhenInitialUSBScanIsEmpty() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        STATE="$ADB_FAKE_LOG.started"
+        if [ "$1" = "devices" ]; then
+          echo "List of devices attached"
+          if [ -f "$STATE" ]; then
+            echo "TESTDEVICE001 device usb:100000001X product:g0sxxx model:SM_S906B device:g0s transport_id:1"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "kill-server" ]; then
+          exit 0
+        fi
+        if [ "$1" = "start-server" ]; then
+          touch "$STATE"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          echo "phone-relay-usb-ok"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
+          echo "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          case "$4" in
+            CLASSPATH=*) sleep 5; exit 0 ;;
+          esac
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+
+        model.connectViaUSB()
+        let startedAt = Date()
+        while model.selectedDevice.adbSerial != "TESTDEVICE001",
+              Date().timeIntervalSince(startedAt) < 5 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertNil(model.activeError)
+        XCTAssertEqual(model.selectedDevice.adbSerial, "TESTDEVICE001")
+        XCTAssertEqual(model.selectedDevice.network, "USB debugging")
+        let calls = loggedCalls(fake.log)
+        XCTAssertTrue(calls.contains("kill-server"))
+        XCTAssertTrue(calls.contains("start-server"))
+        model.stopMirroring()
+        try await Task.sleep(nanoseconds: 500_000_000)
+    }
+
+    @MainActor
+    func testManualUSBConnectReportsUnauthorizedUSBPrompt() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "devices" ]; then
+          echo "List of devices attached"
+          echo "RFCT10ZLTAJ unauthorized usb:1-1 transport_id:1"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+
+        model.connectViaUSB()
+        let startedAt = Date()
+        while model.activeError == nil,
+              Date().timeIntervalSince(startedAt) < 3 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertEqual(model.activeError?.title, "Authorize USB debugging")
+        XCTAssertFalse(model.isPairing)
+    }
+
     func testADBShellReadinessFailureRecognizesStaleUSBTransport() {
         XCTAssertTrue(AppModel.adbShellReadinessFailed("adb: device 'RFCT10ZLTAJ' not found"))
         XCTAssertTrue(AppModel.adbShellReadinessFailed("error: device offline"))
         XCTAssertTrue(AppModel.adbShellReadinessFailed("error: closed"))
         XCTAssertFalse(AppModel.adbShellReadinessFailed("phone-relay-usb-ok"))
+    }
+
+    func testMacUSBDiagnosticRecognizesAndroidVendor() {
+        let diagnostic = AppModel.macUSBDeviceDiagnostic(from: """
+        +-o Pixel 7 Pro@00100000  <class IOUSBHostDevice, id 0x100000999, registered, matched, active, busy 0, retain 20>
+          | {
+          |   "idVendor" = 6353
+          |   "USB Product Name" = "Pixel 7 Pro"
+          |   "USB Vendor Name" = "Google"
+          | }
+        """)
+
+        XCTAssertTrue(diagnostic.hasAnyUSBDevice)
+        XCTAssertTrue(diagnostic.hasAndroidLikeDevice)
+        XCTAssertEqual(diagnostic.deviceName, "Pixel 7 Pro")
+        XCTAssertTrue(AppModel.usbPhoneNotFoundMessage(for: diagnostic).contains("adb cannot see a USB debugging transport"))
+    }
+
+    func testMacUSBDiagnosticReportsNoEnumeratedDevice() {
+        let diagnostic = AppModel.macUSBDeviceDiagnostic(from: "")
+
+        XCTAssertFalse(diagnostic.hasAnyUSBDevice)
+        XCTAssertFalse(diagnostic.hasAndroidLikeDevice)
+        XCTAssertEqual(
+            AppModel.usbPhoneNotFoundMessage(for: diagnostic),
+            "macOS is not seeing the phone on USB at all. Use a data-capable cable, plug directly into this Mac, unlock the phone, set USB mode to File Transfer, then enable USB debugging and tap Allow."
+        )
     }
 
     func testSavedDeviceAutomaticConnectPrioritizesLiveRoutesBeforeSavedRecovery() throws {
@@ -2347,6 +2508,16 @@ final class ADBDeviceParsingTests: XCTestCase {
                 hasReconnectTask: false,
                 hasWirelessStartTask: false,
                 hasUSBWiFiTakeoverTask: true
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldUSBInterruptReconnect(
+                authorizedDevices: [usbDevice],
+                isRecoveringConnection: true,
+                isAwaitingReconnect: true,
+                hasReconnectTask: true,
+                hasWirelessStartTask: true,
+                disallowUSBFallback: true
             )
         )
     }

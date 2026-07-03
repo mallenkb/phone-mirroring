@@ -121,11 +121,44 @@ final class SingleInstanceGuardTests: XCTestCase {
         let source = try String(contentsOfFile: "Sources/PhoneRelay/AppDelegate.swift", encoding: .utf8)
 
         XCTAssertTrue(source.contains("private func bringLaunchWindowToFront(_ window: NSWindow)"))
+        XCTAssertTrue(source.contains("model.beginForegroundLaunchPresentation()"))
+        XCTAssertTrue(source.contains("installForegroundPresentationExitMonitor()"))
+        XCTAssertTrue(source.contains("public func applicationDidResignActive"))
+        XCTAssertTrue(source.contains("model.endForegroundLaunchPresentation()"))
+        XCTAssertTrue(source.contains("guard model.shouldPreserveForegroundLaunchPresentationAfterResign else"))
+        XCTAssertTrue(source.contains("NSApp.setActivationPolicy(.regular)"))
+        XCTAssertTrue(source.contains("NSRunningApplication.current.unhide()"))
+        XCTAssertTrue(source.contains("NSApp.unhide(nil)"))
         XCTAssertTrue(source.contains("window.level = .floating"))
+        XCTAssertTrue(source.contains("window.orderFrontRegardless()"))
         XCTAssertTrue(source.contains("window.makeKeyAndOrderFront(nil)"))
+        XCTAssertTrue(source.contains("NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])"))
         XCTAssertTrue(source.contains("NSApp.activate(ignoringOtherApps: true)"))
         XCTAssertTrue(source.contains("DispatchQueue.main.async {\n            activate()\n        }"))
         XCTAssertTrue(source.contains("bringLaunchWindowToFront(window)"))
+    }
+
+    func testReopenUsesLaunchForegroundPath() throws {
+        let source = try String(contentsOfFile: "Sources/PhoneRelay/AppDelegate.swift", encoding: .utf8)
+        let reopenRange = try XCTUnwrap(source.range(of: "public func applicationShouldHandleReopen"))
+        let remainder = source[reopenRange.lowerBound...]
+        let returnRange = try XCTUnwrap(remainder.range(of: "return false"))
+        let reopenBody = remainder[..<returnRange.upperBound]
+
+        XCTAssertTrue(reopenBody.contains("bringLaunchWindowToFront(target)"))
+        XCTAssertTrue(reopenBody.contains("beginUserRequestedForegroundPresentation()"))
+        XCTAssertFalse(reopenBody.contains("target.makeKeyAndOrderFront(nil)"))
+        XCTAssertFalse(reopenBody.contains("NSApp.activate(ignoringOtherApps: true)"))
+    }
+
+    func testOutsideClickIsForegroundPresentationEscapeHatch() throws {
+        let source = try String(contentsOfFile: "Sources/PhoneRelay/AppDelegate.swift", encoding: .utf8)
+
+        XCTAssertTrue(source.contains("private var foregroundExitMonitor: Any?"))
+        XCTAssertTrue(source.contains("private func installForegroundPresentationExitMonitor()"))
+        XCTAssertTrue(source.contains("matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]"))
+        XCTAssertTrue(source.contains("self?.model.endForegroundLaunchPresentation()"))
+        XCTAssertTrue(source.contains("NSEvent.removeMonitor(foregroundExitMonitor)"))
     }
 
     // MARK: - Connection window presentation
@@ -133,5 +166,23 @@ final class SingleInstanceGuardTests: XCTestCase {
     func testConnectionWindowOnlyTakesFocusWhenAppIsActive() {
         XCTAssertEqual(AppModel.connectionWindowPresentation(appIsActive: true), .activateAndMakeKey)
         XCTAssertEqual(AppModel.connectionWindowPresentation(appIsActive: false), .orderFrontOnly)
+    }
+
+    func testForegroundLaunchKeepsConnectionAndMirrorPresentationAssertive() throws {
+        let modelSource = try String(contentsOfFile: "Sources/PhoneRelay/AppModel.swift", encoding: .utf8)
+        let mirrorWindowSource = try String(
+            contentsOfFile: "Sources/PhoneRelay/Mirror/MirrorContentWindowController.swift",
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(modelSource.contains("private var foregroundLaunchPresentationActive = false"))
+        XCTAssertTrue(modelSource.contains("var shouldPreserveForegroundLaunchPresentationAfterResign: Bool"))
+        XCTAssertTrue(modelSource.contains("foregroundLaunchPresentationActive\n    }\n\n    var shouldAssertForegroundPresentation"))
+        XCTAssertTrue(modelSource.contains("var shouldAssertForegroundPresentation: Bool"))
+        XCTAssertTrue(modelSource.contains("foregroundLaunchPresentationActive || NSApp?.isActive == true"))
+        XCTAssertTrue(modelSource.contains("?? (shouldAssertForegroundPresentation"))
+        XCTAssertTrue(modelSource.contains("connectionWindowPresentation(appIsActive: shouldAssertForegroundPresentation)"))
+        XCTAssertTrue(modelSource.contains("if shouldAssertForegroundPresentation {\n            NSApp?.activate(ignoringOtherApps: true)\n        }"))
+        XCTAssertTrue(mirrorWindowSource.contains("if model.shouldAssertForegroundPresentation {\n            NSApp.activate(ignoringOtherApps: true)\n        }"))
     }
 }

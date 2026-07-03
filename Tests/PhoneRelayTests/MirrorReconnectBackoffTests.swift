@@ -736,6 +736,58 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
+    func testConnectionChoiceTitleUsesConnectedDeviceNameWhenOnline() {
+        XCTAssertEqual(
+            AppModel.connectionChoiceTitle(
+                deviceLabel: "SM S906B",
+                state: .online,
+                isDeviceConnected: true,
+                isFirstTimeUSBSetup: true,
+                isWiFiConnectionAvailable: false
+            ),
+            "SM S906B is connected"
+        )
+    }
+
+    func testConnectionChoiceTitleDoesNotClaimConnectedFromDiscoveryOnlyState() {
+        XCTAssertEqual(
+            AppModel.connectionChoiceTitle(
+                deviceLabel: "Android Device",
+                state: .online,
+                isDeviceConnected: false,
+                isFirstTimeUSBSetup: true,
+                isWiFiConnectionAvailable: false
+            ),
+            "Set up your Android phone with USB"
+        )
+    }
+
+    func testConnectionChoiceTitleKeepsSetupCopyWhenNoDeviceIsOnline() {
+        XCTAssertEqual(
+            AppModel.connectionChoiceTitle(
+                deviceLabel: "",
+                state: .noPhone,
+                isDeviceConnected: false,
+                isFirstTimeUSBSetup: true,
+                isWiFiConnectionAvailable: false
+            ),
+            "Set up your Android phone with USB"
+        )
+    }
+
+    func testConnectionChoiceTitleKeepsConnectCopyForIdleChooser() {
+        XCTAssertEqual(
+            AppModel.connectionChoiceTitle(
+                deviceLabel: "",
+                state: .offline,
+                isDeviceConnected: false,
+                isFirstTimeUSBSetup: false,
+                isWiFiConnectionAvailable: true
+            ),
+            "Connect your Android phone"
+        )
+    }
+
     func testMirrorLoadingTitleUsesFriendlyGenericPhoneName() {
         XCTAssertEqual(AppModel.mirrorLoadingStatusText(name: "Android device"), "Connecting to")
         XCTAssertEqual(AppModel.mirrorLoadingDeviceTitle(name: "Android device"), "Android phone")
@@ -1336,6 +1388,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 hasError: false,
                 needsUserAction: false,
                 isOnline: AppModel.hasRememberedConnectablePhone(records: [record], in: [phone]),
+                hasLivePhone: false,
                 hasSavedDevice: true,
                 isActivelyConnecting: false,
                 isReconnecting: false
@@ -1762,16 +1815,17 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     }
 
     func testConnectionPillStateCoversAllSevenStatuses() {
-        func state(error: Bool = false, online: Bool = false, saved: Bool = false,
+        func state(error: Bool = false, online: Bool = false, live: Bool = false, saved: Bool = false,
                    actionNeeded: Bool = false,
                    connecting: Bool = false, reconnecting: Bool = false) -> AppModel.ConnectionPillState {
             AppModel.resolveConnectionPillState(
-                hasError: error, needsUserAction: actionNeeded, isOnline: online, hasSavedDevice: saved,
+                hasError: error, needsUserAction: actionNeeded, isOnline: online, hasLivePhone: live, hasSavedDevice: saved,
                 isActivelyConnecting: connecting, isReconnecting: reconnecting
             )
         }
         XCTAssertEqual(state(), .noPhone)
         XCTAssertEqual(state(saved: true), .offline)
+        XCTAssertEqual(state(live: true), .online)
         XCTAssertEqual(state(saved: true, actionNeeded: true), .actionNeeded)
         XCTAssertEqual(state(saved: true, connecting: true), .connecting)
         XCTAssertEqual(state(saved: true, connecting: true, reconnecting: true), .reconnecting)
@@ -1801,6 +1855,15 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         XCTAssertEqual(
             AppModel.connectionPillText(
                 state: .actionNeeded,
+                activeErrorTitle: AppModel.usbPhoneNotFoundErrorTitle,
+                hasUnauthorizedUSBDevice: false,
+                adbStatusText: "Running"
+            ),
+            "Mac can't see USB"
+        )
+        XCTAssertEqual(
+            AppModel.connectionPillText(
+                state: .actionNeeded,
                 activeErrorTitle: nil,
                 hasUnauthorizedUSBDevice: true,
                 adbStatusText: "Running"
@@ -1824,6 +1887,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 hasError: false,
                 needsUserAction: false,
                 isOnline: false,
+                hasLivePhone: false,
                 hasSavedDevice: true,
                 isActivelyConnecting: false,
                 isReconnecting: false

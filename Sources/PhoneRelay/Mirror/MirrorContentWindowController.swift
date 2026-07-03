@@ -310,6 +310,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         setWindowFrame(frame, display: true, animate: false)
         layoutRenderSurface()
         window.makeKeyAndOrderFront(nil)
+        if model.shouldAssertForegroundPresentation {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         window.makeFirstResponder(renderView)
         updateFullscreenPresentationIfNeeded()
     }
@@ -642,7 +645,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         rootView.layer?.borderColor = Self.shellBorderColor(for: rootView)
         rootView.layer?.borderWidth = MirrorShellStyle.borderWidth
         rootView.layer?.setValue("continuous", forKey: "cornerCurve")
-        rootView.onHoverChange = { [weak self] _ in self?.evaluateRevealZone() }
+        rootView.onHoverChange = { [weak self] inTopZone in
+            self?.handleRootHoverChange(inTopZone)
+        }
         rootView.onAppearanceChange = { [weak self] in
             self?.applyNormalShellAppearance()
         }
@@ -869,7 +874,35 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     private func handleRenderMouseMoved(_ event: NSEvent) {
+        if rootTopZoneContains(event) {
+            handleRootHoverChange(true)
+            return
+        }
         evaluateRevealZone()
+    }
+
+    private func handleRootHoverChange(_ inTopZone: Bool) {
+        guard inTopZone else {
+            evaluateRevealZone()
+            return
+        }
+        guard window?.isMiniaturized != true,
+              window?.isVisible == true,
+              !isInFullscreen
+        else {
+            hideChromeImmediately(orderOutToolbar: true)
+            return
+        }
+        isPointerInTopZone = true
+        hideWorkItem?.cancel()
+        setChromeVisible(true, requireActiveMirrorWindow: false)
+    }
+
+    private func rootTopZoneContains(_ event: NSEvent) -> Bool {
+        guard rootView.chromeRevealEnabled else { return false }
+        let point = rootView.convert(event.locationInWindow, from: nil)
+        let toolbarZoneMinY = rootView.bounds.height - rootView.chromeActivationHeight
+        return point.y > toolbarZoneMinY
     }
 
     // MARK: - Floating toolbar window
@@ -965,16 +998,8 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         return window?.isKeyWindow == true || toolbarWindow?.isKeyWindow == true
     }
 
-    private func evaluateRevealZone() {
+    private func evaluateRevealZone(mouseLocation: NSPoint = NSEvent.mouseLocation) {
         guard window?.isMiniaturized != true, window?.isVisible == true else {
-            hideChromeImmediately(orderOutToolbar: true)
-            return
-        }
-        guard NSApp.isActive else {
-            hideChromeImmediately(orderOutToolbar: true)
-            return
-        }
-        guard isMirrorWindowActiveForChrome else {
             hideChromeImmediately(orderOutToolbar: true)
             return
         }
@@ -987,7 +1012,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             setChromeVisible(true)
             return
         }
-        if revealZoneContains(NSEvent.mouseLocation) {
+        if revealZoneContains(mouseLocation) {
+            guard isMirrorWindowActiveForChrome else {
+                hideChromeImmediately(orderOutToolbar: true)
+                return
+            }
             isPointerInTopZone = true
             hideWorkItem?.cancel()
             setChromeVisible(true)
@@ -1062,6 +1091,21 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             isPointerInTopZone = false
             setChromeVisible(false, requireActiveMirrorWindow: false)
         }
+    }
+
+    func simulateRevealZoneMouseMoveForTesting(_ inside: Bool) {
+        guard let window else {
+            evaluateRevealZone(mouseLocation: .zero)
+            return
+        }
+        let point = inside
+            ? NSPoint(x: window.frame.midX, y: window.frame.maxY + Self.toolbarGap + 1)
+            : NSPoint(x: window.frame.midX, y: window.frame.midY)
+        evaluateRevealZone(mouseLocation: point)
+    }
+
+    func simulateRootTopZoneHoverForTesting(_ inside: Bool) {
+        handleRootHoverChange(inside)
     }
 
     func simulateAppResignActiveForTesting() {

@@ -233,10 +233,12 @@ struct FigmaMirrorExperienceView: View {
                     .foregroundStyle(accent)
                     .frame(width: 61 * scale, height: 40 * scale)
 
-                Text(model.isFirstTimeUSBSetup && !effectiveWiFiConnectionAvailable ? "Set up your Android phone with USB" : "Connect your Android phone")
+                Text(model.connectionChoiceTitle)
                     .font(.system(size: 16 * scale, weight: .semibold))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.82)
                     .frame(width: width)
             }
 
@@ -890,7 +892,9 @@ struct FigmaMirrorExperienceView: View {
         let statusText = isConnecting
             ? "Connecting to"
             : (visibleTransportLabel == nil ? model.connectionPillText : "Online via")
-        let deviceLabel = state == .noPhone ? "" : model.connectionDeviceLabel
+        let isUSBPhoneNotFound = state == .actionNeeded
+            && model.activeError?.title == AppModel.usbPhoneNotFoundErrorTitle
+        let deviceLabel = (state == .noPhone || isUSBPhoneNotFound) ? "" : model.connectionDeviceLabel
         let baseDeviceLabel = visibleTransportLabel.map { label in
             deviceLabel.isEmpty ? label : "\(label) · \(deviceLabel)"
         } ?? deviceLabel

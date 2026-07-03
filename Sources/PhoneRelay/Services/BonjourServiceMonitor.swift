@@ -1,0 +1,94 @@
+import Foundation
+import Network
+
+/// Persistent Bonjour browsers for the adb service types. Replaces the
+/// spawn-and-kill `dns-sd -B` sweeps: the browsers stay subscribed, so macOS
+/// pushes add/remove events the instant a phone starts or stops advertising,
+/// and the idle cost is zero — no processes, no per-poll browse windows.
+/// Discovery still resolves a service to `host:port` with one short
+/// `dns-sd -L` when it first appears; `ADBController` caches that until the
+/// service disappears.
+final class BonjourServiceMonitor: @unchecked Sendable {
+    static let shared = BonjourServiceMonitor()
+
+    /// Same set (and semantics) as the legacy sweep in
+    /// `ADBController.dnsServiceDiscoveredPhones`.
+    nonisolated static let serviceTypes = [
+        "_adb-tls-connect._tcp",
+        "_adb._tcp",
+        "_adb-tls-pairing._tcp"
+    ]
+
+    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "phonerelay.bonjour-monitor", qos: .utility)
+    private var browsers: [NWBrowser] = []
+    private var started = false
+    /// Types whose browser hit `.failed`. While any browser is down the
+    /// monitor reports unavailable so callers use the legacy dns-sd sweep —
+    /// a partial view would silently hide, say, pairable phones from the QR
+    /// flow. (`.waiting`, e.g. Local Network denied, is not failure: the
+    /// browser recovers on its own the moment permission is granted.)
+    private var failedTypes: Set<String> = []
+    private var servicesByType: [String: Set<String>] = [:]
+
+    /// The currently-advertised adb services, or nil when the monitor can't
+    /// provide a trustworthy answer (a browser failed) and the caller should
+    /// fall back to the legacy sweep. Starts the browsers on first call.
+    func currentServices() -> [ADBController.DNSService]? {
+        startIfNeeded()
+        lock.lock()
+        defer { lock.unlock() }
+        guard failedTypes.isEmpty else { return nil }
+        return servicesByType
+            .flatMap { type, names in
+                names.map { ADBController.DNSService(instance: $0, serviceType: type) }
+            }
+            .sorted { ($0.instance, $0.serviceType) < ($1.instance, $1.serviceType) }
+    }
+
+    private func startIfNeeded() {
+        lock.lock()
+        if started {
+            lock.unlock()
+            return
+        }
+        started = true
+        lock.unlock()
+
+        for type in Self.serviceTypes {
+            let browser = NWBrowser(for: .bonjour(type: type, domain: nil), using: .tcp)
+            browser.browseResultsChangedHandler = { [weak self] results, _ in
+                self?.apply(results: results, forType: type)
+            }
+            browser.stateUpdateHandler = { [weak self] state in
+                guard let self else { return }
+                self.lock.lock()
+                switch state {
+                case .failed(let error):
+                    self.failedTypes.insert(type)
+                    self.lock.unlock()
+                    Logger.log("Bonjour monitor browser failed type=\(type) error=\(error)")
+                case .ready:
+                    self.failedTypes.remove(type)
+                    self.lock.unlock()
+                default:
+                    self.lock.unlock()
+                }
+            }
+            browser.start(queue: queue)
+            lock.lock()
+            browsers.append(browser)
+            lock.unlock()
+        }
+    }
+
+    private func apply(results: Set<NWBrowser.Result>, forType type: String) {
+        let names = Set(results.compactMap { result -> String? in
+            guard case let .service(name, _, _, _) = result.endpoint else { return nil }
+            return name
+        })
+        lock.lock()
+        servicesByType[type] = names
+        lock.unlock()
+    }
+}

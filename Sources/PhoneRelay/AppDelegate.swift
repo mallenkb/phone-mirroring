@@ -36,6 +36,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private var statusItem: NSStatusItem?
     private let model = AppModel()
     private var keyMonitor: Any?
+    private var foregroundExitMonitor: Any?
     private var launchedInBackground = false
     private weak var screenRecordingMenuItem: NSMenuItem?
     private var screenRecordingMenuCancellable: AnyCancellable?
@@ -65,6 +66,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             applyDockIconForUnbundledRun()
         }
 
+        DispatchQueue.global(qos: .utility).async {
+            PhoneFileBrowserService.cleanUpStaleTemporaryPulls()
+        }
+
         let rootView = RootView()
             .environmentObject(model)
         let hostingView = NSHostingView(rootView: rootView)
@@ -92,6 +97,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         window.contentMaxSize = initialWindowSize
         centerOnMainScreen(window)
         model.registerConnectionWindow(window)
+        if !launchedInBackground {
+            model.beginForegroundLaunchPresentation()
+        }
         self.window = window
 
         if shouldShowFirstRunIntro {
@@ -104,6 +112,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
         installMainMenu()
         installStatusItem()
+        installForegroundPresentationExitMonitor()
         installKeyboardScaling()
         _ = sparkleUpdaterController
     }
@@ -307,6 +316,36 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         model.refreshLocalNetworkPermissionAfterSettingsReturn()
     }
 
+    public func applicationDidResignActive(_ notification: Notification) {
+        guard model.shouldPreserveForegroundLaunchPresentationAfterResign else {
+            model.endForegroundLaunchPresentation()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self else { return }
+            if self.model.shouldPreserveForegroundLaunchPresentationAfterResign {
+                self.raisePrimaryWindow()
+            } else if !NSApp.isActive {
+                self.model.endForegroundLaunchPresentation()
+            }
+        }
+    }
+
+    private func installForegroundPresentationExitMonitor() {
+        foregroundExitMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.model.endForegroundLaunchPresentation()
+            }
+        }
+    }
+
+    private func beginUserRequestedForegroundPresentation() {
+        launchedInBackground = false
+        model.beginForegroundLaunchPresentation()
+    }
+
     public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         // Behave like a normal app on every Dock-icon click — whether our window
         // is minimized, hidden behind another app, or simply not key.
@@ -328,11 +367,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             ?? primaries.first
         guard let target else { return true }
 
-        if target.isMiniaturized {
-            target.deminiaturize(nil)
-        }
-        target.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        beginUserRequestedForegroundPresentation()
+        bringLaunchWindowToFront(target)
         return false
     }
 
@@ -498,10 +534,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             ?? NSApp.orderedWindows.first(where: { isPrimary($0) && $0.isVisible })
             ?? primaries.first
         guard let target else { return }
-        if target.isMiniaturized {
-            target.deminiaturize(nil)
-        }
-        target.makeKeyAndOrderFront(nil)
+        bringLaunchWindowToFront(target)
     }
 
     /// A user-initiated launch should be assertive: the app card/window comes
@@ -510,13 +543,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     /// content is still settling, so repeat once on the next run loop.
     private func bringLaunchWindowToFront(_ window: NSWindow) {
         func activate() {
+            NSApp.setActivationPolicy(.regular)
+            NSRunningApplication.current.unhide()
+            NSApp.unhide(nil)
             if window.isMiniaturized {
                 window.deminiaturize(nil)
             }
-            window.level = .floating
+            let originalLevel = window.level
+            if originalLevel == .normal {
+                window.level = .floating
+            }
+            window.orderFrontRegardless()
             window.makeKeyAndOrderFront(nil)
+            NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
             NSApp.activate(ignoringOtherApps: true)
-            window.level = .normal
+            if originalLevel == .normal {
+                window.level = originalLevel
+            }
         }
 
         activate()
@@ -530,6 +573,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         if let keyMonitor {
             NSEvent.removeMonitor(keyMonitor)
             self.keyMonitor = nil
+        }
+        if let foregroundExitMonitor {
+            NSEvent.removeMonitor(foregroundExitMonitor)
+            self.foregroundExitMonitor = nil
         }
         model.shutdown()
         closeAllAppWindows()
@@ -988,6 +1035,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             defer: false
         )
         window.title = "Phone Files"
+        window.identifier = FileBrowserView.windowIdentifier
         window.contentView = hostingView
         window.isReleasedWhenClosed = false
         window.center()

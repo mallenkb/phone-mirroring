@@ -384,19 +384,25 @@ final class NotificationForwarderTests: XCTestCase {
 
     // MARK: - Hide-body privacy
 
-    func testHideBodyOmitsMessageTextButKeepsTitleAndUserInfo() {
+    func testHideBodyOmitsMessageTextEverywhereButKeepsIdentity() {
         let entry = NotificationForwarder.Entry(
             key: "0|com.whatsapp|1|null|10279", pkg: "com.whatsapp",
             title: "Mom", text: "Dinner at 7?", flags: 0
         )
         let shown = NotificationForwarder.notificationContent(for: entry, serial: "S1", hideBody: false)
         XCTAssertEqual(shown.body, "Dinner at 7?")
+        XCTAssertEqual(shown.userInfo[NotificationForwarder.UserInfoKey.notificationText] as? String, "Dinner at 7?")
 
         let hidden = NotificationForwarder.notificationContent(for: entry, serial: "S1", hideBody: true)
         XCTAssertEqual(hidden.body, "")
         XCTAssertEqual(hidden.title, "WhatsApp • Mom") // app + sender still shown
-        // The real text still rides in userInfo so click-to-open can match the row.
-        XCTAssertEqual(hidden.userInfo[NotificationForwarder.UserInfoKey.notificationText] as? String, "Dinner at 7?")
+        // Hidden means hidden on disk too: macOS persists userInfo in the
+        // notification store, so the message text must not ride along. Click-
+        // to-open degrades to title-only matching / launching the source app.
+        XCTAssertEqual(hidden.userInfo[NotificationForwarder.UserInfoKey.notificationText] as? String, "")
+        // The identity keys click/reply still need are present.
+        XCTAssertEqual(hidden.userInfo[NotificationForwarder.UserInfoKey.notificationTitle] as? String, "Mom")
+        XCTAssertEqual(hidden.userInfo[NotificationForwarder.UserInfoKey.sourcePackage] as? String, "com.whatsapp")
     }
 
     // MARK: - Per-app mute model
