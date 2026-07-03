@@ -51,6 +51,36 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: Preflight release secrets
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APP_SPECIFIC_PASSWORD: ${{ secrets.APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+          WEBSITE_REPO_TOKEN: ${{ secrets.WEBSITE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in \
+            APPLE_CERTIFICATE_P12_BASE64 \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_ID \
+            APP_SPECIFIC_PASSWORD \
+            APPLE_TEAM_ID \
+            SPARKLE_PRIVATE_ED_KEY \
+            WEBSITE_REPO_TOKEN
+          do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing required release secret(s): %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
       - name: Run tests
         run: swift test --filter ReleaseReadinessTests
 
