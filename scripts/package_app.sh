@@ -29,6 +29,8 @@ BUILD_DIR="scrcpy-source/build-mac"
 SCRCPY_SERVER="$BUILD_DIR/server/scrcpy-server"
 RESOURCE_SCRCPY_SERVER="Sources/PhoneRelay/Resources/scrcpy-server"
 ASSET_CATALOG="App/Assets.xcassets"
+PRECOMPILED_ASSETS_CAR="Sources/PhoneRelay/Resources/Assets.car"
+PRECOMPILED_APP_ICON="Sources/PhoneRelay/Resources/AppIcon.icns"
 # The SwiftPM product is "PhoneRelay" (Dock name for debug runs); the
 # binary is renamed to $PRODUCT_NAME inside the bundle (CFBundleExecutable).
 HOST_BIN=".build/release/PhoneRelayBinary"
@@ -71,7 +73,10 @@ else
   echo "warning: Sparkle.framework was not found at $SPARKLE_FRAMEWORK; in-app updates will not run in this bundle" >&2
 fi
 
-if [ -d "$ASSET_CATALOG" ]; then
+if [ -f "$PRECOMPILED_ASSETS_CAR" ] && [ -f "$PRECOMPILED_APP_ICON" ]; then
+  cp "$PRECOMPILED_ASSETS_CAR" "$RESOURCES_DIR/Assets.car"
+  cp "$PRECOMPILED_APP_ICON" "$RESOURCES_DIR/AppIcon.icns"
+elif [ -d "$ASSET_CATALOG" ]; then
   ASSET_BUILD_DIR="$TMP_HELPERS/assets"
   mkdir -p "$ASSET_BUILD_DIR"
   xcrun actool "$ASSET_CATALOG" \
