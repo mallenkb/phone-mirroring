@@ -1639,16 +1639,26 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// A launch presentation may defend the window for at most this long.
+    /// Unbounded, it re-raised the window on every resign until the user
+    /// clicked elsewhere — a visible focus tug-of-war ("flashing").
+    nonisolated static let foregroundLaunchPresentationWindow: TimeInterval = 3
+    private var foregroundLaunchPresentationStartedAt: Date?
+
     func beginForegroundLaunchPresentation() {
         foregroundLaunchPresentationActive = true
+        foregroundLaunchPresentationStartedAt = Date()
     }
 
     func endForegroundLaunchPresentation() {
         foregroundLaunchPresentationActive = false
+        foregroundLaunchPresentationStartedAt = nil
     }
 
     var shouldPreserveForegroundLaunchPresentationAfterResign: Bool {
-        foregroundLaunchPresentationActive
+        guard foregroundLaunchPresentationActive,
+              let startedAt = foregroundLaunchPresentationStartedAt else { return false }
+        return Date().timeIntervalSince(startedAt) < Self.foregroundLaunchPresentationWindow
     }
 
     var shouldAssertForegroundPresentation: Bool {

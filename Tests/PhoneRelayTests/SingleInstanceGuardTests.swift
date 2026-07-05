@@ -129,12 +129,16 @@ final class SingleInstanceGuardTests: XCTestCase {
         XCTAssertTrue(source.contains("NSApp.setActivationPolicy(.regular)"))
         XCTAssertTrue(source.contains("NSRunningApplication.current.unhide()"))
         XCTAssertTrue(source.contains("NSApp.unhide(nil)"))
-        XCTAssertTrue(source.contains("window.level = .floating"))
+        // Single-pass raise: the old floating-level juggle and full double
+        // invoke were the visible launch "flash" (fixed 2026-07-05).
+        XCTAssertFalse(source.contains("window.level = .floating"))
         XCTAssertTrue(source.contains("window.orderFrontRegardless()"))
         XCTAssertTrue(source.contains("window.makeKeyAndOrderFront(nil)"))
-        XCTAssertTrue(source.contains("NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])"))
         XCTAssertTrue(source.contains("NSApp.activate(ignoringOtherApps: true)"))
-        XCTAssertTrue(source.contains("DispatchQueue.main.async {\n            activate()\n        }"))
+        XCTAssertTrue(source.contains("if window.isVisible, !window.isKeyWindow, NSApp.isActive {"))
+        // Background (-g) launches must show without stealing focus.
+        XCTAssertTrue(source.contains("} else if launchedInBackground {"))
+        XCTAssertTrue(source.contains("window.orderFront(nil)"))
         XCTAssertTrue(source.contains("bringLaunchWindowToFront(window)"))
     }
 
@@ -181,7 +185,10 @@ final class SingleInstanceGuardTests: XCTestCase {
 
         XCTAssertTrue(modelSource.contains("private var foregroundLaunchPresentationActive = false"))
         XCTAssertTrue(modelSource.contains("var shouldPreserveForegroundLaunchPresentationAfterResign: Bool"))
-        XCTAssertTrue(modelSource.contains("foregroundLaunchPresentationActive\n    }\n\n    var shouldAssertForegroundPresentation"))
+        // The presentation defends the launch for a bounded window only —
+        // unbounded, it re-raised on every resign ("flashing tug-of-war").
+        XCTAssertTrue(modelSource.contains("foregroundLaunchPresentationWindow: TimeInterval = 3"))
+        XCTAssertTrue(modelSource.contains("Date().timeIntervalSince(startedAt) < Self.foregroundLaunchPresentationWindow"))
         XCTAssertTrue(modelSource.contains("var shouldAssertForegroundPresentation: Bool"))
         XCTAssertTrue(modelSource.contains("foregroundLaunchPresentationActive || NSApp?.isActive == true"))
         XCTAssertTrue(modelSource.contains("let launchFrame = mirrorLaunchFrameForNextSession()"))

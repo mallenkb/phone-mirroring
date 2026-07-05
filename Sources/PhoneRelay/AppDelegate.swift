@@ -107,6 +107,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             model.setFirstRunOnboardingActive(true)
             showFirstRunWindow()
             window.orderOut(nil)
+        } else if launchedInBackground {
+            // Script/background launches (`open -g … --launched-in-background`)
+            // show the window without stealing focus — forcing it front here
+            // fought the -g intent and read as flashing.
+            window.orderFront(nil)
         } else {
             bringLaunchWindowToFront(window)
         }
@@ -259,6 +264,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         Logger.log("Yielding duplicate Phone Relay launch to existing instance pid=\(existing.processIdentifier).")
         existing.unhide()
         existing.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        // Let the system process the activation hand-off before this process
+        // exits — terminating immediately dropped it, so the surviving
+        // instance never came forward.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
         NSApp.terminate(nil)
         return true
     }
@@ -291,6 +300,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
     public func applicationDidBecomeActive(_ notification: Notification) {
         model.refreshLocalNetworkPermissionAfterSettingsReturn()
+        if NSApp.keyWindow != nil {
+            // The launch presentation accomplished its goal — ending it now
+            // means the user's next app switch is never fought.
+            model.endForegroundLaunchPresentation()
+        } else if !NSApp.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) {
+            // Activated with nothing on screen (e.g. a yielding duplicate
+            // handed us focus while our window was hidden) — restore it.
+            raisePrimaryWindow()
+        }
     }
 
     public func applicationDidResignActive(_ notification: Notification) {
@@ -528,29 +546,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     /// Borderless SwiftUI windows can miss the first activation pass while their
     /// content is still settling, so repeat once on the next run loop.
     private func bringLaunchWindowToFront(_ window: NSWindow) {
-        func activate() {
-            NSApp.setActivationPolicy(.regular)
-            NSRunningApplication.current.unhide()
-            NSApp.unhide(nil)
-            if window.isMiniaturized {
-                window.deminiaturize(nil)
-            }
-            let originalLevel = window.level
-            if originalLevel == .normal {
-                window.level = .floating
-            }
-            window.orderFrontRegardless()
-            window.makeKeyAndOrderFront(nil)
-            NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
-            NSApp.activate(ignoringOtherApps: true)
-            if originalLevel == .normal {
-                window.level = originalLevel
-            }
+        NSApp.setActivationPolicy(.regular)
+        NSRunningApplication.current.unhide()
+        NSApp.unhide(nil)
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
         }
-
-        activate()
+        window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        // Borderless SwiftUI windows can miss the first key pass while their
+        // backing views attach — one guarded settle, not a second full raise
+        // (the old window-level juggling + double invoke was the visible
+        // "flash" on every launch).
         DispatchQueue.main.async {
-            activate()
+            if window.isVisible, !window.isKeyWindow, NSApp.isActive {
+                window.makeKeyAndOrderFront(nil)
+            }
         }
     }
 
