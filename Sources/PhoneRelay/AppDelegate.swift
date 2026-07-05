@@ -109,9 +109,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             window.orderOut(nil)
         } else if launchedInBackground {
             // Script/background launches (`open -g … --launched-in-background`)
-            // show the window without stealing focus — forcing it front here
-            // fought the -g intent and read as flashing.
-            window.orderFront(nil)
+            // stay fully off-screen: a visible-but-unfocused card over the
+            // user's work was half the "app isn't open but windows appear"
+            // report. The Dock/Finder reopen path reveals everything.
+            window.orderOut(nil)
         } else {
             bringLaunchWindowToFront(window)
         }

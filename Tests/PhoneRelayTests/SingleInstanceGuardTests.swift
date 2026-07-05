@@ -136,9 +136,10 @@ final class SingleInstanceGuardTests: XCTestCase {
         XCTAssertTrue(source.contains("window.makeKeyAndOrderFront(nil)"))
         XCTAssertTrue(source.contains("NSApp.activate(ignoringOtherApps: true)"))
         XCTAssertTrue(source.contains("if window.isVisible, !window.isKeyWindow, NSApp.isActive {"))
-        // Background (-g) launches must show without stealing focus.
+        // Background (-g) launches stay fully off-screen until the user
+        // opens the app — no unfocused card floating over their work.
         XCTAssertTrue(source.contains("} else if launchedInBackground {"))
-        XCTAssertTrue(source.contains("window.orderFront(nil)"))
+        XCTAssertTrue(source.contains("window.orderOut(nil)"))
         XCTAssertTrue(source.contains("bringLaunchWindowToFront(window)"))
     }
 

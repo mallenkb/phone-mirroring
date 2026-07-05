@@ -3255,7 +3255,9 @@ final class AppModel: ObservableObject {
             states: [.mirroringReady, .companionConnected],
             adbSerial: phone.address
         )
-        startMirroring()
+        // Completing a pairing is a deliberate user action: it clears
+        // breakers and bypasses the auto-presentation visibility gate.
+        startMirroring(manual: true)
     }
 
     private func prepareQRCodePairingLegacyTCPIPInBackground(
@@ -5316,6 +5318,11 @@ final class AppModel: ObservableObject {
             return
         }
 
+        if !manual, !isAppUserVisible {
+            Logger.log("Skipping auto mirror start: app has no user-visible window (open the app to resume)")
+            return
+        }
+
         stopDisconnectRecovery()
 
         let serial = selectedDevice.adbSerial
@@ -6178,6 +6185,28 @@ final class AppModel: ObservableObject {
         return normalized.range(of: #"^SM[A-Z0-9]+$"#, options: .regularExpression) != nil
     }
 
+    /// Whether *automatic* flows may put windows on screen. Auto-reconnect
+    /// used to order the connection card and mirror chrome above whatever app
+    /// the user was in even when Phone Relay had no visible presence — the
+    /// "app isn't even open but windows pop over my browser" report
+    /// (2026-07-05). Auto work now stays off-screen unless the user can
+    /// already see the app; opening it (Dock/Finder) resumes everything.
+    nonisolated static func mayAutoPresentWindows(
+        appIsActive: Bool,
+        hasVisiblePrimaryWindow: Bool
+    ) -> Bool {
+        appIsActive || hasVisiblePrimaryWindow
+    }
+
+    var isAppUserVisible: Bool {
+        Self.mayAutoPresentWindows(
+            appIsActive: NSApp?.isActive == true,
+            hasVisiblePrimaryWindow: NSApp?.windows.contains {
+                $0.isVisible && $0.canBecomeMain
+            } == true
+        )
+    }
+
     /// How the connection window may (re)surface. Mirror sessions start and end
     /// on their own (auto-connect, Wi-Fi drops, reconnect cycles), so the window
     /// must never grab key focus from another app the user is working in —
@@ -6217,6 +6246,9 @@ final class AppModel: ObservableObject {
             connectionWindow.makeKeyAndOrderFront(nil)
             NSApp?.activate(ignoringOtherApps: true)
         case .orderFrontOnly:
+            // Never paint the card over another app's window when Phone Relay
+            // has no visible presence — background reconnects stay silent.
+            guard connectionWindow.isVisible || isAppUserVisible else { return }
             connectionWindow.orderFront(nil)
         }
         if startsQRCodePairing && !isFirstTimeUSBSetup {
