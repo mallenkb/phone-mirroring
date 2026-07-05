@@ -134,7 +134,8 @@ final class CaptureFolderTests: XCTestCase {
     }
 
     func testScreenRecordingCommandPassesConfigurableTimeLimit() throws {
-        let source = try String(contentsOfFile: "Sources/PhoneRelay/AppModel.swift", encoding: .utf8)
+        // Capture code moved to AppModel+Capture.swift in the pure-move split.
+        let source = try String(contentsOfFile: "Sources/PhoneRelay/AppModel+Capture.swift", encoding: .utf8)
         XCTAssertTrue(source.contains("screenrecord --time-limit \\(segmentSeconds)"))
         XCTAssertTrue(source.contains("min(Self.screenRecordingSegmentSeconds, remaining)"))
         XCTAssertTrue(source.contains("mergeRecordingSegments"))
