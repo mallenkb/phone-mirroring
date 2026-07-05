@@ -237,14 +237,20 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     }
 
     func testBackgroundAutoConnectVerifiesSavedWiFiRoutesWithoutMDNS() throws {
+        // The flow lives in AppModel.swift; the readiness helper moved to
+        // AppModel+ConnectionHelpers.swift in the pure-move split.
         let source = try String(
             contentsOfFile: "Sources/PhoneRelay/AppModel.swift",
+            encoding: .utf8
+        )
+        let helpers = try String(
+            contentsOfFile: "Sources/PhoneRelay/AppModel+ConnectionHelpers.swift",
             encoding: .utf8
         )
 
         XCTAssertTrue(source.contains("rememberedWirelessAutoConnectRecord"))
         XCTAssertTrue(source.contains("connectAndMirror(record: record)"))
-        XCTAssertTrue(source.contains("connectToRememberedWireless("))
+        XCTAssertTrue(helpers.contains("connectToRememberedWireless("))
     }
 
     @MainActor
