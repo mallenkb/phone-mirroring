@@ -271,11 +271,15 @@ final class AppModel: ObservableObject {
     }
     /// Packages the user has muted; their notifications are tracked (so they stay
     /// in the Settings list) but never posted.
-    @Published private(set) var mutedNotificationPackages: Set<String> =
+    // Setter not private: mutated from AppModel+NotificationActions.swift
+    // (pure-move split); treat as private elsewhere.
+    @Published var mutedNotificationPackages: Set<String> =
         Set(UserDefaults.standard.stringArray(forKey: AppModel.notificationMutedPackagesDefaultsKey) ?? [])
     /// Apps Phone Relay has seen send notifications, newest first — populates the
     /// per-app mute list in Settings. Persisted so the list survives relaunches.
-    @Published private(set) var knownNotificationApps: [NotificationAppInfo] =
+    // Setter not private: mutated from AppModel+NotificationActions.swift
+    // (pure-move split); treat as private elsewhere.
+    @Published var knownNotificationApps: [NotificationAppInfo] =
         AppModel.loadKnownNotificationApps()
 
     @Published private(set) var localNetworkPermissionGrantedForOnboarding = false
@@ -873,7 +877,9 @@ final class AppModel: ObservableObject {
     private lazy var discovery = DiscoveryService(adb: adb)
 
     private weak var connectionWindow: NSWindow?
-    private var mirrorSession: MirrorSession?
+    // Not private: read from AppModel extension files (pure-move split);
+    // treat as private elsewhere.
+    var mirrorSession: MirrorSession?
     private var lastMirrorWindowFrame: NSRect?
     private lazy var notificationForwarder = NotificationForwarder(model: self)
     private let notificationAuthorizationRequester: NotificationAuthorizationRequester
@@ -969,7 +975,9 @@ final class AppModel: ObservableObject {
     /// Per-session token in the on-phone segment filenames, so starting a new
     /// recording can never `rm -f` a previous session's not-yet-pulled file.
     private var screenRecordingSessionToken = ""
-    private var mirrorLaunchTask: Task<Void, Never>?
+    // Not private: read from AppModel extension files (pure-move split);
+    // treat as private elsewhere.
+    var mirrorLaunchTask: Task<Void, Never>?
     private var mirrorSettingsRestartTask: Task<Void, Never>?
     private var suppressMirrorSettingsRestart = false
     private var suppressMirrorAudioForReconnect = false
@@ -8468,219 +8476,6 @@ final class AppModel: ObservableObject {
             arguments.append(contentsOf: ["shell", "input", "keyevent", keycode])
             adb.run(arguments)
         }
-    }
-
-    // MARK: - Forwarded notification interactions
-
-    nonisolated static func launchSourceAppArguments(serial: String, package: String) -> [String] {
-        [
-            "-s", serial,
-            "shell",
-            "monkey",
-            "-p", package,
-            "-c", "android.intent.category.LAUNCHER",
-            "1"
-        ]
-    }
-
-    /// Opens a forwarded notification on the phone — taps its row in the shade
-    /// to fire the real content intent (a chat opens the chat), falling back to
-    /// launching the source app if the row can't be located. Runs on the
-    /// serialized tap queue so rapid banner clicks can't interleave, and brings
-    /// the mirror on screen so the opened content is actually visible.
-    // MARK: - Per-app notification controls
-
-    nonisolated static let maxKnownNotificationApps = 60
-
-    private nonisolated static func loadKnownNotificationApps() -> [NotificationAppInfo] {
-        guard let data = UserDefaults.standard.data(forKey: notificationKnownAppsDefaultsKey),
-              let apps = try? JSONDecoder().decode([NotificationAppInfo].self, from: data) else {
-            return []
-        }
-        return apps
-    }
-
-    private func persistKnownNotificationApps() {
-        if let data = try? JSONEncoder().encode(knownNotificationApps) {
-            UserDefaults.standard.set(data, forKey: Self.notificationKnownAppsDefaultsKey)
-        }
-    }
-
-    func isNotificationPackageMuted(_ package: String) -> Bool {
-        mutedNotificationPackages.contains(package)
-    }
-
-    func setNotificationPackage(_ package: String, muted: Bool) {
-        guard !package.isEmpty else { return }
-        if muted {
-            guard mutedNotificationPackages.insert(package).inserted else { return }
-        } else {
-            guard mutedNotificationPackages.remove(package) != nil else { return }
-        }
-        UserDefaults.standard.set(
-            Array(mutedNotificationPackages).sorted(),
-            forKey: Self.notificationMutedPackagesDefaultsKey
-        )
-    }
-
-    /// Records that `package` sent a notification so it appears in the Settings
-    /// mute list. Most-recent first, deduped, and capped. No-op when nothing
-    /// changes so it doesn't thrash `@Published` on every poll.
-    func registerObservedNotificationApp(package: String, label: String) {
-        guard !package.isEmpty else { return }
-        if let index = knownNotificationApps.firstIndex(where: { $0.package == package }) {
-            // Already first with the same label → nothing to do.
-            if index == 0, knownNotificationApps[index].label == label { return }
-            knownNotificationApps.remove(at: index)
-        }
-        knownNotificationApps.insert(NotificationAppInfo(package: package, label: label), at: 0)
-        if knownNotificationApps.count > Self.maxKnownNotificationApps {
-            knownNotificationApps.removeLast(knownNotificationApps.count - Self.maxKnownNotificationApps)
-        }
-        persistKnownNotificationApps()
-    }
-
-    func openSourceAppFromForwardedNotification(
-        package: String,
-        serial notificationSerial: String?,
-        notificationKey: String? = nil,
-        title: String? = nil,
-        text: String? = nil
-    ) {
-        let package = package.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !package.isEmpty else { return }
-
-        let serial = (notificationSerial?.isEmpty == false ? notificationSerial : nil)
-            ?? selectedDevice.adbSerial
-        guard let serial, !serial.isEmpty else {
-            reportError("Can’t open phone app", "Connect the phone before opening a forwarded notification.")
-            return
-        }
-
-        surfaceMirrorForForwardedNotification()
-
-        let args = Self.launchSourceAppArguments(serial: serial, package: package)
-        NotificationTapService.tapQueue.async {
-            if NotificationTapService.tapForwardedNotificationInShade(
-                serial: serial,
-                notificationKey: notificationKey,
-                title: title,
-                text: text
-            ) {
-                NotificationActionMetrics.shared.record(.open, outcome: .exact)
-                return
-            }
-
-            NotificationActionMetrics.shared.record(.open, outcome: .fallback)
-            let result = Tooling.runResult("adb", arguments: args, timeout: 5)
-            if !result.succeeded {
-                Logger.log("Could not open notification source app package=\(package): \(result.output)")
-            }
-        }
-    }
-
-    /// Types a reply into a message notification's inline RemoteInput on the
-    /// phone. Best-effort and app-dependent; if the inline reply can't be
-    /// driven it falls back to opening the conversation so the user can finish
-    /// the reply by hand.
-    func replyToForwardedNotification(
-        package: String,
-        serial notificationSerial: String?,
-        notificationKey: String? = nil,
-        title: String? = nil,
-        text: String? = nil,
-        reply: String
-    ) {
-        let package = package.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reply = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !reply.isEmpty else { return }
-
-        let serial = (notificationSerial?.isEmpty == false ? notificationSerial : nil)
-            ?? selectedDevice.adbSerial
-        guard let serial, !serial.isEmpty else {
-            reportError("Can’t reply", "Connect the phone before replying to a forwarded notification.")
-            return
-        }
-
-        NotificationTapService.tapQueue.async { [weak self] in
-            if NotificationTapService.replyToForwardedNotificationInShade(
-                serial: serial,
-                notificationKey: notificationKey,
-                title: title,
-                text: text,
-                reply: reply
-            ) {
-                NotificationActionMetrics.shared.record(.reply, outcome: .exact)
-                return
-            }
-            NotificationActionMetrics.shared.record(.reply, outcome: .fallback)
-            // Couldn't drive the inline reply — open the conversation so the
-            // user can type it themselves.
-            Task { @MainActor [weak self] in
-                self?.openSourceAppFromForwardedNotification(
-                    package: package,
-                    serial: serial,
-                    notificationKey: notificationKey,
-                    title: title,
-                    text: text
-                )
-            }
-        }
-    }
-
-    /// Dismisses a forwarded notification on the phone by swiping its row out of
-    /// the shade. Best-effort and OCR-driven (no app activation); silently does
-    /// nothing if the row can't be located.
-    func dismissForwardedNotification(
-        package: String,
-        serial notificationSerial: String?,
-        notificationKey: String? = nil,
-        title: String? = nil,
-        text: String? = nil
-    ) {
-        guard let serial = resolvedNotificationSerial(notificationSerial) else { return }
-        NotificationTapService.tapQueue.async {
-            let dismissed = NotificationTapService.dismissForwardedNotificationInShade(
-                serial: serial, notificationKey: notificationKey, title: title, text: text
-            )
-            NotificationActionMetrics.shared.record(.clear, outcome: dismissed ? .exact : .fallback)
-        }
-    }
-
-    /// Marks a forwarded message-style notification as read on the phone via its
-    /// inline "Mark as read" action, falling back to dismissing the row when the
-    /// app doesn't expose one. Best-effort and OCR-driven.
-    func markForwardedNotificationRead(
-        package: String,
-        serial notificationSerial: String?,
-        notificationKey: String? = nil,
-        title: String? = nil,
-        text: String? = nil
-    ) {
-        guard let serial = resolvedNotificationSerial(notificationSerial) else { return }
-        NotificationTapService.tapQueue.async {
-            let marked = NotificationTapService.markReadForwardedNotificationInShade(
-                serial: serial, notificationKey: notificationKey, title: title, text: text
-            )
-            NotificationActionMetrics.shared.record(.markRead, outcome: marked ? .exact : .fallback)
-        }
-    }
-
-    private func resolvedNotificationSerial(_ notificationSerial: String?) -> String? {
-        let serial = (notificationSerial?.isEmpty == false ? notificationSerial : nil)
-            ?? selectedDevice.adbSerial
-        guard let serial, !serial.isEmpty else { return nil }
-        return serial
-    }
-
-    /// Brings the phone on screen for a notification the user just acted on:
-    /// starts mirroring when nothing is live and a device is connected. The
-    /// window itself is raised by the app delegate when it activates the app.
-    private func surfaceMirrorForForwardedNotification() {
-        guard !isMirroring, mirrorSession == nil, mirrorLaunchTask == nil else { return }
-        guard !isPairing, !isFirstRunOnboardingActive else { return }
-        guard selectedDevice.adbSerial != nil else { return }
-        startMirroring(manual: true)
     }
 
     func takeScreenshot() {
