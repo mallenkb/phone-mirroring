@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Sparkle
 import SwiftUI
+import UniformTypeIdentifiers
 import UserNotifications
 
 /// Borderless windows refuse key status by default, which would break the
@@ -779,6 +780,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         )
         helpMenu.addItem(
             NSMenuItem(
+                title: "Save Diagnostics Bundle…",
+                action: #selector(saveDiagnosticsBundle(_:)),
+                keyEquivalent: ""
+            )
+        )
+        helpMenu.addItem(
+            NSMenuItem(
                 title: "Privacy Policy",
                 action: #selector(openPrivacyPolicy(_:)),
                 keyEquivalent: ""
@@ -1031,6 +1039,28 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
     @objc private func revealLastCapture(_ sender: Any?) {
         model.revealLastCapture()
+    }
+
+    /// Zips a REDACTED log + connection state for support/bug reports: IPs,
+    /// MACs, serials, device names, and notification content are scrubbed
+    /// before anything touches disk.
+    @objc private func saveDiagnosticsBundle(_ sender: Any?) {
+        let contents = model.diagnosticsBundleContents()
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "PhoneRelay-Diagnostics.zip"
+        panel.allowedContentTypes = [.zip]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        Task.detached(priority: .userInitiated) {
+            do {
+                try DiagnosticsBundleService.writeBundle(contents, to: destination)
+                await MainActor.run {
+                    NSWorkspace.shared.activateFileViewerSelecting([destination])
+                }
+            } catch {
+                Logger.log("Diagnostics bundle failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     @objc private func openLogFile(_ sender: Any?) {

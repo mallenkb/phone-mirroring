@@ -2,6 +2,11 @@ import XCTest
 @testable import PhoneRelay
 
 final class PairedPhoneStoreTests: XCTestCase {
+    override class func setUp() {
+        super.setUp()
+        _ = TestDomainHygiene.sweepOnce
+    }
+
     private let store = PairedPhoneStore()
     private let referenceDate = Date(timeIntervalSince1970: 1_700_000_000)
 

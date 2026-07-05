@@ -280,6 +280,22 @@ struct SettingsView: View {
                         title: "Pause while recording",
                         subtitle: "Stop forwarding notifications while you're recording the phone."
                     )
+                    // Drift detector for the OCR-driven banner actions: when
+                    // "app-only" starts dominating, the shade layout changed
+                    // and the exact-tap path needs attention.
+                    let actionSummary = NotificationActionMetrics.shared.summaryLines
+                    if !actionSummary.isEmpty {
+                        rowDivider
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Banner actions on this Mac")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                            Text(actionSummary.joined(separator: "  ·  "))
+                                .font(.footnote)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.vertical, 6)
+                    }
                 }
             }
 
@@ -390,14 +406,17 @@ struct SettingsView: View {
         // Grouped for top-down diagnosis: the live connection first, then each
         // transport's availability, then the macOS services both depend on.
         let categories: [(title: String, items: [ConnectionHealthSnapshot.Item])] = [
-            ("Connection", [snapshot.selectedTransport, snapshot.reconnectAttempts]),
+            // The stall row only exists after background connect work hit a
+            // typed dead end; while healthy the panel stays exactly as it was.
+            ("Connection", [snapshot.selectedTransport, snapshot.reconnectAttempts]
+                + (snapshot.lastStall.map { [$0] } ?? [])),
             ("Transports", [snapshot.usbAuthorization, snapshot.wifiReachability, snapshot.wifiHandoff]),
             ("System", [snapshot.adbStatus, snapshot.localNetworkPermission])
         ]
 
         return SettingsGroup(
             title: "Connection health",
-            footnote: "Live status for the active connection, each transport, and the macOS services they depend on."
+            footnote: "Live status for the active connection, each transport, and the macOS services they depend on. Fix Connection safely restarts the app's adb daemon and rescans — it never interrupts an active mirror."
         ) {
             VStack(alignment: .leading, spacing: 18) {
                 ForEach(categories, id: \.title) { category in
@@ -419,6 +438,17 @@ struct SettingsView: View {
                             }
                         }
                     }
+                }
+
+                HStack(spacing: 10) {
+                    Button {
+                        model.fixConnection()
+                    } label: {
+                        Label("Fix Connection", systemImage: "wrench.and.screwdriver")
+                    }
+                    Text("Clears reconnect throttles and restarts the app-owned adb daemon (skipped while mirroring).")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 // Only surface the fix row when there's actually something to do.

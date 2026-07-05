@@ -180,6 +180,37 @@ struct AuthorizedADBDevice: Identifiable, Equatable, Hashable {
     let isUSB: Bool
 }
 
+/// Why the most recent background connect work stopped, in a form the
+/// Connection Health panel can show. Silent dead-ends (failed readiness
+/// probes, empty QR discovery, unprepared handoffs) record one of these
+/// instead of only writing a log line, so "it just does nothing" is always
+/// answerable from Settings.
+struct ConnectionStall: Equatable {
+    enum Reason: String, CaseIterable {
+        case wirelessTargetUnreachable
+        case wirelessRouteMissing
+        case localNetworkDenied
+        case handoffNotReady
+        case usbNotReady
+        case qrDiscoveryEmpty
+
+        var title: String {
+            switch self {
+            case .wirelessTargetUnreachable: return "Phone didn't answer over Wi-Fi"
+            case .wirelessRouteMissing: return "No Wi-Fi route to dial"
+            case .localNetworkDenied: return "Local Network permission blocked"
+            case .handoffNotReady: return "Wi-Fi handoff not ready"
+            case .usbNotReady: return "USB device not ready"
+            case .qrDiscoveryEmpty: return "QR pairing sees no phone"
+            }
+        }
+    }
+
+    var reason: Reason
+    var detail: String
+    var at: Date
+}
+
 struct ConnectionHealthSnapshot: Equatable {
     enum Level: Equatable {
         case ok
@@ -202,6 +233,9 @@ struct ConnectionHealthSnapshot: Equatable {
     var selectedTransport: Item
     var wifiHandoff: Item
     var reconnectAttempts: Item
+    /// Present when background connect work recently hit a dead end; nil
+    /// while healthy so the panel stays quiet.
+    var lastStall: Item?
     var recommendedFix: String
 }
 

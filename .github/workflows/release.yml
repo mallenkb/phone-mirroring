@@ -78,6 +78,14 @@ jobs:
           done
           if (( ${#missing[@]} > 0 )); then
             printf 'Missing required release secret(s): %s\n' "${missing[*]}" >&2
+            echo "See docs/release-secrets.md for exact gh-secret-set commands to fix this." >&2
+            {
+              echo "## Release blocked: missing secrets"
+              echo ""
+              printf -- '- `%s`\n' "${missing[@]}"
+              echo ""
+              echo "Follow **docs/release-secrets.md** to create and set them."
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
@@ -126,6 +134,14 @@ jobs:
             exit 1
           fi
           DEVELOPER_ID="$DEVELOPER_ID" scripts/notarize.sh dist/PhoneRelay.app
+          # Identity-drift guardrail: a wrong-team certificate (or a silent
+          # ad-hoc fallback) must fail the release, never ship. TCC grants on
+          # user machines are keyed to this identity.
+          SIGNED_TEAM="$(codesign -dv dist/PhoneRelay.app 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+          if [[ "$SIGNED_TEAM" != "$TEAM_ID" ]]; then
+            echo "Signed TeamIdentifier '$SIGNED_TEAM' does not match APPLE_TEAM_ID '$TEAM_ID'." >&2
+            exit 1
+          fi
 
       - name: Create DMG
         env:

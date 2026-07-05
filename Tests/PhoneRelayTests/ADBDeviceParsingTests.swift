@@ -2,6 +2,11 @@ import XCTest
 @testable import PhoneRelay
 
 final class ADBDeviceParsingTests: XCTestCase {
+    override class func setUp() {
+        super.setUp()
+        _ = TestDomainHygiene.sweepOnce
+    }
+
     private let explicitDeviceSetupRequiredDefaultsKey = "MirrorBehavior.explicitDeviceSetupRequired"
 
     private func withoutExplicitDeviceSetupRequired(_ body: () async throws -> Void) async rethrows {

@@ -401,6 +401,11 @@ final class AppModel: ObservableObject {
 
     /// Last failure worth showing the user (mirroring/pairing/adb problems).
     @Published var activeError: UserFacingError?
+    /// Why the most recent background connect work stopped (typed, timestamped).
+    /// Recorded at the silent dead-ends — failed readiness probes, missing
+    /// routes, empty QR discovery — and cleared when a mirror becomes ready,
+    /// so "the app is doing nothing" is always explainable from Settings.
+    @Published private(set) var lastConnectionStall: ConnectionStall?
     /// Most recent saved screenshot or screen recording, for "reveal in Finder".
     @Published private(set) var lastCaptureURL: URL?
 
@@ -415,6 +420,31 @@ final class AppModel: ObservableObject {
         var hasAnyUSBDevice: Bool
         var hasAndroidLikeDevice: Bool
         var deviceName: String?
+    }
+
+    /// Records a typed dead-end for the Connection Health panel. Unlike
+    /// `reportError` this never surfaces a banner — background retries are
+    /// normal — it only answers "why isn't anything happening" on demand.
+    func noteConnectionStall(_ reason: ConnectionStall.Reason, detail: String) {
+        lastConnectionStall = ConnectionStall(reason: reason, detail: detail, at: Date())
+        Logger.log("Connection stall recorded: \(reason.rawValue) — \(detail)")
+    }
+
+    private func clearConnectionStall() {
+        lastConnectionStall = nil
+    }
+
+    /// Health-panel wording for a stall, with a coarse age so the user can
+    /// tell a fresh dead-end from a stale one.
+    nonisolated static func stallValueText(_ stall: ConnectionStall, now: Date = Date()) -> String {
+        let age = max(0, now.timeIntervalSince(stall.at))
+        let ageText: String
+        switch age {
+        case ..<90: ageText = "just now"
+        case ..<3600: ageText = "\(Int(age / 60))m ago"
+        default: ageText = "\(Int(age / 3600))h ago"
+        }
+        return "\(stall.reason.title) (\(ageText))"
     }
 
     func reportError(_ title: String, _ message: String) {
@@ -633,6 +663,45 @@ final class AppModel: ObservableObject {
     /// recording task so it stays Sendable.
     var recordingTimeLimitSeconds: Int {
         Self.clampedRecordingMaxMinutes(recordingMaxMinutes) * 60
+    }
+
+    /// Everything the redacted diagnostics bundle needs, gathered on the
+    /// main actor; the blocking zip write runs in the caller's task.
+    func diagnosticsBundleContents() -> DiagnosticsBundleService.Contents {
+        let logText = (try? String(contentsOf: Logger.logURL, encoding: .utf8))
+            ?? "(log unavailable)"
+        let snapshot = connectionHealthSnapshot
+        var lines: [String] = []
+        for item in [
+            snapshot.selectedTransport, snapshot.reconnectAttempts,
+            snapshot.usbAuthorization, snapshot.wifiReachability,
+            snapshot.wifiHandoff, snapshot.adbStatus,
+            snapshot.localNetworkPermission
+        ] {
+            lines.append("\(item.title): \(item.value)")
+        }
+        if let stall = lastConnectionStall {
+            lines.append("Last stall: \(Self.stallValueText(stall))")
+            lines.append("Stall detail: \(stall.detail)")
+        }
+        lines.append("Recommended fix: \(snapshot.recommendedFix)")
+        let actionSummary = NotificationActionMetrics.shared.summaryLines
+        lines.append("Banner actions: " + (actionSummary.isEmpty ? "none yet" : actionSummary.joined(separator: " · ")))
+
+        let serials = (pairedPhones.flatMap {
+            [$0.id, $0.lastAddress, $0.resolvedUSBSerial ?? "", $0.resolvedWiFiAddress ?? "", $0.wifiMACAddress ?? ""]
+        } + [selectedDevice.adbSerial ?? ""]).filter { !$0.isEmpty }
+        let names = (pairedPhones.map(\.displayName) + [selectedDevice.name]).filter { !$0.isEmpty }
+        let info = Bundle.main.infoDictionary
+        let version = "Phone Relay \(info?["CFBundleShortVersionString"] ?? "?") (\(info?["CFBundleVersion"] ?? "?"))"
+
+        return DiagnosticsBundleService.Contents(
+            logText: logText,
+            connectionSummary: lines.joined(separator: "\n"),
+            appVersion: version,
+            serials: serials,
+            deviceNames: names
+        )
     }
 
     /// Reveals the rolling diagnostic log in Finder so the user can inspect or
@@ -1168,7 +1237,8 @@ final class AppModel: ObservableObject {
             isPreparingWiFiHandoff: usbWiFiHandoffTask != nil
                 || usbWiFiTakeoverTask != nil
                 || wirelessStartTask != nil
-                || reconnectTask != nil
+                || reconnectTask != nil,
+            lastStall: lastConnectionStall
         )
     }
 
@@ -2010,6 +2080,13 @@ final class AppModel: ObservableObject {
                 self.noteAutoConnectFailure(for: phone)
                 self.isAutoConnecting = false
                 Logger.log("Auto-connect to \(address) failed readiness check")
+                self.noteConnectionStall(
+                    readiness.sawNoRouteToHost ? .localNetworkDenied : .wirelessTargetUnreachable,
+                    detail: "\(address) did not answer the adb readiness probe."
+                )
+                if readiness.sawReachableNoRoute {
+                    self.recoverADBDaemonIfSafe(reason: "reachable port but adb no-route for \(address)")
+                }
             }
         }
     }
@@ -2077,6 +2154,13 @@ final class AppModel: ObservableObject {
             self.noteAutoConnectFailure(address: savedAddress)
             self.isAutoConnecting = !self.autoConnectTargetsInFlight.isEmpty
             Logger.log("Auto-connect to saved Wi-Fi route \(savedAddress) failed readiness check")
+            self.noteConnectionStall(
+                result.sawNoRouteToHost ? .localNetworkDenied : .wirelessTargetUnreachable,
+                detail: "Saved route \(savedAddress) did not answer; IP recovery found nothing new."
+            )
+            if result.sawReachableNoRoute {
+                self.recoverADBDaemonIfSafe(reason: "reachable port but adb no-route for \(savedAddress)")
+            }
         }
     }
 
@@ -2186,6 +2270,10 @@ final class AppModel: ObservableObject {
             guard !isUSBSuppressedByWirelessPin(device.serial) else { return }
             guard let readyUSBDevice = await readyUSBDeviceForMirroring(device) else {
                 Logger.log("Skipping USB auto-connect for \(device.serial): USB transport is not ready.")
+                noteConnectionStall(
+                    .usbNotReady,
+                    detail: "\(device.serial) appeared in adb devices but never became shell-ready."
+                )
                 return
             }
             startMirroringOverUSB(
@@ -2691,6 +2779,100 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - adb daemon recovery (INVARIANTS.md rules 1, 8, 9)
+
+    /// Minimum gap between *automatic* daemon respawns. A user's explicit
+    /// Fix Connection press bypasses it (one action, not a storm).
+    nonisolated static let adbDaemonRecoveryCooldown: TimeInterval = 600
+    private var lastADBDaemonRecoveryAt: Date?
+    private var adbDaemonRecoveryInFlight = false
+
+    /// Pure gate for the stale-daemon remedy: never while any mirror work or
+    /// pairing is live (a server restart drops every adb transport), never
+    /// re-entrantly, and automatically only outside the cooldown.
+    nonisolated static func shouldAttemptADBDaemonRecovery(
+        isMirroring: Bool,
+        hasMirrorSession: Bool,
+        hasMirrorLaunchTask: Bool,
+        isPairing: Bool,
+        inFlight: Bool,
+        lastAttemptAt: Date?,
+        now: Date = Date(),
+        cooldown: TimeInterval = adbDaemonRecoveryCooldown,
+        force: Bool = false
+    ) -> Bool {
+        guard !isMirroring, !hasMirrorSession, !hasMirrorLaunchTask, !isPairing, !inFlight else {
+            return false
+        }
+        if force { return true }
+        guard let lastAttemptAt else { return true }
+        return now.timeIntervalSince(lastAttemptAt) >= cooldown
+    }
+
+    /// The stale-daemon remedy as a guarded in-app action: restart the
+    /// app-owned adb server so its Local Network attribution is the app's own
+    /// (a daemon spawned by a shell inherits that shell's — possibly denied —
+    /// identity and silently breaks every Wi-Fi connect). Only ever touches
+    /// the daemon the app itself talks to, never mid-mirror, cooldown-limited,
+    /// and every step is logged.
+    private func recoverADBDaemonIfSafe(force: Bool = false, reason: String) {
+        guard Self.shouldAttemptADBDaemonRecovery(
+            isMirroring: isMirroring,
+            hasMirrorSession: mirrorSession != nil,
+            hasMirrorLaunchTask: mirrorLaunchTask != nil,
+            isPairing: isPairing,
+            inFlight: adbDaemonRecoveryInFlight,
+            lastAttemptAt: lastADBDaemonRecoveryAt,
+            force: force
+        ) else {
+            Logger.log("adb daemon recovery skipped (\(reason)): mirror/pairing active, already running, or cooling down")
+            return
+        }
+        lastADBDaemonRecoveryAt = Date()
+        adbDaemonRecoveryInFlight = true
+        Logger.log("adb daemon recovery (\(reason)): step 1/3 restarting app-owned adb server")
+        let adb = self.adb
+        Task { [weak self] in
+            _ = await Task.detached(priority: .userInitiated) {
+                adb.run(["kill-server"], timeout: 3)
+            }.value
+            await adb.ensureServerStarted()
+            Logger.log("adb daemon recovery (\(reason)): step 2/3 server restarted; rescanning devices")
+            let output = await Task.detached {
+                adb.run(["devices", "-l"], timeout: Self.adbDeviceListTimeout)
+            }.value
+            guard let self else { return }
+            self.adbDaemonRecoveryInFlight = false
+            self.applyDevicePresence(output)
+            // Past failures were evidence about the old daemon — forget them
+            // and let the watcher act immediately.
+            self.failedAutoConnectTargets.removeAll()
+            self.lastPresenceAutoConnectAttemptAt = nil
+            self.wakeDeviceWatcher()
+            Logger.log("adb daemon recovery (\(reason)): step 3/3 done; devices=\(Self.authorizedADBDevices(in: output).count)")
+        }
+    }
+
+    /// User-initiated remedy ladder behind the Fix Connection button. Safe by
+    /// construction: with a live mirror it only refreshes presence and clears
+    /// throttles (never restarts the daemon out from under the stream);
+    /// otherwise it forces the daemon respawn + rescan.
+    func fixConnection() {
+        Logger.log("Fix Connection requested by user")
+        hasShownLocalNetworkPermissionHint = false
+        failedAutoConnectTargets.removeAll()
+        wifiAddressRecoveryAttemptedAt.removeAll()
+        lastPresenceAutoConnectAttemptAt = nil
+        lastSavedWiFiStatusProbeAt = nil
+        if isMirroring || mirrorSession != nil || mirrorLaunchTask != nil {
+            Logger.log("Fix Connection: mirror active — refreshing presence only (daemon restart skipped by rule 1)")
+            scanADBDevices()
+            wakeDeviceWatcher()
+            return
+        }
+        recoverADBDaemonIfSafe(force: true, reason: "fix-connection button")
+    }
+
     // MARK: - USB attach → immediate scan
 
     /// Attach events arrive in bursts (one phone enumerates several USB
@@ -3058,6 +3240,10 @@ final class AppModel: ObservableObject {
         qrPairingSession = nil
     }
 
+    /// Empty QR-discovery polls (750ms apart) before a typed stall is
+    /// recorded — ~30s, long enough that slow mDNS isn't misreported.
+    nonisolated static let qrEmptyDiscoveryStallPolls = 40
+
     private func startQRCodePairingWatcher() {
         guard !isFirstRunOnboardingActive else {
             suspendQRCodePairingForOnboarding()
@@ -3074,6 +3260,12 @@ final class AppModel: ObservableObject {
             await adb.ensureServerStarted()
             guard !Task.isCancelled else { return }
 
+            // The watcher loops silently while nothing advertises. After ~30s
+            // of pure emptiness, record a typed stall (once) so the health
+            // panel can answer "I scanned the QR and nothing happened" —
+            // usually wrong Wi-Fi or a denied Local Network permission.
+            var emptyDiscoveryPolls = 0
+
             while !Task.isCancelled {
                 let phones = await Task.detached { adb.mdnsServices() }.value
                 guard !Task.isCancelled else { return }
@@ -3085,6 +3277,13 @@ final class AppModel: ObservableObject {
                     named: session.serviceName,
                     in: phones
                 ) else {
+                    emptyDiscoveryPolls += 1
+                    if emptyDiscoveryPolls == Self.qrEmptyDiscoveryStallPolls {
+                        self.noteConnectionStall(
+                            .qrDiscoveryEmpty,
+                            detail: "The QR code has been on screen for a while, but the phone's pairing service never appeared. Check both devices share a Wi-Fi network and that Local Network access is allowed."
+                        )
+                    }
                     try? await Task.sleep(nanoseconds: 750_000_000)
                     continue
                 }
@@ -4447,12 +4646,18 @@ final class AppModel: ObservableObject {
                 return
             }
             Logger.log("Preparing USB Wi-Fi handoff in background for \(device.serial)")
-            _ = await self.prepareWirelessMirror(
+            let prepared = await self.prepareWirelessMirror(
                 from: device,
                 activatePreparedMirror: false
             )
             guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
             self.usbWiFiHandoffTask = nil
+            if !prepared {
+                self.noteConnectionStall(
+                    .handoffNotReady,
+                    detail: "Background Wi-Fi handoff for \(device.serial) found no reachable wireless route; USB mirroring is unaffected."
+                )
+            }
         }
     }
 
@@ -5231,6 +5436,8 @@ final class AppModel: ObservableObject {
         var connectedAddress: String?
         var connectAttempts: Int
         var noRouteToHostFailures: Int
+        /// Aggregated attribution signature — see `WirelessTargetReadiness`.
+        var sawReachableNoRoute: Bool = false
 
         var sawNoRouteToHost: Bool {
             connectAttempts > 0 && connectAttempts == noRouteToHostFailures
@@ -5256,6 +5463,7 @@ final class AppModel: ObservableObject {
 
         var connectAttempts = 0
         var noRouteToHostFailures = 0
+        var sawReachableNoRoute = false
         var candidates = candidateAddresses ?? reconnectCandidateAddresses(for: savedAddress)
         if candidates.count > 1 {
             // One concurrent TCP probe round (~0.45s) so the candidate that is
@@ -5291,18 +5499,21 @@ final class AppModel: ObservableObject {
             )
             connectAttempts += readiness.connectAttempts
             noRouteToHostFailures += readiness.noRouteToHostFailures
+            sawReachableNoRoute = sawReachableNoRoute || readiness.sawReachableNoRoute
             if readiness.isReady {
                 return RememberedWirelessConnectResult(
                     connectedAddress: candidate,
                     connectAttempts: connectAttempts,
-                    noRouteToHostFailures: noRouteToHostFailures
+                    noRouteToHostFailures: noRouteToHostFailures,
+                    sawReachableNoRoute: sawReachableNoRoute
                 )
             }
         }
         return RememberedWirelessConnectResult(
             connectedAddress: nil,
             connectAttempts: connectAttempts,
-            noRouteToHostFailures: noRouteToHostFailures
+            noRouteToHostFailures: noRouteToHostFailures,
+            sawReachableNoRoute: sawReachableNoRoute
         )
     }
 
@@ -5871,6 +6082,11 @@ final class AppModel: ObservableObject {
         var isReady: Bool
         var connectAttempts: Int
         var noRouteToHostFailures: Int
+        /// True when the raw TCP probe reached the port but `adb connect`
+        /// still failed "No route to host" — the network path is fine and the
+        /// denial is macOS attribution (stale/misattributed adb daemon or a
+        /// revoked Local Network grant). See INVARIANTS.md rules 8–9.
+        var sawReachableNoRoute: Bool = false
 
         var sawNoRouteToHost: Bool {
             connectAttempts > 0 && connectAttempts == noRouteToHostFailures
@@ -6095,6 +6311,7 @@ final class AppModel: ObservableObject {
 
         var connectAttempts = 0
         var noRouteToHostFailures = 0
+        var sawReachableNoRoute = false
         var restartedADBServerAfterReachableNoRoute = false
         for attempt in 0..<attempts {
             if let remaining = remainingBudget(), remaining <= 0 {
@@ -6152,8 +6369,10 @@ final class AppModel: ObservableObject {
                 )
             }
 
+            var portAcceptedThisAttempt = false
             if let tcpPortProbe {
                 let portAcceptsConnection = await tcpPortProbe(address)
+                portAcceptedThisAttempt = portAcceptsConnection
                 if !portAcceptsConnection {
                     Logger.log("ADB Wi-Fi handoff TCP probe attempt \(attempt + 1)/\(attempts) address=\(address) output=port not ready")
                     // A dead probe usually means a dead port, so skip the
@@ -6181,6 +6400,9 @@ final class AppModel: ObservableObject {
             Logger.log("ADB Wi-Fi handoff connect attempt \(attempt + 1)/\(attempts) address=\(address) output=\(connectOutput.trimmingCharacters(in: .whitespacesAndNewlines))")
             if outputIndicatesLocalNetworkBlocked(connectOutput) {
                 noRouteToHostFailures += 1
+                if portAcceptedThisAttempt {
+                    sawReachableNoRoute = true
+                }
                 if allowADBServerRestart,
                    tcpPortProbe != nil,
                    !restartedADBServerAfterReachableNoRoute,
@@ -6213,7 +6435,8 @@ final class AppModel: ObservableObject {
                 return WirelessTargetReadiness(
                     isReady: true,
                     connectAttempts: connectAttempts,
-                    noRouteToHostFailures: noRouteToHostFailures
+                    noRouteToHostFailures: noRouteToHostFailures,
+                    sawReachableNoRoute: sawReachableNoRoute
                 )
             }
 
@@ -6230,7 +6453,8 @@ final class AppModel: ObservableObject {
         return WirelessTargetReadiness(
             isReady: false,
             connectAttempts: connectAttempts,
-            noRouteToHostFailures: noRouteToHostFailures
+            noRouteToHostFailures: noRouteToHostFailures,
+            sawReachableNoRoute: sawReachableNoRoute
         )
     }
 
@@ -6627,6 +6851,10 @@ final class AppModel: ObservableObject {
                 if savedRouteSawNoRouteToHost {
                     self.presentLocalNetworkPermissionHint()
                 }
+                self.noteConnectionStall(
+                    savedRouteSawNoRouteToHost ? .localNetworkDenied : .wirelessRouteMissing,
+                    detail: "No reachable wireless route for \(savedTarget); saved address and mDNS both came up empty."
+                )
                 return
             }
             if let refreshedSavedTarget {
@@ -6784,6 +7012,7 @@ final class AppModel: ObservableObject {
             // is set in noteMirrorSessionEnded only once a session proves stable.
             self.stopDisconnectRecovery()
             self.activeError = nil
+            self.clearConnectionStall()
             self.manualWirelessConnectDisallowsUSBFallback = false
             self.isRecoveringConnection = false
             self.isAwaitingReconnect = false
@@ -7227,7 +7456,9 @@ final class AppModel: ObservableObject {
         reconnectAttemptCount: Int,
         activeErrorMessage: String?,
         backgroundWiFiHandoffEnabled: Bool = true,
-        isPreparingWiFiHandoff: Bool = false
+        isPreparingWiFiHandoff: Bool = false,
+        lastStall: ConnectionStall? = nil,
+        now: Date = Date()
     ) -> ConnectionHealthSnapshot {
         let hasAuthorizedUSB = authorizedDevices.contains(where: \.isUSB)
         let hasWirelessDevice = authorizedDevices.contains { !$0.isUSB }
@@ -7280,6 +7511,15 @@ final class AppModel: ObservableObject {
             level: reconnectAttemptCount == 0 ? .neutral : .warning
         )
 
+        let stallItem = lastStall.map { stall in
+            ConnectionHealthSnapshot.Item(
+                id: "last-stall",
+                title: "Last stopped because",
+                value: stallValueText(stall, now: now),
+                level: .warning
+            )
+        }
+
         return ConnectionHealthSnapshot(
             usbAuthorization: usbItem,
             wifiReachability: wifiItem,
@@ -7288,6 +7528,7 @@ final class AppModel: ObservableObject {
             selectedTransport: transportItem,
             wifiHandoff: handoffItem,
             reconnectAttempts: attemptsItem,
+            lastStall: stallItem,
             recommendedFix: nextRecommendedConnectionFix(
                 isSelectedDeviceOnline: isSelectedDeviceOnline,
                 isActivelyConnecting: isActivelyConnecting,
@@ -8326,9 +8567,11 @@ final class AppModel: ObservableObject {
                 title: title,
                 text: text
             ) {
+                NotificationActionMetrics.shared.record(.open, outcome: .exact)
                 return
             }
 
+            NotificationActionMetrics.shared.record(.open, outcome: .fallback)
             let result = Tooling.runResult("adb", arguments: args, timeout: 5)
             if !result.succeeded {
                 Logger.log("Could not open notification source app package=\(package): \(result.output)")
@@ -8367,8 +8610,10 @@ final class AppModel: ObservableObject {
                 text: text,
                 reply: reply
             ) {
+                NotificationActionMetrics.shared.record(.reply, outcome: .exact)
                 return
             }
+            NotificationActionMetrics.shared.record(.reply, outcome: .fallback)
             // Couldn't drive the inline reply — open the conversation so the
             // user can type it themselves.
             Task { @MainActor [weak self] in
@@ -8395,9 +8640,10 @@ final class AppModel: ObservableObject {
     ) {
         guard let serial = resolvedNotificationSerial(notificationSerial) else { return }
         NotificationTapService.tapQueue.async {
-            _ = NotificationTapService.dismissForwardedNotificationInShade(
+            let dismissed = NotificationTapService.dismissForwardedNotificationInShade(
                 serial: serial, notificationKey: notificationKey, title: title, text: text
             )
+            NotificationActionMetrics.shared.record(.clear, outcome: dismissed ? .exact : .fallback)
         }
     }
 
@@ -8413,9 +8659,10 @@ final class AppModel: ObservableObject {
     ) {
         guard let serial = resolvedNotificationSerial(notificationSerial) else { return }
         NotificationTapService.tapQueue.async {
-            _ = NotificationTapService.markReadForwardedNotificationInShade(
+            let marked = NotificationTapService.markReadForwardedNotificationInShade(
                 serial: serial, notificationKey: notificationKey, title: title, text: text
             )
+            NotificationActionMetrics.shared.record(.markRead, outcome: marked ? .exact : .fallback)
         }
     }
 
