@@ -346,6 +346,16 @@ struct SettingsView: View {
                 ) {
                     recordingLengthPicker
                 }
+
+                rowDivider
+
+                scrollingPickerRow(
+                    icon: "cursorarrow.rays",
+                    title: "Touch size",
+                    subtitle: "Controls the touch circle shown while recording and burned into saved videos."
+                ) {
+                    recordingTouchSizePicker
+                }
             }
         }
     }
@@ -367,6 +377,17 @@ struct SettingsView: View {
             return hours == 1 ? "1 hour" : "\(hours) hours"
         }
         return "\(minutes) min"
+    }
+
+    private var recordingTouchSizePicker: some View {
+        Picker("", selection: $model.screenRecordingTouchSize) {
+            ForEach(ScreenRecordingTouchSize.allCases) { size in
+                Text(size.title).tag(size)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .fixedSize()
     }
 
     // MARK: - Shortcuts

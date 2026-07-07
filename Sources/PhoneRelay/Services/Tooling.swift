@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 import os
 
-/// Discovery + execution of bundled or Homebrew CLI tools (adb, scrcpy).
+/// Discovery + execution of bundled or Homebrew CLI tools.
 enum Tooling {
     private static let processOutputQueue = DispatchQueue(
         label: "phonerelay.tooling.process-output",
@@ -28,7 +28,6 @@ enum Tooling {
         let candidates = [
             Bundle.main.resourceURL?.appendingPathComponent("bin/\(name)").path(percentEncoded: false),
             Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/\(name)").path(percentEncoded: false),
-            localScrcpyBuildPath(toolName: name),
             "/opt/homebrew/bin/\(name)",
             "/usr/local/bin/\(name)",
             "/usr/bin/\(name)",
@@ -38,27 +37,6 @@ enum Tooling {
         ].compactMap { $0 }
 
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
-    }
-
-    /// During `swift run` the bundled `dist/.app` isn't used, so the brewed
-    /// scrcpy would be picked up instead of the customized build in
-    /// `scrcpy-source/build-mac/app/`. Walk up from the executable until we
-    /// find a sibling `scrcpy-source/build-mac/app/<name>` and prefer it.
-    private static func localScrcpyBuildPath(toolName: String) -> String? {
-        guard toolName == "scrcpy" else { return nil }
-        var url = Bundle.main.bundleURL
-        for _ in 0..<8 {
-            let candidate = url
-                .appendingPathComponent("scrcpy-source")
-                .appendingPathComponent("build-mac/app/\(toolName)")
-                .path(percentEncoded: false)
-            if FileManager.default.isExecutableFile(atPath: candidate) {
-                return candidate
-            }
-            url = url.deletingLastPathComponent()
-            if url.path == "/" { break }
-        }
-        return nil
     }
 
     /// Path to the `scrcpy-server` dex/jar shipped in the app bundle. The

@@ -672,7 +672,10 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         captureCueCancellable = model.$captureCue
             .receive(on: RunLoop.main)
             .sink { [weak self] cue in
-                guard let cue else { return }
+                guard let cue else {
+                    self?.hideActiveStatusCue()
+                    return
+                }
                 self?.showCaptureCue(cue)
             }
         transferActivityCancellable = model.$transferActivity
@@ -814,6 +817,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             cueView.layer?.transform = CATransform3DIdentity
         }
 
+        guard !cue.isPersistent else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.15) { [weak self, weak cueView] in
             guard let self, let cueView, self.activeCaptureCueView === cueView else { return }
             NSAnimationContext.runAnimationGroup { context in

@@ -356,10 +356,14 @@ final class MirrorSession {
         switch event.kind {
         case .down:
             recordMirrorActivity()
+            model?.noteScreenRecordingTouch(at: event.normalized)
+            showRecordingTouch(in: view, at: event.normalized)
             controlChannel.sendTouch(action: .down, normalized: event.normalized,
                                      button: ScrcpyControlChannel.buttonPrimary)
         case .dragged:
             recordMirrorActivity()
+            model?.noteScreenRecordingTouch(at: event.normalized, isMove: true)
+            showRecordingTouch(in: view, at: event.normalized, intensity: 0.7)
             controlChannel.sendTouch(action: .move, normalized: event.normalized,
                                      button: ScrcpyControlChannel.buttonPrimary)
         case .up:
@@ -369,6 +373,8 @@ final class MirrorSession {
             break // not a touch event on Android; ignore
         case .scroll:
             recordMirrorActivity()
+            model?.noteScreenRecordingScroll(at: event.normalized)
+            showRecordingTouch(in: view, at: event.normalized, intensity: 0.92)
             let scrollSpeedPercent = model?.mirrorScrollSpeedPercent ?? 35
             let scrollFeel = model?.mirrorScrollFeel ?? .balanced
             let deltaX = AppModel.shapedMirrorScrollDelta(
@@ -387,6 +393,15 @@ final class MirrorSession {
                 controlChannel.sendScroll(normalized: event.normalized, deltaX: deltaX, deltaY: deltaY)
             }
         }
+    }
+
+    private func showRecordingTouch(in view: MirrorRenderView, at normalized: CGPoint, intensity: CGFloat = 1) {
+        guard model?.isRecording == true else { return }
+        view.showTouchIndicator(
+            at: normalized,
+            intensity: intensity,
+            size: model?.screenRecordingTouchSize ?? .max
+        )
     }
 
     nonisolated static func shouldUseHorizontalTrackpadSwipe(deltaX: CGFloat, deltaY: CGFloat) -> Bool {

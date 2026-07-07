@@ -22,6 +22,7 @@ final class MirrorRenderView: NSView {
     }
 
     let sampleBufferDisplayLayer = AVSampleBufferDisplayLayer()
+    private let touchOverlayLayer = CALayer()
     /// After a flush we drop non-keyframe samples until the next IDR so the
     /// decoder can resync cleanly instead of stalling on a black frame.
     private var awaitingKeyFrameAfterFlush = false
@@ -50,9 +51,15 @@ final class MirrorRenderView: NSView {
         layer?.backgroundColor = NSColor.black.cgColor
         layer?.masksToBounds = true
         layer?.addSublayer(sampleBufferDisplayLayer)
+        layer?.addSublayer(touchOverlayLayer)
         sampleBufferDisplayLayer.videoGravity = .resizeAspect
         sampleBufferDisplayLayer.backgroundColor = NSColor.black.cgColor
         sampleBufferDisplayLayer.actions = [
+            "bounds": NSNull(),
+            "frame": NSNull(),
+            "position": NSNull()
+        ]
+        touchOverlayLayer.actions = [
             "bounds": NSNull(),
             "frame": NSNull(),
             "position": NSNull()
@@ -98,6 +105,7 @@ final class MirrorRenderView: NSView {
         super.layout()
         updateVideoLayerFrame()
         loadingView.frame = bounds
+        touchOverlayLayer.frame = bounds
         applyCornerMask()
     }
 
@@ -149,7 +157,58 @@ final class MirrorRenderView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         sampleBufferDisplayLayer.frame = Self.videoFrame(for: bounds)
+        touchOverlayLayer.frame = bounds
         CATransaction.commit()
+    }
+
+    func showTouchIndicator(
+        at normalized: CGPoint,
+        intensity: CGFloat = 1,
+        size: ScreenRecordingTouchSize = .max
+    ) {
+        guard aspect.width > 0, aspect.height > 0, bounds.width > 0, bounds.height > 0 else { return }
+        let renderedFrame = Self.fittedVideoRect(for: aspect, in: Self.videoFrame(for: bounds))
+        guard renderedFrame.width > 0, renderedFrame.height > 0 else { return }
+
+        let clampedX = min(1, max(0, normalized.x))
+        let clampedY = min(1, max(0, normalized.y))
+        let clampedIntensity = min(1, max(0.25, intensity))
+        let diameter = max(
+            size.minimumDiameter,
+            min(renderedFrame.width, renderedFrame.height) * size.liveDiameterScale
+        )
+        let dot = CALayer()
+        dot.bounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
+        dot.position = CGPoint(
+            x: renderedFrame.minX + clampedX * renderedFrame.width,
+            y: renderedFrame.minY + (1 - clampedY) * renderedFrame.height
+        )
+        dot.cornerRadius = diameter / 2
+        dot.backgroundColor = NSColor.white.withAlphaComponent(0.32 * clampedIntensity).cgColor
+        dot.borderColor = NSColor.white.withAlphaComponent(0.92 * clampedIntensity).cgColor
+        dot.borderWidth = max(2, diameter * 0.07)
+        dot.opacity = 0
+        touchOverlayLayer.addSublayer(dot)
+
+        let opacity = CAKeyframeAnimation(keyPath: "opacity")
+        opacity.values = [0, min(1, 0.95 * clampedIntensity), min(0.68, 0.58 * clampedIntensity), 0]
+        opacity.keyTimes = [0, 0.16, 0.46, 1]
+
+        let scale = CAKeyframeAnimation(keyPath: "transform.scale")
+        scale.values = [0.34, 0.82, 1.16, 1.58]
+        scale.keyTimes = [0, 0.18, 0.48, 1]
+
+        let group = CAAnimationGroup()
+        group.animations = [opacity, scale]
+        group.duration = clampedIntensity >= 0.9 ? 0.62 : 0.42
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        group.isRemovedOnCompletion = false
+        group.fillMode = .both
+        dot.add(group, forKey: "recording-touch-indicator")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + group.duration + 0.05) { [weak dot] in
+            dot?.removeFromSuperlayer()
+        }
     }
 
     private func applyCornerMask() {

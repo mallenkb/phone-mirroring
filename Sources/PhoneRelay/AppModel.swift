@@ -39,11 +39,75 @@ enum MirrorScrollFeel: String, CaseIterable, Identifiable {
     }
 }
 
+enum ScreenRecordingTouchSize: String, CaseIterable, Identifiable, Sendable {
+    case small
+    case medium
+    case large
+    case max
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .small: return "Small"
+        case .medium: return "Medium"
+        case .large: return "Large"
+        case .max: return "Max"
+        }
+    }
+
+    var liveDiameterScale: CGFloat {
+        switch self {
+        case .small: return 0.052
+        case .medium: return 0.072
+        case .large: return 0.09
+        case .max: return 0.11
+        }
+    }
+
+    var recordingDiameterScale: CGFloat {
+        switch self {
+        case .small: return 0.045
+        case .medium: return 0.062
+        case .large: return 0.078
+        case .max: return 0.095
+        }
+    }
+
+    var minimumDiameter: CGFloat {
+        switch self {
+        case .small: return 28
+        case .medium: return 38
+        case .large: return 46
+        case .max: return 54
+        }
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     typealias NotificationAuthorizationRequester = (@escaping (Bool, Error?) -> Void) -> Void
     typealias NotificationSettingsOpener = () -> Void
     typealias LocalNetworkPermissionPrompter = (@escaping (Bool) -> Void) -> Void
+
+    struct ScreenRecordingTouchEvent: Sendable, Equatable {
+        let normalizedX: Double
+        let normalizedY: Double
+        let occurredAt: Date
+        let intensity: Double
+    }
+
+    struct ScreenRecordingSegmentStart: Sendable, Equatable {
+        let index: Int
+        let startedAt: Date
+    }
+
+    struct ScreenRecordingTouchTimelineEvent: Sendable, Equatable {
+        let normalizedX: Double
+        let normalizedY: Double
+        let seconds: Double
+        let intensity: Double
+    }
 
     nonisolated static let localNetworkPermissionReason =
         "Allow Local Network so Phone Relay can find your phone on Wi-Fi for wireless pairing, USB-to-Wi-Fi handoff, and automatic reconnect."
@@ -74,6 +138,7 @@ final class AppModel: ObservableObject {
     nonisolated static let recordingFolderPathDefaultsKey = "Capture.recordingFolderPath"
     nonisolated static let recordingFolderBookmarkDefaultsKey = "Capture.recordingFolderBookmark"
     nonisolated static let recordingMaxMinutesDefaultsKey = "Capture.recordingMaxMinutes"
+    nonisolated static let recordingTouchSizeDefaultsKey = "Capture.recordingTouchSize"
     nonisolated static let diagnosticsEnabledDefaultsKey = DiagnosticsService.diagnosticsEnabledDefaultsKey
     /// Default screen-recording length when the user hasn't picked one.
     nonisolated static let recordingMaxMinutesDefault = 30
@@ -104,6 +169,14 @@ final class AppModel: ObservableObject {
             return .smooth
         }
         return feel
+    }
+
+    nonisolated static func defaultScreenRecordingTouchSize(storedValue: Any?) -> ScreenRecordingTouchSize {
+        guard let rawValue = storedValue as? String,
+              let size = ScreenRecordingTouchSize(rawValue: rawValue) else {
+            return .max
+        }
+        return size
     }
 
     nonisolated static func scaledMirrorScrollDelta(_ delta: CGFloat, speedPercent: Int) -> CGFloat {
@@ -332,6 +405,14 @@ final class AppModel: ObservableObject {
             }
             guard oldValue != recordingMaxMinutes else { return }
             UserDefaults.standard.set(recordingMaxMinutes, forKey: Self.recordingMaxMinutesDefaultsKey)
+        }
+    }
+    @Published var screenRecordingTouchSize: ScreenRecordingTouchSize =
+        AppModel.defaultScreenRecordingTouchSize(
+            storedValue: UserDefaults.standard.object(forKey: AppModel.recordingTouchSizeDefaultsKey)
+        ) {
+        didSet {
+            UserDefaults.standard.set(screenRecordingTouchSize.rawValue, forKey: Self.recordingTouchSizeDefaultsKey)
         }
     }
     /// Frame-rate ceiling. 0 = automatic (match the phone and Mac refresh rates).
@@ -864,6 +945,13 @@ final class AppModel: ObservableObject {
     /// Per-session token in the on-phone segment filenames, so starting a new
     /// recording can never `rm -f` a previous session's not-yet-pulled file.
     var screenRecordingSessionToken = ""
+    /// Tracks Android touch indicators that were enabled only for recording.
+    var screenRecordingTouchIndicatorSerial: String?
+    var screenRecordingTouchIndicatorsEnabled = false
+    var screenRecordingTouchEvents: [ScreenRecordingTouchEvent] = []
+    var screenRecordingSegmentStarts: [ScreenRecordingSegmentStart] = []
+    var lastScreenRecordingTouchMoveAt: Date?
+    var lastScreenRecordingScrollAt: Date?
     // Not private: read from AppModel extension files (pure-move split);
     // treat as private elsewhere.
     var mirrorLaunchTask: Task<Void, Never>?
@@ -1388,6 +1476,7 @@ final class AppModel: ObservableObject {
         guard !isShuttingDown else { return }
         isShuttingDown = true
         restorePresentationModeIfNeeded(async: false)
+        restoreRecordingTouchIndicatorsIfNeeded(async: false)
         stopMirroring(suspendAutoConnect: false)
         discovery.stop()
         notificationForwarder.stop()
@@ -6967,6 +7056,14 @@ final class AppModel: ObservableObject {
         let serial = presentationModeSerial ?? selectedDevice.adbSerial
         presentationModeEnabled = false
         presentationModeSerial = nil
+
+        // Ownership arbitration mirror of restoreRecordingTouchIndicators:
+        // while a recording still owns the touch indicators, leave them on —
+        // its cleanup writes the disable when the recording ends.
+        guard !screenRecordingTouchIndicatorsEnabled else {
+            Logger.log("Presentation Mode released touch indicators; active recording still owns them")
+            return
+        }
 
         guard let serial, !serial.isEmpty else { return }
         let adb = self.adb
