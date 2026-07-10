@@ -43,10 +43,24 @@ jobs:
             -scheme PhoneRelayApp \
             -configuration Release \
             -derivedDataPath .build/XcodeDerivedData \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY=- \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
             DEVELOPMENT_TEAM= \
             build
+
+      # CI has no distribution provisioning profile. Sign the already-built
+      # bundle ad hoc so the same strict artifact verifier can still inspect
+      # entitlements, nested code, and helper/resource integrity.
+      - name: Ad-hoc sign Xcode release artifact
+        run: |
+          APP=".build/XcodeDerivedData/Build/Products/Release/PhoneRelay.app"
+          codesign --force --deep --options runtime --sign - "$APP"
+          codesign \
+            --force \
+            --options runtime \
+            --entitlements scripts/PhoneRelay.release.entitlements \
+            --sign - \
+            "$APP"
 
       - name: Verify Xcode release artifact
         run: |

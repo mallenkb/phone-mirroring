@@ -102,6 +102,19 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertTrue(workflow.contains("swift build -Xswiftc -swift-version -Xswiftc 6"))
     }
 
+    func testCIWrapperBuildDoesNotRequireAProvisioningProfile() throws {
+        let workflow = try String(
+            contentsOf: Self.repoRoot().appendingPathComponent(".github/workflows/ci.yml"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(workflow.contains("CODE_SIGNING_ALLOWED=NO"))
+        XCTAssertTrue(workflow.contains("CODE_SIGNING_REQUIRED=NO"))
+        XCTAssertTrue(workflow.contains("Ad-hoc sign Xcode release artifact"))
+        XCTAssertTrue(workflow.contains("--entitlements scripts/PhoneRelay.release.entitlements"))
+        XCTAssertTrue(workflow.contains("scripts/verify_release_artifact.sh \"$APP\""))
+    }
+
     func testProjectSourcesTreatWarningsAsErrors() throws {
         let package = try String(
             contentsOf: Self.repoRoot().appendingPathComponent("Package.swift"),
