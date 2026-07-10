@@ -25,9 +25,8 @@ if [ -z "${SIGNING_IDENTITY:-}" ]; then
   SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
 fi
 OPEN_AFTER_PACKAGE="${OPEN_AFTER_PACKAGE:-0}"
-BUILD_DIR="scrcpy-source/build-mac"
-SCRCPY_SERVER="$BUILD_DIR/server/scrcpy-server"
 RESOURCE_SCRCPY_SERVER="Sources/PhoneRelay/Resources/scrcpy-server"
+VENDORED_ADB="App/Vendor/adb"
 ASSET_CATALOG="App/Assets.xcassets"
 PRECOMPILED_ASSETS_CAR="Sources/PhoneRelay/Resources/Assets.car"
 PRECOMPILED_APP_ICON="Sources/PhoneRelay/Resources/AppIcon.icns"
@@ -43,6 +42,7 @@ HELPER_BIN_DIR="$RESOURCES_DIR/bin"
 LICENSES_DIR="$RESOURCES_DIR/LICENSES"
 APP_ENTITLEMENTS="scripts/PhoneRelay.release.entitlements"
 
+scripts/verify_tracked_artifacts.sh
 swift build -c release
 
 TMP_HELPERS="$(mktemp -d)"
@@ -50,12 +50,6 @@ cleanup() {
   rm -rf "$TMP_HELPERS"
 }
 trap cleanup EXIT
-
-if [ -x "$APP/Contents/MacOS/adb" ]; then
-  cp "$APP/Contents/MacOS/adb" "$TMP_HELPERS/adb"
-elif [ -x "$APP/Contents/Resources/bin/adb" ]; then
-  cp "$APP/Contents/Resources/bin/adb" "$TMP_HELPERS/adb"
-fi
 
 rm -rf "$APP"
 mkdir -p "$BIN_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR" "$HELPER_BIN_DIR" "$LICENSES_DIR"
@@ -103,25 +97,10 @@ fi
 
 # Audio and video are handled in-process; only the scrcpy-server jar (pushed to
 # the device) and adb are needed. The standalone scrcpy CLI is no longer bundled.
-if [ -f "$SCRCPY_SERVER" ]; then
-  cp "$SCRCPY_SERVER" "$RESOURCES_DIR/scrcpy-server"
-elif [ -f "$RESOURCE_SCRCPY_SERVER" ]; then
-  cp "$RESOURCE_SCRCPY_SERVER" "$RESOURCES_DIR/scrcpy-server"
-else
-  echo "warning: scrcpy-server was not found; mirroring will fail until it is bundled" >&2
-fi
+cp "$RESOURCE_SCRCPY_SERVER" "$RESOURCES_DIR/scrcpy-server"
+cp "$VENDORED_ADB" "$HELPER_BIN_DIR/adb"
 
-if [ -x "$TMP_HELPERS/adb" ]; then
-  cp "$TMP_HELPERS/adb" "$HELPER_BIN_DIR/adb"
-elif command -v adb >/dev/null 2>&1; then
-  cp "$(command -v adb)" "$HELPER_BIN_DIR/adb"
-else
-  echo "warning: adb was not found; device discovery will require adb in the app bundle" >&2
-fi
-
-if [ -f "$HELPER_BIN_DIR/adb" ]; then
-  chmod +x "$HELPER_BIN_DIR/adb"
-fi
+chmod +x "$HELPER_BIN_DIR/adb"
 
 ensure_framework_rpath() {
   executable="$1"

@@ -19,8 +19,8 @@ RESOURCES_DIR="$APP_BUNDLE/Contents/Resources"
 FRAMEWORKS_DIR="$APP_BUNDLE/Contents/Frameworks"
 BIN_DIR="$RESOURCES_DIR/bin"
 LICENSES_DIR="$RESOURCES_DIR/LICENSES"
-SCRCPY_SERVER="$ROOT_DIR/scrcpy-source/build-mac/server/scrcpy-server"
 RESOURCE_SCRCPY_SERVER="$ROOT_DIR/Sources/PhoneRelay/Resources/scrcpy-server"
+VENDORED_ADB="$ROOT_DIR/App/Vendor/adb"
 APP_ASSETS="$ROOT_DIR/App/Assets.xcassets"
 RESOURCE_BUNDLE="$ROOT_DIR/.build/debug/PhoneRelay_PhoneRelay.bundle"
 SPARKLE_FRAMEWORK="$ROOT_DIR/.build/debug/Sparkle.framework"
@@ -97,6 +97,7 @@ if [[ -n "$old_pids" ]]; then
 fi
 
 cd "$ROOT_DIR"
+scripts/verify_tracked_artifacts.sh
 swift build --product "$BUILD_PRODUCT"
 
 rm -rf "$APP_BUNDLE"
@@ -139,20 +140,9 @@ if [[ -f "$ROOT_DIR/LICENSES/scrcpy-APACHE-2.0.txt" ]]; then
   cp "$ROOT_DIR/LICENSES/scrcpy-APACHE-2.0.txt" "$LICENSES_DIR/scrcpy-APACHE-2.0.txt"
 fi
 
-if [[ -f "$SCRCPY_SERVER" ]]; then
-  cp "$SCRCPY_SERVER" "$RESOURCES_DIR/scrcpy-server"
-elif [[ -f "$RESOURCE_SCRCPY_SERVER" ]]; then
-  cp "$RESOURCE_SCRCPY_SERVER" "$RESOURCES_DIR/scrcpy-server"
-else
-  echo "warning: scrcpy-server was not found; mirroring will fail until it is bundled" >&2
-fi
-
-if command -v adb >/dev/null 2>&1; then
-  cp "$(command -v adb)" "$BIN_DIR/adb"
-  chmod +x "$BIN_DIR/adb"
-else
-  echo "warning: adb was not found; device discovery will require adb in the app bundle" >&2
-fi
+cp "$RESOURCE_SCRCPY_SERVER" "$RESOURCES_DIR/scrcpy-server"
+cp "$VENDORED_ADB" "$BIN_DIR/adb"
+chmod +x "$BIN_DIR/adb"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

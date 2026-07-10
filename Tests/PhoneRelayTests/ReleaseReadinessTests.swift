@@ -1,7 +1,53 @@
 import XCTest
+import CryptoKit
 @testable import PhoneRelay
 
 final class ReleaseReadinessTests: XCTestCase {
+    func testTrackedReleaseArtifactsMatchManifest() throws {
+        let root = Self.repoRoot()
+        let manifest = try String(
+            contentsOf: root.appendingPathComponent("scripts/release-artifacts.sha256"),
+            encoding: .utf8
+        )
+
+        let entries = manifest.split(whereSeparator: \.isNewline)
+        XCTAssertEqual(entries.count, 2)
+        for entry in entries {
+            let fields = entry.split(maxSplits: 1, whereSeparator: \.isWhitespace)
+            XCTAssertEqual(fields.count, 2, "Malformed release artifact manifest entry: \(entry)")
+            let expectedHash = String(fields[0])
+            let relativePath = fields[1].trimmingCharacters(in: .whitespaces)
+            let data = try Data(contentsOf: root.appendingPathComponent(relativePath))
+            let actualHash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            XCTAssertEqual(actualHash, expectedHash, relativePath)
+        }
+    }
+
+    func testScriptPackagingUsesOnlyTrackedReleaseArtifacts() throws {
+        for scriptName in ["scripts/build_and_run.sh", "scripts/package_app.sh"] {
+            let script = try String(
+                contentsOf: Self.repoRoot().appendingPathComponent(scriptName),
+                encoding: .utf8
+            )
+            XCTAssertTrue(script.contains("scripts/verify_tracked_artifacts.sh"), scriptName)
+            XCTAssertTrue(script.contains("VENDORED_ADB"), scriptName)
+            XCTAssertTrue(script.contains("RESOURCE_SCRCPY_SERVER"), scriptName)
+            XCTAssertFalse(script.contains("command -v adb"), scriptName)
+            XCTAssertFalse(script.contains("TMP_HELPERS/adb"), scriptName)
+        }
+    }
+
+    func testReleaseVerifierFailsClosedWhenRequiredArtifactsAreMissing() throws {
+        let verifier = try String(
+            contentsOf: Self.repoRoot().appendingPathComponent("scripts/verify_release_artifact.sh"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(verifier.contains(#"[[ ! -x "$ADB_HELPER" ]]"#))
+        XCTAssertTrue(verifier.contains(#"[[ ! -f "$SCRCPY_SERVER" ]]"#))
+        XCTAssertTrue(verifier.contains("lipo -verify_arch"))
+        XCTAssertTrue(verifier.contains("/usr/bin/unzip -tqq"))
+    }
+
     func testXcodeAppSandboxAllowsADBKeysAndConnections() throws {
         let entitlements = try Self.propertyList(at: Self.repoRoot()
             .appendingPathComponent("App/PhoneRelay.entitlements"))

@@ -9,6 +9,28 @@ if [[ ! -d "$APP" ]]; then
 fi
 
 INFO="$APP/Contents/Info.plist"
+ADB_HELPER="$APP/Contents/Resources/bin/adb"
+SCRCPY_SERVER="$APP/Contents/Resources/scrcpy-server"
+
+if [[ ! -x "$ADB_HELPER" ]]; then
+  echo "error: release app is missing the executable adb helper: $ADB_HELPER" >&2
+  exit 1
+fi
+if [[ ! -f "$SCRCPY_SERVER" ]]; then
+  echo "error: release app is missing scrcpy-server: $SCRCPY_SERVER" >&2
+  exit 1
+fi
+for architecture in x86_64 arm64; do
+  if ! lipo -verify_arch "$architecture" "$ADB_HELPER" >/dev/null 2>&1; then
+    echo "error: bundled adb is missing the $architecture architecture" >&2
+    exit 1
+  fi
+done
+if ! /usr/bin/unzip -tqq "$SCRCPY_SERVER"; then
+  echo "error: bundled scrcpy-server is not a valid jar/zip archive" >&2
+  exit 1
+fi
+
 /usr/libexec/PlistBuddy -c "Print :NSLocalNetworkUsageDescription" "$INFO" >/dev/null
 bonjour_services="$(/usr/libexec/PlistBuddy -c "Print :NSBonjourServices" "$INFO")"
 for service in _adb._tcp _adb-tls-connect._tcp _adb-tls-pairing._tcp; do
