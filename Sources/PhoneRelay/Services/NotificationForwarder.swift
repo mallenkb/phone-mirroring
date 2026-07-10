@@ -255,12 +255,18 @@ final class NotificationForwarder {
             // Without this, an unauthorized identity (fresh signature/bundle
             // id) drops every banner with no trace in the log.
             if let error {
-                Logger.log("Notification delivery failed pkg=\(pkg): \(error.localizedDescription)")
+                let errorCode = (error as NSError).code
+                Logger.log("Notification delivery failed", fields: [
+                    .privateValue("package", pkg),
+                    .publicValue("errorCode", String(errorCode)),
+                    .privateValue("error", error.localizedDescription)
+                ])
             }
         }
-        // Log the key, never the title/text: message previews must not end up
-        // in the plaintext log file users share when reporting bugs.
-        Logger.log("Forwarded notification pkg=\(entry.pkg) key=\(entry.key)")
+        Logger.log("Forwarded notification", fields: [
+            .privateValue("package", entry.pkg),
+            .privateValue("notificationKey", entry.key)
+        ])
     }
 
     /// Upgrades a forwarded banner to a communication notification so the source

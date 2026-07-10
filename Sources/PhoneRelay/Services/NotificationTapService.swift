@@ -56,7 +56,7 @@ enum NotificationTapService {
         for pass in 1...3 {
             Thread.sleep(forTimeInterval: pass == 1 ? 0.8 : 0.6)
             guard let screenshot = capturePhoneScreenPNG(serial: serial) else {
-                Logger.log("Could not capture phone screen for forwarded notification key=\(notificationKey ?? "")")
+                log("Could not capture phone screen for forwarded notification", notificationKey: notificationKey)
                 break
             }
             let lines = recognizedTextLines(inPNG: screenshot)
@@ -66,7 +66,7 @@ enum NotificationTapService {
                 // up. Otherwise the first pass may simply have raced the shade
                 // animation, so look once more.
                 if tappedAtLeastOnce, !notificationShadeIsFocused(serial: serial) {
-                    Logger.log("Opened forwarded notification content key=\(notificationKey ?? "")")
+                    log("Opened forwarded notification content", notificationKey: notificationKey)
                     return true
                 }
                 if pass == 1 { continue }
@@ -88,7 +88,7 @@ enum NotificationTapService {
                     )
                     continue
                 }
-                Logger.log("Forwarded notification was not visible in notification shade key=\(notificationKey ?? "")")
+                log("Forwarded notification was not visible in notification shade", notificationKey: notificationKey)
                 break
             }
 
@@ -104,13 +104,13 @@ enum NotificationTapService {
                 timeout: 2
             )
             guard tap.succeeded else {
-                Logger.log("Could not tap forwarded notification key=\(notificationKey ?? ""): \(tap.output)")
+                log("Could not tap forwarded notification", notificationKey: notificationKey, privateOutput: tap.output)
                 break
             }
             tappedAtLeastOnce = true
             Thread.sleep(forTimeInterval: 0.6)
             if !notificationShadeIsFocused(serial: serial) {
-                Logger.log("Opened forwarded notification content key=\(notificationKey ?? "")")
+                log("Opened forwarded notification content", notificationKey: notificationKey)
                 return true
             }
         }
@@ -162,7 +162,7 @@ enum NotificationTapService {
         }
 
         guard let replyPoint, let imageWidth = imageSize?.width else {
-            Logger.log("No inline reply action found for forwarded notification key=\(notificationKey ?? "")")
+            log("No inline reply action found for forwarded notification", notificationKey: notificationKey)
             collapseShade(serial: serial)
             return false
         }
@@ -189,7 +189,7 @@ enum NotificationTapService {
             timeout: 4
         )
         guard typed.succeeded else {
-            Logger.log("Could not type reply for forwarded notification key=\(notificationKey ?? ""): \(typed.output)")
+            log("Could not type reply for forwarded notification", notificationKey: notificationKey, privateOutput: typed.output)
             collapseShade(serial: serial)
             return false
         }
@@ -216,7 +216,7 @@ enum NotificationTapService {
 
         Thread.sleep(forTimeInterval: 0.4)
         collapseShade(serial: serial)
-        Logger.log("Sent inline reply for forwarded notification key=\(notificationKey ?? "")")
+        log("Sent inline reply for forwarded notification", notificationKey: notificationKey)
         return true
     }
 
@@ -249,7 +249,7 @@ enum NotificationTapService {
             Thread.sleep(forTimeInterval: 0.3)
             collapseShade(serial: serial)
             if dismissed {
-                Logger.log("Dismissed forwarded notification key=\(notificationKey ?? "")")
+                log("Dismissed forwarded notification", notificationKey: notificationKey)
             }
             return dismissed
         }
@@ -294,7 +294,7 @@ enum NotificationTapService {
                 Thread.sleep(forTimeInterval: 0.3)
                 collapseShade(serial: serial)
                 if tap.succeeded {
-                    Logger.log("Marked forwarded notification as read key=\(notificationKey ?? "")")
+                    log("Marked forwarded notification as read", notificationKey: notificationKey)
                 }
                 return tap.succeeded
             }
@@ -305,7 +305,7 @@ enum NotificationTapService {
             Thread.sleep(forTimeInterval: 0.3)
             collapseShade(serial: serial)
             if dismissed {
-                Logger.log("Mark-as-read fell back to dismissing notification key=\(notificationKey ?? "")")
+                log("Mark-as-read fell back to dismissing notification", notificationKey: notificationKey)
             }
             return dismissed
         }
@@ -360,7 +360,7 @@ enum NotificationTapService {
                 Thread.sleep(forTimeInterval: 0.5)
             }
             guard !keyguardIsShowing(serial: serial) else {
-                Logger.log("Phone stayed locked; launching the source app instead for key=\(notificationKey ?? "")")
+                log("Phone stayed locked; launching the source app instead", notificationKey: notificationKey)
                 return false
             }
         }
@@ -371,7 +371,7 @@ enum NotificationTapService {
             timeout: 2
         )
         guard expand.succeeded else {
-            Logger.log("Could not expand notification shade for forwarded notification key=\(notificationKey ?? ""): \(expand.output)")
+            log("Could not expand notification shade for forwarded notification", notificationKey: notificationKey, privateOutput: expand.output)
             return false
         }
         return true
@@ -383,6 +383,23 @@ enum NotificationTapService {
             arguments: ["-s", serial, "shell", "cmd", "statusbar", "collapse"],
             timeout: 2
         )
+    }
+
+    /// Notification keys contain the source package and Android user id, while
+    /// adb output may repeat device or notification content. Keep both as
+    /// structured private fields so neither reaches the plaintext log.
+    private static func log(
+        _ event: String,
+        notificationKey: String?,
+        privateOutput: String? = nil
+    ) {
+        var fields: [Logger.Field] = [
+            .privateValue("notificationKey", notificationKey ?? "")
+        ]
+        if let privateOutput {
+            fields.append(.privateValue("toolOutput", privateOutput))
+        }
+        Logger.log(event, fields: fields)
     }
 
     // MARK: - Matching (pure; unit-tested)

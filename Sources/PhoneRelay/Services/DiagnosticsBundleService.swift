@@ -11,8 +11,40 @@ enum DiagnosticsBundleService {
     private nonisolated static let ipv4Pattern = try? NSRegularExpression(
         pattern: #"\b(?:\d{1,3}\.){3}\d{1,3}\b"#
     )
+    private nonisolated static let bracketedIPv6Pattern = try? NSRegularExpression(
+        pattern: #"\[[0-9A-Fa-f:]+(?:%[A-Za-z0-9._-]+)?\]"#
+    )
+    /// Unbracketed IPv6 must either contain `::` or at least three colons.
+    /// That deliberately excludes clock timestamps such as `16:59:18`.
+    private nonisolated static let ipv6Pattern = try? NSRegularExpression(
+        pattern: #"(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{1,4}::[0-9A-Fa-f:]*[0-9A-Fa-f]|(?:[0-9A-Fa-f]{1,4}:){3,7}[0-9A-Fa-f]{1,4})(?:%[A-Za-z0-9._-]+)?(?![0-9A-Fa-f:])"#
+    )
     private nonisolated static let macPattern = try? NSRegularExpression(
         pattern: #"\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b"#
+    )
+    private nonisolated static let localHostnamePattern = try? NSRegularExpression(
+        pattern: #"\b[A-Za-z0-9_](?:[A-Za-z0-9_-]*[A-Za-z0-9_])?(?:\.[A-Za-z0-9_](?:[A-Za-z0-9_-]*[A-Za-z0-9_])?)*\.local\b"#,
+        options: [.caseInsensitive]
+    )
+    private nonisolated static let networkEndpointFieldPattern = try? NSRegularExpression(
+        pattern: #"\b(address|target|endpoint|host)=([^\s,\]\)]+)"#,
+        options: [.caseInsensitive]
+    )
+    private nonisolated static let notificationKeyPattern = try? NSRegularExpression(
+        pattern: #"\b(key|notificationKey)=([^\s\n]+)"#,
+        options: [.caseInsensitive]
+    )
+    private nonisolated static let packagePattern = try? NSRegularExpression(
+        pattern: #"\b(pkg|package)=([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+)"#,
+        options: [.caseInsensitive]
+    )
+    private nonisolated static let serialFieldPattern = try? NSRegularExpression(
+        pattern: #"\b(serial|adbSerial)=(?!«)([^\s,\]\)]+)"#,
+        options: [.caseInsensitive]
+    )
+    private nonisolated static let emailPattern = try? NSRegularExpression(
+        pattern: #"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"#,
+        options: [.caseInsensitive]
     )
     /// `title=…`/`text=…` payloads up to end-of-segment: OCR/tap debugging
     /// logs carry notification content in this shape.
@@ -37,7 +69,15 @@ enum DiagnosticsBundleService {
             output = output.replacingOccurrences(of: name, with: "«device\(index + 1)»")
         }
         output = replacing(pattern: notificationPayloadPattern, in: output, with: "«notification-content»")
+        output = replacing(pattern: notificationKeyPattern, in: output, with: "$1=«notification-key»")
+        output = replacing(pattern: packagePattern, in: output, with: "$1=«package»")
+        output = replacing(pattern: serialFieldPattern, in: output, with: "$1=«serial»")
+        output = replacing(pattern: networkEndpointFieldPattern, in: output, with: "$1=«network-endpoint»")
+        output = replacing(pattern: emailPattern, in: output, with: "«email»")
+        output = replacing(pattern: localHostnamePattern, in: output, with: "«local-hostname»")
         output = replacing(pattern: macPattern, in: output, with: "«mac»")
+        output = replacing(pattern: bracketedIPv6Pattern, in: output, with: "«ip»")
+        output = replacing(pattern: ipv6Pattern, in: output, with: "«ip»")
         output = replacing(pattern: ipv4Pattern, in: output, with: "«ip»")
         return output
     }

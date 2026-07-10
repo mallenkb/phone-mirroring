@@ -111,7 +111,10 @@ extension AppModel {
             NotificationActionMetrics.shared.record(.open, outcome: .fallback)
             let result = Tooling.runResult("adb", arguments: args, timeout: 5)
             if !result.succeeded {
-                Logger.log("Could not open notification source app package=\(package): \(result.output)")
+                Logger.log("Could not open notification source app", fields: [
+                    .privateValue("package", package),
+                    .privateValue("toolOutput", result.output)
+                ])
             }
         }
     }

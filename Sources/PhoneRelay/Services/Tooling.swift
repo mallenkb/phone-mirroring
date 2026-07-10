@@ -262,6 +262,25 @@ enum Tooling {
 }
 
 enum Logger {
+    struct Field: Sendable {
+        enum Privacy: Sendable {
+            case publicValue
+            case privateValue
+        }
+
+        let key: String
+        let value: String
+        let privacy: Privacy
+
+        static func publicValue(_ key: String, _ value: String) -> Field {
+            Field(key: key, value: value, privacy: .publicValue)
+        }
+
+        static func privateValue(_ key: String, _ value: String) -> Field {
+            Field(key: key, value: value, privacy: .privateValue)
+        }
+    }
+
     /// Unified-logging handle — visible in Console.app, filterable by subsystem.
     private static let osLog = os.Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.example.PhoneRelay",
@@ -292,6 +311,30 @@ enum Logger {
     }()
 
     static func log(_ message: String) {
+        // Apply the format-independent baseline at ingestion too. Bundle
+        // export performs another pass with paired-device identities, but IPs,
+        // endpoints, notification fields, and labelled serials should never be
+        // persisted in the first place.
+        let redactedMessage = DiagnosticsBundleService.redact(singleLine(message))
+        osLog.log("\(redactedMessage, privacy: .public)")
+        queue.async { appendToFile(redactedMessage) }
+    }
+
+    /// Records an event as key/value fields while dropping private values at
+    /// the logging boundary. This keeps identifiers out of both Console.app
+    /// and the plaintext rolling log, rather than relying only on later bundle
+    /// redaction to catch every sensitive value format.
+    static func log(_ event: String, fields: [Field]) {
+        let renderedFields = fields.map { field in
+            let key = singleLine(field.key)
+            switch field.privacy {
+            case .publicValue:
+                return "\(key)=\(singleLine(field.value))"
+            case .privateValue:
+                return "\(key)=«private»"
+            }
+        }
+        let message = ([singleLine(event)] + renderedFields).joined(separator: " ")
         osLog.log("\(message, privacy: .public)")
         queue.async { appendToFile(message) }
     }
@@ -300,6 +343,10 @@ enum Logger {
     /// test can assert on the on-disk log right after calling `log`.
     static func flushForTesting() {
         queue.sync {}
+    }
+
+    private static func singleLine(_ value: String) -> String {
+        value.replacingOccurrences(of: #"[\r\n\t]+"#, with: " ", options: .regularExpression)
     }
 
     private static func appendToFile(_ message: String) {
