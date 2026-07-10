@@ -3,7 +3,6 @@
 # Swift Package Manager
 .build/
 .swiftpm/
-Package.resolved
 
 # Local packaged builds and downloaded tool sources
 build/

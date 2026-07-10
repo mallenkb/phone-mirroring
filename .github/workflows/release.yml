@@ -22,7 +22,7 @@ jobs:
       APP_NAME: PhoneRelay
       WEBSITE_REPO: mallenkb/phonerelay-website
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Validate tag
         id: version
@@ -47,9 +47,9 @@ jobs:
           echo "zip_name=PhoneRelay-$VERSION.zip" >> "$GITHUB_OUTPUT"
 
       - name: Select Xcode
-        uses: maxim-lobanov/setup-xcode@v1
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
         with:
-          xcode-version: latest-stable
+          xcode-version: "16.4"
 
       - name: Preflight release secrets
         env:
@@ -215,7 +215,7 @@ jobs:
           echo "$URL" > release-asset-url.txt
 
       - name: Upload release URL artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-asset-url
           path: release-asset-url.txt

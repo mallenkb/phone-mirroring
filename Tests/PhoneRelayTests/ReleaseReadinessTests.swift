@@ -48,6 +48,48 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertTrue(verifier.contains("/usr/bin/unzip -tqq"))
     }
 
+    func testDependencyLocksMatchAcrossBuildEntrypoints() throws {
+        let root = Self.repoRoot()
+        let swiftPMLock = root.appendingPathComponent("Package.resolved")
+        let xcodeLock = root.appendingPathComponent(
+            "App/PhoneRelay.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+        )
+        let swiftPMPins = try Self.normalizedPackagePins(at: swiftPMLock)
+        let xcodePins = try Self.normalizedPackagePins(at: xcodeLock)
+        XCTAssertEqual(swiftPMPins, xcodePins)
+        XCTAssertFalse(swiftPMPins.isEmpty)
+    }
+
+    func testWorkflowsPinActionsAndXcodeVersion() throws {
+        let workflowDirectory = Self.repoRoot().appendingPathComponent(".github/workflows")
+        let workflowURLs = try FileManager.default.contentsOfDirectory(
+            at: workflowDirectory,
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "yml" || $0.pathExtension == "yaml" }
+        XCTAssertFalse(workflowURLs.isEmpty)
+
+        let pinnedAction = try NSRegularExpression(
+            pattern: #"^uses:\s+[^@\s]+@[0-9a-f]{40}(?:\s+#.*)?$"#
+        )
+        for workflowURL in workflowURLs {
+            let workflow = try String(contentsOf: workflowURL, encoding: .utf8)
+            XCTAssertFalse(workflow.contains("latest-stable"), workflowURL.lastPathComponent)
+            for rawLine in workflow.split(whereSeparator: \.isNewline) {
+                var line = rawLine.trimmingCharacters(in: .whitespaces)
+                if line.hasPrefix("- ") { line.removeFirst(2) }
+                guard line.hasPrefix("uses:") else { continue }
+                let range = NSRange(line.startIndex..<line.endIndex, in: line)
+                XCTAssertNotNil(
+                    pinnedAction.firstMatch(in: line, range: range),
+                    "Unpinned action in \(workflowURL.lastPathComponent): \(line)"
+                )
+            }
+            if workflow.contains("maxim-lobanov/setup-xcode") {
+                XCTAssertTrue(workflow.contains(#"xcode-version: "16.4""#), workflowURL.lastPathComponent)
+            }
+        }
+    }
+
     func testXcodeAppSandboxAllowsADBKeysAndConnections() throws {
         let entitlements = try Self.propertyList(at: Self.repoRoot()
             .appendingPathComponent("App/PhoneRelay.entitlements"))
@@ -332,6 +374,14 @@ final class ReleaseReadinessTests: XCTestCase {
         let data = try Data(contentsOf: url)
         let plist = try PropertyListSerialization.propertyList(from: data, format: nil)
         return try XCTUnwrap(plist as? [String: Any])
+    }
+
+    private static func normalizedPackagePins(at url: URL) throws -> Data {
+        let data = try Data(contentsOf: url)
+        let object = try JSONSerialization.jsonObject(with: data)
+        let dictionary = try XCTUnwrap(object as? [String: Any])
+        let pins = try XCTUnwrap(dictionary["pins"] as? [[String: Any]])
+        return try JSONSerialization.data(withJSONObject: pins, options: [.sortedKeys])
     }
 
     private static func repoRoot() -> URL {
