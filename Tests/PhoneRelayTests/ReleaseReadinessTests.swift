@@ -90,6 +90,18 @@ final class ReleaseReadinessTests: XCTestCase {
         }
     }
 
+    func testSwift6CompatibilityLaneStaysVisibleAndNonBlocking() throws {
+        let workflow = try String(
+            contentsOf: Self.repoRoot().appendingPathComponent(".github/workflows/ci.yml"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(workflow.contains("swift-6-compatibility:"))
+        XCTAssertTrue(workflow.contains("Swift 6 Compatibility (non-blocking)"))
+        XCTAssertTrue(workflow.contains("continue-on-error: true"))
+        XCTAssertTrue(workflow.contains("swift build -Xswiftc -swift-version -Xswiftc 6"))
+    }
+
     func testProjectSourcesTreatWarningsAsErrors() throws {
         let package = try String(
             contentsOf: Self.repoRoot().appendingPathComponent("Package.swift"),

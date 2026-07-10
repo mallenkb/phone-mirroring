@@ -57,3 +57,21 @@ jobs:
       # bundle, broken codesign invocations) that swift test can't see.
       - name: Package app (release dry run)
         run: scripts/package_app.sh
+
+  swift-6-compatibility:
+    name: Swift 6 Compatibility (non-blocking)
+    runs-on: macos-15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: "16.4"
+
+      - name: Build in Swift 6 language mode
+        # PostHog currently bounds this lane below green. Keeping the build
+        # visible but non-blocking lets us catch changes in that dependency and
+        # prevents new project-owned Swift 6 errors from accumulating unnoticed.
+        run: swift build -Xswiftc -swift-version -Xswiftc 6
