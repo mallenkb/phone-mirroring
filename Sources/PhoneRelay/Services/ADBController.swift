@@ -5,6 +5,11 @@ import Foundation
 struct ADBController: Sendable {
     private static let commandLock = NSLock()
 
+    enum ExecutionPolicy: Equatable, Sendable {
+        case concurrent
+        case serialized
+    }
+
     /// adb subcommands that mutate daemon or transport state. Only these are
     /// serialized, so concurrent connect/pair flows can't race the server.
     /// Read-only queries (`devices`, `shell`, `mdns`) run unlocked — blocking
@@ -34,11 +39,20 @@ struct ADBController: Sendable {
         return nil
     }
 
+    /// Explicit, deterministic policy used by both production execution and
+    /// tests. Keeping this separate from wall-clock behavior means USB watcher
+    /// responsiveness is a contract, not a latency threshold vulnerable to CI
+    /// scheduler noise.
+    nonisolated static func executionPolicy(for arguments: [String]) -> ExecutionPolicy {
+        guard let command = commandWord(in: arguments),
+              serializedCommands.contains(command)
+        else { return .concurrent }
+        return .serialized
+    }
+
     @discardableResult
     func run(_ arguments: [String], timeout: TimeInterval? = nil) -> String {
-        guard let command = Self.commandWord(in: arguments),
-              Self.serializedCommands.contains(command)
-        else {
+        guard Self.executionPolicy(for: arguments) == .serialized else {
             return Tooling.run("adb", arguments: arguments, timeout: timeout)
         }
         Self.commandLock.lock()

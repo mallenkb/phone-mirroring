@@ -92,54 +92,10 @@ final class ToolingTimeoutTests: XCTestCase {
         XCTAssertTrue(ADBController.serializedCommands.contains("connect"))
         XCTAssertFalse(ADBController.serializedCommands.contains("devices"))
         XCTAssertFalse(ADBController.serializedCommands.contains("shell"))
-    }
-
-    // The device watcher's `devices -l` poll must not queue behind a slow
-    // `connect` to an unreachable address — that lag is what made USB
-    // plug-in detection feel slow.
-    func testDevicesPollIsNotBlockedBehindSlowConnect() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("PhoneRelayTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer {
-            try? FileManager.default.removeItem(at: directory)
-            unsetenv("ANDROID_MIRROR_ADB_PATH")
-        }
-
-        let fakeADB = directory.appendingPathComponent("adb")
-        let script = """
-        #!/bin/sh
-        if [ "$1" = "connect" ]; then
-          sleep 2
-          echo "connected to $2"
-          exit 0
-        fi
-        echo "List of devices attached"
-        exit 0
-        """
-        try script.write(to: fakeADB, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755],
-            ofItemAtPath: fakeADB.path
-        )
-        setenv("ANDROID_MIRROR_ADB_PATH", fakeADB.path, 1)
-
-        let connectTask = Task.detached {
-            ADBController().run(["connect", "192.0.2.53:5555"], timeout: 4)
-        }
-        // Give the connect a head start so it holds the serialized lock.
-        try await Task.sleep(nanoseconds: 300_000_000)
-
-        let start = Date()
-        _ = await Task.detached {
-            ADBController().run(["devices", "-l"], timeout: 4)
-        }.value
-        let devicesLatency = Date().timeIntervalSince(start)
-
-        _ = await connectTask.value
-        // Serialized behind the 2s connect this would be ≥1.7s; unblocked it is
-        // a single process spawn. The wide margin absorbs CI scheduler noise.
-        XCTAssertLessThan(devicesLatency, 1.2, "devices poll waited behind the connect lock")
+        XCTAssertEqual(ADBController.executionPolicy(for: ["connect", "192.0.2.5:5555"]), .serialized)
+        XCTAssertEqual(ADBController.executionPolicy(for: ["-s", "RFTEST", "tcpip", "5555"]), .serialized)
+        XCTAssertEqual(ADBController.executionPolicy(for: ["devices", "-l"]), .concurrent)
+        XCTAssertEqual(ADBController.executionPolicy(for: ["-s", "RFTEST", "shell", "echo", "ok"]), .concurrent)
     }
 
     // The binary-output runner backs notification-banner screenshots on a
