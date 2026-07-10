@@ -378,10 +378,10 @@ final class ADBDeviceParsingTests: XCTestCase {
     }
 
     func testManualUSBConnectPinsUSBWithoutChangingAutoPreference() throws {
-        let source = try String(contentsOfFile: "Sources/PhoneRelay/AppModel.swift", encoding: .utf8)
+        let source = try SourceTestSupport.appModelImplementation()
         guard let functionRange = source.range(of: "func connectViaUSB()"),
               let nextFunctionRange = source.range(
-                of: "private func prefillWirelessIPFromUSBDevice",
+                of: "func prefillWirelessIPFromUSBDevice",
                 range: functionRange.upperBound..<source.endIndex
               )
         else {
@@ -542,9 +542,9 @@ final class ADBDeviceParsingTests: XCTestCase {
     }
 
     func testSavedDeviceAutomaticConnectPrioritizesLiveRoutesBeforeSavedRecovery() throws {
-        let source = try String(contentsOfFile: "Sources/PhoneRelay/AppModel.swift", encoding: .utf8)
+        let source = try SourceTestSupport.appModelImplementation()
         let start = try XCTUnwrap(source.range(of: "func connect(record: PairedPhoneRecord, transport: SavedConnectionTransport = .automatic)"))
-        let end = try XCTUnwrap(source.range(of: "private func connectViaSavedUSB(record:", range: start.upperBound..<source.endIndex))
+        let end = try XCTUnwrap(source.range(of: "func connectViaSavedUSB(record:", range: start.upperBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
         let liveWiFi = try XCTUnwrap(body.range(of: "Self.liveWirelessAuthorizedDevice("))

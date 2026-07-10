@@ -239,10 +239,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     func testBackgroundAutoConnectVerifiesSavedWiFiRoutesWithoutMDNS() throws {
         // The flow lives in AppModel.swift; the readiness helper moved to
         // AppModel+ConnectionHelpers.swift in the pure-move split.
-        let source = try String(
-            contentsOfFile: "Sources/PhoneRelay/AppModel.swift",
-            encoding: .utf8
-        )
+        let source = try SourceTestSupport.appModelImplementation()
         let helpers = try String(
             contentsOfFile: "Sources/PhoneRelay/AppModel+ConnectionHelpers.swift",
             encoding: .utf8
@@ -397,10 +394,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     }
 
     func testManualDisconnectKeepsPresenceWatcherForStatusOnly() throws {
-        let source = try String(
-            contentsOfFile: "Sources/PhoneRelay/AppModel.swift",
-            encoding: .utf8
-        )
+        let source = try SourceTestSupport.appModelImplementation()
 
         XCTAssertTrue(source.contains("guard backgroundServicesEnabled else { return }"))
         XCTAssertFalse(source.contains("guard backgroundServicesEnabled, !isAutoReconnectSuppressedForManualDisconnect else { return }"))
@@ -1157,10 +1151,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     // The manual reconnect loop must hunt for a moved DHCP address by MAC (the
     // case mDNS + the saved address both miss), bypassing the per-phone cooldown.
     func testManualReconnectLoopRecoversChangedWiFiAddress() throws {
-        let source = try String(
-            contentsOfFile: "Sources/PhoneRelay/AppModel.swift",
-            encoding: .utf8
-        )
+        let source = try SourceTestSupport.appModelImplementation()
 
         XCTAssertTrue(source.contains("func reconnectOverWiFi("))
         XCTAssertTrue(source.contains("recoverChangedWiFiAddress("))
@@ -1250,10 +1241,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     }
 
     func testDeviceWatcherDebouncesMissingMirrorTransport() throws {
-        let source = try String(
-            contentsOfFile: "Sources/PhoneRelay/AppModel.swift",
-            encoding: .utf8
-        )
+        let source = try SourceTestSupport.appModelImplementation()
         XCTAssertTrue(source.contains("missingMirrorTransportPollMisses += 1"))
         XCTAssertTrue(source.contains("missingMirrorTransportPollMisses >= Self.missingMirrorTransportPollGrace"))
         // The counter resets when the transport reappears, so only *consecutive*
@@ -1990,9 +1978,9 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     }
 
     func testDiscoveredWiFiConnectPersistsWiFiAddressForNextLaunch() throws {
-        let source = try String(contentsOfFile: "Sources/PhoneRelay/AppModel.swift", encoding: .utf8)
-        let start = try XCTUnwrap(source.range(of: "private func connectAndMirror(phone: DiscoveredPhone)"))
-        let end = try XCTUnwrap(source.range(of: "private func connectAndMirror(record:", range: start.upperBound..<source.endIndex))
+        let source = try SourceTestSupport.appModelImplementation()
+        let start = try XCTUnwrap(source.range(of: "func connectAndMirror(phone: DiscoveredPhone)"))
+        let end = try XCTUnwrap(source.range(of: "func connectAndMirror(record:", range: start.upperBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(body.contains("recordForDiscoveredWiFiRoute("))

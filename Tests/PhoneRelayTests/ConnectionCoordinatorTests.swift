@@ -93,4 +93,27 @@ final class ConnectionCoordinatorTests: XCTestCase {
 
         coordinator.cancelAll()
     }
+
+    func testResetClearsConnectionRuntimeState() {
+        let coordinator = ConnectionCoordinator()
+        coordinator.isAutoReconnectSuppressedForManualDisconnect = true
+        coordinator.manualDisconnectKnownSerials = ["USB-1"]
+        coordinator.failedAutoConnectTargets = ["192.0.2.1:5555": Date()]
+        coordinator.autoConnectTargetsInFlight = ["192.0.2.1:5555"]
+        coordinator.wirelessPinnedUSBSerials = ["USB-1"]
+        coordinator.manualUSBPinnedSerials = ["USB-1"]
+        coordinator.launchReconnectDeadline = Date()
+        coordinator.failedLegacyHandoffSerials = ["USB-1"]
+
+        coordinator.reset()
+
+        XCTAssertFalse(coordinator.isAutoReconnectSuppressedForManualDisconnect)
+        XCTAssertNil(coordinator.manualDisconnectKnownSerials)
+        XCTAssertTrue(coordinator.failedAutoConnectTargets.isEmpty)
+        XCTAssertTrue(coordinator.autoConnectTargetsInFlight.isEmpty)
+        XCTAssertTrue(coordinator.wirelessPinnedUSBSerials.isEmpty)
+        XCTAssertTrue(coordinator.manualUSBPinnedSerials.isEmpty)
+        XCTAssertNil(coordinator.launchReconnectDeadline)
+        XCTAssertTrue(coordinator.failedLegacyHandoffSerials.isEmpty)
+    }
 }

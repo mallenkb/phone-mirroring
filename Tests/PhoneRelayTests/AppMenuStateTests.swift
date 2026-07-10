@@ -18,10 +18,7 @@ final class AppMenuStateTests: XCTestCase {
             contentsOfFile: "Sources/PhoneRelay/Views/SettingsView.swift",
             encoding: .utf8
         )
-        let appModelSource = try String(
-            contentsOfFile: "Sources/PhoneRelay/AppModel.swift",
-            encoding: .utf8
-        )
+        let appModelSource = try SourceTestSupport.appModelImplementation()
         let connectionSource = try String(
             contentsOfFile: "Sources/PhoneRelay/Views/FigmaMirrorExperienceView.swift",
             encoding: .utf8
@@ -163,10 +160,7 @@ final class AppMenuStateTests: XCTestCase {
     }
 
     func testPresentationModeStopClearsAndroidTouchIndicators() throws {
-        let source = try String(
-            contentsOfFile: "Sources/PhoneRelay/AppModel.swift",
-            encoding: .utf8
-        )
+        let source = try SourceTestSupport.appModelImplementation()
 
         XCTAssertTrue(source.contains("\"show_touches\", \"0\""))
         XCTAssertTrue(source.contains("\"pointer_location\", \"0\""))
@@ -174,15 +168,12 @@ final class AppMenuStateTests: XCTestCase {
     }
 
     func testStoppingMirrorRestoresPresentationMode() throws {
-        let source = try String(
-            contentsOfFile: "Sources/PhoneRelay/AppModel.swift",
-            encoding: .utf8
-        )
+        let source = try SourceTestSupport.appModelImplementation()
 
         let stopBody = try sourceSlice(
             in: source,
             from: "func stopMirroring(suspendAutoConnect: Bool = true)",
-            to: "private func recoverMissingMirrorTransport()"
+            to: "func recoverMissingMirrorTransport()"
         )
         let sessionEndedBody = try sourceSlice(
             in: source,
@@ -191,8 +182,8 @@ final class AppMenuStateTests: XCTestCase {
         )
         let recoverBody = try sourceSlice(
             in: source,
-            from: "private func recoverMissingMirrorTransport()",
-            to: "private func launchNativeMirror("
+            from: "func recoverMissingMirrorTransport()",
+            to: "func launchNativeMirror("
         )
 
         XCTAssertTrue(stopBody.contains("restorePresentationModeIfNeeded()"))
@@ -201,18 +192,15 @@ final class AppMenuStateTests: XCTestCase {
     }
 
     func testUSBWiFiHandoffPersistsOnlyAfterReadinessCompletes() throws {
-        let source = try String(
-            contentsOfFile: "Sources/PhoneRelay/AppModel.swift",
-            encoding: .utf8
-        )
+        let source = try SourceTestSupport.appModelImplementation()
         let candidateBody = try sourceSlice(
             in: source,
-            from: "private func rememberUSBWiFiHandoffCandidate(",
+            from: "func rememberUSBWiFiHandoffCandidate(",
             to: "/// \"No route to host\" on every attempt"
         )
         let finishBody = try sourceSlice(
             in: source,
-            from: "private func finishWirelessHandoff(",
+            from: "func finishWirelessHandoff(",
             to: "func connectViaUSB()"
         )
 
@@ -221,10 +209,7 @@ final class AppMenuStateTests: XCTestCase {
     }
 
     func testFailedUSBWiFiTakeoverEndsLoadingState() throws {
-        let source = try String(
-            contentsOfFile: "Sources/PhoneRelay/AppModel.swift",
-            encoding: .utf8
-        )
+        let source = try SourceTestSupport.appModelImplementation()
         let failureBody = try sourceSlice(
             in: source,
             from: "Logger.log(\"Prepared Wi-Fi handoff address=\\(candidate.address) was not ready after USB ended\")",
@@ -232,8 +217,8 @@ final class AppMenuStateTests: XCTestCase {
         )
         let takeoverBody = try sourceSlice(
             in: source,
-            from: "private func startUSBWiFiHandoffTakeoverIfAvailable(",
-            to: "    private func recoverUSBLaunchFailureOverWireless"
+            from: "func startUSBWiFiHandoffTakeoverIfAvailable(",
+            to: "    func recoverUSBLaunchFailureOverWireless"
         )
 
         XCTAssertTrue(failureBody.contains("self.isRecoveringConnection = false"))

@@ -477,10 +477,8 @@ final class MirrorWindowChromeTests: XCTestCase {
             .deletingLastPathComponent()
         let viewSourceURL = packageRoot
             .appendingPathComponent("Sources/PhoneRelay/Views/FigmaMirrorExperienceView.swift")
-        let modelSourceURL = packageRoot
-            .appendingPathComponent("Sources/PhoneRelay/AppModel.swift")
         let viewSource = try String(contentsOf: viewSourceURL, encoding: .utf8)
-        let modelSource = try String(contentsOf: modelSourceURL, encoding: .utf8)
+        let modelSource = try SourceTestSupport.appModelImplementation()
 
         XCTAssertTrue(viewSource.contains("private var isUSBButtonBusy: Bool {\n        inlineConnectingTransport == .usb\n    }"))
         XCTAssertTrue(viewSource.contains("private var isWirelessButtonBusy: Bool {\n        inlineConnectingTransport == .wifi\n    }"))

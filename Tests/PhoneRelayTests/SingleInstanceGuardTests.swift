@@ -178,13 +178,13 @@ final class SingleInstanceGuardTests: XCTestCase {
     }
 
     func testForegroundLaunchKeepsConnectionAndMirrorPresentationAssertive() throws {
-        let modelSource = try String(contentsOfFile: "Sources/PhoneRelay/AppModel.swift", encoding: .utf8)
+        let modelSource = try SourceTestSupport.appModelImplementation()
         let mirrorWindowSource = try String(
             contentsOfFile: "Sources/PhoneRelay/Mirror/MirrorContentWindowController.swift",
             encoding: .utf8
         )
 
-        XCTAssertTrue(modelSource.contains("private var foregroundLaunchPresentationActive = false"))
+        XCTAssertTrue(modelSource.contains("var foregroundLaunchPresentationActive = false"))
         XCTAssertTrue(modelSource.contains("var shouldPreserveForegroundLaunchPresentationAfterResign: Bool"))
         // The presentation defends the launch for a bounded window only —
         // unbounded, it re-raised on every resign ("flashing tug-of-war").
@@ -193,7 +193,7 @@ final class SingleInstanceGuardTests: XCTestCase {
         XCTAssertTrue(modelSource.contains("var shouldAssertForegroundPresentation: Bool"))
         XCTAssertTrue(modelSource.contains("foregroundLaunchPresentationActive || NSApp?.isActive == true"))
         XCTAssertTrue(modelSource.contains("let launchFrame = mirrorLaunchFrameForNextSession()"))
-        XCTAssertTrue(modelSource.contains("private func mirrorLaunchFrameForNextSession() -> NSRect?"))
+        XCTAssertTrue(modelSource.contains("func mirrorLaunchFrameForNextSession() -> NSRect?"))
         XCTAssertTrue(modelSource.contains("return activeScreen.frame.intersects(candidate) ? candidate : nil"))
         XCTAssertTrue(modelSource.contains("?? (shouldAssertForegroundPresentation"))
         XCTAssertTrue(modelSource.contains("connectionWindowPresentation(appIsActive: shouldAssertForegroundPresentation)"))

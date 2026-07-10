@@ -92,19 +92,17 @@ final class QRCodePairingTests: XCTestCase {
     }
 
     func testQRCodePairingStartsMirrorBeforeLegacyTCPIPPromotion() throws {
-        let sourceURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent("Sources/PhoneRelay/AppModel.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let source = try SourceTestSupport.appModelImplementation()
         let watcher = try XCTUnwrap(
             source.range(
-                of: "private func startQRCodePairingWatcher()",
+                of: "func startQRCodePairingWatcher()",
                 options: [],
                 range: source.startIndex..<source.endIndex
             )
         )
         let reset = try XCTUnwrap(
             source.range(
-                of: "private func resetQRCodePairingAfterFailure",
+                of: "func resetQRCodePairingAfterFailure",
                 options: [],
                 range: watcher.upperBound..<source.endIndex
             )

@@ -165,7 +165,7 @@ final class CaptureFolderTests: XCTestCase {
 
     func testScreenRecordingOwnsAndroidTouchIndicators() throws {
         let captureSource = try String(contentsOfFile: "Sources/PhoneRelay/AppModel+Capture.swift", encoding: .utf8)
-        let modelSource = try String(contentsOfFile: "Sources/PhoneRelay/AppModel.swift", encoding: .utf8)
+        let modelSource = try SourceTestSupport.appModelImplementation()
         let mirrorSource = try String(contentsOfFile: "Sources/PhoneRelay/Mirror/MirrorSession.swift", encoding: .utf8)
 
         XCTAssertTrue(captureSource.contains("await self.enableRecordingTouchIndicators(adb: adb, serial: serial)"))
