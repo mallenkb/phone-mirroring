@@ -45,7 +45,9 @@ final class MirrorSession {
     private var clipboardBridge: ClipboardBridge?
     private var windowController: MirrorContentWindowController?
     private var screenOffTask: Task<Void, Never>?
+    private var deviceLockMonitorTask: Task<Void, Never>?
     private var screenOffDeadline: Date?
+    private var deviceLockState: AndroidDeviceLockState = .unknown
 
     private var streamWidth: UInt32 = 0
     private var streamHeight: UInt32 = 0
@@ -196,6 +198,8 @@ final class MirrorSession {
         clipboardBridge = nil
         screenOffTask?.cancel()
         screenOffTask = nil
+        deviceLockMonitorTask?.cancel()
+        deviceLockMonitorTask = nil
         screenOffDeadline = nil
         controlChannel?.close()
         controlChannel = nil
@@ -352,6 +356,7 @@ final class MirrorSession {
 
     func forwardPointerEvent(_ event: MirrorRenderView.PointerEvent,
                              in view: MirrorRenderView) {
+        guard deviceLockState != .locked else { return }
         guard let controlChannel else { return }
         switch event.kind {
         case .down:
@@ -411,6 +416,7 @@ final class MirrorSession {
     }
 
     func forwardKeyEvent(_ event: NSEvent) {
+        guard deviceLockState != .locked else { return }
         if event.type == .keyDown,
            event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
            event.charactersIgnoringModifiers?.lowercased() == "l" {
@@ -480,6 +486,7 @@ final class MirrorSession {
             let controller = MirrorContentWindowController(model: model, session: self, launchFrame: launchFrame)
             windowController = controller
             scheduleAutomaticScreenOffIfNeeded()
+            startDeviceLockMonitoringIfNeeded()
         }
         windowController?.renderView.setLoadingDeviceName(header.deviceName)
         windowController?.show()
@@ -570,6 +577,26 @@ final class MirrorSession {
                 }
             }
         }
+    }
+
+    private func startDeviceLockMonitoringIfNeeded() {
+        guard deviceLockMonitorTask == nil else { return }
+        let serial = serial
+        deviceLockMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let state = await AndroidDeviceLockStateProbe.currentState(serial: serial)
+                guard !Task.isCancelled, let self, !self.didStop, !self.isStopping else { return }
+                self.applyDeviceLockState(state)
+                try? await Task.sleep(nanoseconds: AndroidDeviceLockStateProbe.pollingIntervalNanoseconds)
+            }
+        }
+    }
+
+    private func applyDeviceLockState(_ state: AndroidDeviceLockState) {
+        guard state != .unknown, state != deviceLockState else { return }
+        deviceLockState = state
+        Logger.log("Android device lock state changed: \(state == .locked ? "locked" : "unlocked")")
+        windowController?.renderView.setDeviceLocked(state == .locked)
     }
 
     private func recordMirrorActivity(now: Date = Date()) {

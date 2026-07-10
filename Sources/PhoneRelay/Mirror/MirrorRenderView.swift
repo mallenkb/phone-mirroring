@@ -27,11 +27,13 @@ final class MirrorRenderView: NSView {
     /// decoder can resync cleanly instead of stalling on a black frame.
     private var awaitingKeyFrameAfterFlush = false
     private let loadingView = MirrorLoadingView()
+    private let lockedView = MirrorLockedView()
     private var aspect: CGSize = .zero
     private var trackingArea: NSTrackingArea?
     private var hasRenderedFirstFrame = false
     private var firstFrameReadyToDisplay = false
     private var loadingStartedAt = Date()
+    private(set) var isShowingDeviceLocked = false
     var cornerRadius: CGFloat = 0 {
         didSet { applyCornerMask() }
     }
@@ -66,6 +68,7 @@ final class MirrorRenderView: NSView {
         ]
         registerForDraggedTypes([.fileURL])
         setupLoadingView()
+        setupLockedView()
         applyCornerMask()
     }
 
@@ -105,6 +108,7 @@ final class MirrorRenderView: NSView {
         super.layout()
         updateVideoLayerFrame()
         loadingView.frame = bounds
+        lockedView.frame = bounds
         touchOverlayLayer.frame = bounds
         applyCornerMask()
     }
@@ -151,6 +155,14 @@ final class MirrorRenderView: NSView {
     func setLoadingText(statusText: String, deviceName: String) {
         loadingView.statusText = statusText
         loadingView.deviceName = deviceName
+    }
+
+    func setDeviceLocked(_ locked: Bool) {
+        guard isShowingDeviceLocked != locked else { return }
+        isShowingDeviceLocked = locked
+        lockedView.isHidden = !locked
+        sampleBufferDisplayLayer.isHidden = locked
+        touchOverlayLayer.isHidden = locked
     }
 
     func updateVideoLayerFrame() {
@@ -220,6 +232,7 @@ final class MirrorRenderView: NSView {
         loadingView.layer?.cornerRadius = cornerRadius
         loadingView.layer?.masksToBounds = cornerRadius > 0
         loadingView.layer?.setValue("continuous", forKey: "cornerCurve")
+        lockedView.cornerRadius = cornerRadius
     }
 
     private func setupLoadingView() {
@@ -229,6 +242,13 @@ final class MirrorRenderView: NSView {
         loadingView.alphaValue = 1
         loadingView.startProgress(duration: 3)
         addSubview(loadingView)
+    }
+
+    private func setupLockedView() {
+        lockedView.frame = bounds
+        lockedView.autoresizingMask = [.width, .height]
+        lockedView.isHidden = true
+        addSubview(lockedView, positioned: .above, relativeTo: loadingView)
     }
 
     private func hideLoadingViewIfNeeded() {
@@ -270,6 +290,7 @@ final class MirrorRenderView: NSView {
         emit(event, kind: .moved)
     }
     override func scrollWheel(with event: NSEvent) {
+        guard !isShowingDeviceLocked else { return }
         guard let point = normalizedPoint(for: event) else { return }
         let deltas = Self.deviceScrollDeltas(
             deltaX: event.scrollingDeltaX,
@@ -283,8 +304,14 @@ final class MirrorRenderView: NSView {
             scrollDY: deltas.y
         ))
     }
-    override func keyDown(with event: NSEvent) { onKeyEvent?(event) }
-    override func keyUp(with event: NSEvent) { onKeyEvent?(event) }
+    override func keyDown(with event: NSEvent) {
+        guard !isShowingDeviceLocked else { return }
+        onKeyEvent?(event)
+    }
+    override func keyUp(with event: NSEvent) {
+        guard !isShowingDeviceLocked else { return }
+        onKeyEvent?(event)
+    }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) {
@@ -305,6 +332,7 @@ final class MirrorRenderView: NSView {
     }
 
     private func emit(_ event: NSEvent, kind: PointerKind) {
+        guard !isShowingDeviceLocked else { return }
         guard let point = normalizedPoint(for: event) else { return }
         onPointerEvent?(PointerEvent(kind: kind, normalized: point, scrollDX: 0, scrollDY: 0))
     }
