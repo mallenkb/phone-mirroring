@@ -90,6 +90,19 @@ final class ReleaseReadinessTests: XCTestCase {
         }
     }
 
+    func testProjectSourcesTreatWarningsAsErrors() throws {
+        let package = try String(
+            contentsOf: Self.repoRoot().appendingPathComponent("Package.swift"),
+            encoding: .utf8
+        )
+        let xcodeProject = try String(
+            contentsOf: Self.repoRoot().appendingPathComponent("App/PhoneRelay.xcodeproj/project.pbxproj"),
+            encoding: .utf8
+        )
+        XCTAssertEqual(package.components(separatedBy: #".unsafeFlags(["-warnings-as-errors"])"#).count - 1, 2)
+        XCTAssertEqual(xcodeProject.components(separatedBy: "SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;").count - 1, 2)
+    }
+
     func testXcodeAppSandboxAllowsADBKeysAndConnections() throws {
         let entitlements = try Self.propertyList(at: Self.repoRoot()
             .appendingPathComponent("App/PhoneRelay.entitlements"))
@@ -117,6 +130,7 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertTrue(project.contains("CODE_SIGN_ENTITLEMENTS = ../scripts/PhoneRelay.release.entitlements;"))
         XCTAssertTrue(project.contains(#"if [ \"${CONFIGURATION:-}\" = \"Release\" ]; then"#))
         XCTAssertTrue(project.contains(#"codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$ADB\""#))
+        XCTAssertTrue(project.contains(#"[ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]"#))
         XCTAssertTrue(project.contains(#"--entitlements \"$SRCROOT/HelperInherit.entitlements\""#))
     }
 

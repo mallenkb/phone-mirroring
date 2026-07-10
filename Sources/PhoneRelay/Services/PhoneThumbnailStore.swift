@@ -1,6 +1,7 @@
-import AppKit
+import Foundation
 import CryptoKit
 import ImageIO
+import UniformTypeIdentifiers
 
 /// Pulls and caches gallery thumbnails for phone images. Downscales to
 /// 256px, keys the disk cache by serial+path+size+mtime (so an edited photo
@@ -10,7 +11,7 @@ final class PhoneThumbnailStore: @unchecked Sendable {
 
     static let shared = PhoneThumbnailStore()
 
-    private let memoryCache = NSCache<NSString, NSImage>()
+    private let memoryCache = NSCache<NSString, NSData>()
     private let concurrencyGate = DispatchSemaphore(value: 3)
     private let diskDirectory: URL
 
@@ -47,25 +48,25 @@ final class PhoneThumbnailStore: @unchecked Sendable {
 
     /// Blocking; call from a detached task. Returns nil when the entry isn't
     /// an image, the pull fails, or decoding fails.
-    func thumbnail(serial: String, directory: String, entry: PhoneFileEntry) -> NSImage? {
+    func thumbnailPNGData(serial: String, directory: String, entry: PhoneFileEntry) -> Data? {
         guard Self.isThumbnailable(entry) else { return nil }
         let remotePath = PhoneFileBrowserService.joined(directory, entry.name)
         let key = Self.cacheKey(serial: serial, remotePath: remotePath, entry: entry)
 
         if let cached = memoryCache.object(forKey: key as NSString) {
-            return cached
+            return cached as Data
         }
         let diskURL = diskDirectory.appendingPathComponent(key + ".png")
-        if let image = NSImage(contentsOf: diskURL) {
-            memoryCache.setObject(image, forKey: key as NSString)
-            return image
+        if let data = try? Data(contentsOf: diskURL), Self.isDecodableImageData(data) {
+            memoryCache.setObject(data as NSData, forKey: key as NSString)
+            return data
         }
 
         concurrencyGate.wait()
         defer { concurrencyGate.signal() }
         // Another waiter may have produced it while this one was queued.
         if let cached = memoryCache.object(forKey: key as NSString) {
-            return cached
+            return cached as Data
         }
 
         let scratch = FileManager.default.temporaryDirectory
@@ -78,19 +79,15 @@ final class PhoneThumbnailStore: @unchecked Sendable {
             case .success(let pulled) = PhoneFileBrowserService.pull(
                 serial: serial, remotePath: remotePath, localDirectory: scratch
             ),
-            let thumbnail = Self.downscaled(pulled)
+            let thumbnailData = Self.downscaledPNGData(pulled)
         else { return nil }
 
-        if let tiff = thumbnail.tiffRepresentation,
-           let bitmap = NSBitmapImageRep(data: tiff),
-           let png = bitmap.representation(using: .png, properties: [:]) {
-            try? png.write(to: diskURL)
-        }
-        memoryCache.setObject(thumbnail, forKey: key as NSString)
-        return thumbnail
+        try? thumbnailData.write(to: diskURL, options: .atomic)
+        memoryCache.setObject(thumbnailData as NSData, forKey: key as NSString)
+        return thumbnailData
     }
 
-    nonisolated private static func downscaled(_ url: URL) -> NSImage? {
+    nonisolated static func downscaledPNGData(_ url: URL) -> Data? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -98,6 +95,23 @@ final class PhoneThumbnailStore: @unchecked Sendable {
                 kCGImageSourceCreateThumbnailWithTransform: true
               ] as CFDictionary)
         else { return nil }
-        return NSImage(cgImage: cgImage, size: .zero)
+
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            output,
+            UTType.png.identifier as CFString,
+            1,
+            nil
+        ) else { return nil }
+        CGImageDestinationAddImage(destination, cgImage, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return output as Data
+    }
+
+    nonisolated private static func isDecodableImageData(_ data: Data) -> Bool {
+        guard !data.isEmpty,
+              let source = CGImageSourceCreateWithData(data as CFData, nil)
+        else { return false }
+        return CGImageSourceGetCount(source) > 0
     }
 }

@@ -710,7 +710,7 @@ struct FigmaMirrorExperienceView: View {
     }
 
     private func openDeviceSettings() {
-        NSApp.sendAction(Selector(("showSettings:")), to: nil, from: nil)
+        NSApp.sendAction(NSSelectorFromString("showSettings:"), to: nil, from: nil)
     }
 
     private func dismissConnectionHelpSheet() {

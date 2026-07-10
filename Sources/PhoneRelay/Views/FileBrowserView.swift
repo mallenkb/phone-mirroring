@@ -98,8 +98,8 @@ final class FileBrowserModel: ObservableObject {
     @Published var viewMode: ViewMode = .list
 
     /// Blocking thumbnail fetch for gallery cells; call from a detached task.
-    nonisolated func loadThumbnail(directory: String, entry: PhoneFileEntry, serial: String) -> NSImage? {
-        PhoneThumbnailStore.shared.thumbnail(
+    nonisolated func loadThumbnailData(directory: String, entry: PhoneFileEntry, serial: String) -> Data? {
+        PhoneThumbnailStore.shared.thumbnailPNGData(
             serial: serial, directory: directory, entry: entry
         )
     }
@@ -1407,12 +1407,14 @@ private struct FileBrowserGalleryCell: View {
                   PhoneThumbnailStore.isThumbnailable(entry),
                   let context = model.thumbnailContext
             else { return }
-            let loaded = await Task.detached(priority: .utility) {
-                model.loadThumbnail(
+            let loadedData = await Task.detached(priority: .utility) {
+                model.loadThumbnailData(
                     directory: context.directory, entry: entry, serial: context.serial
                 )
             }.value
-            if !Task.isCancelled { thumbnail = loaded }
+            if !Task.isCancelled, let loadedData {
+                thumbnail = NSImage(data: loadedData)
+            }
         }
     }
 

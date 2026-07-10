@@ -31,6 +31,9 @@ let package = Package(
             name: "PhoneRelayApp",
             dependencies: ["PhoneRelay"],
             path: "Sources/PhoneRelayApp",
+            swiftSettings: [
+                .unsafeFlags(["-warnings-as-errors"])
+            ],
             linkerSettings: [
                 // Embed Info.plist into the executable so debug runs (Xcode /
                 // `swift run`) have a bundle identity and local-network usage
@@ -59,6 +62,9 @@ let package = Package(
             exclude: ["Info.plist"],
             resources: [
                 .process("Resources")
+            ],
+            swiftSettings: [
+                .unsafeFlags(["-warnings-as-errors"])
             ]
         ),
         .testTarget(

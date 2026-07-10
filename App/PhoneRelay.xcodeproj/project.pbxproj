@@ -185,7 +185,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -eu\nADB=\"$CODESIGNING_FOLDER_PATH/Contents/Resources/bin/adb\"\nif [ -f \"$ADB\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  if [ \"${CONFIGURATION:-}\" = \"Release\" ]; then\n    codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$ADB\"\n  else\n    codesign --force --options runtime --entitlements \"$SRCROOT/HelperInherit.entitlements\" --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$ADB\"\n  fi\nfi\nif [ -n \"$SCRIPT_OUTPUT_FILE_0\" ]; then\n  touch \"$SCRIPT_OUTPUT_FILE_0\"\nfi\n";
+			shellScript = "set -eu\nADB=\"$CODESIGNING_FOLDER_PATH/Contents/Resources/bin/adb\"\nif [ -f \"$ADB\" ] && [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]; then\n  if [ \"${CONFIGURATION:-}\" = \"Release\" ]; then\n    codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$ADB\"\n  else\n    codesign --force --options runtime --entitlements \"$SRCROOT/HelperInherit.entitlements\" --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$ADB\"\n  fi\nfi\nif [ -n \"${SCRIPT_OUTPUT_FILE_0:-}\" ]; then\n  touch \"$SCRIPT_OUTPUT_FILE_0\"\nfi\n";
 		};
 		AA00000000000000000C0008 /* Copy legal resources */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -252,6 +252,7 @@
 				STRIP_INSTALLED_PRODUCT = NO;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
 				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
@@ -270,6 +271,7 @@
 				STRIP_INSTALLED_PRODUCT = NO;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
