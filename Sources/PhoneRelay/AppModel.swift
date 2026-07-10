@@ -917,7 +917,7 @@ final class AppModel: ObservableObject {
     private var launchReconnectDeadline: Date?
     private var foregroundLaunchPresentationActive = false
     private var hasCompletedSuccessfulMirrorConnection = false
-    private var deviceWatcherTask: Task<Void, Never>?
+    private let connectionCoordinator = ConnectionCoordinator()
     /// Event-driven reconnect state: fires an immediate auto-connect attempt on
     /// Mac wake / network-path restore instead of waiting out the watcher's
     /// poll interval and failure cooldowns.
@@ -931,14 +931,6 @@ final class AppModel: ObservableObject {
     private var lastUSBAttachNudgeAt: Date?
     private var deviceWatcherWakeContinuation: CheckedContinuation<Void, Never>?
     private var deviceWatcherSleepGeneration = 0
-    private var qrPairingTask: Task<Void, Never>?
-    private var usbConnectTask: Task<Void, Never>?
-    private var usbWiFiAddressPrefillTask: Task<Void, Never>?
-    private var usbWiFiHandoffTask: Task<Void, Never>?
-    private var usbWiFiTakeoverTask: Task<Void, Never>?
-    private var wirelessStartTask: Task<Void, Never>?
-    private var reconnectTask: Task<Void, Never>?
-    private var disconnectRecoveryTask: Task<Void, Never>?
     // Not private: used from AppModel+Capture.swift (pure-move split).
     var screenRecordingMonitorTask: Task<Void, Never>?
     var screenRecordingRemotePaths: [String] = []
@@ -1071,11 +1063,7 @@ final class AppModel: ObservableObject {
             || isRecoveringConnection
             || isAwaitingReconnect
             || isAutoConnecting
-            || usbConnectTask != nil
-            || usbWiFiHandoffTask != nil
-            || usbWiFiTakeoverTask != nil
-            || wirelessStartTask != nil
-            || reconnectTask != nil {
+            || connectionCoordinator.hasActiveConnectionAttempt {
             return true
         }
         return isWithinLaunchReconnectWindow
@@ -1220,10 +1208,7 @@ final class AppModel: ObservableObject {
             reconnectAttemptCount: reconnectAttemptCount,
             activeErrorMessage: activeError?.message,
             backgroundWiFiHandoffEnabled: backgroundWiFiHandoffEnabled,
-            isPreparingWiFiHandoff: usbWiFiHandoffTask != nil
-                || usbWiFiTakeoverTask != nil
-                || wirelessStartTask != nil
-                || reconnectTask != nil,
+            isPreparingWiFiHandoff: connectionCoordinator.isPreparingWiFiHandoff,
             lastStall: lastConnectionStall
         )
     }
@@ -1459,15 +1444,6 @@ final class AppModel: ObservableObject {
         if let didWakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(didWakeObserver)
         }
-        deviceWatcherTask?.cancel()
-        qrPairingTask?.cancel()
-        usbConnectTask?.cancel()
-        usbWiFiAddressPrefillTask?.cancel()
-        usbWiFiHandoffTask?.cancel()
-        usbWiFiTakeoverTask?.cancel()
-        wirelessStartTask?.cancel()
-        reconnectTask?.cancel()
-        disconnectRecoveryTask?.cancel()
         screenRecordingMonitorTask?.cancel()
         mirrorSettingsRestartTask?.cancel()
     }
@@ -1482,25 +1458,8 @@ final class AppModel: ObservableObject {
         notificationForwarder.stop()
         stopQRCodePairingSession()
         stopSystemEventReconnectTriggers()
-        deviceWatcherTask?.cancel()
-        deviceWatcherTask = nil
-        qrPairingTask?.cancel()
-        qrPairingTask = nil
-        usbConnectTask?.cancel()
-        usbConnectTask = nil
-        usbWiFiAddressPrefillTask?.cancel()
-        usbWiFiAddressPrefillTask = nil
-        usbWiFiHandoffTask?.cancel()
-        usbWiFiHandoffTask = nil
-        usbWiFiTakeoverTask?.cancel()
-        usbWiFiTakeoverTask = nil
+        connectionCoordinator.cancelAll()
         usbWiFiHandoffCandidate = nil
-        wirelessStartTask?.cancel()
-        wirelessStartTask = nil
-        reconnectTask?.cancel()
-        reconnectTask = nil
-        disconnectRecoveryTask?.cancel()
-        disconnectRecoveryTask = nil
         screenRecordingMonitorTask?.cancel()
         screenRecordingMonitorTask = nil
         mirrorSettingsRestartTask?.cancel()
@@ -1515,14 +1474,7 @@ final class AppModel: ObservableObject {
     }
 
     private func cancelWirelessReconnectWork() {
-        reconnectTask?.cancel()
-        reconnectTask = nil
-        wirelessStartTask?.cancel()
-        wirelessStartTask = nil
-        disconnectRecoveryTask?.cancel()
-        disconnectRecoveryTask = nil
-        usbWiFiTakeoverTask?.cancel()
-        usbWiFiTakeoverTask = nil
+        connectionCoordinator.cancelWirelessReconnectWork()
         isManualADBTargetConnecting = false
         isRecoveringConnection = false
         isAwaitingReconnect = false
@@ -1681,10 +1633,7 @@ final class AppModel: ObservableObject {
             hasLiveWirelessDevice: authorized.contains { !$0.isUSB },
             isPairing: isPairing,
             isMirroring: isMirroring,
-            hasWirelessWorkInFlight: wirelessStartTask != nil
-                || reconnectTask != nil
-                || usbWiFiHandoffTask != nil
-                || usbWiFiTakeoverTask != nil,
+            hasWirelessWorkInFlight: connectionCoordinator.hasWirelessWorkInFlight,
             lastProbeAt: lastSavedWiFiStatusProbeAt
         ) else {
             return
@@ -1905,10 +1854,10 @@ final class AppModel: ObservableObject {
             if !self.isMirroring,
                !self.isPairing,
                self.autoConnectTargetsInFlight.isEmpty,
-               self.usbConnectTask == nil,
-               self.usbWiFiHandoffTask == nil,
-               self.wirelessStartTask == nil,
-               self.reconnectTask == nil,
+               self.connectionCoordinator.usbConnectTask == nil,
+               self.connectionCoordinator.usbWiFiHandoffTask == nil,
+               self.connectionCoordinator.wirelessStartTask == nil,
+               self.connectionCoordinator.reconnectTask == nil,
                self.mirrorLaunchTask == nil {
                 self.isAutoConnecting = false
                 self.launchReconnectDeadline = nil
@@ -2277,11 +2226,11 @@ final class AppModel: ObservableObject {
         guard !isMirroring, !isPairing else {
             return
         }
-        guard usbConnectTask == nil,
-              usbWiFiHandoffTask == nil,
-              usbWiFiTakeoverTask == nil,
-              wirelessStartTask == nil,
-              reconnectTask == nil,
+        guard connectionCoordinator.usbConnectTask == nil,
+              connectionCoordinator.usbWiFiHandoffTask == nil,
+              connectionCoordinator.usbWiFiTakeoverTask == nil,
+              connectionCoordinator.wirelessStartTask == nil,
+              connectionCoordinator.reconnectTask == nil,
               mirrorLaunchTask == nil else {
             return
         }
@@ -2470,9 +2419,9 @@ final class AppModel: ObservableObject {
     /// nothing to do — meaningfully lower idle CPU/battery.
     private func startDeviceWatcher() {
         guard backgroundServicesEnabled else { return }
-        guard deviceWatcherTask == nil else { return }
+        guard connectionCoordinator.deviceWatcherTask == nil else { return }
         let adb = self.adb
-        deviceWatcherTask = Task { [weak self] in
+        connectionCoordinator.deviceWatcherTask = Task { [weak self] in
             while !Task.isCancelled {
                 let output = await Task.detached {
                     adb.run(["devices", "-l"], timeout: Self.adbDeviceListTimeout)
@@ -2508,9 +2457,9 @@ final class AppModel: ObservableObject {
                     authorizedDevices: authorized,
                     isRecoveringConnection: self.isRecoveringConnection,
                     isAwaitingReconnect: self.isAwaitingReconnect,
-                    hasReconnectTask: self.reconnectTask != nil,
-                    hasWirelessStartTask: self.wirelessStartTask != nil,
-                    hasUSBWiFiTakeoverTask: self.usbWiFiTakeoverTask != nil,
+                    hasReconnectTask: self.connectionCoordinator.reconnectTask != nil,
+                    hasWirelessStartTask: self.connectionCoordinator.wirelessStartTask != nil,
+                    hasUSBWiFiTakeoverTask: self.connectionCoordinator.usbWiFiTakeoverTask != nil,
                     disallowUSBFallback: self.manualWirelessConnectDisallowsUSBFallback
                 ) {
                     Logger.log("USB device interrupted wireless reconnect; cancelling stale reconnect work")
@@ -2563,7 +2512,7 @@ final class AppModel: ObservableObject {
                 // a later reconnect can use it without making USB wait. Never
                 // fires mid-session, and never twice for the same plug-in.
                 if shouldPrioritizeUSBHandoff
-                    && self.usbWiFiTakeoverTask == nil
+                    && self.connectionCoordinator.usbWiFiTakeoverTask == nil
                     && (self.pairedPhones.isEmpty || !self.autoConnectEligiblePairedPhones.isEmpty)
                     && Self.shouldAutoStartAuthorizedUSB(
                         hasSavedDevices: !self.autoConnectEligiblePairedPhones.isEmpty,
@@ -2596,9 +2545,9 @@ final class AppModel: ObservableObject {
                     isPairing: self.isPairing,
                     explicitDeviceSetupRequired: self.explicitDeviceSetupRequired,
                     hasMirrorLaunchTask: self.mirrorLaunchTask != nil,
-                    hasWirelessStartTask: self.wirelessStartTask != nil,
-                    hasReconnectTask: self.reconnectTask != nil,
-                    hasUSBConnectTask: self.usbConnectTask != nil,
+                    hasWirelessStartTask: self.connectionCoordinator.wirelessStartTask != nil,
+                    hasReconnectTask: self.connectionCoordinator.reconnectTask != nil,
+                    hasUSBConnectTask: self.connectionCoordinator.usbConnectTask != nil,
                     isAwaitingReconnect: self.isAwaitingReconnect,
                     selectedSerial: self.selectedDevice.adbSerial
                 ), let serial = self.selectedDevice.adbSerial,
@@ -2920,11 +2869,7 @@ final class AppModel: ObservableObject {
             launchReconnectDeadline = nil
         }
         let hasActiveReconnectWork = !autoConnectTargetsInFlight.isEmpty
-            || usbConnectTask != nil
-            || usbWiFiHandoffTask != nil
-            || usbWiFiTakeoverTask != nil
-            || reconnectTask != nil
-            || wirelessStartTask != nil
+            || connectionCoordinator.hasActiveConnectionAttempt
             || mirrorLaunchTask != nil
         isAutoConnecting = Self.shouldShowAutoConnecting(
             hasSavedDevice: !autoConnectEligiblePairedPhones.isEmpty,
@@ -3188,17 +3133,17 @@ final class AppModel: ObservableObject {
             return
         }
         guard !isMirroring, !isRecoveringConnection else { return }
-        qrPairingTask?.cancel()
-        qrPairingTask = nil
+        connectionCoordinator.qrPairingTask?.cancel()
+        connectionCoordinator.qrPairingTask = nil
         isQRCodePairingWaiting = false
         qrPairingSession = .random()
         startQRCodePairingWatcher()
     }
 
     func stopQRCodePairingSession() {
-        let hadPairingTask = qrPairingTask != nil
-        qrPairingTask?.cancel()
-        qrPairingTask = nil
+        let hadPairingTask = connectionCoordinator.qrPairingTask != nil
+        connectionCoordinator.qrPairingTask?.cancel()
+        connectionCoordinator.qrPairingTask = nil
         isQRCodePairingWaiting = false
         if hadPairingTask && isPairing {
             isPairing = false
@@ -3219,14 +3164,14 @@ final class AppModel: ObservableObject {
             suspendQRCodePairingForOnboarding()
             return
         }
-        guard qrPairingTask == nil,
+        guard connectionCoordinator.qrPairingTask == nil,
               let session = qrPairingSession
         else { return }
 
         isQRCodePairingWaiting = true
 
         let adb = self.adb
-        qrPairingTask = Task { [weak self] in
+        connectionCoordinator.qrPairingTask = Task { [weak self] in
             await adb.ensureServerStarted()
             guard !Task.isCancelled else { return }
 
@@ -3318,7 +3263,7 @@ final class AppModel: ObservableObject {
     private func resetQRCodePairingAfterFailure(_ message: String) {
         isPairing = false
         isQRCodePairingWaiting = false
-        qrPairingTask = nil
+        connectionCoordinator.qrPairingTask = nil
         qrPairingSession = .random()
         startQRCodePairingWatcher()
     }
@@ -3326,7 +3271,7 @@ final class AppModel: ObservableObject {
     private func finishQRCodePairing(with phone: DiscoveredPhone, displayName: String) {
         isPairing = false
         isQRCodePairingWaiting = false
-        qrPairingTask = nil
+        connectionCoordinator.qrPairingTask = nil
         qrPairingSession = nil
         touchPairedPhone(
             id: phone.id,
@@ -3815,8 +3760,8 @@ final class AppModel: ObservableObject {
     ) {
         guard !manualUSBPinnedSerials.contains(usbDevice.serial) else {
             Logger.log("Skipping Wi-Fi handoff for \(usbDevice.serial): user selected USB.")
-            usbWiFiHandoffTask?.cancel()
-            usbWiFiHandoffTask = nil
+            connectionCoordinator.usbWiFiHandoffTask?.cancel()
+            connectionCoordinator.usbWiFiHandoffTask = nil
             if usbWiFiHandoffCandidate?.usbSerial == usbDevice.serial {
                 usbWiFiHandoffCandidate = nil
             }
@@ -3860,8 +3805,8 @@ final class AppModel: ObservableObject {
     ) {
         guard !manualUSBPinnedSerials.contains(usbDevice.serial) else {
             Logger.log("Skipping live USB->Wi-Fi switch for \(usbDevice.serial): user selected USB.")
-            usbWiFiHandoffTask?.cancel()
-            usbWiFiHandoffTask = nil
+            connectionCoordinator.usbWiFiHandoffTask?.cancel()
+            connectionCoordinator.usbWiFiHandoffTask = nil
             if usbWiFiHandoffCandidate?.usbSerial == usbDevice.serial {
                 usbWiFiHandoffCandidate = nil
             }
@@ -3933,11 +3878,11 @@ final class AppModel: ObservableObject {
         }
         guard !isMirroring else { return }
         resumeDiscoveryAfterManualConnect()
-        usbConnectTask?.cancel()
-        usbWiFiHandoffTask?.cancel()
-        usbWiFiHandoffTask = nil
-        usbWiFiTakeoverTask?.cancel()
-        usbWiFiTakeoverTask = nil
+        connectionCoordinator.usbConnectTask?.cancel()
+        connectionCoordinator.usbWiFiHandoffTask?.cancel()
+        connectionCoordinator.usbWiFiHandoffTask = nil
+        connectionCoordinator.usbWiFiTakeoverTask?.cancel()
+        connectionCoordinator.usbWiFiTakeoverTask = nil
         usbWiFiHandoffCandidate = nil
         // An explicit reconnect is a clean retry: let the Wi-Fi handoff attempt
         // `adb tcpip` again even if it gave up earlier this session.
@@ -3947,7 +3892,7 @@ final class AppModel: ObservableObject {
         isPairing = true
 
         let adb = self.adb
-        usbConnectTask = Task { [weak self] in
+        connectionCoordinator.usbConnectTask = Task { [weak self] in
             var output = await Task.detached {
                 adb.run(["devices", "-l"], timeout: Self.adbDeviceListTimeout)
             }.value
@@ -3963,7 +3908,7 @@ final class AppModel: ObservableObject {
             if hasUnauthorizedUSB {
                 self.reportUSBNotAuthorized()
                 self.isPairing = false
-                self.usbConnectTask = nil
+                self.connectionCoordinator.usbConnectTask = nil
                 return
             }
 
@@ -3971,7 +3916,7 @@ final class AppModel: ObservableObject {
                 Logger.log("Manual USB connect found no USB device; restarting adb server once before giving up.")
                 // Release the pairing indicator before the restart retry: a
                 // stalled adb daemon costs two full scan timeouts, and the UI
-                // must not read "pairing" that long. `usbConnectTask` stays
+                // must not read "pairing" that long. The coordinator's USB task stays
                 // set, so the status pill still shows the attempt as active
                 // and auto-connect flows stay blocked while the retry runs.
                 self.isPairing = false
@@ -3986,7 +3931,7 @@ final class AppModel: ObservableObject {
                 if hasUnauthorizedUSB {
                     self.reportUSBNotAuthorized()
                     self.isPairing = false
-                    self.usbConnectTask = nil
+                    self.connectionCoordinator.usbConnectTask = nil
                     return
                 }
             }
@@ -3999,7 +3944,7 @@ final class AppModel: ObservableObject {
                     Self.usbPhoneNotFoundMessage(for: diagnostic)
                 )
                 self.isPairing = false
-                self.usbConnectTask = nil
+                self.connectionCoordinator.usbConnectTask = nil
                 return
             }
 
@@ -4009,13 +3954,13 @@ final class AppModel: ObservableObject {
                     "Phone Relay found the USB device, but adb could not talk to it yet. Keep the phone unlocked, replug the cable, and approve USB debugging on the phone."
                 )
                 self.isPairing = false
-                self.usbConnectTask = nil
+                self.connectionCoordinator.usbConnectTask = nil
                 return
             }
 
             let wifiAddress = await self.prefillWirelessIPFromUSBDevice(readyUSBDevice)
             self.pinManualUSBTransport(serial: readyUSBDevice.serial)
-            self.usbConnectTask = nil
+            self.connectionCoordinator.usbConnectTask = nil
             self.startMirroringOverUSB(
                 readyUSBDevice,
                 manual: true,
@@ -4178,10 +4123,10 @@ final class AppModel: ObservableObject {
     private func pinManualUSBTransport(serial: String) {
         manualWirelessConnectDisallowsUSBFallback = false
         manualUSBPinnedSerials.insert(serial)
-        usbWiFiHandoffTask?.cancel()
-        usbWiFiHandoffTask = nil
-        usbWiFiTakeoverTask?.cancel()
-        usbWiFiTakeoverTask = nil
+        connectionCoordinator.usbWiFiHandoffTask?.cancel()
+        connectionCoordinator.usbWiFiHandoffTask = nil
+        connectionCoordinator.usbWiFiTakeoverTask?.cancel()
+        connectionCoordinator.usbWiFiTakeoverTask = nil
         if usbWiFiHandoffCandidate?.usbSerial == serial {
             usbWiFiHandoffCandidate = nil
         }
@@ -4329,10 +4274,10 @@ final class AppModel: ObservableObject {
         }
 
         resumeDiscoveryAfterManualConnect()
-        reconnectTask?.cancel()
-        usbConnectTask?.cancel()
-        usbWiFiHandoffTask?.cancel()
-        usbWiFiHandoffTask = nil
+        connectionCoordinator.reconnectTask?.cancel()
+        connectionCoordinator.usbConnectTask?.cancel()
+        connectionCoordinator.usbWiFiHandoffTask?.cancel()
+        connectionCoordinator.usbWiFiHandoffTask = nil
         cancelWirelessReconnectWork()
         stopQRCodePairingSession()
         isPairing = true
@@ -4340,7 +4285,7 @@ final class AppModel: ObservableObject {
 
         let adb = self.adb
         let generation = mirrorStartGeneration
-        reconnectTask = Task { [weak self] in
+        connectionCoordinator.reconnectTask = Task { [weak self] in
             await adb.ensureServerStarted()
             let pairOutput = await Task.detached {
                 adb.run(["pair", pairAddress, code], timeout: 20)
@@ -4418,14 +4363,14 @@ final class AppModel: ObservableObject {
                 self.manualADBTarget = connectablePhone.address
             }
 
-            self.reconnectTask = nil
+            self.connectionCoordinator.reconnectTask = nil
             self.isManualWirelessPairing = false
             self.finishQRCodePairing(with: pairedPhone, displayName: deviceName)
         }
     }
 
     private func failManualWirelessPairing(_ title: String, _ message: String) {
-        reconnectTask = nil
+        connectionCoordinator.reconnectTask = nil
         isPairing = false
         isManualWirelessPairing = false
         reportError(title, message)
@@ -4448,10 +4393,10 @@ final class AppModel: ObservableObject {
         let matchedRecord = pairedRecord(matchingWirelessAddress: address)
 
         resumeDiscoveryAfterManualConnect()
-        reconnectTask?.cancel()
-        usbConnectTask?.cancel()
-        usbWiFiHandoffTask?.cancel()
-        usbWiFiHandoffTask = nil
+        connectionCoordinator.reconnectTask?.cancel()
+        connectionCoordinator.usbConnectTask?.cancel()
+        connectionCoordinator.usbWiFiHandoffTask?.cancel()
+        connectionCoordinator.usbWiFiHandoffTask = nil
         cancelWirelessReconnectWork()
         stopQRCodePairingSession()
         if let matchedRecord {
@@ -4463,7 +4408,7 @@ final class AppModel: ObservableObject {
 
         let adb = self.adb
         let generation = mirrorStartGeneration
-        reconnectTask = Task { [weak self] in
+        connectionCoordinator.reconnectTask = Task { [weak self] in
             await adb.ensureServerStarted()
             var candidateAddresses = initialCandidateAddresses
             var result = await Self.connectToRememberedWirelessReadiness(
@@ -4527,7 +4472,7 @@ final class AppModel: ObservableObject {
             }
 
             guard let self, !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
-            self.reconnectTask = nil
+            self.connectionCoordinator.reconnectTask = nil
             self.isPairing = false
 
             guard let connectedAddress = result.connectedAddress else {
@@ -4586,7 +4531,7 @@ final class AppModel: ObservableObject {
         wifiAddress: String? = nil,
         prepareWirelessHandoff: Bool = true
     ) {
-        usbWiFiHandoffTask?.cancel()
+        connectionCoordinator.usbWiFiHandoffTask?.cancel()
         cancelWirelessReconnectWork()
         isPairing = false
         select(device: device)
@@ -4605,16 +4550,16 @@ final class AppModel: ObservableObject {
     }
 
     private func prepareWirelessHandoffInBackground(from device: AuthorizedADBDevice) {
-        usbWiFiHandoffTask?.cancel()
+        connectionCoordinator.usbWiFiHandoffTask?.cancel()
         let generation = mirrorStartGeneration
-        usbWiFiHandoffTask = Task { [weak self] in
+        connectionCoordinator.usbWiFiHandoffTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 750_000_000)
             guard let self else { return }
             guard !Task.isCancelled,
                   self.mirrorStartGeneration == generation,
                   self.isMirroring || self.mirrorLaunchTask != nil
             else {
-                self.usbWiFiHandoffTask = nil
+                self.connectionCoordinator.usbWiFiHandoffTask = nil
                 return
             }
             Logger.log("Preparing USB Wi-Fi handoff in background for \(device.serial)")
@@ -4623,7 +4568,7 @@ final class AppModel: ObservableObject {
                 activatePreparedMirror: false
             )
             guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
-            self.usbWiFiHandoffTask = nil
+            self.connectionCoordinator.usbWiFiHandoffTask = nil
             if !prepared {
                 self.noteConnectionStall(
                     .handoffNotReady,
@@ -4831,13 +4776,13 @@ final class AppModel: ObservableObject {
 
     private func prefillWirelessRouteForPresentUSBDeviceIfNeeded(_ devices: [AuthorizedADBDevice]) {
         guard let usbDevice = devices.first(where: \.isUSB) else {
-            usbWiFiAddressPrefillTask?.cancel()
-            usbWiFiAddressPrefillTask = nil
+            connectionCoordinator.usbWiFiAddressPrefillTask?.cancel()
+            connectionCoordinator.usbWiFiAddressPrefillTask = nil
             lastUSBWiFiAddressPrefillSerial = nil
             lastUSBWiFiAddressPrefillAt = nil
             return
         }
-        guard usbWiFiAddressPrefillTask == nil else { return }
+        guard connectionCoordinator.usbWiFiAddressPrefillTask == nil else { return }
         guard Self.shouldRefreshUSBWiFiAddressPrefill(
             lastSerial: lastUSBWiFiAddressPrefillSerial,
             currentSerial: usbDevice.serial,
@@ -4848,12 +4793,12 @@ final class AppModel: ObservableObject {
         lastUSBWiFiAddressPrefillSerial = usbDevice.serial
         lastUSBWiFiAddressPrefillAt = Date()
         let adb = self.adb
-        usbWiFiAddressPrefillTask = Task { [weak self] in
+        connectionCoordinator.usbWiFiAddressPrefillTask = Task { [weak self] in
             let routeOutput = await Task.detached {
                 adb.run(["-s", usbDevice.serial, "shell", "ip", "route"], timeout: Self.wirelessHandoffRouteQueryTimeout)
             }.value
             guard let self, !Task.isCancelled else { return }
-            self.usbWiFiAddressPrefillTask = nil
+            self.connectionCoordinator.usbWiFiAddressPrefillTask = nil
 
             guard let wifiIP = Self.wifiIPAddress(in: routeOutput) else {
                 self.lastUSBWiFiAddressPrefillSerial = nil
@@ -5300,8 +5245,8 @@ final class AppModel: ObservableObject {
         isMirroring
             || isRecoveringConnection
             || isAwaitingReconnect
-            || usbWiFiTakeoverTask != nil
-            || usbWiFiHandoffTask != nil
+            || connectionCoordinator.usbWiFiTakeoverTask != nil
+            || connectionCoordinator.usbWiFiHandoffTask != nil
             || mirrorLaunchTask != nil
     }
 
@@ -5318,8 +5263,8 @@ final class AppModel: ObservableObject {
     /// it is idle with no window it quits instead of lurking invisibly in the
     /// background and re-popping mirror windows on the next auto-reconnect.
     var isPerformingMirrorHandoffOrRecovery: Bool {
-        usbWiFiHandoffTask != nil
-            || usbWiFiTakeoverTask != nil
+        connectionCoordinator.usbWiFiHandoffTask != nil
+            || connectionCoordinator.usbWiFiTakeoverTask != nil
             || mirrorLaunchTask != nil
             || isRecoveringConnection
             || isAwaitingReconnect
@@ -5424,7 +5369,7 @@ final class AppModel: ObservableObject {
 
     private func startWirelessMirroring(savedTarget: String) {
         guard !isPairing else { return }
-        wirelessStartTask?.cancel()
+        connectionCoordinator.wirelessStartTask?.cancel()
 
         let selectedID = selectedDevice.id
         let selectedName = selectedDevice.name
@@ -5433,7 +5378,7 @@ final class AppModel: ObservableObject {
 
         isPairing = true
 
-        wirelessStartTask = Task { [weak self] in
+        connectionCoordinator.wirelessStartTask = Task { [weak self] in
             var target: String?
             var refreshedSavedTarget: String?
             var savedRouteSawNoRouteToHost = false
@@ -5496,7 +5441,7 @@ final class AppModel: ObservableObject {
             }
 
             self.isPairing = false
-            self.wirelessStartTask = nil
+            self.connectionCoordinator.wirelessStartTask = nil
             guard let target else {
                 if savedRouteSawNoRouteToHost {
                     self.presentLocalNetworkPermissionHint()
@@ -5527,22 +5472,22 @@ final class AppModel: ObservableObject {
         mirrorStartGeneration += 1
         mirrorLaunchTask?.cancel()
         mirrorLaunchTask = nil
-        usbConnectTask?.cancel()
-        usbConnectTask = nil
-        usbWiFiAddressPrefillTask?.cancel()
-        usbWiFiAddressPrefillTask = nil
-        usbWiFiHandoffTask?.cancel()
-        usbWiFiHandoffTask = nil
-        usbWiFiTakeoverTask?.cancel()
-        usbWiFiTakeoverTask = nil
+        connectionCoordinator.usbConnectTask?.cancel()
+        connectionCoordinator.usbConnectTask = nil
+        connectionCoordinator.usbWiFiAddressPrefillTask?.cancel()
+        connectionCoordinator.usbWiFiAddressPrefillTask = nil
+        connectionCoordinator.usbWiFiHandoffTask?.cancel()
+        connectionCoordinator.usbWiFiHandoffTask = nil
+        connectionCoordinator.usbWiFiTakeoverTask?.cancel()
+        connectionCoordinator.usbWiFiTakeoverTask = nil
         usbWiFiHandoffCandidate = nil
-        wirelessStartTask?.cancel()
-        wirelessStartTask = nil
-        if reconnectTask != nil {
+        connectionCoordinator.wirelessStartTask?.cancel()
+        connectionCoordinator.wirelessStartTask = nil
+        if connectionCoordinator.reconnectTask != nil {
             // A deliberate stop also cancels an in-flight manual reconnect and
             // releases its busy flag (its own cleanup is skipped once cancelled).
-            reconnectTask?.cancel()
-            reconnectTask = nil
+            connectionCoordinator.reconnectTask?.cancel()
+            connectionCoordinator.reconnectTask = nil
             isPairing = false
             reconnectAttemptCount = 0
         }
@@ -5762,9 +5707,9 @@ final class AppModel: ObservableObject {
             lastMirrorWindowFrame = finalMirrorFrame
             connectionWindow?.setFrame(finalMirrorFrame, display: false)
         }
-        usbWiFiHandoffTask?.cancel()
-        usbWiFiHandoffTask = nil
-        usbWiFiTakeoverTask?.cancel()
+        connectionCoordinator.usbWiFiHandoffTask?.cancel()
+        connectionCoordinator.usbWiFiHandoffTask = nil
+        connectionCoordinator.usbWiFiTakeoverTask?.cancel()
         stopQRCodePairingSession()
         isRecoveringConnection = true
         isAwaitingReconnect = true
@@ -5774,7 +5719,7 @@ final class AppModel: ObservableObject {
 
         let adb = self.adb
         let generation = mirrorStartGeneration
-        usbWiFiTakeoverTask = Task { [weak self] in
+        connectionCoordinator.usbWiFiTakeoverTask = Task { [weak self] in
             let readiness = await Self.waitForADBWirelessTargetReadiness(
                 adb: adb,
                 address: candidate.address,
@@ -5795,7 +5740,7 @@ final class AppModel: ObservableObject {
             )
 
             guard let self, !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
-            self.usbWiFiTakeoverTask = nil
+            self.connectionCoordinator.usbWiFiTakeoverTask = nil
             if readiness.isReady {
                 DiagnosticsService.shared.capture(
                     takeoverAttempt.isRetry ? .wifiRetrySucceeded : .wifiHandoffSucceeded,
@@ -5839,8 +5784,8 @@ final class AppModel: ObservableObject {
                     self.presentLocalNetworkPermissionHint()
                 }
                 Logger.log("Prepared Wi-Fi handoff address=\(candidate.address) was not ready after USB ended")
-                self.usbWiFiHandoffTask?.cancel()
-                self.usbWiFiHandoffTask = nil
+                self.connectionCoordinator.usbWiFiHandoffTask?.cancel()
+                self.connectionCoordinator.usbWiFiHandoffTask = nil
                 self.usbWiFiHandoffCandidate = nil
                 self.lastUSBHandoffSerial = candidate.usbSerial
                 self.isAutoConnecting = false
@@ -5907,8 +5852,8 @@ final class AppModel: ObservableObject {
         isRecoveringConnection = true
         isAwaitingReconnect = true
         stopQRCodePairingSession()
-        disconnectRecoveryTask?.cancel()
-        disconnectRecoveryTask = Task { [weak self] in
+        connectionCoordinator.disconnectRecoveryTask?.cancel()
+        connectionCoordinator.disconnectRecoveryTask = Task { [weak self] in
             let deadline = Date().addingTimeInterval(Self.disconnectRecoveryGracePeriod)
             while !Task.isCancelled, Date() < deadline {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -5931,8 +5876,8 @@ final class AppModel: ObservableObject {
     }
 
     private func stopDisconnectRecovery() {
-        disconnectRecoveryTask?.cancel()
-        disconnectRecoveryTask = nil
+        connectionCoordinator.disconnectRecoveryTask?.cancel()
+        connectionCoordinator.disconnectRecoveryTask = nil
         isRecoveringConnection = false
         isAwaitingReconnect = false
     }
@@ -6493,11 +6438,11 @@ final class AppModel: ObservableObject {
         isSelectedDeviceOnline = false
         stopQRCodePairingSession()
         isPairing = true
-        usbConnectTask?.cancel()
+        connectionCoordinator.usbConnectTask?.cancel()
 
         let adb = self.adb
         let generation = mirrorStartGeneration
-        usbConnectTask = Task { [weak self] in
+        connectionCoordinator.usbConnectTask = Task { [weak self] in
             let output = await Task.detached {
                 adb.run(["devices", "-l"], timeout: Self.adbDeviceListTimeout)
             }.value
@@ -6506,14 +6451,14 @@ final class AppModel: ObservableObject {
             self.recordADBHealth(output, authorizedDevices: authorizedDevices)
             guard let usbDevice = authorizedDevices.first(where: { $0.isUSB && $0.serial == usbSerial }) else {
                 self.isPairing = false
-                self.usbConnectTask = nil
+                self.connectionCoordinator.usbConnectTask = nil
                 self.reportError("USB phone not found", "Connect \(record.displayName) with USB and make sure USB debugging is authorized.")
                 return
             }
 
             guard let readyUSBDevice = await self.readyUSBDeviceForMirroring(usbDevice) else {
                 self.isPairing = false
-                self.usbConnectTask = nil
+                self.connectionCoordinator.usbConnectTask = nil
                 self.reportError("USB phone not ready", "Phone Relay found \(record.displayName), but adb could not talk to it. Replug the cable and approve USB debugging on the phone.")
                 return
             }
@@ -6521,7 +6466,7 @@ final class AppModel: ObservableObject {
             let wifiAddress = await self.prefillWirelessIPFromUSBDevice(readyUSBDevice)
                 ?? record.resolvedWiFiAddress
             self.pinManualUSBTransport(serial: readyUSBDevice.serial)
-            self.usbConnectTask = nil
+            self.connectionCoordinator.usbConnectTask = nil
             self.startMirroringOverUSB(
                 readyUSBDevice,
                 manual: true,
@@ -6566,13 +6511,13 @@ final class AppModel: ObservableObject {
 
     private func connectSavedWiFiViaUSB(record: PairedPhoneRecord, usbDevice: AuthorizedADBDevice) {
         stopQRCodePairingSession()
-        wirelessStartTask?.cancel()
-        reconnectTask?.cancel()
+        connectionCoordinator.wirelessStartTask?.cancel()
+        connectionCoordinator.reconnectTask?.cancel()
         isPairing = true
 
         let adb = self.adb
         let generation = mirrorStartGeneration
-        wirelessStartTask = Task { [weak self] in
+        connectionCoordinator.wirelessStartTask = Task { [weak self] in
             let connectedAddress = await Self.connectToUSBDeviceOverCurrentWiFi(
                 adb: adb,
                 usbDevice: usbDevice,
@@ -6584,7 +6529,7 @@ final class AppModel: ObservableObject {
             )
 
             guard let self, !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
-            self.wirelessStartTask = nil
+            self.connectionCoordinator.wirelessStartTask = nil
             self.isPairing = false
 
             guard let connectedAddress else {
@@ -6667,7 +6612,7 @@ final class AppModel: ObservableObject {
         }
 
         resumeAutoConnect(for: leadRecord)
-        reconnectTask?.cancel()
+        connectionCoordinator.reconnectTask?.cancel()
         stopQRCodePairingSession()
         select(record: leadRecord)               // names the "Reconnecting to…" overlay
         isPairing = true
@@ -6681,7 +6626,7 @@ final class AppModel: ObservableObject {
 
         let adb = self.adb
         let generation = mirrorStartGeneration
-        reconnectTask = Task { [weak self] in
+        connectionCoordinator.reconnectTask = Task { [weak self] in
             await adb.ensureServerStarted()
 
             let deadline = Date().addingTimeInterval(Self.manualReconnectWindow)
@@ -6842,7 +6787,7 @@ final class AppModel: ObservableObject {
         let deviceName = await Self.connectedDeviceName(adb: adb, serial: address, fallback: record.displayName)
 
         guard !Task.isCancelled, mirrorStartGeneration == generation, !isMirroring else { return }
-        reconnectTask = nil
+        connectionCoordinator.reconnectTask = nil
         isPairing = false
         reconnectAttemptCount = 0
         select(record: record)
@@ -6869,7 +6814,7 @@ final class AppModel: ObservableObject {
         unavailableTitle: String = "Phone not reachable over Wi-Fi",
         unavailableMessage: String = "Make sure USB debugging is enabled and authorized, the phone is awake, and both devices are on the same Wi-Fi, or connect USB once to refresh the Wi-Fi path."
     ) {
-        reconnectTask = nil
+        connectionCoordinator.reconnectTask = nil
         isPairing = false
         isManualADBTargetConnecting = false
         isRecoveringConnection = false
@@ -6915,10 +6860,10 @@ final class AppModel: ObservableObject {
             stopMirroring()
         }
         disconnectForgottenWirelessTargets(wirelessTargets)
-        usbConnectTask?.cancel()
-        usbConnectTask = nil
-        usbWiFiHandoffTask?.cancel()
-        usbWiFiHandoffTask = nil
+        connectionCoordinator.usbConnectTask?.cancel()
+        connectionCoordinator.usbConnectTask = nil
+        connectionCoordinator.usbWiFiHandoffTask?.cancel()
+        connectionCoordinator.usbWiFiHandoffTask = nil
         cancelWirelessReconnectWork()
         stopQRCodePairingSession()
         pairedPhones = []
