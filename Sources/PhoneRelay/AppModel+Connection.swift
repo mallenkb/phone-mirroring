@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import Network
 
@@ -186,7 +187,10 @@ extension AppModel {
             }.value
             guard !Task.isCancelled else { return }
             self.savedWiFiStatusProbeInFlight = false
-            let refreshed = Self.authorizedADBDevices(in: output)
+            let refreshed = Self.devicesAvailableForCurrentPath(
+                Self.authorizedADBDevices(in: output),
+                isPathLossConfirmed: self.isNetworkPathLossConfirmed
+            )
             self.recordADBHealth(output, authorizedDevices: refreshed)
             self.applyDevicePresence(output)
             if refreshed.contains(where: { !$0.isUSB }) {
@@ -248,6 +252,9 @@ extension AppModel {
 
     // MARK: - First-run onboarding presentation gate
 
+    /// After onboarding completes, auto-mirror stays paused until this instant
+    /// so the freshly revealed connection screen is actually seen before a
+    /// mirror session takes over.
     nonisolated static let postOnboardingMirrorHoldDuration: TimeInterval = 3
 
     func setFirstRunOnboardingActive(_ active: Bool) {
@@ -944,7 +951,10 @@ extension AppModel {
                     adb.run(["devices", "-l"], timeout: Self.adbDeviceListTimeout)
                 }.value
                 guard let self else { return }
-                let authorized = Self.authorizedADBDevices(in: output)
+                let authorized = Self.devicesAvailableForCurrentPath(
+                    Self.authorizedADBDevices(in: output),
+                    isPathLossConfirmed: self.isNetworkPathLossConfirmed
+                )
                 self.recordADBHealth(output, authorizedDevices: authorized)
                 self.updateUSBAuthorizationHint(from: output, authorizedDevices: authorized)
                 self.applyDevicePresence(output)
@@ -1156,6 +1166,44 @@ extension AppModel {
         nowSatisfied && previousSatisfied == false
     }
 
+    /// Small enough to update the connection surface promptly, but long enough
+    /// to ignore the brief `.unsatisfied` pulses NWPathMonitor can emit during a
+    /// Wi-Fi handover.
+    nonisolated static let networkPathLossConfirmationNanoseconds: UInt64 = 750_000_000
+
+    nonisolated static func isWirelessTransport(serial: String?, network: String) -> Bool {
+        if let serial, !serial.isEmpty, isWirelessADBTarget(serial) {
+            return true
+        }
+        return network.localizedCaseInsensitiveContains("wi-fi")
+            || network.localizedCaseInsensitiveContains("wifi")
+            || network.localizedCaseInsensitiveContains("wireless")
+    }
+
+    /// A network-path loss is only authoritative for a live wireless selection.
+    /// USB must remain online even when the Mac has no network route.
+    nonisolated static func shouldInvalidateConnectionForConfirmedPathLoss(
+        isPathLossConfirmed: Bool,
+        isSelectedDeviceOnline: Bool,
+        isMirroring: Bool,
+        selectedSerial: String?,
+        selectedNetwork: String
+    ) -> Bool {
+        guard isPathLossConfirmed, isSelectedDeviceOnline || isMirroring else { return false }
+        return isWirelessTransport(serial: selectedSerial, network: selectedNetwork)
+    }
+
+    /// adb can retain a wireless serial as `device` briefly after the Mac loses
+    /// its route. Once path loss is confirmed, USB remains trustworthy but those
+    /// wireless rows must not drive the UI back to Online.
+    nonisolated static func devicesAvailableForCurrentPath(
+        _ devices: [AuthorizedADBDevice],
+        isPathLossConfirmed: Bool
+    ) -> [AuthorizedADBDevice] {
+        guard isPathLossConfirmed else { return devices }
+        return devices.filter(\.isUSB)
+    }
+
     /// Wires the Mac-side events that predict "the phone is reachable again" —
     /// wake from sleep and the network path coming back up — to an immediate
     /// auto-connect attempt. Without these, a lid-open reconnect waits for the
@@ -1172,6 +1220,14 @@ extension AppModel {
                 guard let self else { return }
                 let previous = self.lastNetworkPathWasSatisfied
                 self.lastNetworkPathWasSatisfied = satisfied
+                if !satisfied {
+                    self.scheduleNetworkPathLossConfirmation()
+                    return
+                }
+
+                self.networkPathLossConfirmationTask?.cancel()
+                self.networkPathLossConfirmationTask = nil
+                self.isNetworkPathLossConfirmed = false
                 guard Self.isReconnectWorthyPathTransition(
                     previousSatisfied: previous,
                     nowSatisfied: satisfied
@@ -1207,6 +1263,9 @@ extension AppModel {
     func stopSystemEventReconnectTriggers() {
         networkPathMonitor?.cancel()
         networkPathMonitor = nil
+        networkPathLossConfirmationTask?.cancel()
+        networkPathLossConfirmationTask = nil
+        isNetworkPathLossConfirmed = false
         usbAttachMonitor?.stop()
         usbAttachMonitor = nil
         if let didWakeObserver {
@@ -1215,11 +1274,60 @@ extension AppModel {
         }
     }
 
+    func scheduleNetworkPathLossConfirmation() {
+        networkPathLossConfirmationTask?.cancel()
+        networkPathLossConfirmationTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.networkPathLossConfirmationNanoseconds)
+            guard !Task.isCancelled,
+                  let self,
+                  self.lastNetworkPathWasSatisfied == false
+            else { return }
+
+            self.networkPathLossConfirmationTask = nil
+            self.confirmNetworkPathLoss()
+        }
+    }
+
+    func confirmNetworkPathLoss() {
+        guard !isNetworkPathLossConfirmed else { return }
+        isNetworkPathLossConfirmed = true
+
+        let invalidatesSelectedConnection = Self.shouldInvalidateConnectionForConfirmedPathLoss(
+            isPathLossConfirmed: true,
+            isSelectedDeviceOnline: isSelectedDeviceOnline,
+            isMirroring: isMirroring,
+            selectedSerial: selectedDevice.adbSerial,
+            selectedNetwork: selectedDevice.network
+        )
+
+        // Bonjour results and wireless adb rows describe the previous route.
+        // Clear the discovery-backed Online pill immediately and wake the normal
+        // watcher so it can refresh USB/presence state without a tighter poll.
+        discoveredPhones = []
+        latestAuthorizedADBDevices = Self.devicesAvailableForCurrentPath(
+            latestAuthorizedADBDevices,
+            isPathLossConfirmed: true
+        )
+        wakeDeviceWatcher()
+
+        guard invalidatesSelectedConnection else { return }
+        Logger.log("Network path unavailable; marking selected Wi-Fi device offline")
+        isSelectedDeviceOnline = false
+        missingMirrorTransportPollMisses = 0
+
+        if isMirroring || mirrorSession != nil || mirrorLaunchTask != nil {
+            recoverMissingMirrorTransport()
+        } else {
+            refreshAutoConnectingState(authorized: latestAuthorizedADBDevices)
+        }
+    }
+
     // MARK: - adb daemon recovery (INVARIANTS.md rules 1, 8, 9)
 
     /// Minimum gap between *automatic* daemon respawns. A user's explicit
     /// Fix Connection press bypasses it (one action, not a storm).
     nonisolated static let adbDaemonRecoveryCooldown: TimeInterval = 600
+
     /// Pure gate for the stale-daemon remedy: never while any mirror work or
     /// pairing is live (a server restart drops every adb transport), never
     /// re-entrantly, and automatically only outside the cooldown.
@@ -1480,7 +1588,10 @@ extension AppModel {
         isRecoveringConnection: Bool,
         isAwaitingReconnect: Bool
     ) -> Bool {
-        true
+        // The mirror owns the loading state once launch begins. Keeping the
+        // connection card visible creates two identical "Connecting" windows
+        // (and multiplies them further if retries overlap).
+        false
     }
 
     nonisolated static func deviceWatcherPollInterval(
@@ -3154,8 +3265,12 @@ extension AppModel {
     }
 
     func applyADBOutput(_ output: String) {
-        recordADBHealth(output)
-        guard let first = Self.authorizedADBDevices(in: output).first else {
+        let devices = Self.devicesAvailableForCurrentPath(
+            Self.authorizedADBDevices(in: output),
+            isPathLossConfirmed: isNetworkPathLossConfirmed
+        )
+        recordADBHealth(output, authorizedDevices: devices)
+        guard let first = devices.first else {
             selectedDevice.states = [.wirelessDebuggingRequired, .usbAuthorizationRequired, .companionConnected]
             isSelectedDeviceOnline = false
             return
@@ -3225,7 +3340,10 @@ extension AppModel {
     }
 
     func applyDevicePresence(_ output: String) {
-        let devices = Self.authorizedADBDevices(in: output)
+        let devices = Self.devicesAvailableForCurrentPath(
+            Self.authorizedADBDevices(in: output),
+            isPathLossConfirmed: isNetworkPathLossConfirmed
+        )
         recordADBHealth(output, authorizedDevices: devices)
         prefillWirelessRouteForPresentUSBDeviceIfNeeded(devices)
         if explicitDeviceSetupRequired,

@@ -766,6 +766,16 @@ final class MirrorWindowChromeTests: XCTestCase {
 
         XCTAssertTrue(renderView.performKeyEquivalent(with: commandV))
         XCTAssertEqual(forwardedEvents, 1)
+        XCTAssertNil(MirrorSession.androidCommandShortcutKey(for: commandV))
+    }
+
+    func testCommandVPasteDoesNotAlsoInjectAndroidControlV() throws {
+        let source = try String(contentsOfFile: "Sources/PhoneRelay/Mirror/MirrorSession.swift", encoding: .utf8)
+
+        XCTAssertFalse(
+            source.contains("sendControlKeyEvent(.v)"),
+            "Command-V already sends SET_CLIPBOARD with paste=true; adding Android Ctrl+V duplicates paste in fields that honor both paths."
+        )
     }
 
     @MainActor
@@ -1378,6 +1388,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         chromeBar.configure(
             deviceName: "SM S906B",
             onHome: {},
+            onRecentApps: {},
             onPhoneFiles: {},
             onScreenshot: {},
             onStopRecording: { didStopRecording = true }
@@ -1386,6 +1397,26 @@ final class MirrorWindowChromeTests: XCTestCase {
         chromeBar.triggerRecordingPillForTesting()
 
         XCTAssertTrue(didStopRecording)
+    }
+
+    @MainActor
+    func testDoubleClickingHomeTriggersRecentAppsWithoutDelayingFirstHomeClick() {
+        let chromeBar = MirrorChromeBar()
+        var actions: [String] = []
+        chromeBar.configure(
+            deviceName: "SM S906B",
+            onHome: { actions.append("home") },
+            onRecentApps: { actions.append("recentApps") },
+            onPhoneFiles: {},
+            onScreenshot: {},
+            onStopRecording: {}
+        )
+
+        chromeBar.triggerHomeForTesting(clickCount: 1)
+        XCTAssertEqual(actions, ["home"], "A single click must still register immediately.")
+
+        chromeBar.triggerHomeForTesting(clickCount: 2)
+        XCTAssertEqual(actions, ["home", "recentApps"], "The second click must bypass Home's debounce and open recent apps.")
     }
 
     @MainActor
@@ -1418,6 +1449,36 @@ final class MirrorWindowChromeTests: XCTestCase {
         let hitView = button.hitTest(NSPoint(x: button.bounds.midX, y: button.bounds.midY))
 
         XCTAssertTrue(hitView === button, "The decorative hover glyph must not intercept close/minimize/zoom clicks.")
+    }
+
+    @MainActor
+    func testChromeActionIconDoesNotStealButtonHitTesting() {
+        let button = MirrorChromeOutlineButton(
+            symbol: "house.fill",
+            accessibilityDescription: "Home"
+        )
+        button.frame = NSRect(
+            x: 0,
+            y: 0,
+            width: MirrorChromeOutlineButton.touchWidth,
+            height: MirrorChromeOutlineButton.touchHeight
+        )
+        button.layoutSubtreeIfNeeded()
+
+        let hitView = button.hitTest(NSPoint(x: button.bounds.midX, y: button.bounds.midY))
+
+        XCTAssertTrue(hitView === button, "Clicking the visible toolbar icon must trigger its containing action.")
+    }
+
+    @MainActor
+    func testRecordingPillContentDoesNotStealButtonHitTesting() {
+        let pill = MirrorRecordingStatusPill()
+        pill.frame = NSRect(x: 0, y: 0, width: 62, height: 22)
+        pill.layoutSubtreeIfNeeded()
+
+        let hitView = pill.hitTest(NSPoint(x: pill.bounds.midX, y: pill.bounds.midY))
+
+        XCTAssertTrue(hitView === pill, "Clicking the recording icon or timer must trigger the recording action.")
     }
 
     @MainActor
@@ -1677,7 +1738,7 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
-    func testFloatingToolbarDoesNotRevealFromDetachedZoneAfterMirrorWindowResignsKey() throws {
+    func testFloatingToolbarRevealsFromDetachedZoneAfterMirrorWindowResignsKey() throws {
         let model = AppModel()
         let session = MirrorSession(model: model, serial: nil)
         let controller = MirrorContentWindowController(model: model, session: session)
@@ -1693,9 +1754,36 @@ final class MirrorWindowChromeTests: XCTestCase {
 
         controller.simulateRevealZoneMouseMoveForTesting(true)
 
-        XCTAssertFalse(controller.isChromeVisibleForTesting)
-        XCTAssertTrue(controller.toolbarIgnoresMouseEventsForTesting)
-        XCTAssertFalse(controller.toolbarIsVisibleForTesting)
+        XCTAssertTrue(controller.isChromeVisibleForTesting)
+        XCTAssertFalse(controller.toolbarIgnoresMouseEventsForTesting)
+        XCTAssertTrue(controller.toolbarIsVisibleForTesting)
+    }
+
+    @MainActor
+    func testFloatingToolbarAcceptsMouseMovedEventsForInactiveHoverReveal() throws {
+        let model = AppModel()
+        let session = MirrorSession(model: model, serial: nil)
+        let controller = MirrorContentWindowController(model: model, session: session)
+
+        let toolbar = try XCTUnwrap(controller.toolbarWindowForTesting)
+
+        XCTAssertTrue(toolbar.acceptsMouseMovedEvents)
+    }
+
+    func testFloatingToolbarMouseDownActivatesParentWindowBeforeForwardingClick() throws {
+        let source = try String(contentsOfFile: "Sources/PhoneRelay/Mirror/MirrorContentWindowController.swift", encoding: .utf8)
+
+        XCTAssertTrue(source.contains("parentWindowToActivate?.makeKeyAndOrderFront(nil)"))
+        XCTAssertTrue(source.contains("NSApp.activate(ignoringOtherApps: true)"))
+    }
+
+    func testTopBandMouseDownRevealsChromeInsteadOfForwardingPhoneTap() throws {
+        let source = try String(contentsOfFile: "Sources/PhoneRelay/Mirror/MirrorContentWindowController.swift", encoding: .utf8)
+
+        XCTAssertTrue(source.contains("shouldRevealChromeFromPointerEvent(event)"))
+        XCTAssertTrue(source.contains("activateMirrorForChromeInteraction()"))
+        XCTAssertTrue(source.contains("handleRootHoverChange(true)"))
+        XCTAssertTrue(source.contains("return event.normalized.y >= 1 - activationRatio"))
     }
 
     @MainActor

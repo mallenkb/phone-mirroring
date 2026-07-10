@@ -237,8 +237,6 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     }
 
     func testBackgroundAutoConnectVerifiesSavedWiFiRoutesWithoutMDNS() throws {
-        // The flow lives in AppModel.swift; the readiness helper moved to
-        // AppModel+ConnectionHelpers.swift in the pure-move split.
         let source = try SourceTestSupport.appModelImplementation()
         let helpers = try String(
             contentsOfFile: "Sources/PhoneRelay/AppModel+ConnectionHelpers.swift",
@@ -1240,6 +1238,84 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(AppModel.missingMirrorTransportPollGrace, 2)
     }
 
+    func testConfirmedNetworkLossInvalidatesLiveWirelessConnection() {
+        XCTAssertTrue(
+            AppModel.shouldInvalidateConnectionForConfirmedPathLoss(
+                isPathLossConfirmed: true,
+                isSelectedDeviceOnline: true,
+                isMirroring: false,
+                selectedSerial: "192.168.68.50:5555",
+                selectedNetwork: "Wi-Fi"
+            )
+        )
+    }
+
+    func testConfirmedNetworkLossInvalidatesWirelessMirrorEvenBeforePresencePoll() {
+        XCTAssertTrue(
+            AppModel.shouldInvalidateConnectionForConfirmedPathLoss(
+                isPathLossConfirmed: true,
+                isSelectedDeviceOnline: false,
+                isMirroring: true,
+                selectedSerial: "Android.local:5555",
+                selectedNetwork: "Wireless debugging"
+            )
+        )
+    }
+
+    func testConfirmedNetworkLossDoesNotInvalidateUSBConnection() {
+        XCTAssertFalse(
+            AppModel.shouldInvalidateConnectionForConfirmedPathLoss(
+                isPathLossConfirmed: true,
+                isSelectedDeviceOnline: true,
+                isMirroring: true,
+                selectedSerial: "RFCT10ZLTAJ",
+                selectedNetwork: "USB debugging"
+            )
+        )
+    }
+
+    func testUnconfirmedNetworkLossDoesNotInvalidateWirelessConnection() {
+        XCTAssertFalse(
+            AppModel.shouldInvalidateConnectionForConfirmedPathLoss(
+                isPathLossConfirmed: false,
+                isSelectedDeviceOnline: true,
+                isMirroring: true,
+                selectedSerial: "192.168.68.50:5555",
+                selectedNetwork: "Wi-Fi"
+            )
+        )
+    }
+
+    func testConfirmedNetworkLossFiltersStaleWirelessADBRowsButKeepsUSB() {
+        let usb = AuthorizedADBDevice(
+            serial: "RFCT10ZLTAJ",
+            product: "g0sxxx",
+            model: "SM S906B",
+            isUSB: true
+        )
+        let wifi = AuthorizedADBDevice(
+            serial: "192.168.68.50:5555",
+            product: "g0sxxx",
+            model: "SM S906B",
+            isUSB: false
+        )
+
+        XCTAssertEqual(
+            AppModel.devicesAvailableForCurrentPath(
+                [usb, wifi],
+                isPathLossConfirmed: true
+            ),
+            [usb]
+        )
+        XCTAssertEqual(
+            AppModel.devicesAvailableForCurrentPath(
+                [usb, wifi],
+                isPathLossConfirmed: false
+            ),
+            [usb, wifi]
+        )
+    }
+
     func testDeviceWatcherDebouncesMissingMirrorTransport() throws {
         let source = try SourceTestSupport.appModelImplementation()
         XCTAssertTrue(source.contains("missingMirrorTransportPollMisses += 1"))
@@ -1708,20 +1784,20 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
-    func testMirrorLaunchKeepsConnectionWindowVisibleUntilReadyToDisplay() {
-        XCTAssertTrue(
+    func testMirrorLaunchHandsLoadingStateOffToMirrorWindow() {
+        XCTAssertFalse(
             AppModel.shouldKeepConnectionWindowVisibleDuringMirrorLaunch(
                 isRecoveringConnection: true,
                 isAwaitingReconnect: false
             )
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             AppModel.shouldKeepConnectionWindowVisibleDuringMirrorLaunch(
                 isRecoveringConnection: false,
                 isAwaitingReconnect: true
             )
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             AppModel.shouldKeepConnectionWindowVisibleDuringMirrorLaunch(
                 isRecoveringConnection: false,
                 isAwaitingReconnect: false

@@ -41,17 +41,70 @@ fi
 
 VERIFY=false
 LOGS=false
+# A person running this script in Terminal is explicitly opening the app, so
+# launch it in front. Non-interactive automation builds/packages only unless it
+# explicitly passes --foreground, --background, --verify, or --logs.
+LAUNCH=false
 BACKGROUND=false
+if [[ -t 0 || -t 1 ]]; then
+  LAUNCH=true
+fi
 
 for arg in "$@"; do
   case "$arg" in
-    --verify) VERIFY=true ;;
-    --logs) LOGS=true ;;
-    --foreground) BACKGROUND=false ;;
-    --background) BACKGROUND=true ;;
+    --verify) VERIFY=true; LAUNCH=true ;;
+    --logs) LOGS=true; LAUNCH=true ;;
+    --foreground) LAUNCH=true; BACKGROUND=false ;;
+    --background) LAUNCH=true; BACKGROUND=true ;;
+    --build-only) LAUNCH=false ;;
     *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
+
+# Serialize the complete stop -> build -> package -> launch transaction. The
+# old script only checked for a running app before the lengthy build, so two
+# overlapping rebuilds could both observe no process and later launch their own
+# copy. mkdir is atomic on macOS and gives every workspace one launch owner.
+RUN_LOCK_DIR="$ROOT_DIR/.build/phonerelay-build-and-run.lock"
+RUN_LOCK_PID_FILE="$RUN_LOCK_DIR/pid"
+
+release_run_lock() {
+  rm -f "$RUN_LOCK_PID_FILE"
+  rmdir "$RUN_LOCK_DIR" 2>/dev/null || true
+}
+
+acquire_run_lock() {
+  mkdir -p "$ROOT_DIR/.build"
+  if mkdir "$RUN_LOCK_DIR" 2>/dev/null; then
+    printf '%s\n' "$$" > "$RUN_LOCK_PID_FILE"
+    return 0
+  fi
+
+  # Give a process that just created the directory a moment to publish its PID.
+  local owner_pid=""
+  for _ in {1..10}; do
+    owner_pid="$(sed -n '1p' "$RUN_LOCK_PID_FILE" 2>/dev/null || true)"
+    [[ -n "$owner_pid" ]] && break
+    sleep 0.05
+  done
+
+  if [[ "$owner_pid" =~ ^[0-9]+$ ]] && kill -0 "$owner_pid" 2>/dev/null; then
+    echo "Phone Relay build-and-run is already active (pid $owner_pid); skipping duplicate launch."
+    exit 0
+  fi
+
+  # Recover a stale lock left by an interrupted shell, then acquire it once.
+  rm -f "$RUN_LOCK_PID_FILE"
+  rmdir "$RUN_LOCK_DIR" 2>/dev/null || {
+    echo "Unable to recover stale build-and-run lock: $RUN_LOCK_DIR" >&2
+    exit 1
+  }
+  mkdir "$RUN_LOCK_DIR"
+  printf '%s\n' "$$" > "$RUN_LOCK_PID_FILE"
+}
+
+acquire_run_lock
+trap release_run_lock EXIT
 
 # The SwiftPM product is "PhoneRelayBinary"; the binary is renamed to
 # $PRODUCT_NAME inside the bundle (CFBundleExecutable).
@@ -76,22 +129,23 @@ wait_for_app_exit() {
   return 1
 }
 
-# Kill old instances and wait until they are actually gone before launching a
-# new one, so two copies never overlap (the app also self-terminates duplicate
-# instances as a safety net).
-old_pids="$(collect_app_pids)"
-if [[ -n "$old_pids" ]]; then
-  for pid in $old_pids; do
-    pkill -TERM -P "$pid" 2>/dev/null || true
-    kill "$pid" 2>/dev/null || true
-  done
-  if ! wait_for_app_exit; then
+# Kill old instances only for an intentional launch. A build-only automation
+# must not close the app the user already has open.
+if "$LAUNCH"; then
+  old_pids="$(collect_app_pids)"
+  if [[ -n "$old_pids" ]]; then
     for pid in $old_pids; do
-      pkill -KILL -P "$pid" 2>/dev/null || true
-      kill -KILL "$pid" 2>/dev/null || true
+      pkill -TERM -P "$pid" 2>/dev/null || true
+      kill "$pid" 2>/dev/null || true
     done
     if ! wait_for_app_exit; then
-      echo "warning: an existing $PRODUCT_NAME instance is still running; the new copy will defer to it" >&2
+      for pid in $old_pids; do
+        pkill -KILL -P "$pid" 2>/dev/null || true
+        kill -KILL "$pid" 2>/dev/null || true
+      done
+      if ! wait_for_app_exit; then
+        echo "warning: an existing $PRODUCT_NAME instance is still running; the new copy will defer to it" >&2
+      fi
     fi
   fi
 fi
@@ -238,13 +292,21 @@ if command -v codesign >/dev/null 2>&1; then
   codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 fi
 
-# Launch in the foreground by default so starting Phone Relay always brings the
-# app forward. Pass --background only for scripted rebuild loops that should not
-# steal focus.
+# Non-interactive build-only callers stop here. They neither start a hidden app
+# nor interfere with an app the user already opened.
+if ! "$LAUNCH"; then
+  echo "$APP_NAME built at $APP_BUNDLE"
+  exit 0
+fi
+
+# Intentional opens are foreground by default. Background launch exists only
+# for an explicit --background caller.
+# Do not use `open -n`: it explicitly requests another application instance and
+# can multiply connection/mirror windows when launch requests overlap.
 if "$BACKGROUND"; then
-  /usr/bin/open -n -g "$APP_BUNDLE" --args --launched-in-background
+  /usr/bin/open -g "$APP_BUNDLE" --args --launched-in-background
 else
-  /usr/bin/open -n "$APP_BUNDLE"
+  /usr/bin/open "$APP_BUNDLE"
 fi
 
 if "$VERIFY"; then

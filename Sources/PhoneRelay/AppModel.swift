@@ -866,6 +866,12 @@ final class AppModel: ObservableObject {
     var isFirstRunOnboardingActive = false
     var postOnboardingMirrorHoldUntil: Date?
     var postOnboardingRevealTask: Task<Void, Never>?
+    /// A short confirmation window keeps transient path churn (for example,
+    /// switching access points) from tearing down a healthy wireless mirror.
+    /// Once confirmed, wireless rows still cached by adb are ignored until the
+    /// path returns, so stale transports cannot flip the UI back to Online.
+    var networkPathLossConfirmationTask: Task<Void, Never>?
+    var isNetworkPathLossConfirmed = false
     // Not private: used from AppModel+Capture.swift (pure-move split).
     var screenRecordingMonitorTask: Task<Void, Never>?
     var screenRecordingRemotePaths: [String] = []
@@ -1339,6 +1345,7 @@ final class AppModel: ObservableObject {
     }
 
     deinit {
+        networkPathLossConfirmationTask?.cancel()
         screenRecordingMonitorTask?.cancel()
     }
 

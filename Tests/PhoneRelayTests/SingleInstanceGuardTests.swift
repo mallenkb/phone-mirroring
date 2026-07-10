@@ -117,6 +117,21 @@ final class SingleInstanceGuardTests: XCTestCase {
         XCTAssertFalse(AppDelegate.isBackgroundLaunch(arguments: []))
     }
 
+    func testBuildAndRunSerializesAndDoesNotForceNewAppInstances() throws {
+        let source = try String(contentsOfFile: "scripts/build_and_run.sh", encoding: .utf8)
+
+        XCTAssertTrue(source.contains("LAUNCH=false"))
+        XCTAssertTrue(source.contains("if [[ -t 0 || -t 1 ]]; then"))
+        XCTAssertTrue(source.contains("--foreground) LAUNCH=true; BACKGROUND=false"))
+        XCTAssertTrue(source.contains("--build-only) LAUNCH=false"))
+        XCTAssertTrue(source.contains("if ! \"$LAUNCH\"; then"))
+        XCTAssertTrue(source.contains("RUN_LOCK_DIR="))
+        XCTAssertTrue(source.contains("mkdir \"$RUN_LOCK_DIR\""))
+        XCTAssertTrue(source.contains("trap release_run_lock EXIT"))
+        XCTAssertFalse(source.contains("/usr/bin/open -n"))
+        XCTAssertTrue(source.contains("/usr/bin/open -g \"$APP_BUNDLE\" --args --launched-in-background"))
+    }
+
     func testLaunchWindowIsExplicitlyBroughtToFront() throws {
         let source = try String(contentsOfFile: "Sources/PhoneRelay/AppDelegate.swift", encoding: .utf8)
 
@@ -195,7 +210,8 @@ final class SingleInstanceGuardTests: XCTestCase {
         XCTAssertTrue(modelSource.contains("let launchFrame = mirrorLaunchFrameForNextSession()"))
         XCTAssertTrue(modelSource.contains("func mirrorLaunchFrameForNextSession() -> NSRect?"))
         XCTAssertTrue(modelSource.contains("return activeScreen.frame.intersects(candidate) ? candidate : nil"))
-        XCTAssertTrue(modelSource.contains("?? (shouldAssertForegroundPresentation"))
+        XCTAssertFalse(modelSource.contains("?? (shouldAssertForegroundPresentation"))
+        XCTAssertTrue(modelSource.contains("?? Self.shouldKeepConnectionWindowVisibleDuringMirrorLaunch("))
         XCTAssertTrue(modelSource.contains("connectionWindowPresentation(appIsActive: shouldAssertForegroundPresentation)"))
         XCTAssertTrue(modelSource.contains("if shouldAssertForegroundPresentation {\n            NSApp?.activate(ignoringOtherApps: true)\n        }"))
         XCTAssertTrue(mirrorWindowSource.contains("if model.shouldAssertForegroundPresentation {\n            NSApp.activate(ignoringOtherApps: true)\n        }"))

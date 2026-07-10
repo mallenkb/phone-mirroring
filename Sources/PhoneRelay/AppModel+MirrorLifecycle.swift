@@ -282,11 +282,10 @@ extension AppModel {
         ])
         let launchFrame = mirrorLaunchFrameForNextSession()
         let keepConnectionWindowVisible = keepConnectionWindowVisibleOverride
-            ?? (shouldAssertForegroundPresentation
-                || Self.shouldKeepConnectionWindowVisibleDuringMirrorLaunch(
-                    isRecoveringConnection: isRecoveringConnection,
-                    isAwaitingReconnect: isAwaitingReconnect
-                ))
+            ?? Self.shouldKeepConnectionWindowVisibleDuringMirrorLaunch(
+                isRecoveringConnection: isRecoveringConnection,
+                isAwaitingReconnect: isAwaitingReconnect
+            )
         let session = MirrorSession(model: self, serial: serial, launchFrame: launchFrame)
         session.onSessionEnded = { [weak self, weak session] finalMirrorFrame in
             guard let self else { return }
@@ -925,7 +924,7 @@ extension AppModel {
     }
 
     /// Not private: called from AppModel+ConnectionHelpers.swift (pure-move
-    /// split); treat as private elsewhere.
+    /// split); treat as elsewhere.
     nonisolated static func isSamsungModelCode(_ name: String) -> Bool {
         let normalized = name
             .replacingOccurrences(of: "-", with: "")

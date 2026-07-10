@@ -438,14 +438,14 @@ final class MirrorSession {
             return
         }
 
-        // ⌘V: push the current Mac clipboard and ask the phone to paste it into
-        // the focused field. Handled before key mapping so it can't be typed.
+        // ⌘V: push the current Mac clipboard and ask scrcpy to paste it into
+        // the focused field. Do not also inject Android Ctrl+V here; fields
+        // that honor both mechanisms would insert the same clipboard twice.
         if event.type == .keyDown,
            event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
            event.charactersIgnoringModifiers?.lowercased() == "v" {
             guard model?.clipboardSyncEnabled ?? true else { return }
             clipboardBridge?.pasteToDevice()
-            controlChannel.sendControlKeyEvent(.v)
             return
         }
 

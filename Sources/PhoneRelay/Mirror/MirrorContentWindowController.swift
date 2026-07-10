@@ -663,6 +663,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         chromeBar.configure(
             deviceName: model.mirrorWindowDeviceTitle,
             onHome: { [weak self] in self?.model.sendAndroidKey("KEYCODE_HOME") },
+            onRecentApps: { [weak self] in self?.model.sendAndroidKey("KEYCODE_APP_SWITCH") },
             onPhoneFiles: {
                 NSApp.sendAction(#selector(AppDelegate.showPhoneFiles(_:)), to: nil, from: nil)
             },
@@ -758,7 +759,13 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             self?.handleRenderMouseMoved(event)
         }
         renderView.onPointerEvent = { [weak self] event in
-            self?.session?.forwardPointerEvent(event, in: self?.renderView ?? MirrorRenderView())
+            guard let self else { return }
+            if self.shouldRevealChromeFromPointerEvent(event) {
+                self.activateMirrorForChromeInteraction()
+                self.handleRootHoverChange(true)
+                return
+            }
+            self.session?.forwardPointerEvent(event, in: self.renderView)
         }
         renderView.onKeyEvent = { [weak self] event in
             guard self?.model.keyboardInputEnabled ?? true else { return }
@@ -909,6 +916,24 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         return point.y > toolbarZoneMinY
     }
 
+    private func shouldRevealChromeFromPointerEvent(_ event: MirrorRenderView.PointerEvent) -> Bool {
+        guard event.kind == .down,
+              rootView.chromeRevealEnabled,
+              window?.isMiniaturized != true,
+              window?.isVisible == true,
+              !isInFullscreen
+        else { return false }
+
+        let renderedHeight = max(1, renderView.sampleBufferDisplayLayer.frame.height)
+        let activationRatio = min(0.2, max(0.02, rootView.chromeActivationHeight / renderedHeight))
+        return event.normalized.y >= 1 - activationRatio
+    }
+
+    private func activateMirrorForChromeInteraction() {
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     // MARK: - Floating toolbar window
 
     private func installToolbarWindow(parent: NSWindow) {
@@ -928,7 +953,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         toolbar.backgroundColor = .clear
         toolbar.hasShadow = true
         toolbar.level = .normal
+        toolbar.acceptsMouseMovedEvents = true
         toolbar.ignoresMouseEvents = true
+        toolbar.parentWindowToActivate = parent
         toolbar.contentView = chromeBar
         toolbar.alphaValue = 0
         parent.addChildWindow(toolbar, ordered: .above)
@@ -1017,13 +1044,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             return
         }
         if revealZoneContains(mouseLocation) {
-            guard isMirrorWindowActiveForChrome else {
-                hideChromeImmediately(orderOutToolbar: true)
-                return
-            }
             isPointerInTopZone = true
             hideWorkItem?.cancel()
-            setChromeVisible(true)
+            setChromeVisible(true, requireActiveMirrorWindow: false)
         } else {
             isPointerInTopZone = false
             scheduleHide()
@@ -1574,8 +1597,19 @@ private final class MirrorContentWindow: NSWindow {
 /// It may become key because AppKit can key child windows during ordering, but
 /// it never becomes main so the mirror window remains the primary document.
 final class MirrorToolbarWindow: NSWindow {
+    weak var parentWindowToActivate: NSWindow?
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown || event.type == .rightMouseDown || event.type == .otherMouseDown {
+            parentWindowToActivate?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            orderFront(nil)
+        }
+        super.sendEvent(event)
+    }
 }
 
 // MARK: - Root container
@@ -1823,13 +1857,15 @@ final class MirrorChromeBar: NSView {
     func configure(
         deviceName: String,
         onHome: @escaping () -> Void,
+        onRecentApps: @escaping () -> Void,
         onPhoneFiles: @escaping () -> Void,
         onScreenshot: @escaping () -> Void,
         onStopRecording: @escaping () -> Void
     ) {
         titleLabel.stringValue = deviceName
-        homeBtn.toolTip = "Go to Android home"
+        homeBtn.toolTip = "Go to Android home. Double-click for recent apps."
         homeBtn.action = onHome
+        homeBtn.doubleAction = onRecentApps
         homeBtn.minimumActionInterval = 0.35
         recentAppsBtn.toolTip = "Browse phone files"
         recentAppsBtn.action = onPhoneFiles
@@ -2107,6 +2143,10 @@ final class MirrorChromeBar: NSView {
 
     func triggerRecordingPillForTesting() {
         recordingPill.action?()
+    }
+
+    func triggerHomeForTesting(clickCount: Int) {
+        homeBtn.performAction(clickCount: clickCount)
     }
 
     var rightActionVisibilityForTesting: [Bool] {
@@ -2478,6 +2518,14 @@ final class MirrorRecordingStatusPill: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // The image and elapsed-time label are decorative parts of one control.
+        // Route clicks anywhere in the pill back to the pill itself so clicking
+        // directly on either child still stops the recording.
+        guard super.hitTest(point) != nil else { return nil }
+        return self
+    }
+
     override func mouseDown(with event: NSEvent) {
         layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.28).cgColor
     }
@@ -2592,6 +2640,7 @@ final class MirrorChromeOutlineButton: NSView {
     private let hoverRoundedCorners: CACornerMask
     private var lastActionTime: TimeInterval = 0
     var action: (() -> Void)?
+    var doubleAction: (() -> Void)?
     var minimumActionInterval: TimeInterval = 0
     var chromeScale: CGFloat = 1 {
         didSet { needsLayout = true }
@@ -2692,6 +2741,15 @@ final class MirrorChromeOutlineButton: NSView {
 
     override var mouseDownCanMoveWindow: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // NSImageView participates in hit-testing by default. Without this,
+        // clicks on the visible icon land on imageView (which has no action),
+        // while only the narrow padding around it reaches this control. Treat
+        // the icon as decoration and make the full touch rect one hit target.
+        guard super.hitTest(point) != nil else { return nil }
+        return self
+    }
 
     override func layout() {
         super.layout()
@@ -2844,7 +2902,22 @@ final class MirrorChromeOutlineButton: NSView {
         hoverBackgroundLayer.fillColor = nil
         let p = convert(event.locationInWindow, from: nil)
         guard bounds.contains(p) else { return }
+        performAction(clickCount: event.clickCount)
+    }
+
+    func performAction(clickCount: Int) {
         let now = ProcessInfo.processInfo.systemUptime
+
+        // The first click stays immediate so Home never feels sluggish. AppKit
+        // reports the second release as clickCount == 2; let that click invoke
+        // the alternate action even though it arrives inside the single-click
+        // debounce interval.
+        if clickCount == 2, let doubleAction {
+            lastActionTime = now
+            doubleAction()
+            return
+        }
+
         guard minimumActionInterval <= 0 || now - lastActionTime >= minimumActionInterval else { return }
         lastActionTime = now
         action?()
