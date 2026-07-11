@@ -39,6 +39,10 @@ struct SettingsView: View {
                     .padding(.top, 2)
                     .padding(.bottom, 24)
             }
+            .scrollIndicators(
+                model.settingsScrollBarVisibility == .always ? .visible : .automatic,
+                axes: .vertical
+            )
 
             if selectedTab == .devices {
                 Divider()
@@ -169,6 +173,19 @@ struct SettingsView: View {
                     subtitle: "Softens larger deltas for less jumpy motion while keeping input responsive."
                 ) {
                     mirrorScrollFeelPicker
+                }
+            }
+
+            SettingsGroup(
+                title: "Settings window",
+                footnote: "Choose when the settings window's own scroll bar is visible."
+            ) {
+                scrollingPickerRow(
+                    icon: "scroll",
+                    title: "Scroll bar",
+                    subtitle: "Always show it, or show it when you hover or scroll."
+                ) {
+                    settingsScrollBarVisibilityPicker
                 }
             }
         }
@@ -1060,6 +1077,17 @@ struct SettingsView: View {
         Picker("", selection: $model.mirrorScrollFeel) {
             ForEach(MirrorScrollFeel.allCases) { feel in
                 Text(feel.title).tag(feel)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .fixedSize()
+    }
+
+    private var settingsScrollBarVisibilityPicker: some View {
+        Picker("", selection: $model.settingsScrollBarVisibility) {
+            ForEach(SettingsScrollBarVisibility.allCases) { visibility in
+                Text(visibility.title).tag(visibility)
             }
         }
         .labelsHidden()

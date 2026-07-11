@@ -39,6 +39,20 @@ enum MirrorScrollFeel: String, CaseIterable, Identifiable {
     }
 }
 
+enum SettingsScrollBarVisibility: String, CaseIterable, Identifiable {
+    case always
+    case onHover
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .always: return "Always"
+        case .onHover: return "On hover"
+        }
+    }
+}
+
 enum ScreenRecordingTouchSize: String, CaseIterable, Identifiable, Sendable {
     case small
     case medium
@@ -130,6 +144,7 @@ final class AppModel: ObservableObject {
     nonisolated static let latestReleaseURL = URL(string: "https://github.com/mallenkb/phone-mirroring/releases/latest")!
     nonisolated static let mirrorScrollSpeedDefaultsKey = "MirrorBehavior.scrollSpeedPercent"
     nonisolated static let mirrorScrollFeelDefaultsKey = "MirrorBehavior.scrollFeel"
+    nonisolated static let settingsScrollBarVisibilityDefaultsKey = "Appearance.settingsScrollBarVisibility"
     nonisolated static let backgroundWiFiHandoffDefaultsKey = "MirrorBehavior.backgroundWiFiHandoffEnabled"
     nonisolated static let mirrorAlwaysOnTopDefaultsKey = "MirrorBehavior.alwaysOnTopEnabled"
     nonisolated static let mirrorProfileDefaultsKey = "MirrorQuality.profile"
@@ -169,6 +184,14 @@ final class AppModel: ObservableObject {
             return .smooth
         }
         return feel
+    }
+
+    nonisolated static func defaultSettingsScrollBarVisibility(storedValue: Any?) -> SettingsScrollBarVisibility {
+        guard let rawValue = storedValue as? String,
+              let visibility = SettingsScrollBarVisibility(rawValue: rawValue) else {
+            return .always
+        }
+        return visibility
     }
 
     nonisolated static func defaultScreenRecordingTouchSize(storedValue: Any?) -> ScreenRecordingTouchSize {
@@ -295,6 +318,17 @@ final class AppModel: ObservableObject {
         ) {
         didSet {
             UserDefaults.standard.set(mirrorScrollFeel.rawValue, forKey: Self.mirrorScrollFeelDefaultsKey)
+        }
+    }
+    @Published var settingsScrollBarVisibility: SettingsScrollBarVisibility =
+        AppModel.defaultSettingsScrollBarVisibility(
+            storedValue: UserDefaults.standard.object(forKey: AppModel.settingsScrollBarVisibilityDefaultsKey)
+        ) {
+        didSet {
+            UserDefaults.standard.set(
+                settingsScrollBarVisibility.rawValue,
+                forKey: Self.settingsScrollBarVisibilityDefaultsKey
+            )
         }
     }
     /// Mirrors Android notifications into macOS Notification Center by polling
