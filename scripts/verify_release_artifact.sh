@@ -21,7 +21,7 @@ if [[ ! -f "$SCRCPY_SERVER" ]]; then
   exit 1
 fi
 for architecture in x86_64 arm64; do
-  if ! lipo -verify_arch "$architecture" "$ADB_HELPER" >/dev/null 2>&1; then
+  if ! lipo -archs "$ADB_HELPER" | tr ' ' '\n' | grep -Fxq "$architecture"; then
     echo "error: bundled adb is missing the $architecture architecture" >&2
     exit 1
   fi
