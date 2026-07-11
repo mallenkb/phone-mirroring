@@ -39,7 +39,7 @@ enum MirrorScrollFeel: String, CaseIterable, Identifiable {
     }
 }
 
-enum SettingsScrollBarVisibility: String, CaseIterable, Identifiable {
+enum MirrorChromeBarVisibility: String, CaseIterable, Identifiable {
     case always
     case onHover
 
@@ -144,7 +144,7 @@ final class AppModel: ObservableObject {
     nonisolated static let latestReleaseURL = URL(string: "https://github.com/mallenkb/phone-mirroring/releases/latest")!
     nonisolated static let mirrorScrollSpeedDefaultsKey = "MirrorBehavior.scrollSpeedPercent"
     nonisolated static let mirrorScrollFeelDefaultsKey = "MirrorBehavior.scrollFeel"
-    nonisolated static let settingsScrollBarVisibilityDefaultsKey = "Appearance.settingsScrollBarVisibility"
+    nonisolated static let mirrorChromeBarVisibilityDefaultsKey = "MirrorBehavior.chromeBarVisibility"
     nonisolated static let backgroundWiFiHandoffDefaultsKey = "MirrorBehavior.backgroundWiFiHandoffEnabled"
     nonisolated static let mirrorAlwaysOnTopDefaultsKey = "MirrorBehavior.alwaysOnTopEnabled"
     nonisolated static let mirrorProfileDefaultsKey = "MirrorQuality.profile"
@@ -186,10 +186,10 @@ final class AppModel: ObservableObject {
         return feel
     }
 
-    nonisolated static func defaultSettingsScrollBarVisibility(storedValue: Any?) -> SettingsScrollBarVisibility {
+    nonisolated static func defaultMirrorChromeBarVisibility(storedValue: Any?) -> MirrorChromeBarVisibility {
         guard let rawValue = storedValue as? String,
-              let visibility = SettingsScrollBarVisibility(rawValue: rawValue) else {
-            return .always
+              let visibility = MirrorChromeBarVisibility(rawValue: rawValue) else {
+            return .onHover
         }
         return visibility
     }
@@ -320,14 +320,14 @@ final class AppModel: ObservableObject {
             UserDefaults.standard.set(mirrorScrollFeel.rawValue, forKey: Self.mirrorScrollFeelDefaultsKey)
         }
     }
-    @Published var settingsScrollBarVisibility: SettingsScrollBarVisibility =
-        AppModel.defaultSettingsScrollBarVisibility(
-            storedValue: UserDefaults.standard.object(forKey: AppModel.settingsScrollBarVisibilityDefaultsKey)
+    @Published var mirrorChromeBarVisibility: MirrorChromeBarVisibility =
+        AppModel.defaultMirrorChromeBarVisibility(
+            storedValue: UserDefaults.standard.object(forKey: AppModel.mirrorChromeBarVisibilityDefaultsKey)
         ) {
         didSet {
             UserDefaults.standard.set(
-                settingsScrollBarVisibility.rawValue,
-                forKey: Self.settingsScrollBarVisibilityDefaultsKey
+                mirrorChromeBarVisibility.rawValue,
+                forKey: Self.mirrorChromeBarVisibilityDefaultsKey
             )
         }
     }

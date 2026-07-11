@@ -8,7 +8,7 @@ private enum MirrorShellStyle {
 }
 
 /// Owns the in-process mirror window: a borderless, rounded NSWindow whose
-/// content is our own `MirrorRenderView` plus a hover-revealed chrome bar.
+/// content is our own `MirrorRenderView` plus a configurable chrome bar.
 /// Because the window lives in our process, dragging is a native AppKit
 /// window move (`NSWindow.performDrag`) — no cross-process AX chase, smooth
 /// at display refresh rate, exactly like Reflect.
@@ -24,7 +24,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     /// let the hover toolbar grow up to 60% taller so it stays readable.
     static let maximumChromeScale: CGFloat = 1.6
     static var maximumChromeHeight: CGFloat { chromeHeight * maximumChromeScale }
-    /// The hover toolbar floats as an overlay over the top of the mirror, so the
+    /// The toolbar floats as an overlay over the top of the mirror, so the
     /// render fills the window all the way to the top edge and no band is
     /// reserved. At rest there is zero chrome footprint — just the phone.
     static var visibleChromeRenderTopInset: CGFloat { 0 }
@@ -120,6 +120,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private var deviceTitleCancellable: AnyCancellable?
     private var alwaysOnTopCancellable: AnyCancellable?
     private var alwaysOnTopToolbarCancellable: AnyCancellable?
+    private var chromeBarVisibilityCancellable: AnyCancellable?
     private var recordingToolbarCancellable: AnyCancellable?
     private var appActivationObservers: [NSObjectProtocol] = []
     private var activeCaptureCueView: MirrorCaptureCueView?
@@ -310,6 +311,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         setWindowFrame(frame, display: true, animate: false)
         layoutRenderSurface()
         window.makeKeyAndOrderFront(nil)
+        applyChromeBarVisibility()
         if model.shouldAssertForegroundPresentation {
             NSApp.activate(ignoringOtherApps: true)
         }
@@ -651,6 +653,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         rootView.onAppearanceChange = { [weak self] in
             self?.applyNormalShellAppearance()
         }
+        rootView.chromeRevealEnabled = model.mirrorChromeBarVisibility == .onHover
 
         renderView.translatesAutoresizingMaskIntoConstraints = false
         renderView.cornerRadius = Self.renderCornerRadius
@@ -729,6 +732,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         // The toolbar lives in its own borderless child window floating above
         // the phone — not inside this content view.
         installToolbarWindow(parent: window)
+        chromeBarVisibilityCancellable = model.$mirrorChromeBarVisibility
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.applyChromeBarVisibility()
+            }
 
         let renderTopConstraint = renderView.topAnchor.constraint(equalTo: rootView.topAnchor, constant: Self.visibleChromeRenderTopInset)
         let renderLeadingConstraint = renderView.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: Self.screenLeftInset)
@@ -909,6 +917,20 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         setChromeVisible(true, requireActiveMirrorWindow: false)
     }
 
+    private func applyChromeBarVisibility() {
+        let alwaysVisible = model.mirrorChromeBarVisibility == .always
+        rootView.chromeRevealEnabled = !alwaysVisible
+        guard window?.isVisible == true, !isInFullscreen else { return }
+
+        if alwaysVisible {
+            hideWorkItem?.cancel()
+            isPointerInTopZone = false
+            setChromeVisible(true, requireActiveMirrorWindow: false)
+        } else {
+            evaluateRevealZone()
+        }
+    }
+
     private func rootTopZoneContains(_ event: NSEvent) -> Bool {
         guard rootView.chromeRevealEnabled else { return false }
         let point = rootView.convert(event.locationInWindow, from: nil)
@@ -1038,6 +1060,12 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             hideChromeImmediately()
             return
         }
+        if model.mirrorChromeBarVisibility == .always {
+            hideWorkItem?.cancel()
+            isPointerInTopZone = false
+            setChromeVisible(true, requireActiveMirrorWindow: false)
+            return
+        }
         guard !model.isRecording else {
             hideWorkItem?.cancel()
             setChromeVisible(true)
@@ -1160,6 +1188,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     private func scheduleHide() {
+        guard model.mirrorChromeBarVisibility == .onHover else {
+            hideWorkItem?.cancel()
+            setChromeVisible(true, requireActiveMirrorWindow: false)
+            return
+        }
         guard !model.isRecording else {
             hideWorkItem?.cancel()
             setChromeVisible(true)
@@ -1277,6 +1310,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         ) { [weak self] _ in
             guard let controller = self else { return }
             Task { @MainActor in
+                guard controller.model.mirrorChromeBarVisibility == .onHover else { return }
                 controller.hideChromeImmediately(orderOutToolbar: true)
             }
         })
@@ -1382,6 +1416,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             }
             repositionToolbarWindow()
             startRevealMonitoring()
+            applyChromeBarVisibility()
         }
 
         rootView.needsLayout = true
@@ -1463,6 +1498,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     func windowDidResignKey(_ notification: Notification) {
+        guard model.mirrorChromeBarVisibility == .onHover else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.isMirrorWindowActiveForChrome else { return }
             self.hideChromeImmediately(orderOutToolbar: true)

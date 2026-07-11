@@ -95,6 +95,7 @@ struct WindowRegistrationView: NSViewRepresentable {
         private weak var parentWindow: NSWindow?
         private var toolbarWindow: NSWindow?
         private var alwaysOnTopToolbarCancellable: AnyCancellable?
+        private var chromeBarVisibilityCancellable: AnyCancellable?
         private var revealMonitors: [Any] = []
         private var windowObservers: [NSObjectProtocol] = []
         private var hideWorkItem: DispatchWorkItem?
@@ -102,6 +103,7 @@ struct WindowRegistrationView: NSViewRepresentable {
         private var isDraggingChrome = false
         private var isPointerInTopZone = false
         private var isMirroring = false
+        private var chromeBarVisibility: MirrorChromeBarVisibility = .onHover
         private let onboardingPhoneAspect: CGFloat = MirrorContentWindowController.defaultMirrorAspect
         private var onboardingReferenceHeight: CGFloat { AppModel.onboardingWindowSize.height }
 
@@ -127,6 +129,7 @@ struct WindowRegistrationView: NSViewRepresentable {
                 toolbarWindow?.orderOut(nil)
             } else {
                 startRevealMonitoring()
+                applyChromeBarVisibility()
             }
         }
 
@@ -145,10 +148,12 @@ struct WindowRegistrationView: NSViewRepresentable {
             toolbarWindow = nil
             parentWindow = nil
             alwaysOnTopToolbarCancellable = nil
+            chromeBarVisibilityCancellable = nil
         }
 
         private func install(parent: NSWindow, model: AppModel) {
             parentWindow = parent
+            chromeBarVisibility = model.mirrorChromeBarVisibility
 
             chromeBar.translatesAutoresizingMaskIntoConstraints = true
             chromeBar.autoresizingMask = [.width, .height]
@@ -214,11 +219,18 @@ struct WindowRegistrationView: NSViewRepresentable {
             toolbar.alphaValue = 0
             parent.addChildWindow(toolbar, ordered: .above)
             toolbarWindow = toolbar
+            chromeBarVisibilityCancellable = model.$mirrorChromeBarVisibility
+                .receive(on: RunLoop.main)
+                .sink { [weak self] visibility in
+                    self?.chromeBarVisibility = visibility
+                    self?.applyChromeBarVisibility()
+                }
             applyAlwaysOnTop(model.mirrorAlwaysOnTopEnabled)
             installWindowObservers(for: parent)
             repositionToolbarWindow()
             if !isMirroring {
                 startRevealMonitoring()
+                applyChromeBarVisibility()
             }
         }
 
@@ -336,6 +348,12 @@ struct WindowRegistrationView: NSViewRepresentable {
                 hideChromeImmediately()
                 return
             }
+            guard chromeBarVisibility == .onHover else {
+                hideWorkItem?.cancel()
+                isPointerInTopZone = false
+                setChromeVisible(true)
+                return
+            }
             if revealZoneContains(NSEvent.mouseLocation) {
                 isPointerInTopZone = true
                 hideWorkItem?.cancel()
@@ -346,7 +364,23 @@ struct WindowRegistrationView: NSViewRepresentable {
             }
         }
 
+        private func applyChromeBarVisibility() {
+            guard !isMirroring else { return }
+            if chromeBarVisibility == .always {
+                hideWorkItem?.cancel()
+                isPointerInTopZone = false
+                setChromeVisible(true)
+            } else {
+                evaluateRevealZone()
+            }
+        }
+
         private func scheduleHide() {
+            guard chromeBarVisibility == .onHover else {
+                hideWorkItem?.cancel()
+                setChromeVisible(true)
+                return
+            }
             guard !isDraggingChrome, !isPointerInTopZone else {
                 isPointerInTopZone = true
                 return

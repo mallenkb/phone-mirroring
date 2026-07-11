@@ -39,11 +39,6 @@ struct SettingsView: View {
                     .padding(.top, 2)
                     .padding(.bottom, 24)
             }
-            .scrollIndicators(
-                model.settingsScrollBarVisibility == .always ? .visible : .automatic,
-                axes: .vertical
-            )
-
             if selectedTab == .devices {
                 Divider()
                 clearDevicesRow
@@ -154,6 +149,19 @@ struct SettingsView: View {
             }
 
             SettingsGroup(
+                title: "Window chrome",
+                footnote: "Controls the floating bar above the mirrored phone window."
+            ) {
+                scrollingPickerRow(
+                    icon: "macwindow",
+                    title: "Chrome bar",
+                    subtitle: "Always keep it visible, or reveal it when you hover near the top."
+                ) {
+                    mirrorChromeBarVisibilityPicker
+                }
+            }
+
+            SettingsGroup(
                 title: "Scrolling",
                 footnote: "Applies to mouse wheel and trackpad scrolling inside the mirrored phone window."
             ) {
@@ -176,18 +184,6 @@ struct SettingsView: View {
                 }
             }
 
-            SettingsGroup(
-                title: "Settings window",
-                footnote: "Choose when the settings window's own scroll bar is visible."
-            ) {
-                scrollingPickerRow(
-                    icon: "scroll",
-                    title: "Scroll bar",
-                    subtitle: "Always show it, or show it when you hover or scroll."
-                ) {
-                    settingsScrollBarVisibilityPicker
-                }
-            }
         }
     }
 
@@ -1084,9 +1080,9 @@ struct SettingsView: View {
         .fixedSize()
     }
 
-    private var settingsScrollBarVisibilityPicker: some View {
-        Picker("", selection: $model.settingsScrollBarVisibility) {
-            ForEach(SettingsScrollBarVisibility.allCases) { visibility in
+    private var mirrorChromeBarVisibilityPicker: some View {
+        Picker("", selection: $model.mirrorChromeBarVisibility) {
+            ForEach(MirrorChromeBarVisibility.allCases) { visibility in
                 Text(visibility.title).tag(visibility)
             }
         }
