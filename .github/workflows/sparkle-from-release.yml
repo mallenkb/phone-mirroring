@@ -84,9 +84,9 @@ jobs:
           set -euo pipefail
           SPARKLE_VERSION="2.9.3"
           SPARKLE_URL="https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-for-Swift-Package-Manager.zip"
-          mkdir -p .build/artifacts/sparkle
+          mkdir -p .build/artifacts/sparkle/Sparkle
           curl --fail --location --retry 3 --output /tmp/Sparkle.zip "$SPARKLE_URL"
-          unzip -q -o /tmp/Sparkle.zip -d .build/artifacts/sparkle
+          unzip -q -o /tmp/Sparkle.zip -d .build/artifacts/sparkle/Sparkle
           test -x .build/artifacts/sparkle/Sparkle/bin/generate_appcast
 
       - name: Create Sparkle ZIP and appcast
