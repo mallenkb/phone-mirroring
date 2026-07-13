@@ -2811,9 +2811,11 @@ final class ADBDeviceParsingTests: XCTestCase {
     }
 
     func testConnectToRememberedWirelessReadinessFlagsNoRouteToHostAcrossCandidates() async throws {
-        // With no reachable probe signal, only the preferred stable route gets
-        // a real connect attempt. Its no-route result still attributes the
-        // failure to Local Network rather than treating the phone as offline.
+        // Every connect — saved port and the :5555 fallback — fails with "No
+        // route to host", the macOS Local Network denial signature. The result
+        // must report it so the saved-route reconnect prompts for permission
+        // instead of silently treating the phone as offline. Legacy (manual)
+        // callers dial every candidate even when nothing answered the probe.
         let fake = try installFakeADB(script: """
         #!/bin/sh
         echo "$@" >> "$ADB_FAKE_LOG"
@@ -2833,7 +2835,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertNil(result.connectedAddress)
         XCTAssertTrue(result.sawNoRouteToHost)
         let calls = loggedCalls(fake.log)
-        XCTAssertFalse(calls.contains("connect 192.0.2.44:42111"))
+        XCTAssertTrue(calls.contains("connect 192.0.2.44:42111"))
         XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
     }
 
@@ -2892,7 +2894,47 @@ final class ADBDeviceParsingTests: XCTestCase {
         let result = await AppModel.connectToRememberedWirelessReadiness(
             adb: ADBController(),
             savedAddress: "192.0.2.44:42111",
-            candidateAddresses: candidates
+            candidateAddresses: candidates,
+            restrictDialsToReachableOrStable: true
+        )
+
+        XCTAssertEqual(result.connectedAddress, "192.0.2.44:5555")
+        let connects = loggedCalls(fake.log).filter { $0.hasPrefix("connect ") }
+        XCTAssertEqual(connects, ["connect 192.0.2.44:5555"])
+    }
+
+    func testSleepingStablePhoneStillGetsOneRealConnectWhenProbesFail() async throws {
+        // A phone in Wi-Fi power-save can drop the short TCP probe's SYNs while
+        // a full adb connect still gets through. Coordinator-owned dialing must
+        // give the preferred stable endpoint one real attempt — and must not
+        // dial the dead TLS candidate.
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          echo "connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+        let originalProbe = AppModel.adbTCPPortProbe
+        AppModel.adbTCPPortProbe = { _ in false }
+        defer { AppModel.adbTCPPortProbe = originalProbe }
+
+        let candidates = AppModel.canonicalReconnectCandidateAddresses(
+            savedAddress: "192.0.2.44:42111",
+            liveAddress: nil
+        )
+        let result = await AppModel.connectToRememberedWirelessReadiness(
+            adb: ADBController(),
+            savedAddress: "192.0.2.44:42111",
+            candidateAddresses: candidates,
+            restrictDialsToReachableOrStable: true
         )
 
         XCTAssertEqual(result.connectedAddress, "192.0.2.44:5555")

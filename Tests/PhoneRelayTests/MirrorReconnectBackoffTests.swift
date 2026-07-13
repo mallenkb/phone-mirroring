@@ -247,6 +247,14 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         XCTAssertTrue(source.contains("requestAutomaticReconnect(trigger:"))
         XCTAssertTrue(source.contains("performAutomaticWirelessReconnect(record:"))
         XCTAssertTrue(helpers.contains("connectToRememberedWireless("))
+        // Automatic reconnect must never share the wire with a user-initiated
+        // connect flow: both the entry point and the loop guard on manual work.
+        XCTAssertEqual(
+            source.components(
+                separatedBy: "!connectionCoordinator.hasManualConnectionWorkInFlight"
+            ).count - 1,
+            2
+        )
     }
 
     @MainActor
@@ -1967,6 +1975,45 @@ final class MirrorReconnectBackoffTests: XCTestCase {
             XCTAssertEqual(model.connectionPillState, .waitingForPhone)
             XCTAssertEqual(model.connectionPillText, "Waiting for phone")
         }
+    }
+
+    @MainActor
+    func testConnectionPillSurfacesProvenPairingRequirementAtPlateau() {
+        withoutExplicitDeviceSetupRequired {
+            let record = PairedPhoneRecord(
+                id: "phone-a",
+                displayName: "Phone A",
+                lastAddress: "192.0.2.44:5555",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 200)
+            )
+            let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+
+            // Pairing-required is the one plateau failure the user provably has
+            // to fix, so the pill asks for action instead of an open-ended wait.
+            model.connectionCoordinator.automaticRetryStates[record.id] = .init(
+                failureCount: 4,
+                nextRetryAt: Date().addingTimeInterval(30),
+                lastFailure: .pairingRequired
+            )
+            model.connectionCoordinator.automaticReconnectState = .waiting(
+                recordID: record.id,
+                retryAt: Date().addingTimeInterval(30),
+                failure: .pairingRequired
+            )
+
+            XCTAssertEqual(model.automaticReconnectPlateauFailure, .pairingRequired)
+            XCTAssertEqual(model.connectionPillState, .actionNeeded)
+        }
+        XCTAssertEqual(
+            AppModel.connectionPillText(
+                state: .actionNeeded,
+                activeErrorTitle: AppModel.wifiPairingRequiredErrorTitle,
+                hasUnauthorizedUSBDevice: false,
+                adbStatusText: "Running"
+            ),
+            "Pair phone again"
+        )
     }
 
     func testConnectionPillTextKeepsActionNeededCopySimple() {

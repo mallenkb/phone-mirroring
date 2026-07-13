@@ -10,6 +10,10 @@ import Network
 /// cancels it, so stale handles cannot keep the UI in a connecting state.
 @MainActor
 final class ConnectionCoordinator {
+    // Same-channel transport reappearance after a manual Disconnect is
+    // deliberately NOT a trigger here: the reappeared device is already a
+    // verified `adb devices` transport, so `handleManualDisconnectPause`
+    // mirrors it directly instead of routing through the wireless resolver.
     enum AutomaticReconnectTrigger: Hashable, Sendable {
         case launch
         case discovery(address: String, eventID: UInt64)
@@ -17,7 +21,6 @@ final class ConnectionCoordinator {
         case networkRestored(eventID: UInt64)
         case systemWake(eventID: UInt64)
         case disconnectRecovery
-        case transportReappeared(serial: String, isUSB: Bool)
 
         var evidenceKey: String? {
             switch self {
@@ -29,8 +32,6 @@ final class ConnectionCoordinator {
                 return "network:\(eventID)"
             case .systemWake(let eventID):
                 return "wake:\(eventID)"
-            case .transportReappeared(let serial, let isUSB):
-                return "transport:\(isUSB ? "usb" : "wifi"):\(serial)"
             }
         }
     }
@@ -164,6 +165,26 @@ final class ConnectionCoordinator {
             || usbWiFiTakeoverTask != nil
             || wirelessStartTask != nil
             || reconnectTask != nil
+    }
+
+    /// Explicit user-initiated connection work. The automatic reconnect task is
+    /// deliberately excluded: it consults this before starting or dialing, so a
+    /// manual flow always owns the wire and two connect flights for the same
+    /// phone can never race.
+    var hasManualConnectionWorkInFlight: Bool {
+        usbConnectTask != nil
+            || usbWiFiHandoffTask != nil
+            || usbWiFiTakeoverTask != nil
+            || wirelessStartTask != nil
+            || reconnectTask != nil
+    }
+
+    /// True only while the automatic reconnect flight is actively dialing —
+    /// a loop parked in retry backoff (`waiting`) keeps its task alive but is
+    /// not on the wire, so cheap status probes may run without racing it.
+    var isAutomaticReconnectDialing: Bool {
+        if case .attempting = automaticReconnectState { return true }
+        return false
     }
 
     /// Cancels every workflow owned by this coordinator. Mirror launch,

@@ -17,11 +17,16 @@ of these on purpose, update this file in the same commit.
 2. **Reconnect prefers legacy `tcpip 5555` over Android-11 TLS wireless
    debugging.** The `:5555` listener survives without the phone's
    Wireless-debugging toggle; the TLS random port dies when the toggle goes
-   off. Candidate construction is canonical: stable `:5555` endpoints first,
-   then other saved routes, then freshly advertised TLS. TCP reachability may
+   off. Coordinator-owned reconnects build candidates canonically — stable
+   `:5555` endpoints first, then other saved routes, then freshly advertised
+   TLS — and gate dials on the TCP probe (dead TLS routes are skipped; the
+   preferred stable endpoint always gets one real connect). Manual retry,
+   handoff, and address-recovery paths still use the legacy saved-address-first
+   resolver and dial every candidate; unifying them is Stage 2 work, so within
+   Stage 1 the two resolvers coexist deliberately. In both, reachability may
    move live endpoints ahead of dead ones but never changes preference within
-   the live group. `tcpip` mode does NOT survive a phone reboot; the TLS route
-   is the fallback for exactly that case.
+   the live group — do not reorder to TLS-first. `tcpip` mode does NOT survive
+   a phone reboot; the TLS route is the fallback for exactly that case.
 
 3. **`adb tcpip` restarts the phone's adbd and drops the live USB mirror.**
    Every handoff path probes port 5555 first and only runs `tcpip` when the

@@ -32,8 +32,13 @@ extension AppModel {
             // auto-re-mirror is held until the user reconnects (or replugs) — so
             // Disconnect means "stop mirroring", not "stop discovering".
             guard !self.isAutoReconnectSuppressedForManualDisconnect else { return }
-            guard currentAddresses != previousAddresses,
-                  let address = phones.first(where: { $0.kind.isConnectable })?.address else {
+            // Only a route *appearing* is evidence worth a backoff bypass; a
+            // phone dropping off mDNS would just spend a doomed attempt and
+            // inflate the failure count.
+            let appearedAddresses = currentAddresses.subtracting(previousAddresses)
+            guard let address = phones.first(where: {
+                $0.kind.isConnectable && appearedAddresses.contains($0.address)
+            })?.address else {
                 return
             }
             let eventID = self.connectionCoordinator.nextAutomaticDiscoveryEventID()
@@ -170,26 +175,56 @@ extension AppModel {
     func probeSavedWiFiStatusIfNeeded(authorized: [AuthorizedADBDevice]) {
         guard !savedWiFiStatusProbeInFlight else { return }
         let records = Self.recordsByMostRecent(autoConnectEligiblePairedPhones)
-        guard records.contains(where: { $0.resolvedWiFiAddress != nil }) else {
+        guard let record = records.first(where: { $0.resolvedWiFiAddress != nil }),
+              let address = record.resolvedWiFiAddress else {
             return
         }
+        // A merely-waiting automatic reconnect (parked in backoff) must not
+        // block this probe: a plain :5555 phone advertises nothing over mDNS,
+        // so this cheap dial is the only signal that turns the Wi-Fi status
+        // green while the coordinator sleeps. Only an actively dialing flight
+        // (or manual wireless work) owns the wire.
         guard Self.shouldProbeSavedWiFiStatus(
             hasSavedWiFiRoute: true,
             hasLiveWirelessDevice: authorized.contains { !$0.isUSB },
             isPairing: isPairing,
             isMirroring: isMirroring,
-            hasWirelessWorkInFlight: connectionCoordinator.hasWirelessWorkInFlight,
+            hasWirelessWorkInFlight: connectionCoordinator.isPreparingWiFiHandoff
+                || connectionCoordinator.isAutomaticReconnectDialing,
             lastProbeAt: lastSavedWiFiStatusProbeAt
         ) else {
             return
         }
 
         lastSavedWiFiStatusProbeAt = Date()
-        // Stage 1 retains this legacy clock, but its tick feeds the one
-        // coordinator instead of initiating an independent adb connect.
         savedWiFiStatusProbeInFlight = true
-        requestAutomaticReconnect(trigger: .watcher)
-        savedWiFiStatusProbeInFlight = false
+        let adb = self.adb
+        Task { [weak self] in
+            let connectOutput = await Task.detached {
+                adb.run(["connect", address], timeout: Self.wirelessHandoffConnectTimeout)
+            }.value
+            guard let self, !Task.isCancelled else { return }
+            guard Self.adbConnectSucceeded(connectOutput) else {
+                self.savedWiFiStatusProbeInFlight = false
+                return
+            }
+
+            let output = await Task.detached {
+                adb.run(["devices", "-l"], timeout: Self.adbDeviceListTimeout)
+            }.value
+            guard !Task.isCancelled else { return }
+            self.savedWiFiStatusProbeInFlight = false
+            let refreshed = Self.devicesAvailableForCurrentPath(
+                Self.authorizedADBDevices(in: output),
+                isPathLossConfirmed: self.isNetworkPathLossConfirmed
+            )
+            self.recordADBHealth(output, authorizedDevices: refreshed)
+            self.applyDevicePresence(output)
+            if refreshed.contains(where: { !$0.isUSB }) {
+                self.failedAutoConnectTargets.removeValue(forKey: address)
+                Logger.log("Saved Wi-Fi route reappeared during background status probe address=\(address)")
+            }
+        }
     }
 
     // MARK: - Window registration
@@ -335,7 +370,8 @@ extension AppModel {
               mirrorSession == nil,
               mirrorLaunchTask == nil,
               !isPairing,
-              !isAutoReconnectSuppressedForManualDisconnect else { return }
+              !isAutoReconnectSuppressedForManualDisconnect,
+              !connectionCoordinator.hasManualConnectionWorkInFlight else { return }
         // Global single-flight intentionally prioritizes the most-recent phone.
         // Additional paired phones queue behind it; adb connect is globally
         // serialized and the dominant product case is one remembered phone.
@@ -384,6 +420,7 @@ extension AppModel {
                   mirrorLaunchTask == nil,
                   !isPairing,
                   !isAutoReconnectSuppressedForManualDisconnect,
+                  !connectionCoordinator.hasManualConnectionWorkInFlight,
                   let record = Self.recordsByMostRecent(autoConnectEligiblePairedPhones)
                     .first(where: Self.isWirelessRecord) else {
                 connectionCoordinator.automaticReconnectTask = nil
@@ -465,12 +502,23 @@ extension AppModel {
                     notBefore: autoMirrorBackoffUntil
                 )
                 let failureCount = connectionCoordinator.automaticRetryStates[record.id]?.failureCount ?? 1
-                if failureCount >= 4,
-                   activeError?.title != Self.wifiConnectionNotReadyErrorTitle {
-                    reportError(
-                        Self.wifiConnectionNotReadyErrorTitle,
-                        "Phone Relay is still checking for \(record.displayName). Keep the phone on the same Wi-Fi and check Wireless debugging. USB is an optional recovery if the phone remains unavailable."
-                    )
+                if failureCount >= 4 {
+                    // Pairing-required is the one plateau failure that is
+                    // provably the user's to fix — the phone only advertises
+                    // its pairing service — so say that instead of "waiting".
+                    if failure == .pairingRequired {
+                        if activeError?.title != Self.wifiPairingRequiredErrorTitle {
+                            reportError(
+                                Self.wifiPairingRequiredErrorTitle,
+                                "\(record.displayName) is only advertising its pairing service. Open Wireless debugging on the phone and pair with QR again, or connect USB once."
+                            )
+                        }
+                    } else if activeError?.title != Self.wifiConnectionNotReadyErrorTitle {
+                        reportError(
+                            Self.wifiConnectionNotReadyErrorTitle,
+                            "Phone Relay is still checking for \(record.displayName). Keep the phone on the same Wi-Fi and check Wireless debugging. USB is an optional recovery if the phone remains unavailable."
+                        )
+                    }
                 }
                 let legacyRetryAt = failedAutoConnectTargets[record.lastAddress]
                     .map { $0.addingTimeInterval(Self.autoConnectFailureCooldown) }
@@ -507,6 +555,7 @@ extension AppModel {
             adb: adb,
             savedAddress: record.resolvedWiFiAddress ?? record.lastAddress,
             candidateAddresses: candidates,
+            restrictDialsToReachableOrStable: true,
             readinessAttempts: 2,
             preflightLocalNetworkAccess: { address in
                 await Self.preflightLocalNetworkAccess(address: address)
@@ -627,37 +676,11 @@ extension AppModel {
         launchNativeMirror(serial: sessionAddress)
     }
 
-    /// Recovery path for builds that lost the UserDefaults paired-phone record:
-    /// if ADB/mDNS can see exactly one connectable Wi-Fi target, treat it as the
-    /// user's phone, reconnect, then persist it back into the paired store.
-    func attemptRecoveredWiFiReconnect() {
-        let adb = self.adb
-        Task { [weak self] in
-            for attempt in 0..<5 {
-                if attempt > 0 {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                }
-                guard let self, !self.isMirroring, !self.isPairing, self.pairedPhones.isEmpty else {
-                    return
-                }
-                guard !self.explicitDeviceSetupRequired else {
-                    return
-                }
-
-                let phones = await Task.detached { adb.connectableMDNSTargets() }.value
-                guard let phone = Self.singleConnectableRecoveryCandidate(in: phones) else {
-                    continue
-                }
-
-                self.isAutoConnecting = true
-                self.stopQRCodePairingSession()
-                Logger.log("Recovering missing paired-phone record from single connectable ADB target \(phone.id) \(phone.address)")
-                self.connectAndMirror(phone: phone)
-                return
-            }
-        }
-    }
-
+    /// Gate for the old "adopt a single visible Wi-Fi target when the paired
+    /// store was lost" recovery flow. Deliberately disabled (always false); the
+    /// flow itself was removed once the single-flight coordinator became the
+    /// only automatic reconnect entry point. Kept so the disable stays
+    /// documented and tested rather than silently forgotten.
     nonisolated static func shouldAttemptRecoveredWiFiReconnect(
         hasSavedDevices: Bool,
         explicitDeviceSetupRequired: Bool
@@ -796,6 +819,7 @@ extension AppModel {
                 adb: adb,
                 savedAddress: savedAddress,
                 candidateAddresses: candidateAddresses,
+                restrictDialsToReachableOrStable: true,
                 readinessAttempts: 2,
                 preflightLocalNetworkAccess: { address in
                     await Self.preflightLocalNetworkAccess(address: address)
@@ -2623,6 +2647,7 @@ extension AppModel {
     nonisolated static let localNetworkBlockedErrorTitle = "Local Network may be blocked"
     nonisolated static let usbPhoneNotFoundErrorTitle = "USB phone not found"
     nonisolated static let wifiConnectionNotReadyErrorTitle = "Wi-Fi connection not ready"
+    nonisolated static let wifiPairingRequiredErrorTitle = "Wireless debugging needs pairing"
 
     /// "No route to host" on every attempt — while the phone can reach the Mac
     /// — is usually macOS denying this app's Local Network permission, which can

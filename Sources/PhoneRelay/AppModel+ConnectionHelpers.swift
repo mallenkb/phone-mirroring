@@ -156,6 +156,7 @@ extension AppModel {
         adb: ADBController,
         savedAddress: String,
         candidateAddresses: [String]? = nil,
+        restrictDialsToReachableOrStable: Bool = false,
         readinessAttempts: Int = 1,
         delayNanoseconds: UInt64 = 700_000_000,
         preflightLocalNetworkAccess: ((String) async -> Void)? = nil,
@@ -189,22 +190,30 @@ extension AppModel {
                     reachable.insert(candidate)
                 }
             }
-            let reachableCandidates = candidates.filter(reachable.contains)
-            let preferredStable = candidates.first {
-                port(in: $0) == legacyADBWirelessPort
+            if restrictDialsToReachableOrStable {
+                // Coordinator-owned reconnects: a plain :5555 phone may reject
+                // a short probe while waking, so after all demonstrably-live
+                // routes give only the preferred stable endpoint one real adb
+                // connect attempt; do not dial every dead TLS address and
+                // create stale duplicate transports.
+                let reachableCandidates = candidates.filter(reachable.contains)
+                let preferredStable = candidates.first {
+                    port(in: $0) == legacyADBWirelessPort
+                }
+                var dialCandidates = reachableCandidates
+                if let preferredStable, !dialCandidates.contains(preferredStable) {
+                    dialCandidates.append(preferredStable)
+                }
+                if dialCandidates.isEmpty, let first = candidates.first {
+                    dialCandidates.append(first)
+                }
+                candidates = dialCandidates
+            } else {
+                // Manual retry / handoff / recovery callers keep dialing every
+                // candidate: a user-initiated attempt would rather spend a
+                // connect timeout than skip a live route whose probe flaked.
+                candidates = orderedByReachability(candidates, reachable: reachable)
             }
-            var dialCandidates = reachableCandidates
-            // A plain :5555 phone may reject a short probe while waking. After
-            // all demonstrably-live routes, give only the preferred stable
-            // endpoint one real adb connect attempt; do not dial every dead TLS
-            // address and create stale duplicate transports.
-            if let preferredStable, !dialCandidates.contains(preferredStable) {
-                dialCandidates.append(preferredStable)
-            }
-            if dialCandidates.isEmpty, let first = candidates.first {
-                dialCandidates.append(first)
-            }
-            candidates = dialCandidates
         }
         for candidate in candidates {
             let readiness = await waitForADBWirelessTargetReadiness(

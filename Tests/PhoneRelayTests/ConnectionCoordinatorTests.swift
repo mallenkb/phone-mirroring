@@ -191,4 +191,36 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.automaticReconnectState, .idle)
         XCTAssertNotNil(coordinator.beginAutomaticReconnect(recordID: "phone-a"))
     }
+
+    func testAutomaticReconnectCountsAsDialingOnlyWhileAttempting() {
+        let coordinator = ConnectionCoordinator()
+        XCTAssertFalse(coordinator.isAutomaticReconnectDialing)
+
+        _ = coordinator.beginAutomaticReconnect(recordID: "phone-a")
+        XCTAssertTrue(coordinator.isAutomaticReconnectDialing)
+
+        // Parked in backoff: the flight is alive but off the wire, so the
+        // background saved-route status probe may dial.
+        _ = coordinator.recordAutomaticReconnectFailure(
+            recordID: "phone-a",
+            failure: .temporarilyUnavailable
+        )
+        XCTAssertFalse(coordinator.isAutomaticReconnectDialing)
+    }
+
+    func testManualConnectionWorkInFlightExcludesAutomaticReconnect() {
+        let coordinator = ConnectionCoordinator()
+        XCTAssertFalse(coordinator.hasManualConnectionWorkInFlight)
+
+        // The automatic reconnect task consults this property, so it must not
+        // count itself as manual work.
+        coordinator.automaticReconnectTask = Task { await Task.yield() }
+        XCTAssertFalse(coordinator.hasManualConnectionWorkInFlight)
+
+        coordinator.reconnectTask = Task { await Task.yield() }
+        XCTAssertTrue(coordinator.hasManualConnectionWorkInFlight)
+
+        coordinator.cancelAll()
+        XCTAssertFalse(coordinator.hasManualConnectionWorkInFlight)
+    }
 }

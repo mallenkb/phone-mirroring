@@ -697,8 +697,10 @@ extension AppModel {
         if latestADBStatusText != "adb missing",
            !latestHasUnauthorizedUSBDevice,
            activeError?.title != Self.localNetworkBlockedErrorTitle,
-           isAutomaticReconnectAtPlateau {
-            return .waitingForPhone
+           let plateauFailure = automaticReconnectPlateauFailure {
+            // Pairing-required is proven (the phone advertises pairing only),
+            // so surface the action instead of an open-ended wait.
+            return plateauFailure == .pairingRequired ? .actionNeeded : .waitingForPhone
         }
         return Self.resolveConnectionPillState(
             hasError: hasBlockingError,
@@ -717,11 +719,19 @@ extension AppModel {
     }
 
     var isAutomaticReconnectAtPlateau: Bool {
-        guard case .waiting(let recordID, _, _) = connectionCoordinator.automaticReconnectState,
-              let retry = connectionCoordinator.automaticRetryStates[recordID] else { return false }
-        return ConnectionCoordinator.automaticReconnectDelay(
-            failureCount: retry.failureCount
-        ) >= 30
+        automaticReconnectPlateauFailure != nil
+    }
+
+    /// Non-nil once the automatic retry ladder has reached its 30s plateau,
+    /// carrying the classified failure so the pill can distinguish a provable
+    /// user action (pairing required) from an open-ended wait.
+    var automaticReconnectPlateauFailure: ConnectionCoordinator.AutomaticReconnectFailure? {
+        guard case .waiting(let recordID, _, let failure) = connectionCoordinator.automaticReconnectState,
+              let retry = connectionCoordinator.automaticRetryStates[recordID],
+              ConnectionCoordinator.automaticReconnectDelay(
+                failureCount: retry.failureCount
+              ) >= 30 else { return nil }
+        return failure
     }
 
     var connectionPillText: String {
@@ -749,6 +759,9 @@ extension AppModel {
                 }
                 if activeErrorTitle == Self.wifiConnectionNotReadyErrorTitle {
                     return "Wi-Fi not ready"
+                }
+                if activeErrorTitle == Self.wifiPairingRequiredErrorTitle {
+                    return "Pair phone again"
                 }
                 return "Action needed"
             }
