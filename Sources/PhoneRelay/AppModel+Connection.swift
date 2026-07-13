@@ -170,8 +170,7 @@ extension AppModel {
     func probeSavedWiFiStatusIfNeeded(authorized: [AuthorizedADBDevice]) {
         guard !savedWiFiStatusProbeInFlight else { return }
         let records = Self.recordsByMostRecent(autoConnectEligiblePairedPhones)
-        guard let record = records.first(where: { $0.resolvedWiFiAddress != nil }),
-              let address = record.resolvedWiFiAddress else {
+        guard records.contains(where: { $0.resolvedWiFiAddress != nil }) else {
             return
         }
         guard Self.shouldProbeSavedWiFiStatus(
