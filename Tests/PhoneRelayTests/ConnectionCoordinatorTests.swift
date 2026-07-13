@@ -5,7 +5,7 @@ import XCTest
 final class ConnectionCoordinatorTests: XCTestCase {
     func testCancelAllCancelsAndClearsEveryOwnedTask() {
         let coordinator = ConnectionCoordinator()
-        let tasks = (0..<9).map { _ in Task<Void, Never> { await Task.yield() } }
+        let tasks = (0..<10).map { _ in Task<Void, Never> { await Task.yield() } }
         coordinator.deviceWatcherTask = tasks[0]
         coordinator.qrPairingTask = tasks[1]
         coordinator.usbConnectTask = tasks[2]
@@ -15,6 +15,7 @@ final class ConnectionCoordinatorTests: XCTestCase {
         coordinator.wirelessStartTask = tasks[6]
         coordinator.reconnectTask = tasks[7]
         coordinator.disconnectRecoveryTask = tasks[8]
+        coordinator.automaticReconnectTask = tasks[9]
 
         coordinator.cancelAll()
 
@@ -28,6 +29,7 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.wirelessStartTask)
         XCTAssertNil(coordinator.reconnectTask)
         XCTAssertNil(coordinator.disconnectRecoveryTask)
+        XCTAssertNil(coordinator.automaticReconnectTask)
         XCTAssertFalse(coordinator.hasActiveConnectionAttempt)
         XCTAssertFalse(coordinator.hasWirelessWorkInFlight)
     }
@@ -115,5 +117,78 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.manualUSBPinnedSerials.isEmpty)
         XCTAssertNil(coordinator.launchReconnectDeadline)
         XCTAssertTrue(coordinator.failedLegacyHandoffSerials.isEmpty)
+        XCTAssertEqual(coordinator.automaticReconnectState, .idle)
+        XCTAssertTrue(coordinator.automaticRetryStates.isEmpty)
+    }
+
+    func testAutomaticReconnectBackoffUsesFiveTenTwentyThirtySchedule() {
+        XCTAssertEqual(ConnectionCoordinator.automaticReconnectDelay(failureCount: 0), 0)
+        XCTAssertEqual(ConnectionCoordinator.automaticReconnectDelay(failureCount: 1), 5)
+        XCTAssertEqual(ConnectionCoordinator.automaticReconnectDelay(failureCount: 2), 10)
+        XCTAssertEqual(ConnectionCoordinator.automaticReconnectDelay(failureCount: 3), 20)
+        XCTAssertEqual(ConnectionCoordinator.automaticReconnectDelay(failureCount: 4), 30)
+        XCTAssertEqual(ConnectionCoordinator.automaticReconnectDelay(failureCount: 20), 30)
+    }
+
+    func testRetryHistoryIsPhoneKeyedAndRouteEvidenceBypassesOnce() {
+        let coordinator = ConnectionCoordinator()
+        let now = Date(timeIntervalSince1970: 1_000)
+        _ = coordinator.recordAutomaticReconnectFailure(
+            recordID: "phone-a",
+            failure: .temporarilyUnavailable,
+            now: now
+        )
+
+        XCTAssertFalse(coordinator.mayAttemptAutomaticReconnect(recordID: "phone-a", trigger: .watcher, now: now))
+        XCTAssertTrue(coordinator.mayAttemptAutomaticReconnect(recordID: "phone-a", trigger: .discovery(address: "192.0.2.10:37123", eventID: 1), now: now))
+        XCTAssertFalse(coordinator.mayAttemptAutomaticReconnect(recordID: "phone-a", trigger: .discovery(address: "192.0.2.10:37123", eventID: 1), now: now))
+        XCTAssertTrue(coordinator.mayAttemptAutomaticReconnect(recordID: "phone-b", trigger: .watcher, now: now))
+    }
+
+    func testWatcherCannotBypassLegacyDeadlineButFreshDiscoveryCanOnce() {
+        let coordinator = ConnectionCoordinator()
+        let now = Date(timeIntervalSince1970: 1_000)
+        let legacyDeadline = now.addingTimeInterval(20)
+
+        XCTAssertFalse(
+            coordinator.mayAttemptAutomaticReconnect(
+                recordID: "phone-a",
+                trigger: .watcher,
+                now: now,
+                notBefore: legacyDeadline
+            )
+        )
+        XCTAssertTrue(
+            coordinator.mayAttemptAutomaticReconnect(
+                recordID: "phone-a",
+                trigger: .discovery(address: "192.0.2.10:37123", eventID: 7),
+                now: now,
+                notBefore: legacyDeadline
+            )
+        )
+        XCTAssertFalse(
+            coordinator.mayAttemptAutomaticReconnect(
+                recordID: "phone-a",
+                trigger: .discovery(address: "192.0.2.10:37123", eventID: 7),
+                now: now,
+                notBefore: legacyDeadline
+            )
+        )
+    }
+
+    func testManualDisconnectIsHardCoordinatorState() {
+        let coordinator = ConnectionCoordinator()
+        coordinator.automaticReconnectTask = Task { await Task.yield() }
+
+        coordinator.enterManualDisconnect()
+
+        XCTAssertEqual(coordinator.automaticReconnectState, .manuallyDisconnected)
+        XCTAssertNil(coordinator.automaticReconnectTask)
+        XCTAssertFalse(coordinator.mayAttemptAutomaticReconnect(recordID: "phone-a", trigger: .networkRestored(eventID: 1)))
+        XCTAssertNil(coordinator.beginAutomaticReconnect(recordID: "phone-a"))
+
+        coordinator.leaveManualDisconnect()
+        XCTAssertEqual(coordinator.automaticReconnectState, .idle)
+        XCTAssertNotNil(coordinator.beginAutomaticReconnect(recordID: "phone-a"))
     }
 }

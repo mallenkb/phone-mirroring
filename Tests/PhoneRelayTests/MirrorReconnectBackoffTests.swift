@@ -244,7 +244,8 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
 
         XCTAssertTrue(source.contains("rememberedWirelessAutoConnectRecord"))
-        XCTAssertTrue(source.contains("connectAndMirror(record: record)"))
+        XCTAssertTrue(source.contains("requestAutomaticReconnect(trigger:"))
+        XCTAssertTrue(source.contains("performAutomaticWirelessReconnect(record:"))
         XCTAssertTrue(helpers.contains("connectToRememberedWireless("))
     }
 
@@ -1884,7 +1885,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         XCTAssertTrue(AppModel.isStableMirrorSession(lived: 60))
     }
 
-    func testConnectionPillStateCoversAllSevenStatuses() {
+    func testConnectionPillStateCoversAllEightStatuses() {
         func state(error: Bool = false, online: Bool = false, live: Bool = false, saved: Bool = false,
                    actionNeeded: Bool = false,
                    connecting: Bool = false, reconnecting: Bool = false) -> AppModel.ConnectionPillState {
@@ -1909,7 +1910,63 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         XCTAssertEqual(AppModel.ConnectionPillState.noPhone.text, "No phone connected")
         XCTAssertEqual(AppModel.ConnectionPillState.actionNeeded.text, "Action needed")
         XCTAssertEqual(AppModel.ConnectionPillState.reconnecting.text, "Reconnecting")
+        XCTAssertEqual(AppModel.ConnectionPillState.waitingForPhone.text, "Waiting for phone")
         XCTAssertEqual(AppModel.ConnectionPillState.failed.text, "Connection failed")
+    }
+
+    func testAutomaticReconnectTriggersRespectExplicitSetupAndOnboarding() {
+        XCTAssertFalse(
+            AppModel.automaticReconnectTriggerAllowed(
+                explicitDeviceSetupRequired: true,
+                isFirstRunOnboardingActive: false,
+                isAutoMirrorHeldForOnboarding: false
+            )
+        )
+        XCTAssertFalse(
+            AppModel.automaticReconnectTriggerAllowed(
+                explicitDeviceSetupRequired: false,
+                isFirstRunOnboardingActive: true,
+                isAutoMirrorHeldForOnboarding: false
+            )
+        )
+        XCTAssertTrue(
+            AppModel.automaticReconnectTriggerAllowed(
+                explicitDeviceSetupRequired: false,
+                isFirstRunOnboardingActive: false,
+                isAutoMirrorHeldForOnboarding: false
+            )
+        )
+    }
+
+    @MainActor
+    func testConnectionPillTransitionsToWaitingExactlyAtThirtySecondPlateau() {
+        withoutExplicitDeviceSetupRequired {
+            let record = PairedPhoneRecord(
+                id: "phone-a",
+                displayName: "Phone A",
+                lastAddress: "192.0.2.44:5555",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 200)
+            )
+            let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+
+            model.connectionCoordinator.automaticRetryStates[record.id] = .init(
+                failureCount: 3,
+                nextRetryAt: Date().addingTimeInterval(20),
+                lastFailure: .temporarilyUnavailable
+            )
+            model.connectionCoordinator.automaticReconnectState = .waiting(
+                recordID: record.id,
+                retryAt: Date().addingTimeInterval(20),
+                failure: .temporarilyUnavailable
+            )
+            XCTAssertFalse(model.isAutomaticReconnectAtPlateau)
+
+            model.connectionCoordinator.automaticRetryStates[record.id]?.failureCount = 4
+            XCTAssertTrue(model.isAutomaticReconnectAtPlateau)
+            XCTAssertEqual(model.connectionPillState, .waitingForPhone)
+            XCTAssertEqual(model.connectionPillText, "Waiting for phone")
+        }
     }
 
     func testConnectionPillTextKeepsActionNeededCopySimple() {
@@ -1920,7 +1977,25 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 hasUnauthorizedUSBDevice: false,
                 adbStatusText: "Running"
             ),
-            "Connect USB to refresh"
+            "Allow Local Network"
+        )
+        XCTAssertEqual(
+            AppModel.connectionPillText(
+                state: .actionNeeded,
+                activeErrorTitle: AppModel.wifiConnectionNotReadyErrorTitle,
+                hasUnauthorizedUSBDevice: false,
+                adbStatusText: "Running"
+            ),
+            "Wi-Fi not ready"
+        )
+        XCTAssertEqual(
+            AppModel.connectionPillText(
+                state: .actionNeeded,
+                activeErrorTitle: "Pairing failed",
+                hasUnauthorizedUSBDevice: false,
+                adbStatusText: "Running"
+            ),
+            "Action needed"
         )
         XCTAssertEqual(
             AppModel.connectionPillText(

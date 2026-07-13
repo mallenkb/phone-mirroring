@@ -566,21 +566,13 @@ extension AppModel {
         isRecoveringConnection = true
         isAwaitingReconnect = true
         stopQRCodePairingSession()
+        requestAutomaticReconnect(trigger: .disconnectRecovery)
         connectionCoordinator.disconnectRecoveryTask?.cancel()
         connectionCoordinator.disconnectRecoveryTask = Task { [weak self] in
             let deadline = Date().addingTimeInterval(Self.disconnectRecoveryGracePeriod)
             while !Task.isCancelled, Date() < deadline {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard let self, !self.isMirroring else { return }
-                if self.isSelectedDeviceOnline {
-                    if let until = self.autoMirrorBackoffUntil, Date() < until {
-                        let delay = max(0, until.timeIntervalSinceNow)
-                        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                        guard !Task.isCancelled, !self.isMirroring else { return }
-                    }
-                    self.startMirroring()
-                    return
-                }
             }
             guard !Task.isCancelled, let self, !self.isMirroring else { return }
             self.isRecoveringConnection = false
@@ -658,6 +650,7 @@ extension AppModel {
         case actionNeeded
         case connecting
         case reconnecting
+        case waitingForPhone
         case online
         case failed
 
@@ -668,6 +661,7 @@ extension AppModel {
             case .actionNeeded: return "Action needed"
             case .connecting: return "Connecting"
             case .reconnecting: return "Reconnecting"
+            case .waitingForPhone: return "Waiting for phone"
             case .online: return "Online"
             case .failed: return "Connection failed"
             }
@@ -696,12 +690,23 @@ extension AppModel {
     /// been established once this session (otherwise the first attempt reads
     /// `connecting`).
     var connectionPillState: ConnectionPillState {
-        Self.resolveConnectionPillState(
-            hasError: activeError != nil,
-            needsUserAction: activeError != nil
+        // A stale, auto-dismissing error must not outrank a live retry. If the
+        // watcher has already started reconnecting, communicate the current
+        // work instead of a remedy that may no longer be necessary.
+        let hasBlockingError = activeError != nil && !isActivelyConnecting
+        if latestADBStatusText != "adb missing",
+           !latestHasUnauthorizedUSBDevice,
+           activeError?.title != Self.localNetworkBlockedErrorTitle,
+           isAutomaticReconnectAtPlateau {
+            return .waitingForPhone
+        }
+        return Self.resolveConnectionPillState(
+            hasError: hasBlockingError,
+            needsUserAction: hasBlockingError
                 || latestHasUnauthorizedUSBDevice
                 || latestADBStatusText == "adb missing",
-            isOnline: isSelectedDeviceOnline || hasRememberedWiFiHandoffRoute,
+            isOnline: isSelectedDeviceOnline
+                || (!isActivelyConnecting && hasRememberedWiFiHandoffRoute),
             hasLivePhone: !latestAuthorizedADBDevices.isEmpty
                 || discoveredPhones.contains { $0.kind.isConnectable },
             hasSavedDevice: !pairedPhones.isEmpty,
@@ -709,6 +714,14 @@ extension AppModel {
             isReconnecting: hasCompletedSuccessfulMirrorConnection
                 && (isRecoveringConnection || isAwaitingReconnect)
         )
+    }
+
+    var isAutomaticReconnectAtPlateau: Bool {
+        guard case .waiting(let recordID, _, _) = connectionCoordinator.automaticReconnectState,
+              let retry = connectionCoordinator.automaticRetryStates[recordID] else { return false }
+        return ConnectionCoordinator.automaticReconnectDelay(
+            failureCount: retry.failureCount
+        ) >= 30
     }
 
     var connectionPillText: String {
@@ -731,7 +744,13 @@ extension AppModel {
                 if activeErrorTitle == Self.usbPhoneNotFoundErrorTitle {
                     return "Mac can't see USB"
                 }
-                return "Connect USB to refresh"
+                if activeErrorTitle == Self.localNetworkBlockedErrorTitle {
+                    return "Allow Local Network"
+                }
+                if activeErrorTitle == Self.wifiConnectionNotReadyErrorTitle {
+                    return "Wi-Fi not ready"
+                }
+                return "Action needed"
             }
             if hasUnauthorizedUSBDevice {
                 return "Allow USB debugging"

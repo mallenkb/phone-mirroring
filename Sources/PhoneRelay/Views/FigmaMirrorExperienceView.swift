@@ -952,7 +952,7 @@ struct FigmaMirrorExperienceView: View {
             return Color.white.opacity(0.45)
         case .actionNeeded:
             return Color(red: 0.97, green: 0.44, blue: 0.44)
-        case .connecting, .reconnecting:
+        case .connecting, .reconnecting, .waitingForPhone:
             return Color(red: 0.98, green: 0.75, blue: 0.18)
         case .online:
             return connectionOnlineGreen
