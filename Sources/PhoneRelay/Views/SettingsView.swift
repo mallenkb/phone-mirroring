@@ -144,7 +144,7 @@ struct SettingsView: View {
                     icon: "wifi",
                     isOn: $model.backgroundWiFiHandoffEnabled,
                     title: "Advanced USB-to-Wi-Fi handoff",
-                    subtitle: "Leave this off unless you want USB mirroring to prepare a separate legacy ADB Wi-Fi route."
+                    subtitle: "Prepare Wi-Fi automatically after USB mirroring so you can unplug the cable. Turn this off to stay on USB."
                 )
             }
 

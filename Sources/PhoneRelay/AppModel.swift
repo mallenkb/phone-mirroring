@@ -485,7 +485,7 @@ final class AppModel: ObservableObject {
     var preferUSBMirroring: Bool { false }
     /// Prepares a Wi-Fi adb route in the background after USB mirroring starts.
     @Published var backgroundWiFiHandoffEnabled: Bool =
-        (UserDefaults.standard.object(forKey: AppModel.backgroundWiFiHandoffDefaultsKey) as? Bool) ?? false {
+        (UserDefaults.standard.object(forKey: AppModel.backgroundWiFiHandoffDefaultsKey) as? Bool) ?? true {
         didSet {
             UserDefaults.standard.set(
                 backgroundWiFiHandoffEnabled,

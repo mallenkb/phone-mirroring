@@ -341,6 +341,7 @@ final class ADBDeviceParsingTests: XCTestCase {
             AppModel.shouldAttemptWirelessHandoff(
                 from: usbDevice,
                 preferUSBMirroring: false,
+                backgroundWiFiHandoffEnabled: true,
                 hasSavedDevices: true
             )
         )
@@ -348,12 +349,13 @@ final class ADBDeviceParsingTests: XCTestCase {
             AppModel.shouldAttemptWirelessHandoff(
                 from: usbDevice,
                 preferUSBMirroring: false,
+                backgroundWiFiHandoffEnabled: true,
                 hasSavedDevices: false
             )
         )
     }
 
-    func testPassiveUSBWiFiHandoffDoesNotDependOnAdvancedToggle() {
+    func testPassiveUSBWiFiHandoffRespectsAdvancedToggle() {
         let usbDevice = AuthorizedADBDevice(
             serial: "TESTDEVICE001",
             product: "raven",
@@ -368,7 +370,7 @@ final class ADBDeviceParsingTests: XCTestCase {
                 backgroundWiFiHandoffEnabled: true
             )
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             AppModel.shouldAttemptWirelessHandoff(
                 from: usbDevice,
                 preferUSBMirroring: false,
@@ -816,7 +818,7 @@ final class ADBDeviceParsingTests: XCTestCase {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
-        XCTAssertEqual(model.activeError?.title, "Connect USB to refresh Wi-Fi")
+        XCTAssertEqual(model.activeError?.title, AppModel.wifiConnectionNotReadyErrorTitle)
         XCTAssertNil(model.selectedDevice.adbSerial)
         let calls = loggedCalls(fake.log)
         XCTAssertFalse(calls.contains("connect 192.0.2.44:43123"))
@@ -884,7 +886,7 @@ final class ADBDeviceParsingTests: XCTestCase {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
-        XCTAssertEqual(model.activeError?.title, "Connect USB to refresh Wi-Fi")
+        XCTAssertEqual(model.activeError?.title, AppModel.wifiConnectionNotReadyErrorTitle)
         let calls = loggedCalls(fake.log)
         XCTAssertNil(model.selectedDevice.adbSerial)
         XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
@@ -937,7 +939,7 @@ final class ADBDeviceParsingTests: XCTestCase {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
-        XCTAssertEqual(model.activeError?.title, "Connect USB to refresh Wi-Fi")
+        XCTAssertEqual(model.activeError?.title, AppModel.wifiConnectionNotReadyErrorTitle)
         let calls = loggedCalls(fake.log)
         XCTAssertTrue(calls.contains("mdns services"))
         XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
@@ -983,7 +985,7 @@ final class ADBDeviceParsingTests: XCTestCase {
                 try await Task.sleep(nanoseconds: 50_000_000)
             }
 
-            XCTAssertEqual(model.activeError?.title, "Connect USB to refresh Wi-Fi")
+            XCTAssertEqual(model.activeError?.title, AppModel.wifiConnectionNotReadyErrorTitle)
             XCTAssertTrue(model.activeError?.message.contains("VOG L09") == true)
             XCTAssertFalse(model.connectionDeviceLabel.contains("Android Device"))
         }
@@ -1843,6 +1845,93 @@ final class ADBDeviceParsingTests: XCTestCase {
             AppModel.reconnectCandidateAddresses(for: "192.0.2.44:5555"),
             ["192.0.2.44:5555"]
         )
+    }
+
+    func testCanonicalReconnectCandidatesPreferStableRoutesBeforeTLS() {
+        XCTAssertEqual(
+            AppModel.canonicalReconnectCandidateAddresses(
+                savedAddress: "192.0.2.44:42111",
+                liveAddress: "192.0.2.45:37123"
+            ),
+            [
+                "192.0.2.44:5555",
+                "192.0.2.45:5555",
+                "192.0.2.44:42111",
+                "192.0.2.45:37123"
+            ]
+        )
+    }
+
+    func testWirelessPersistenceGuardAcceptsOnlyHostPortRoutes() {
+        XCTAssertEqual(
+            AppModel.persistableWirelessAddress("192.0.2.44:5555"),
+            "192.0.2.44:5555"
+        )
+        XCTAssertNil(AppModel.persistableWirelessAddress("RFCT10ZLTAJ"))
+        XCTAssertNil(AppModel.persistableWirelessAddress("adb-RFCT10ZLTAJ._adb-tls-connect._tcp"))
+        XCTAssertNil(AppModel.persistableWirelessAddress("192.0.2.44"))
+    }
+
+    func testAutomaticWirelessPersistencePrefersStableAndPreservesExistingFallback() {
+        XCTAssertEqual(
+            AppModel.automaticWirelessAddressToPersist(
+                sessionAddress: "192.0.2.45:5555",
+                existingWirelessAddress: "192.0.2.44:5555"
+            ),
+            "192.0.2.45:5555"
+        )
+        XCTAssertNil(
+            AppModel.automaticWirelessAddressToPersist(
+                sessionAddress: "192.0.2.45:37123",
+                existingWirelessAddress: "192.0.2.44:5555"
+            )
+        )
+        XCTAssertEqual(
+            AppModel.automaticWirelessAddressToPersist(
+                sessionAddress: "192.0.2.45:37123",
+                existingWirelessAddress: nil
+            ),
+            "192.0.2.45:37123"
+        )
+        XCTAssertNil(
+            AppModel.automaticWirelessAddressToPersist(
+                sessionAddress: "RFCT10ZLTAJ",
+                existingWirelessAddress: nil
+            )
+        )
+    }
+
+    @MainActor
+    func testInvalidWirelessHandoffValueCannotClobberStableRoute() {
+        let suiteName = "PhoneRelayTests.WirelessPersistence.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = PairedPhoneStore(primaryDefaults: defaults, suiteNames: [])
+        let record = PairedPhoneRecord(
+            id: "phone-a",
+            displayName: "Phone A",
+            lastAddress: "192.0.2.44:5555",
+            usbSerial: "RFCT10ZLTAJ",
+            wifiAddress: "192.0.2.44:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 200)
+        )
+        let model = AppModel(
+            startBackgroundServices: false,
+            pairedPhones: [record],
+            store: store
+        )
+
+        model.touchPairedPhone(
+            id: record.id,
+            displayName: record.displayName,
+            address: "RFCT10ZLTAJ",
+            usbSerial: "RFCT10ZLTAJ",
+            wifiAddress: "RFCT10ZLTAJ"
+        )
+
+        XCTAssertEqual(model.pairedPhones.first?.resolvedWiFiAddress, "192.0.2.44:5555")
+        XCTAssertEqual(model.pairedPhones.first?.lastAddress, "192.0.2.44:5555")
     }
 
     func testPromoteToLegacyTCPIPSwitchesWirelessDeviceToPort5555() async throws {
@@ -2725,7 +2814,8 @@ final class ADBDeviceParsingTests: XCTestCase {
         // Every connect — saved port and the :5555 fallback — fails with "No
         // route to host", the macOS Local Network denial signature. The result
         // must report it so the saved-route reconnect prompts for permission
-        // instead of silently treating the phone as offline.
+        // instead of silently treating the phone as offline. Legacy (manual)
+        // callers dial every candidate even when nothing answered the probe.
         let fake = try installFakeADB(script: """
         #!/bin/sh
         echo "$@" >> "$ADB_FAKE_LOG"
@@ -2765,6 +2855,9 @@ final class ADBDeviceParsingTests: XCTestCase {
         exit 0
         """)
         defer { fake.cleanup() }
+        let originalProbe = AppModel.adbTCPPortProbe
+        AppModel.adbTCPPortProbe = { address in address == "192.0.2.44:42111" }
+        defer { AppModel.adbTCPPortProbe = originalProbe }
 
         let result = await AppModel.connectToRememberedWirelessReadiness(
             adb: ADBController(),
@@ -2773,6 +2866,80 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         XCTAssertEqual(result.connectedAddress, "192.0.2.44:42111")
         XCTAssertFalse(result.sawNoRouteToHost)
+    }
+
+    func testReachableTLSAndLegacyRoutesConnectLegacyFirstWithoutDuplicateTransport() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          echo "connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+        let originalProbe = AppModel.adbTCPPortProbe
+        AppModel.adbTCPPortProbe = { _ in true }
+        defer { AppModel.adbTCPPortProbe = originalProbe }
+
+        let candidates = AppModel.canonicalReconnectCandidateAddresses(
+            savedAddress: "192.0.2.44:42111",
+            liveAddress: nil
+        )
+        let result = await AppModel.connectToRememberedWirelessReadiness(
+            adb: ADBController(),
+            savedAddress: "192.0.2.44:42111",
+            candidateAddresses: candidates,
+            restrictDialsToReachableOrStable: true
+        )
+
+        XCTAssertEqual(result.connectedAddress, "192.0.2.44:5555")
+        let connects = loggedCalls(fake.log).filter { $0.hasPrefix("connect ") }
+        XCTAssertEqual(connects, ["connect 192.0.2.44:5555"])
+    }
+
+    func testSleepingStablePhoneStillGetsOneRealConnectWhenProbesFail() async throws {
+        // A phone in Wi-Fi power-save can drop the short TCP probe's SYNs while
+        // a full adb connect still gets through. Coordinator-owned dialing must
+        // give the preferred stable endpoint one real attempt — and must not
+        // dial the dead TLS candidate.
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "connect" ]; then
+          echo "connected to $2"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+        let originalProbe = AppModel.adbTCPPortProbe
+        AppModel.adbTCPPortProbe = { _ in false }
+        defer { AppModel.adbTCPPortProbe = originalProbe }
+
+        let candidates = AppModel.canonicalReconnectCandidateAddresses(
+            savedAddress: "192.0.2.44:42111",
+            liveAddress: nil
+        )
+        let result = await AppModel.connectToRememberedWirelessReadiness(
+            adb: ADBController(),
+            savedAddress: "192.0.2.44:42111",
+            candidateAddresses: candidates,
+            restrictDialsToReachableOrStable: true
+        )
+
+        XCTAssertEqual(result.connectedAddress, "192.0.2.44:5555")
+        let connects = loggedCalls(fake.log).filter { $0.hasPrefix("connect ") }
+        XCTAssertEqual(connects, ["connect 192.0.2.44:5555"])
     }
 
     func testWirelessReadinessRestartsADBWhenTCPIsReachableButConnectReportsNoRoute() async throws {

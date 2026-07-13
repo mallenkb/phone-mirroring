@@ -17,9 +17,16 @@ of these on purpose, update this file in the same commit.
 2. **Reconnect prefers legacy `tcpip 5555` over Android-11 TLS wireless
    debugging.** The `:5555` listener survives without the phone's
    Wireless-debugging toggle; the TLS random port dies when the toggle goes
-   off. Candidate ordering (saved address first, then `host:5555`) is
-   deliberate — do not reorder to TLS-first. `tcpip` mode does NOT survive a
-   phone reboot; the TLS route is the fallback for exactly that case.
+   off. Coordinator-owned reconnects build candidates canonically — stable
+   `:5555` endpoints first, then other saved routes, then freshly advertised
+   TLS — and gate dials on the TCP probe (dead TLS routes are skipped; the
+   preferred stable endpoint always gets one real connect). Manual retry,
+   handoff, and address-recovery paths still use the legacy saved-address-first
+   resolver and dial every candidate; unifying them is Stage 2 work, so within
+   Stage 1 the two resolvers coexist deliberately. In both, reachability may
+   move live endpoints ahead of dead ones but never changes preference within
+   the live group — do not reorder to TLS-first. `tcpip` mode does NOT survive
+   a phone reboot; the TLS route is the fallback for exactly that case.
 
 3. **`adb tcpip` restarts the phone's adbd and drops the live USB mirror.**
    Every handoff path probes port 5555 first and only runs `tcpip` when the
@@ -32,8 +39,10 @@ of these on purpose, update this file in the same commit.
    running; auto-re-mirror stays paused until a transport *re-appears* (cable
    replugged, phone Wi-Fi toggled off/on) — and reconnects on **that same
    channel**. A disconnect must never fall over to the other transport, and
-   per-transport suppression was tried and reverted (f8d3c86). System-event
-   nudges (wake, network path) do not end the pause.
+   per-transport suppression was tried and reverted (f8d3c86). The coordinator's
+   `manuallyDisconnected` state is the hard gate: timer, discovery, wake, and
+   network-path events cannot end it. Only an explicit user reconnect or a
+   verified reappearance on the same channel may resume.
 
 5. **The USB→Wi-Fi handoff pipeline has a total time budget**
    (`wirelessHandoffMaxDuration`, 10s) sized to absorb slow route/MAC reads
@@ -49,7 +58,14 @@ of these on purpose, update this file in the same commit.
 7. **Never poll faster — react to events.** Discovery latency work is done
    with kernel/system push (persistent `NWBrowser` Bonjour monitors, IOKit
    USB-attach wake, NWPathMonitor, wake notifications), never by tightening
-   poll intervals. The polls that remain are safety nets.
+   poll intervals. The polls that remain are safety nets. Candidate TCP probes
+   may run concurrently because they do not mutate ADB transport state; all
+   `adb connect` calls for a phone remain serial and coordinator-owned.
+
+   The single-flight reconnect rollout is intentionally two-stage. Stage 1
+   routes every trigger through the coordinator while legacy cooldown clocks
+   remain. Stage 2 removes those redundant clocks only after Stage 1 is verified,
+   so live regressions remain bisectable.
 
 ## adb daemon & macOS identity (TCC)
 
@@ -130,8 +146,11 @@ of these on purpose, update this file in the same commit.
 20. **Test-suite gotchas:** `swift test | tail` masks the exit code; some
     tests read `AppModel.swift` as *text* (moving code breaks them — update
     paths); suites that create UserDefaults domains must clean up
-    (`TestDomainHygiene` sweeps crash leftovers); never run the suite while
-    a live mirror matters (see rule 1).
+   (`TestDomainHygiene` sweeps crash leftovers); never run the suite while
+   a live mirror matters (see rule 1). `testManualWirelessPairing` is
+   environment-flaky at clean HEAD, and the full-suite `MirrorScrollSpeedTests`
+   SIGSEGV is a parallel-run artifact; neither alone attributes a reconnect
+   coordinator regression.
 
 21. **`dist/`, `scrcpy-source/`, `PhoneRelay.app/` stay untracked.** The git
     pack already carries ~430 MB of historical binaries; don't add more.

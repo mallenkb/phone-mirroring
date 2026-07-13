@@ -46,6 +46,74 @@ extension AppModel {
         return candidates
     }
 
+    /// Canonical reconnect order for one phone. Stable legacy listeners are
+    /// always preferred to random TLS ports, including when mDNS advertises a
+    /// fresh TLS endpoint. Reachability may move live endpoints ahead of dead
+    /// ones later, but never changes preference within the live group.
+    nonisolated static func canonicalReconnectCandidateAddresses(
+        savedAddress: String,
+        liveAddress: String?
+    ) -> [String] {
+        var candidates: [String] = []
+
+        func append(_ address: String?) {
+            guard let address, !address.isEmpty, !candidates.contains(address) else { return }
+            candidates.append(address)
+        }
+
+        // Prefer :5555 on the remembered host, followed by :5555 on a newly
+        // discovered host after DHCP movement.
+        if let savedHost = host(in: savedAddress) {
+            append("\(savedHost):\(legacyADBWirelessPort)")
+        }
+        if let liveAddress, let liveHost = host(in: liveAddress) {
+            append("\(liveHost):\(legacyADBWirelessPort)")
+        }
+
+        if port(in: savedAddress) != legacyADBWirelessPort {
+            append(savedAddress)
+        }
+        if let liveAddress, port(in: liveAddress) != legacyADBWirelessPort {
+            append(liveAddress)
+        }
+
+        // Service-name targets may not expose a host that can be rewritten.
+        if candidates.isEmpty {
+            append(savedAddress)
+            append(liveAddress)
+        }
+        return candidates
+    }
+
+    /// Persistence choke point for wireless routes. A successful session may
+    /// be identified by a USB serial or service name, but only a concrete
+    /// host:port endpoint may replace the remembered Wi-Fi address.
+    nonisolated static func persistableWirelessAddress(_ address: String?) -> String? {
+        guard let address,
+              localNetworkEndpointParts(from: address) != nil else { return nil }
+        return address
+    }
+
+    /// Chooses what, if anything, may replace the stored Wi-Fi route after a
+    /// verified session. A promoted/stable listener wins; a temporary TLS port
+    /// is stored only when there is no existing stable fallback.
+    nonisolated static func automaticWirelessAddressToPersist(
+        sessionAddress: String,
+        existingWirelessAddress: String?
+    ) -> String? {
+        let session = persistableWirelessAddress(sessionAddress)
+        let existingStable = persistableWirelessAddress(existingWirelessAddress).flatMap {
+            port(in: $0) == legacyADBWirelessPort ? $0 : nil
+        }
+        if let session, port(in: session) == legacyADBWirelessPort {
+            return session
+        }
+        if existingStable != nil {
+            return nil
+        }
+        return session
+    }
+
     /// Stable partition of reconnect candidates: hosts whose port answered a
     /// probe first, everything else after, preserving the preference order
     /// within each group. Returns the input unchanged when the probe result
@@ -88,6 +156,7 @@ extension AppModel {
         adb: ADBController,
         savedAddress: String,
         candidateAddresses: [String]? = nil,
+        restrictDialsToReachableOrStable: Bool = false,
         readinessAttempts: Int = 1,
         delayNanoseconds: UInt64 = 700_000_000,
         preflightLocalNetworkAccess: ((String) async -> Void)? = nil,
@@ -121,7 +190,30 @@ extension AppModel {
                     reachable.insert(candidate)
                 }
             }
-            candidates = orderedByReachability(candidates, reachable: reachable)
+            if restrictDialsToReachableOrStable {
+                // Coordinator-owned reconnects: a plain :5555 phone may reject
+                // a short probe while waking, so after all demonstrably-live
+                // routes give only the preferred stable endpoint one real adb
+                // connect attempt; do not dial every dead TLS address and
+                // create stale duplicate transports.
+                let reachableCandidates = candidates.filter(reachable.contains)
+                let preferredStable = candidates.first {
+                    port(in: $0) == legacyADBWirelessPort
+                }
+                var dialCandidates = reachableCandidates
+                if let preferredStable, !dialCandidates.contains(preferredStable) {
+                    dialCandidates.append(preferredStable)
+                }
+                if dialCandidates.isEmpty, let first = candidates.first {
+                    dialCandidates.append(first)
+                }
+                candidates = dialCandidates
+            } else {
+                // Manual retry / handoff / recovery callers keep dialing every
+                // candidate: a user-initiated attempt would rather spend a
+                // connect timeout than skip a live route whose probe flaked.
+                candidates = orderedByReachability(candidates, reachable: reachable)
+            }
         }
         for candidate in candidates {
             let readiness = await waitForADBWirelessTargetReadiness(
