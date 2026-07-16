@@ -125,6 +125,13 @@ final class AppMenuStateTests: XCTestCase {
         )
 
         XCTAssertTrue(body.contains("!model.isPerformingMirrorHandoffOrRecovery"))
+        XCTAssertTrue(body.contains("scheduleWindowlessRecoveryTermination()"))
+        XCTAssertTrue(body.contains("Date().addingTimeInterval(30)"))
+        XCTAssertTrue(body.contains("NSApp.terminate(nil)"))
+        XCTAssertTrue(source.contains("public func applicationShouldTerminate(_ sender: NSApplication)"))
+        XCTAssertTrue(source.contains("return .terminateNow"))
+        let modelSource = try SourceTestSupport.appModelImplementation()
+        XCTAssertTrue(modelSource.contains("isMirroring\n            || mirrorSession != nil\n            || connectionCoordinator.usbWiFiHandoffTask != nil"))
     }
 
     func testTerminationClosesAllAppWindowsAfterModelShutdown() throws {

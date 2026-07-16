@@ -66,6 +66,32 @@ final class ConnectionCoordinator {
         var displayName: String
     }
 
+    /// A user's transport choice applies only to the connection currently being
+    /// launched. It is deliberately separate from `wirelessPinnedUSBSerials`,
+    /// which is internal anti-ping-pong state while an established Wi-Fi route
+    /// is active or being recovered.
+    enum TransportIntent: Equatable {
+        case automatic
+        case manualUSB(serial: String)
+        case manualWiFi
+
+        var requiresWiFi: Bool {
+            if case .manualWiFi = self { return true }
+            return false
+        }
+
+        func permitsPreparedWiFiTakeover(for usbSerial: String) -> Bool {
+            switch self {
+            case .automatic:
+                return true
+            case .manualUSB(let selectedSerial):
+                return selectedSerial != usbSerial
+            case .manualWiFi:
+                return false
+            }
+        }
+    }
+
     // Runtime state for reconnect, handoff, and transport-selection policy.
     // AppModel exposes observable outcomes; this object owns the mutable
     // bookkeeping that makes those outcomes deterministic.
@@ -82,8 +108,7 @@ final class ConnectionCoordinator {
     var previousAuthorizedSerials: Set<String> = []
     var lastUSBHandoffSerial: String?
     var wirelessPinnedUSBSerials: Set<String> = []
-    var manualUSBPinnedSerials: Set<String> = []
-    var manualWirelessConnectDisallowsUSBFallback = false
+    var transportIntent: TransportIntent = .automatic
     var lastUSBWiFiAddressPrefillSerial: String?
     var lastUSBWiFiAddressPrefillAt: Date?
     var launchReconnectDeadline: Date?
@@ -92,6 +117,8 @@ final class ConnectionCoordinator {
     var sessionAutoConnectSuspendedRecordIDs = Set<PairedPhoneRecord.ID>()
     var usbWiFiHandoffCandidate: USBWiFiHandoffCandidate?
     var failedLegacyHandoffSerials: Set<String> = []
+    private(set) var usbWiFiHandoffGeneration = 0
+    private(set) var discoveredWiFiConnectGeneration = 0
 
     // Event sources and watcher suspension belong to the same lifecycle as the
     // connection tasks. Keeping them here prevents AppModel teardown from
@@ -111,6 +138,7 @@ final class ConnectionCoordinator {
     var usbWiFiAddressPrefillTask: Task<Void, Never>?
     var usbWiFiHandoffTask: Task<Void, Never>?
     var usbWiFiTakeoverTask: Task<Void, Never>?
+    var discoveredWiFiConnectTask: Task<Void, Never>?
     var wirelessStartTask: Task<Void, Never>?
     var reconnectTask: Task<Void, Never>?
     var disconnectRecoveryTask: Task<Void, Never>?
@@ -131,6 +159,7 @@ final class ConnectionCoordinator {
         usbWiFiAddressPrefillTask?.cancel()
         usbWiFiHandoffTask?.cancel()
         usbWiFiTakeoverTask?.cancel()
+        discoveredWiFiConnectTask?.cancel()
         wirelessStartTask?.cancel()
         reconnectTask?.cancel()
         disconnectRecoveryTask?.cancel()
@@ -147,6 +176,7 @@ final class ConnectionCoordinator {
         usbConnectTask != nil
             || usbWiFiHandoffTask != nil
             || usbWiFiTakeoverTask != nil
+            || discoveredWiFiConnectTask != nil
             || wirelessStartTask != nil
             || reconnectTask != nil
             || automaticReconnectTask != nil
@@ -154,6 +184,7 @@ final class ConnectionCoordinator {
 
     var hasWirelessWorkInFlight: Bool {
         wirelessStartTask != nil
+            || discoveredWiFiConnectTask != nil
             || reconnectTask != nil
             || usbWiFiHandoffTask != nil
             || usbWiFiTakeoverTask != nil
@@ -163,6 +194,7 @@ final class ConnectionCoordinator {
     var isPreparingWiFiHandoff: Bool {
         usbWiFiHandoffTask != nil
             || usbWiFiTakeoverTask != nil
+            || discoveredWiFiConnectTask != nil
             || wirelessStartTask != nil
             || reconnectTask != nil
     }
@@ -173,6 +205,7 @@ final class ConnectionCoordinator {
     /// phone can never race.
     var hasManualConnectionWorkInFlight: Bool {
         usbConnectTask != nil
+            || discoveredWiFiConnectTask != nil
             || usbWiFiHandoffTask != nil
             || usbWiFiTakeoverTask != nil
             || wirelessStartTask != nil
@@ -195,8 +228,9 @@ final class ConnectionCoordinator {
         cancel(&qrPairingTask)
         cancel(&usbConnectTask)
         cancel(&usbWiFiAddressPrefillTask)
-        cancel(&usbWiFiHandoffTask)
+        cancelUSBWiFiHandoff()
         cancel(&usbWiFiTakeoverTask)
+        cancelDiscoveredWiFiConnect()
         cancel(&wirelessStartTask)
         cancel(&reconnectTask)
         cancel(&disconnectRecoveryTask)
@@ -208,12 +242,54 @@ final class ConnectionCoordinator {
     /// device watching, QR pairing, USB connection, or handoff preparation.
     func cancelWirelessReconnectWork() {
         cancel(&reconnectTask)
+        cancelDiscoveredWiFiConnect()
         cancel(&wirelessStartTask)
         cancel(&disconnectRecoveryTask)
         cancel(&usbWiFiTakeoverTask)
         cancelAutomaticReconnect(clearRetryState: false)
         autoConnectTargetsInFlight.removeAll()
         launchReconnectDeadline = nil
+    }
+
+    /// Starts a new handoff ownership epoch. A cancelled task may still resume
+    /// after a non-cooperative adb call, so generation ownership—not the task
+    /// handle alone—decides whether it may mutate connection state.
+    func beginUSBWiFiHandoff() -> Int {
+        cancelUSBWiFiHandoff()
+        return usbWiFiHandoffGeneration
+    }
+
+    func isCurrentUSBWiFiHandoff(_ generation: Int) -> Bool {
+        usbWiFiHandoffGeneration == generation
+    }
+
+    func finishUSBWiFiHandoff(_ generation: Int) {
+        guard isCurrentUSBWiFiHandoff(generation) else { return }
+        usbWiFiHandoffTask = nil
+    }
+
+    func cancelUSBWiFiHandoff() {
+        usbWiFiHandoffGeneration &+= 1
+        cancel(&usbWiFiHandoffTask)
+    }
+
+    func beginDiscoveredWiFiConnect() -> Int {
+        cancelDiscoveredWiFiConnect()
+        return discoveredWiFiConnectGeneration
+    }
+
+    func isCurrentDiscoveredWiFiConnect(_ generation: Int) -> Bool {
+        discoveredWiFiConnectGeneration == generation
+    }
+
+    func finishDiscoveredWiFiConnect(_ generation: Int) {
+        guard isCurrentDiscoveredWiFiConnect(generation) else { return }
+        discoveredWiFiConnectTask = nil
+    }
+
+    func cancelDiscoveredWiFiConnect() {
+        discoveredWiFiConnectGeneration &+= 1
+        cancel(&discoveredWiFiConnectTask)
     }
 
     func reset() {
@@ -232,8 +308,7 @@ final class ConnectionCoordinator {
         previousAuthorizedSerials.removeAll()
         lastUSBHandoffSerial = nil
         wirelessPinnedUSBSerials.removeAll()
-        manualUSBPinnedSerials.removeAll()
-        manualWirelessConnectDisallowsUSBFallback = false
+        transportIntent = .automatic
         lastUSBWiFiAddressPrefillSerial = nil
         lastUSBWiFiAddressPrefillAt = nil
         launchReconnectDeadline = nil

@@ -129,6 +129,18 @@ wait_for_app_exit() {
   return 1
 }
 
+stop_debugger_parent_if_needed() {
+  local app_pid="$1"
+  local parent_pid parent_command
+  parent_pid="$(ps -o ppid= -p "$app_pid" 2>/dev/null | tr -d ' ' || true)"
+  [[ "$parent_pid" =~ ^[0-9]+$ ]] || return 0
+  parent_command="$(ps -o command= -p "$parent_pid" 2>/dev/null || true)"
+  if [[ "$parent_command" == *"/debugserver "* ]]; then
+    echo "Stopping Xcode debugserver (pid $parent_pid) that owns Phone Relay pid $app_pid."
+    kill -TERM "$parent_pid" 2>/dev/null || true
+  fi
+}
+
 # Kill old instances only for an intentional launch. A build-only automation
 # must not close the app the user already has open.
 if "$LAUNCH"; then
@@ -140,11 +152,13 @@ if "$LAUNCH"; then
     done
     if ! wait_for_app_exit; then
       for pid in $old_pids; do
+        stop_debugger_parent_if_needed "$pid"
         pkill -KILL -P "$pid" 2>/dev/null || true
         kill -KILL "$pid" 2>/dev/null || true
       done
       if ! wait_for_app_exit; then
-        echo "warning: an existing $PRODUCT_NAME instance is still running; the new copy will defer to it" >&2
+        echo "error: an existing $PRODUCT_NAME instance could not be stopped; refusing to build or launch a competing copy" >&2
+        exit 1
       fi
     fi
   fi
@@ -252,15 +266,19 @@ PLIST
 # Prefer a real Apple Development identity when one is in the keychain: TCC
 # grants (Local Network, Notifications) are keyed to the signing identity, and
 # ad-hoc signatures change every build, which silently revokes them.
+find_signing_identity_hash() {
+  local name_fragment="$1"
+  security find-identity -v -p codesigning 2>/dev/null \
+    | awk -v fragment="$name_fragment" 'index($0, fragment) { print $2; exit }' || true
+}
+
 if [[ -z "${SIGNING_IDENTITY:-}" ]]; then
-  # Prefer the Nokofio Platforms Ltd development cert; fall back to any
-  # Apple Development identity, then ad-hoc.
-  SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
-    | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' \
-    | grep "Marlon Alenya" | head -1)
+  # Use the certificate hash, not its display name. Xcode can keep multiple
+  # valid development certificates with the same name, which makes codesign's
+  # name lookup ambiguous.
+  SIGNING_IDENTITY="$(find_signing_identity_hash "Apple Development: Marlon Alenya")"
   if [[ -z "$SIGNING_IDENTITY" ]]; then
-    SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
-      | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)
+    SIGNING_IDENTITY="$(find_signing_identity_hash "Apple Development:")"
   fi
   SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
 fi
@@ -280,6 +298,9 @@ ensure_framework_rpath() {
   fi
 }
 
+# SwiftPM signs build products ad-hoc. Remove that disposable signature before
+# install_name_tool changes the load commands, then sign the final bundle once.
+codesign --remove-signature "$EXECUTABLE_PATH" 2>/dev/null || true
 ensure_framework_rpath "$EXECUTABLE_PATH"
 
 if command -v codesign >/dev/null 2>&1; then

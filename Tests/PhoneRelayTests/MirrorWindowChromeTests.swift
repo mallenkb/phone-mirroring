@@ -493,6 +493,8 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertFalse(viewSource.contains("model.shouldShowConnectionLoadingSurface && inlineConnectingTransport == nil"))
         XCTAssertTrue(viewSource.contains("isAvailable: effectiveUSBConnectionAvailable"))
         XCTAssertTrue(viewSource.contains("isAvailable: effectiveWiFiConnectionAvailable"))
+        XCTAssertTrue(viewSource.contains("model.isMatchingLiveWirelessConnectionAvailable"))
+        XCTAssertTrue(viewSource.contains("if effectiveWiFiConnectionAvailable"))
         XCTAssertTrue(viewSource.contains("network.localizedCaseInsensitiveContains(\"wireless\")"))
         XCTAssertTrue(viewSource.contains("Self.connectionOnlineGreen : .white"))
         XCTAssertTrue(viewSource.contains("model.connectViaAvailableWireless()"))
@@ -506,6 +508,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(modelSource.contains("var isWirelessConnectionAvailable"))
         XCTAssertTrue(modelSource.contains("var hasSavedWirelessConnection"))
         XCTAssertTrue(modelSource.contains("var hasVisibleSavedWirelessConnection"))
+        XCTAssertTrue(modelSource.contains("keepConnectionChooserVisibleForNextMirrorLaunch = true"))
         XCTAssertTrue(modelSource.contains("inlineUntilConnected: Bool = false"))
     }
 
@@ -600,7 +603,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(source.contains("model.connectViaAvailableWireless()"))
     }
 
-    func testBottomStatusPillHidesCombinedTransportLabel() throws {
+    func testBottomStatusPillShowsCombinedTransportAvailabilityInline() throws {
         let testURL = URL(fileURLWithPath: #filePath)
         let packageRoot = testURL
             .deletingLastPathComponent()
@@ -614,8 +617,8 @@ final class MirrorWindowChromeTests: XCTestCase {
         let manualADBStart = try XCTUnwrap(source.range(of: "private func manualADBTargetRow"))
         let pillBody = String(source[pillStart.lowerBound..<manualADBStart.lowerBound])
 
-        XCTAssertTrue(pillBody.contains("visibleTransportLabel = transportLabel == \"USB + Wi-Fi\" ? nil : transportLabel"))
-        XCTAssertTrue(pillBody.contains("visibleTransportLabel == nil ? model.connectionPillText : \"Online via\""))
+        XCTAssertTrue(pillBody.contains("let visibleTransportLabel = transportLabel"))
+        XCTAssertTrue(pillBody.contains("model.isAutoReconnectSuppressedForManualDisconnect ? \"Available via\" : \"Online via\""))
     }
 
     func testConnectionChromeRevealOrdersParentWindowWithToolbar() throws {

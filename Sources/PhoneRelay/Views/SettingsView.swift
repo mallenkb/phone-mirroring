@@ -139,13 +139,6 @@ struct SettingsView: View {
                     title: "Turn the phone screen off after 30 seconds",
                     subtitle: "If the mirror is idle, the phone's own display goes dark automatically while mirroring keeps working here. Press ⌘L to do it now."
                 )
-                rowDivider
-                toggleRow(
-                    icon: "wifi",
-                    isOn: $model.backgroundWiFiHandoffEnabled,
-                    title: "Advanced USB-to-Wi-Fi handoff",
-                    subtitle: "Prepare Wi-Fi automatically after USB mirroring so you can unplug the cable. Turn this off to stay on USB."
-                )
             }
 
             SettingsGroup(
@@ -1144,7 +1137,8 @@ struct SettingsView: View {
             return true
         }
 
-        return liveRoutes(for: record).hasWiFi
+        let routes = liveRoutes(for: record)
+        return routes.hasWiFi || routes.hasUSB
     }
 
     private func liveRoutes(for record: PairedPhoneRecord) -> AppModel.LiveConnectionRoutes {
@@ -1591,7 +1585,7 @@ private struct PairedPhoneRow: View {
 
     private var statusColor: Color {
         if isActive { return .green }
-        if isOnline { return .accentColor }
+        if isOnline { return .green }
         return .secondary
     }
 

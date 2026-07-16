@@ -128,6 +128,9 @@ final class SingleInstanceGuardTests: XCTestCase {
         XCTAssertTrue(source.contains("RUN_LOCK_DIR="))
         XCTAssertTrue(source.contains("mkdir \"$RUN_LOCK_DIR\""))
         XCTAssertTrue(source.contains("trap release_run_lock EXIT"))
+        XCTAssertTrue(source.contains("stop_debugger_parent_if_needed"))
+        XCTAssertTrue(source.contains("refusing to build or launch a competing copy"))
+        XCTAssertTrue(source.contains("find_signing_identity_hash"))
         XCTAssertFalse(source.contains("/usr/bin/open -n"))
         XCTAssertTrue(source.contains("/usr/bin/open -g \"$APP_BUNDLE\" --args --launched-in-background"))
     }

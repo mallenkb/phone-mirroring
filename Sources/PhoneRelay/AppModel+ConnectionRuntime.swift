@@ -9,6 +9,7 @@ import Network
 @MainActor
 extension AppModel {
     typealias USBWiFiHandoffCandidate = ConnectionCoordinator.USBWiFiHandoffCandidate
+    typealias TransportIntent = ConnectionCoordinator.TransportIntent
 
     var isAutoReconnectSuppressedForManualDisconnect: Bool {
         get { connectionCoordinator.isAutoReconnectSuppressedForManualDisconnect }
@@ -75,14 +76,9 @@ extension AppModel {
         set { connectionCoordinator.wirelessPinnedUSBSerials = newValue }
     }
 
-    var manualUSBPinnedSerials: Set<String> {
-        get { connectionCoordinator.manualUSBPinnedSerials }
-        set { connectionCoordinator.manualUSBPinnedSerials = newValue }
-    }
-
-    var manualWirelessConnectDisallowsUSBFallback: Bool {
-        get { connectionCoordinator.manualWirelessConnectDisallowsUSBFallback }
-        set { connectionCoordinator.manualWirelessConnectDisallowsUSBFallback = newValue }
+    var transportIntent: TransportIntent {
+        get { connectionCoordinator.transportIntent }
+        set { connectionCoordinator.transportIntent = newValue }
     }
 
     var lastUSBWiFiAddressPrefillSerial: String? {

@@ -12,15 +12,18 @@ SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-BRG3UL9d/8qtx7RJdobbGi1q87hpbEfl
 # Prefer a real Apple Development identity when one is in the keychain: TCC
 # grants (Local Network, Notifications) are keyed to the signing identity, and
 # ad-hoc signatures change every build, which silently revokes them.
+find_signing_identity_hash() {
+  local name_fragment="$1"
+  security find-identity -v -p codesigning 2>/dev/null \
+    | awk -v fragment="$name_fragment" 'index($0, fragment) { print $2; exit }' || true
+}
+
 if [ -z "${SIGNING_IDENTITY:-}" ]; then
-  # Prefer the Nokofio Platforms Ltd development cert; fall back to any
-  # Apple Development identity, then ad-hoc.
-  SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
-    | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' \
-    | grep "Marlon Alenya" | head -1 || true)
+  # Use the certificate hash because Xcode may retain multiple valid
+  # development certificates with the same display name.
+  SIGNING_IDENTITY="$(find_signing_identity_hash "Apple Development: Marlon Alenya")"
   if [ -z "$SIGNING_IDENTITY" ]; then
-    SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
-      | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1 || true)
+    SIGNING_IDENTITY="$(find_signing_identity_hash "Apple Development:")"
   fi
   SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
 fi
@@ -159,6 +162,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+codesign --remove-signature "$BIN_DIR/$PRODUCT_NAME" 2>/dev/null || true
 ensure_framework_rpath "$BIN_DIR/$PRODUCT_NAME"
 
 if command -v codesign >/dev/null 2>&1; then

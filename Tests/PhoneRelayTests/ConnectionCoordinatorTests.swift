@@ -5,17 +5,18 @@ import XCTest
 final class ConnectionCoordinatorTests: XCTestCase {
     func testCancelAllCancelsAndClearsEveryOwnedTask() {
         let coordinator = ConnectionCoordinator()
-        let tasks = (0..<10).map { _ in Task<Void, Never> { await Task.yield() } }
+        let tasks = (0..<11).map { _ in Task<Void, Never> { await Task.yield() } }
         coordinator.deviceWatcherTask = tasks[0]
         coordinator.qrPairingTask = tasks[1]
         coordinator.usbConnectTask = tasks[2]
         coordinator.usbWiFiAddressPrefillTask = tasks[3]
         coordinator.usbWiFiHandoffTask = tasks[4]
         coordinator.usbWiFiTakeoverTask = tasks[5]
-        coordinator.wirelessStartTask = tasks[6]
-        coordinator.reconnectTask = tasks[7]
-        coordinator.disconnectRecoveryTask = tasks[8]
-        coordinator.automaticReconnectTask = tasks[9]
+        coordinator.discoveredWiFiConnectTask = tasks[6]
+        coordinator.wirelessStartTask = tasks[7]
+        coordinator.reconnectTask = tasks[8]
+        coordinator.disconnectRecoveryTask = tasks[9]
+        coordinator.automaticReconnectTask = tasks[10]
 
         coordinator.cancelAll()
 
@@ -26,6 +27,7 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.usbWiFiAddressPrefillTask)
         XCTAssertNil(coordinator.usbWiFiHandoffTask)
         XCTAssertNil(coordinator.usbWiFiTakeoverTask)
+        XCTAssertNil(coordinator.discoveredWiFiConnectTask)
         XCTAssertNil(coordinator.wirelessStartTask)
         XCTAssertNil(coordinator.reconnectTask)
         XCTAssertNil(coordinator.disconnectRecoveryTask)
@@ -44,6 +46,7 @@ final class ConnectionCoordinatorTests: XCTestCase {
         let wirelessStart = Task<Void, Never> { await Task.yield() }
         let recovery = Task<Void, Never> { await Task.yield() }
         let takeover = Task<Void, Never> { await Task.yield() }
+        let discoveredWiFi = Task<Void, Never> { await Task.yield() }
         coordinator.deviceWatcherTask = watcher
         coordinator.qrPairingTask = pairing
         coordinator.usbConnectTask = usbConnect
@@ -52,6 +55,7 @@ final class ConnectionCoordinatorTests: XCTestCase {
         coordinator.wirelessStartTask = wirelessStart
         coordinator.disconnectRecoveryTask = recovery
         coordinator.usbWiFiTakeoverTask = takeover
+        coordinator.discoveredWiFiConnectTask = discoveredWiFi
 
         coordinator.cancelWirelessReconnectWork()
 
@@ -63,6 +67,7 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertTrue(wirelessStart.isCancelled)
         XCTAssertTrue(recovery.isCancelled)
         XCTAssertTrue(takeover.isCancelled)
+        XCTAssertTrue(discoveredWiFi.isCancelled)
         XCTAssertNotNil(coordinator.deviceWatcherTask)
         XCTAssertNotNil(coordinator.qrPairingTask)
         XCTAssertNotNil(coordinator.usbConnectTask)
@@ -71,6 +76,7 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.wirelessStartTask)
         XCTAssertNil(coordinator.disconnectRecoveryTask)
         XCTAssertNil(coordinator.usbWiFiTakeoverTask)
+        XCTAssertNil(coordinator.discoveredWiFiConnectTask)
         XCTAssertTrue(coordinator.isPreparingWiFiHandoff)
 
         watcher.cancel()
@@ -96,6 +102,39 @@ final class ConnectionCoordinatorTests: XCTestCase {
         coordinator.cancelAll()
     }
 
+    func testHandoffGenerationPreventsStaleTaskFromClearingReplacement() {
+        let coordinator = ConnectionCoordinator()
+        let firstGeneration = coordinator.beginUSBWiFiHandoff()
+        coordinator.usbWiFiHandoffTask = Task { await Task.yield() }
+        let secondGeneration = coordinator.beginUSBWiFiHandoff()
+        coordinator.usbWiFiHandoffTask = Task { await Task.yield() }
+
+        XCTAssertNotEqual(firstGeneration, secondGeneration)
+        coordinator.finishUSBWiFiHandoff(firstGeneration)
+        XCTAssertNotNil(coordinator.usbWiFiHandoffTask)
+        coordinator.finishUSBWiFiHandoff(secondGeneration)
+        XCTAssertNil(coordinator.usbWiFiHandoffTask)
+    }
+
+    func testExplicitUSBBlocksPreparedTakeoverOnlyForChosenSerial() {
+        XCTAssertTrue(
+            ConnectionCoordinator.TransportIntent.automatic
+                .permitsPreparedWiFiTakeover(for: "USB-A")
+        )
+        XCTAssertFalse(
+            ConnectionCoordinator.TransportIntent.manualUSB(serial: "USB-A")
+                .permitsPreparedWiFiTakeover(for: "USB-A")
+        )
+        XCTAssertTrue(
+            ConnectionCoordinator.TransportIntent.manualUSB(serial: "USB-A")
+                .permitsPreparedWiFiTakeover(for: "USB-B")
+        )
+        XCTAssertFalse(
+            ConnectionCoordinator.TransportIntent.manualWiFi
+                .permitsPreparedWiFiTakeover(for: "USB-A")
+        )
+    }
+
     func testResetClearsConnectionRuntimeState() {
         let coordinator = ConnectionCoordinator()
         coordinator.isAutoReconnectSuppressedForManualDisconnect = true
@@ -103,7 +142,7 @@ final class ConnectionCoordinatorTests: XCTestCase {
         coordinator.failedAutoConnectTargets = ["192.0.2.1:5555": Date()]
         coordinator.autoConnectTargetsInFlight = ["192.0.2.1:5555"]
         coordinator.wirelessPinnedUSBSerials = ["USB-1"]
-        coordinator.manualUSBPinnedSerials = ["USB-1"]
+        coordinator.transportIntent = .manualUSB(serial: "USB-1")
         coordinator.launchReconnectDeadline = Date()
         coordinator.failedLegacyHandoffSerials = ["USB-1"]
 
@@ -114,7 +153,7 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.failedAutoConnectTargets.isEmpty)
         XCTAssertTrue(coordinator.autoConnectTargetsInFlight.isEmpty)
         XCTAssertTrue(coordinator.wirelessPinnedUSBSerials.isEmpty)
-        XCTAssertTrue(coordinator.manualUSBPinnedSerials.isEmpty)
+        XCTAssertEqual(coordinator.transportIntent, .automatic)
         XCTAssertNil(coordinator.launchReconnectDeadline)
         XCTAssertTrue(coordinator.failedLegacyHandoffSerials.isEmpty)
         XCTAssertEqual(coordinator.automaticReconnectState, .idle)

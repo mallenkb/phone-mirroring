@@ -336,7 +336,7 @@ final class ADBDeviceParsingTests: XCTestCase {
             isUSB: true
         )
 
-        XCTAssertFalse(AppModel.shouldAttemptWirelessHandoff(from: usbDevice, preferUSBMirroring: true))
+        XCTAssertTrue(AppModel.shouldAttemptWirelessHandoff(from: usbDevice, preferUSBMirroring: true))
         XCTAssertTrue(
             AppModel.shouldAttemptWirelessHandoff(
                 from: usbDevice,
@@ -355,7 +355,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
     }
 
-    func testPassiveUSBWiFiHandoffRespectsAdvancedToggle() {
+    func testPassiveUSBWiFiHandoffIsAlwaysEnabled() {
         let usbDevice = AuthorizedADBDevice(
             serial: "TESTDEVICE001",
             product: "raven",
@@ -370,7 +370,7 @@ final class ADBDeviceParsingTests: XCTestCase {
                 backgroundWiFiHandoffEnabled: true
             )
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             AppModel.shouldAttemptWirelessHandoff(
                 from: usbDevice,
                 preferUSBMirroring: false,
@@ -379,7 +379,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
     }
 
-    func testManualUSBConnectPinsUSBWithoutChangingAutoPreference() throws {
+    func testManualUSBConnectChoosesUSBWithoutCancellingHandoff() throws {
         let source = try SourceTestSupport.appModelImplementation()
         guard let functionRange = source.range(of: "func connectViaUSB()"),
               let nextFunctionRange = source.range(
@@ -392,9 +392,9 @@ final class ADBDeviceParsingTests: XCTestCase {
         }
 
         let body = String(source[functionRange.lowerBound..<nextFunctionRange.lowerBound])
-        XCTAssertTrue(body.contains("pinManualUSBTransport(serial: readyUSBDevice.serial)"))
-        XCTAssertTrue(body.contains("prepareWirelessHandoff: false"))
-        XCTAssertTrue(body.contains("pinManualUSBTransport(serial: liveUSBDevice.serial)"))
+        XCTAssertTrue(body.contains("beginManualUSBConnection(serial: readyUSBDevice.serial)"))
+        XCTAssertTrue(body.contains("prepareWirelessHandoff: true"))
+        XCTAssertTrue(body.contains("beginManualUSBConnection(serial: liveUSBDevice.serial)"))
         XCTAssertFalse(body.contains("shouldAttemptWirelessHandoff("))
         XCTAssertFalse(body.contains("preferUSBMirroring"))
     }
@@ -550,23 +550,20 @@ final class ADBDeviceParsingTests: XCTestCase {
         let body = String(source[start.lowerBound..<end.lowerBound])
 
         let liveWiFi = try XCTUnwrap(body.range(of: "Self.liveWirelessAuthorizedDevice("))
-        let liveUSB = try XCTUnwrap(body.range(of: "liveUSBDevice(for: record) != nil"))
         let discoveredWiFi = try XCTUnwrap(body.range(of: "Self.rememberedConnectablePhone(for: record, in: discoveredPhones)"))
-        let savedWiFi = try XCTUnwrap(body.range(of: "reconnectOverWiFi(preferredRecord: record, restrictToPreferredRecord: true)"))
-        let savedUSB = try XCTUnwrap(body.range(of: "startMirroring(manual: true)", range: savedWiFi.upperBound..<body.endIndex))
+        let savedWiFi = try XCTUnwrap(body.range(of: "reconnectOverWiFi("))
+        let liveUSB = try XCTUnwrap(body.range(of: "connectViaSavedUSB(record: record, explicit: false)"))
 
-        XCTAssertLessThan(liveWiFi.lowerBound, liveUSB.lowerBound)
-        XCTAssertLessThan(liveUSB.lowerBound, discoveredWiFi.lowerBound)
+        XCTAssertLessThan(liveWiFi.lowerBound, discoveredWiFi.lowerBound)
         XCTAssertLessThan(discoveredWiFi.lowerBound, savedWiFi.lowerBound)
-        XCTAssertLessThan(savedWiFi.lowerBound, savedUSB.lowerBound)
+        XCTAssertLessThan(savedWiFi.lowerBound, liveUSB.lowerBound)
     }
 
-    func testSettingsViewExposesBackgroundWiFiHandoffToggle() throws {
+    func testSettingsViewDoesNotExposeHandoffAsAnOptionalToggle() throws {
         let source = try String(contentsOfFile: "Sources/PhoneRelay/Views/SettingsView.swift", encoding: .utf8)
 
-        XCTAssertTrue(source.contains("$model.backgroundWiFiHandoffEnabled"))
-        XCTAssertTrue(source.contains("Advanced USB-to-Wi-Fi handoff"))
-        XCTAssertTrue(source.contains("Leave this off unless you want USB mirroring to prepare a separate legacy ADB Wi-Fi route."))
+        XCTAssertFalse(source.contains("$model.backgroundWiFiHandoffEnabled"))
+        XCTAssertFalse(source.contains("Advanced USB-to-Wi-Fi handoff"))
     }
 
     func testConnectionHealthShowsWiFiHandoffStatus() {
@@ -595,7 +592,7 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         XCTAssertEqual(preparing.wifiHandoff.value, "Preparing")
 
-        let disabled = AppModel.connectionHealthSnapshot(
+        let legacyDisabledPreference = AppModel.connectionHealthSnapshot(
             selectedSerial: usbDevice.serial,
             selectedNetwork: "USB debugging",
             isSelectedDeviceOnline: true,
@@ -611,7 +608,7 @@ final class ADBDeviceParsingTests: XCTestCase {
             isPreparingWiFiHandoff: false
         )
 
-        XCTAssertEqual(disabled.wifiHandoff.value, "Off")
+        XCTAssertEqual(legacyDisabledPreference.wifiHandoff.value, "Unavailable")
     }
 
     func testManualADBTargetNormalizationAcceptsIPOnlyAndAddsLegacyPort() {
@@ -2035,6 +2032,10 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertTrue(AppModel.adbTCPIPSucceeded("restarting in TCP mode port: 5555"))
         XCTAssertTrue(AppModel.adbTCPIPSucceeded("already in TCP mode"))
         XCTAssertFalse(AppModel.adbTCPIPSucceeded("error: device unauthorized"))
+        XCTAssertEqual(AppModel.adbTCPIPCommandResult("error: closed"), .ambiguousRestart)
+        XCTAssertEqual(AppModel.adbTCPIPCommandResult("command timed out"), .ambiguousRestart)
+        XCTAssertEqual(AppModel.adbTCPIPCommandResult("error: device unauthorized"), .failed)
+        XCTAssertEqual(AppModel.adbTCPIPCommandResult("device offline"), .failed)
     }
 
     func testWaitForADBConnectRetriesUntilADBAcceptsWirelessTarget() async throws {
@@ -2422,14 +2423,14 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(resume, Self.resumeWiFi)
     }
 
-    func testManualDisconnectPrefersRepluggedCableWhenBothReturn() {
+    func testManualDisconnectPrefersWiFiWhenBothReturn() {
         // Phone went fully offline then came back on both transports at once —
-        // prefer the cable for a deterministic, fast reconnect.
+        // restore the normal Wi-Fi-first policy.
         let resume = AppModel.manualDisconnectResumeDevice(
             authorizedDevices: [Self.resumeWiFi, Self.resumeUSB],
             knownSerials: []
         )
-        XCTAssertEqual(resume, Self.resumeUSB)
+        XCTAssertEqual(resume, Self.resumeWiFi)
     }
 
     func testManualDisconnectNoResumeWhenNothingOnline() {
@@ -2452,6 +2453,43 @@ final class ADBDeviceParsingTests: XCTestCase {
             knownSerials: [Self.resumeWiFi.serial]
         )
         XCTAssertEqual(resume, newIP)
+    }
+
+    func testManualDisconnectIgnoresRoutesFromAnotherPhone() {
+        let record = PairedPhoneRecord(
+            id: "PHONE-A",
+            displayName: "Pixel A",
+            lastAddress: "PHONE-A",
+            usbSerial: "PHONE-A",
+            firstPaired: .now,
+            lastConnected: .now
+        )
+        let selected = MirrorDevice(
+            id: record.id,
+            name: record.displayName,
+            model: "Pixel A",
+            battery: 80,
+            isCharging: false,
+            network: "USB",
+            lastSeen: .now,
+            states: [.companionConnected],
+            adbSerial: "PHONE-A"
+        )
+        let otherPhoneWiFi = AuthorizedADBDevice(
+            serial: "192.0.2.99:5555",
+            product: "pixel_b",
+            model: "Pixel B",
+            isUSB: false
+        )
+
+        XCTAssertNil(
+            AppModel.manualDisconnectResumeDevice(
+                authorizedDevices: [otherPhoneWiFi],
+                knownSerials: [],
+                selectedDevice: selected,
+                pairedPhones: [record]
+            )
+        )
     }
 
     func testFreshUSBHandoffSuppressesPresenceAutoConnectForSameWatcherPoll() {
@@ -3160,7 +3198,6 @@ final class ADBDeviceParsingTests: XCTestCase {
         defer { fake.cleanup() }
 
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
-        model.backgroundWiFiHandoffEnabled = true
 
         model.connectViaUSB()
         let startedAt = Date()
@@ -3179,7 +3216,7 @@ final class ADBDeviceParsingTests: XCTestCase {
     }
 
     @MainActor
-    func testManualUSBConnectPrefillsWirelessIPFromDeviceWiFiRoute() async throws {
+    func testManualUSBConnectPrefillsWirelessIPWithoutRestartingADBD() async throws {
         let fake = try installFakeADB(script: """
         #!/bin/sh
         echo "$@" >> "$ADB_FAKE_LOG"
@@ -3209,7 +3246,6 @@ final class ADBDeviceParsingTests: XCTestCase {
         defer { fake.cleanup() }
 
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
-        model.backgroundWiFiHandoffEnabled = false
 
         model.connectViaUSB()
         let startedAt = Date()
@@ -3222,6 +3258,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(model.selectedDevice.adbSerial, "TESTDEVICE001")
         XCTAssertEqual(model.pairedPhones.first?.usbSerial, "TESTDEVICE001")
         XCTAssertEqual(model.pairedPhones.first?.wifiAddress, "192.0.2.44:5555")
+        try await Task.sleep(nanoseconds: 1_000_000_000)
         XCTAssertFalse(loggedCalls(fake.log).contains("-s TESTDEVICE001 tcpip 5555"))
         model.stopMirroring()
         try await Task.sleep(nanoseconds: 500_000_000)
@@ -3303,7 +3340,7 @@ final class ADBDeviceParsingTests: XCTestCase {
     }
 
     @MainActor
-    func testManualUSBConnectPreparesVerifiedWiFiWhileKeepingUSBMirrorActive() async throws {
+    func testManualUSBConnectDoesNotIssueTCPIPWhenListenerIsUnavailable() async throws {
         let fake = try installFakeADB(script: """
         #!/bin/sh
         echo "$@" >> "$ADB_FAKE_LOG"
@@ -3317,7 +3354,7 @@ final class ADBDeviceParsingTests: XCTestCase {
           exit 0
         fi
         if [ "$1" = "-s" ] && [ "$3" = "tcpip" ]; then
-          echo "restarting in TCP mode port: 5555"
+          echo "error: closed"
           exit 0
         fi
         if [ "$1" = "connect" ]; then
@@ -3347,7 +3384,6 @@ final class ADBDeviceParsingTests: XCTestCase {
         defer { fake.cleanup() }
 
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
-        model.backgroundWiFiHandoffEnabled = true
 
         model.connectViaUSB()
         let startedAt = Date()
@@ -3361,12 +3397,13 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(model.selectedDevice.adbSerial, "TESTDEVICE001")
         XCTAssertEqual(model.selectedDevice.network, "USB debugging")
         XCTAssertTrue(model.pairedPhones.contains(where: { $0.lastAddress == "192.0.2.44:5555" }))
+        XCTAssertFalse(loggedCalls(fake.log).contains("-s TESTDEVICE001 tcpip 5555"))
         model.stopMirroring()
         try await Task.sleep(nanoseconds: 500_000_000)
     }
 
     @MainActor
-    func testManualUSBConnectStartsUSBImmediatelyWithoutPreparingWiFiHandoff() async throws {
+    func testManualUSBConnectStartsUSBAndPreparesWiFiNonDestructively() async throws {
         let fake = try installFakeADB(script: """
         #!/bin/sh
         echo "$@" >> "$ADB_FAKE_LOG"
@@ -3408,7 +3445,6 @@ final class ADBDeviceParsingTests: XCTestCase {
         defer { fake.cleanup() }
 
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
-        model.backgroundWiFiHandoffEnabled = true
 
         model.connectViaUSB()
         let startedAt = Date()
@@ -3420,16 +3456,16 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(model.selectedDevice.adbSerial, "TESTDEVICE001")
         XCTAssertEqual(model.selectedDevice.network, "USB debugging")
         XCTAssertEqual(model.pairedPhones.first?.resolvedWiFiAddress, "192.0.2.44:5555")
+        try await Task.sleep(nanoseconds: 1_000_000_000)
         let calls = loggedCalls(fake.log)
         XCTAssertFalse(calls.contains("-s TESTDEVICE001 tcpip 5555"))
-        XCTAssertFalse(calls.contains("connect 192.0.2.44:5555"))
         XCTAssertFalse(calls.contains { $0.contains("-s 192.0.2.44:5555 shell CLASSPATH=") })
         model.stopMirroring()
         try await Task.sleep(nanoseconds: 500_000_000)
     }
 
     @MainActor
-    func testManualUSBMirrorExitDoesNotTakeOverWiFiHandoffSilently() async throws {
+    func testManualUSBMirrorExitDoesNotForceUnpreparedWiFiHandoff() async throws {
         let fake = try installFakeADB(script: """
         #!/bin/sh
         echo "$@" >> "$ADB_FAKE_LOG"
@@ -3491,7 +3527,6 @@ final class ADBDeviceParsingTests: XCTestCase {
         defer { fake.cleanup() }
 
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
-        model.backgroundWiFiHandoffEnabled = true
 
         model.connectViaUSB()
         let startedAt = Date()
@@ -3501,13 +3536,11 @@ final class ADBDeviceParsingTests: XCTestCase {
             try await Task.sleep(nanoseconds: 100_000_000)
         }
 
+        try await Task.sleep(nanoseconds: 2_000_000_000)
+
         XCTAssertNil(model.activeError)
-        XCTAssertTrue(model.hasActiveMirrorSession)
-        XCTAssertEqual(model.selectedDevice.adbSerial, "TESTDEVICE001")
-        XCTAssertEqual(model.selectedDevice.network, "USB debugging")
-        let calls = loggedCalls(fake.log)
-        XCTAssertFalse(calls.contains("-s TESTDEVICE001 tcpip 5555"))
-        XCTAssertFalse(calls.contains { $0.contains("-s 192.0.2.44:5555 shell CLASSPATH=") })
+        XCTAssertNotEqual(model.selectedDevice.adbSerial, "192.0.2.44:5555")
+        XCTAssertFalse(loggedCalls(fake.log).contains("-s TESTDEVICE001 tcpip 5555"))
         model.stopMirroring()
         try await Task.sleep(nanoseconds: 500_000_000)
     }
@@ -3551,7 +3584,6 @@ final class ADBDeviceParsingTests: XCTestCase {
         defer { AppModel.adbTCPPortProbe = { await AppModel.adbTCPPortAcceptsConnection($0) } }
 
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
-        model.backgroundWiFiHandoffEnabled = true
 
         model.connectViaUSB()
         let startedAt = Date()
@@ -3608,7 +3640,6 @@ final class ADBDeviceParsingTests: XCTestCase {
         defer { AppModel.adbTCPPortProbe = { await AppModel.adbTCPPortAcceptsConnection($0) } }
 
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
-        model.backgroundWiFiHandoffEnabled = true
         let usb = AuthorizedADBDevice(
             serial: "TESTDEVICE001",
             product: "raven",

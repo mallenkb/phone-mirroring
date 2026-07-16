@@ -48,13 +48,13 @@ struct FigmaMirrorExperienceView: View {
     }
     private var effectiveUSBConnectionAvailable: Bool {
         inlineConnectingTransport == nil
-            ? model.isUSBConnectionAvailable || isCurrentUSBSessionOnline
-            : usbAvailabilityBeforeConnect
+            ? model.isMatchingUSBConnectionAvailable || isCurrentUSBSessionOnline
+            : usbAvailabilityBeforeConnect || model.isMatchingUSBConnectionAvailable
     }
     private var effectiveWiFiConnectionAvailable: Bool {
         inlineConnectingTransport == nil
-            ? model.isLiveWirelessConnectionAvailable || isCurrentWiFiSessionOnline
-            : wifiAvailabilityBeforeConnect
+            ? model.isMatchingLiveWirelessConnectionAvailable || isCurrentWiFiSessionOnline
+            : wifiAvailabilityBeforeConnect || model.isMatchingLiveWirelessConnectionAvailable
     }
     private var usbChoiceSubtitle: String {
         if effectiveUSBConnectionAvailable {
@@ -255,8 +255,8 @@ struct FigmaMirrorExperienceView: View {
                         width: width,
                         scale: scale,
                         action: {
-                            usbAvailabilityBeforeConnect = model.isUSBConnectionAvailable
-                            wifiAvailabilityBeforeConnect = model.isLiveWirelessConnectionAvailable
+                            usbAvailabilityBeforeConnect = model.isMatchingUSBConnectionAvailable
+                            wifiAvailabilityBeforeConnect = model.isMatchingLiveWirelessConnectionAvailable
                             inlineConnectingTransport = .usb
                             model.connectViaUSB()
                         }
@@ -273,9 +273,9 @@ struct FigmaMirrorExperienceView: View {
                             width: width,
                             scale: scale,
                             action: {
-                                usbAvailabilityBeforeConnect = model.isUSBConnectionAvailable
-                                wifiAvailabilityBeforeConnect = model.isLiveWirelessConnectionAvailable
-	                            if model.isLiveWirelessConnectionAvailable {
+                                usbAvailabilityBeforeConnect = model.isMatchingUSBConnectionAvailable
+                                wifiAvailabilityBeforeConnect = model.isMatchingLiveWirelessConnectionAvailable
+	                            if effectiveWiFiConnectionAvailable {
 	                                inlineConnectingTransport = .wifi
 	                                model.connectViaAvailableWireless()
 	                            } else if model.hasSavedWirelessConnection {
@@ -449,7 +449,7 @@ struct FigmaMirrorExperienceView: View {
                 connectionChoiceIcon(
                     systemName: iconName,
                     resourceName: resourceIconName,
-                    isAvailable: isAvailable || showsProgress,
+                    isAvailable: isAvailable,
                     scale: scale
                 )
                 .frame(width: 32 * scale, height: 32 * scale)
@@ -888,10 +888,12 @@ struct FigmaMirrorExperienceView: View {
         let state = model.connectionPillState
         let isConnecting = state == .connecting || state == .reconnecting
         let transportLabel = state == .online ? model.connectionTransportLabel : nil
-        let visibleTransportLabel = transportLabel == "USB + Wi-Fi" ? nil : transportLabel
+        let visibleTransportLabel = transportLabel
         let statusText = isConnecting
             ? "Connecting to"
-            : (visibleTransportLabel == nil ? model.connectionPillText : "Online via")
+            : (visibleTransportLabel == nil
+                ? model.connectionPillText
+                : (model.isAutoReconnectSuppressedForManualDisconnect ? "Available via" : "Online via"))
         let isUSBPhoneNotFound = state == .actionNeeded
             && model.activeError?.title == AppModel.usbPhoneNotFoundErrorTitle
         let deviceLabel = (state == .noPhone || isUSBPhoneNotFound) ? "" : model.connectionDeviceLabel

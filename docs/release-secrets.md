@@ -6,8 +6,8 @@ is why every tagged release fails in the "Preflight release secrets" step.
 
 | Secret | Status | What it is |
 | --- | --- | --- |
-| `APPLE_CERTIFICATE_P12_BASE64` | ❌ missing | Base64 of the exported Developer ID Application certificate (.p12) |
-| `APPLE_CERTIFICATE_PASSWORD` | ❌ missing | Password chosen when exporting that .p12 |
+| `APPLE_CERTIFICATE_P12_BASE64` | ❌ missing | Base64 of the exported Developer ID Application certificate **and its private key** (`.p12`) |
+| `APPLE_CERTIFICATE_PASSWORD` | ❌ missing | Password chosen when exporting that `.p12` |
 | `APP_SPECIFIC_PASSWORD` | ❌ missing | App-specific password for the Apple ID (notarization) |
 | `APPLE_ID` | ✅ set | Apple ID email used for notarization |
 | `APPLE_TEAM_ID` | ✅ set | Team ID (982T43ATCM, Nokofio Platforms Ltd) |
@@ -18,11 +18,24 @@ is why every tagged release fails in the "Preflight release secrets" step.
 
 1. **Developer ID certificate (.p12).** You need a **Developer ID
    Application** certificate — note this is a *different type* from the
-   "Apple Development"/"Apple Distribution" certs currently in the local
-   keychain. Create/download it at
+   "Apple Development"/"Apple Distribution" certs. Create/download it at
    <https://developer.apple.com/account/resources/certificates> (type:
    Developer ID Application), double-click to install, then in Keychain
    Access: right-click the certificate → Export → .p12 with a password.
+
+   Installing a `.cer` file alone is not sufficient: it must pair with the
+   private key created with the same Certificate Signing Request. Before
+   exporting, verify that this command prints a `Developer ID Application`
+   identity for team `982T43ATCM`:
+
+   ```sh
+   security find-identity -v -p codesigning | grep 'Developer ID Application'
+   ```
+
+   If it prints nothing, recreate the Certificate Signing Request in Keychain
+   Access on the Mac that will export the `.p12`, then issue and install a new
+   Developer ID Application certificate from that request. The `.cer` cannot
+   be used for signing or exported as a usable `.p12` without that private key.
 
    ```sh
    base64 -i DeveloperID.p12 | gh secret set APPLE_CERTIFICATE_P12_BASE64

@@ -511,6 +511,76 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         XCTAssertEqual(model.connectionTransportLabel, "USB + Wi-Fi")
     }
 
+    @MainActor
+    func testConnectionAvailabilityIsScopedToSelectedPhone() {
+        let selectedRecord = PairedPhoneRecord(
+            id: "PHONE-A",
+            displayName: "Pixel A",
+            lastAddress: "PHONE-A",
+            usbSerial: "PHONE-A",
+            firstPaired: .now,
+            lastConnected: .now
+        )
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [selectedRecord])
+        model.selectedDevice = MirrorDevice(
+            id: selectedRecord.id,
+            name: selectedRecord.displayName,
+            model: "Pixel A",
+            battery: 80,
+            isCharging: false,
+            network: "USB",
+            lastSeen: .now,
+            states: [.companionConnected],
+            adbSerial: "PHONE-A"
+        )
+        model.applyDevicePresence("""
+        List of devices attached
+        PHONE-A device usb:1-1 product:pixel_a model:Pixel_A device:pixel transport_id:1
+        192.0.2.99:5555 device product:pixel_b model:Pixel_B device:pixel transport_id:2
+        """)
+
+        XCTAssertTrue(model.isMatchingUSBConnectionAvailable)
+        XCTAssertFalse(model.isMatchingLiveWirelessConnectionAvailable)
+        XCTAssertEqual(model.connectionTransportLabel, "USB")
+    }
+
+    @MainActor
+    func testMatchingDiscoveredWiFiIsGreenBeforeConnectionAttempt() {
+        let record = PairedPhoneRecord(
+            id: "adb-PHONE-A",
+            displayName: "Pixel A",
+            lastAddress: "192.0.2.44:5555",
+            usbSerial: "PHONE-A",
+            wifiAddress: "192.0.2.44:5555",
+            firstPaired: .now,
+            lastConnected: .now
+        )
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+        model.selectedDevice = MirrorDevice(
+            id: record.id,
+            name: record.displayName,
+            model: "Pixel A",
+            battery: 80,
+            isCharging: false,
+            network: "Wi-Fi",
+            lastSeen: .now,
+            states: [.companionConnected],
+            adbSerial: record.resolvedWiFiAddress
+        )
+        model.setDiscoveredPhonesForTesting([
+            DiscoveredPhone(
+                id: record.id,
+                address: "192.0.2.44:5555",
+                kind: .legacyTCPIP,
+                lastSeen: .now
+            )
+        ])
+
+        XCTAssertTrue(model.isMatchingLiveWirelessConnectionAvailable)
+        XCTAssertEqual(model.connectionTransportLabel, "Wi-Fi")
+        XCTAssertFalse(model.isActivelyConnecting)
+    }
+
     func testLiveConnectionRoutesDoNotTreatSavedWiFiAsLive() {
         let record = PairedPhoneRecord(
             id: "adb-RFCT10ZLTAJ",
@@ -567,6 +637,20 @@ final class MirrorReconnectBackoffTests: XCTestCase {
                 discoveredPhones: []
             ).statusLabel,
             "Wi-Fi and USB available"
+        )
+
+        let unrelatedDiscovery = DiscoveredPhone(
+            id: "adb-OTHER-PHONE",
+            address: "192.0.2.99:5555",
+            kind: .legacyTCPIP,
+            lastSeen: .now
+        )
+        XCTAssertFalse(
+            AppModel.liveConnectionRoutes(
+                for: record,
+                authorizedDevices: [usb],
+                discoveredPhones: [unrelatedDiscovery]
+            ).hasWiFi
         )
     }
 
@@ -1910,10 +1994,11 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         XCTAssertEqual(state(saved: true, connecting: true, reconnecting: true), .reconnecting)
         XCTAssertEqual(state(online: true, saved: true), .online)
         XCTAssertEqual(state(error: true, saved: true), .failed)
-        // User action wins over failures; failures win over online; online wins over connecting.
+        // User action wins over failures; an active dial visibly replaces the
+        // passive online/available state until the mirror is ready.
         XCTAssertEqual(state(error: true, online: true, actionNeeded: true, connecting: true), .actionNeeded)
         XCTAssertEqual(state(error: true, online: true, connecting: true), .failed)
-        XCTAssertEqual(state(online: true, connecting: true), .online)
+        XCTAssertEqual(state(online: true, connecting: true), .connecting)
 
         XCTAssertEqual(AppModel.ConnectionPillState.noPhone.text, "No phone connected")
         XCTAssertEqual(AppModel.ConnectionPillState.actionNeeded.text, "Action needed")

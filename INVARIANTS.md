@@ -30,30 +30,45 @@ of these on purpose, update this file in the same commit.
 
 3. **`adb tcpip` restarts the phone's adbd and drops the live USB mirror.**
    Every handoff path probes port 5555 first and only runs `tcpip` when the
-   port is closed AND the serial hasn't already failed a legacy handoff this
-   session (`failedLegacyHandoffSerials`). Removing that memory reintroduces
-   a doomed ~15s detour on every reconnect for phones that block
+   port is closed, the connection is automatic, AND the serial hasn't already
+   failed a legacy handoff this session (`failedLegacyHandoffSerials`). An
+   explicit USB choice still captures the current IP/MAC and verifies existing
+   legacy/TLS/mDNS routes, but must not restart adbd underneath the selected USB
+   mirror. Removing that distinction either overrides the user's USB choice or
+   reintroduces a doomed ~15s detour on every reconnect for phones that block
    adb-over-Wi-Fi.
 
 4. **Manual Disconnect is sticky.** It stops the mirror but keeps discovery
    running; auto-re-mirror stays paused until a transport *re-appears* (cable
-   replugged, phone Wi-Fi toggled off/on) — and reconnects on **that same
-   channel**. A disconnect must never fall over to the other transport, and
-   per-transport suppression was tried and reverted (f8d3c86). The coordinator's
+   replugged, phone Wi-Fi toggled off/on). A disconnect must never fall over
+   to a continuously-present transport; when both routes genuinely return
+   together, the normal Wi-Fi-first policy applies. Per-transport suppression
+   was tried and reverted (f8d3c86). The coordinator's
    `manuallyDisconnected` state is the hard gate: timer, discovery, wake, and
    network-path events cannot end it. Only an explicit user reconnect or a
-   verified reappearance on the same channel may resume.
+   verified transport reappearance may resume.
 
 5. **The USB→Wi-Fi handoff pipeline has a total time budget**
    (`wirelessHandoffMaxDuration`, 10s) sized to absorb slow route/MAC reads
    plus adbd's 1–4s restart. Shrinking it misfiles healthy phones as
    "blocks adb-over-Wi-Fi".
 
-6. **Wireless pins prevent USB↔Wi-Fi ping-pong.** A cable moved to Wi-Fi
-   (`wirelessPinnedUSBSerials`) is ignored by the watcher while the Wi-Fi
-   route is being pursued; a user's explicit USB choice
-   (`manualUSBPinnedSerials`) must never be overridden by in-flight handoff
-   work.
+6. **Wireless pins prevent USB↔Wi-Fi ping-pong; user choices do not disable
+   handoff.** A cable moved to Wi-Fi (`wirelessPinnedUSBSerials`) is ignored by
+   the watcher while the Wi-Fi route is being pursued. A user's explicit USB
+   or Wi-Fi choice is a connection-scoped `TransportIntent`: USB controls the
+   immediate launch but still refreshes/prepares Wi-Fi, Wi-Fi refuses silent
+   USB fallback for that attempt, and all later automatic work returns to the
+   Wi-Fi-first policy. Every background handoff and discovered-Wi-Fi dial owns
+   a coordinator generation; cancelled work checks ownership after suspension
+   and before state changes so it cannot clear or promote a replacement task.
+
+   Connection availability is phone-scoped once a selected/saved identity
+   exists. A matching live route turns its chooser icon green before dialing;
+   routes from another phone cannot produce `USB + Wi-Fi` or resume a manually
+   disconnected phone. User-initiated dialing stays on the chooser as an inline
+   row state until the ready mirror replaces it—no intermediate loading screen
+   or disappearing-window gap.
 
 7. **Never poll faster — react to events.** Discovery latency work is done
    with kernel/system push (persistent `NWBrowser` Bonjour monitors, IOKit

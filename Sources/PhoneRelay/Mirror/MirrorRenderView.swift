@@ -423,7 +423,9 @@ final class MirrorLoadingView: NSView {
         CATransaction.setDisableActions(true)
         gradientLayer.frame = bounds
         CATransaction.commit()
-        progressText.layoutSubtreeIfNeeded()
+        // AppKit is already laying out this subtree. Forcing a nested layout
+        // here triggers `_NSDetectedLayoutRecursion` and can stall the mirror
+        // window while it is transitioning from its loading surface.
         applyCornerMask()
     }
 

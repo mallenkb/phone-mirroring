@@ -56,6 +56,7 @@ extension AppModel {
         guard manual || !isAutoMirrorHeldForOnboarding else { return }
 
         if manual {
+            keepConnectionChooserVisibleForNextMirrorLaunch = true
             resumeDiscoveryAfterManualConnect()
             // A deliberate retry clears backoff.
             setAutoConnectSuspendedForSelectedDevice(false)
@@ -191,10 +192,10 @@ extension AppModel {
         connectionCoordinator.usbConnectTask = nil
         connectionCoordinator.usbWiFiAddressPrefillTask?.cancel()
         connectionCoordinator.usbWiFiAddressPrefillTask = nil
-        connectionCoordinator.usbWiFiHandoffTask?.cancel()
-        connectionCoordinator.usbWiFiHandoffTask = nil
+        connectionCoordinator.cancelUSBWiFiHandoff()
         connectionCoordinator.usbWiFiTakeoverTask?.cancel()
         connectionCoordinator.usbWiFiTakeoverTask = nil
+        connectionCoordinator.cancelDiscoveredWiFiConnect()
         usbWiFiHandoffCandidate = nil
         connectionCoordinator.wirelessStartTask?.cancel()
         connectionCoordinator.wirelessStartTask = nil
@@ -210,6 +211,7 @@ extension AppModel {
         mirrorSession?.stop()
         mirrorSession = nil
         isMirroring = false
+        keepConnectionChooserVisibleForNextMirrorLaunch = false
         restorePresentationModeIfNeeded()
         stopDisconnectRecovery()
         // A deliberate stop clears the crash-loop breaker and the Wi-Fi pin, so
@@ -217,7 +219,7 @@ extension AppModel {
         consecutiveQuickMirrorFailures = 0
         autoMirrorBackoffUntil = nil
         wirelessPinnedUSBSerials.removeAll()
-        manualUSBPinnedSerials.removeAll()
+        transportIntent = .automatic
         isAwaitingReconnect = false
         if isRecording {
             isRecording = false
@@ -282,10 +284,12 @@ extension AppModel {
         ])
         let launchFrame = mirrorLaunchFrameForNextSession()
         let keepConnectionWindowVisible = keepConnectionWindowVisibleOverride
-            ?? Self.shouldKeepConnectionWindowVisibleDuringMirrorLaunch(
-                isRecoveringConnection: isRecoveringConnection,
-                isAwaitingReconnect: isAwaitingReconnect
-            )
+            ?? (keepConnectionChooserVisibleForNextMirrorLaunch
+                || Self.shouldKeepConnectionWindowVisibleDuringMirrorLaunch(
+                    isRecoveringConnection: isRecoveringConnection,
+                    isAwaitingReconnect: isAwaitingReconnect
+                ))
+        keepConnectionChooserVisibleForNextMirrorLaunch = false
         let session = MirrorSession(model: self, serial: serial, launchFrame: launchFrame)
         session.onSessionEnded = { [weak self, weak session] finalMirrorFrame in
             guard let self else { return }
@@ -322,7 +326,7 @@ extension AppModel {
             self.stopDisconnectRecovery()
             self.activeError = nil
             self.clearConnectionStall()
-            self.manualWirelessConnectDisallowsUSBFallback = false
+            self.transportIntent = .automatic
             self.isRecoveringConnection = false
             self.isAwaitingReconnect = false
             self.hideConnectionWindowForNativeMirror()
@@ -362,8 +366,8 @@ extension AppModel {
                 if self.recoverUSBLaunchFailureOverWireless(serial: serial, detail: detail) {
                     return
                 }
-                if self.manualWirelessConnectDisallowsUSBFallback {
-                    self.manualWirelessConnectDisallowsUSBFallback = false
+                if self.transportIntent.requiresWiFi {
+                    self.transportIntent = .automatic
                     self.reportError("Couldn’t start Wi-Fi mirroring", message)
                     self.showConnectionWindow(startsQRCodePairing: false)
                     return
@@ -404,8 +408,7 @@ extension AppModel {
         guard let usbSerial,
               let candidate = usbWiFiHandoffCandidate,
               candidate.usbSerial == usbSerial,
-              !manualUSBPinnedSerials.contains(usbSerial),
-              !manualWirelessConnectDisallowsUSBFallback
+              transportIntent.permitsPreparedWiFiTakeover(for: usbSerial)
         else { return false }
 
         Logger.log("USB mirror ended; attempting prepared Wi-Fi handoff address=\(candidate.address)")
@@ -421,8 +424,7 @@ extension AppModel {
             lastMirrorWindowFrame = finalMirrorFrame
             connectionWindow?.setFrame(finalMirrorFrame, display: false)
         }
-        connectionCoordinator.usbWiFiHandoffTask?.cancel()
-        connectionCoordinator.usbWiFiHandoffTask = nil
+        connectionCoordinator.cancelUSBWiFiHandoff()
         connectionCoordinator.usbWiFiTakeoverTask?.cancel()
         stopQRCodePairingSession()
         isRecoveringConnection = true
@@ -498,8 +500,7 @@ extension AppModel {
                     self.presentLocalNetworkPermissionHint()
                 }
                 Logger.log("Prepared Wi-Fi handoff address=\(candidate.address) was not ready after USB ended")
-                self.connectionCoordinator.usbWiFiHandoffTask?.cancel()
-                self.connectionCoordinator.usbWiFiHandoffTask = nil
+                self.connectionCoordinator.cancelUSBWiFiHandoff()
                 self.usbWiFiHandoffCandidate = nil
                 self.lastUSBHandoffSerial = candidate.usbSerial
                 self.isAutoConnecting = false
@@ -679,8 +680,8 @@ extension AppModel {
     ) -> ConnectionPillState {
         if needsUserAction { return .actionNeeded }
         if hasError { return .failed }
-        if isOnline || hasLivePhone { return .online }
         if isActivelyConnecting { return isReconnecting ? .reconnecting : .connecting }
+        if isOnline || hasLivePhone { return .online }
         if hasSavedDevice { return .offline }
         return .noPhone
     }
@@ -709,8 +710,8 @@ extension AppModel {
                 || latestADBStatusText == "adb missing",
             isOnline: isSelectedDeviceOnline
                 || (!isActivelyConnecting && hasRememberedWiFiHandoffRoute),
-            hasLivePhone: !latestAuthorizedADBDevices.isEmpty
-                || discoveredPhones.contains { $0.kind.isConnectable },
+            hasLivePhone: isMatchingUSBConnectionAvailable
+                || isMatchingLiveWirelessConnectionAvailable,
             hasSavedDevice: !pairedPhones.isEmpty,
             isActivelyConnecting: isActivelyConnecting,
             isReconnecting: hasCompletedSuccessfulMirrorConnection
@@ -889,9 +890,9 @@ extension AppModel {
         hasWirelessDevice: Bool,
         hasWiFiReachability: Bool
     ) -> ConnectionHealthSnapshot.Item {
-        if !enabled {
-            return .init(id: "wifi-handoff", title: "Wi-Fi handoff", value: "Off", level: .neutral)
-        }
+        // Kept for source compatibility with older diagnostics callers. Wi-Fi
+        // handoff is now invariant behavior and cannot be disabled.
+        _ = enabled
         if isPreparing {
             return .init(id: "wifi-handoff", title: "Wi-Fi handoff", value: "Preparing", level: .warning)
         }

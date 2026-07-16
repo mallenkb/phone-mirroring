@@ -539,7 +539,11 @@ extension AppModel {
         let liveWiFiAddress = liveWirelessAuthorizedDevice(
             for: record,
             in: authorizedDevices
-        )?.serial ?? rememberedConnectablePhone(for: record, in: discoveredPhones)?.address
+        )?.serial ?? rememberedConnectablePhone(
+            for: record,
+            in: discoveredPhones,
+            allowSingleCandidateFallback: false
+        )?.address
         let liveUSBSerial = liveUSBAuthorizedDevice(
             for: record,
             in: authorizedDevices
@@ -634,7 +638,8 @@ extension AppModel {
 
     nonisolated static func rememberedConnectablePhone(
         for record: PairedPhoneRecord,
-        in phones: [DiscoveredPhone]
+        in phones: [DiscoveredPhone],
+        allowSingleCandidateFallback: Bool = true
     ) -> DiscoveredPhone? {
         let connectablePhones = phones.filter { $0.kind.isConnectable }
         if let exact = connectablePhones.first(where: { $0.id == record.id }) {
@@ -647,7 +652,7 @@ extension AppModel {
         if let sameHost = connectablePhones.first(where: { host(in: $0.address) == expectedHost }) {
             return sameHost
         }
-        guard connectablePhones.count == 1 else {
+        guard allowSingleCandidateFallback, connectablePhones.count == 1 else {
             return nil
         }
         return connectablePhones.first
@@ -780,6 +785,32 @@ extension AppModel {
         let lowercased = output.lowercased()
         return lowercased.contains("restarting in tcp mode port")
             || lowercased.contains("already in tcp mode")
+    }
+
+    enum ADBTCPIPCommandResult: Equatable {
+        case succeeded
+        case ambiguousRestart
+        case failed
+    }
+
+    /// `adb tcpip` often loses its reply because adbd restarts first. Only that
+    /// narrow family of close/timeout results is allowed to proceed to listener
+    /// verification; explicit authorization, offline, and command errors fall
+    /// through immediately to the non-destructive TLS/mDNS routes.
+    nonisolated static func adbTCPIPCommandResult(_ output: String) -> ADBTCPIPCommandResult {
+        if adbTCPIPSucceeded(output) {
+            return .succeeded
+        }
+        let lowercased = output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lowercased.isEmpty
+            || lowercased.contains("error: closed")
+            || lowercased.contains("connection reset")
+            || lowercased.contains("broken pipe")
+            || lowercased.contains("timed out")
+            || lowercased.contains("timeout") {
+            return .ambiguousRestart
+        }
+        return .failed
     }
 
     nonisolated static func waitForADBConnect(

@@ -38,6 +38,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private let model = AppModel()
     private var keyMonitor: Any?
     private var foregroundExitMonitor: Any?
+    private var windowlessRecoveryTerminationTask: Task<Void, Never>?
     private var launchedInBackground = false
     private weak var screenRecordingMenuItem: NSMenuItem?
     private var screenRecordingMenuCancellable: AnyCancellable?
@@ -296,7 +297,50 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         // the app is genuinely idle with no window, quit; otherwise it lurks
         // invisibly in the background and keeps throwing up mirror windows on
         // every auto-reconnect ("the app isn't even open but it happens").
-        !model.isPerformingMirrorHandoffOrRecovery
+        let shouldTerminate = !model.isPerformingMirrorHandoffOrRecovery
+        if !shouldTerminate {
+            scheduleWindowlessRecoveryTermination()
+        }
+        return shouldTerminate
+    }
+
+    /// AppKit only asks `applicationShouldTerminateAfterLastWindowClosed` once.
+    /// If that answer is `false` during a handoff, recovery can later stall and
+    /// leave a zero-window process alive forever. Preserve the normal handoff
+    /// gap, but terminate when it settles or after a bounded grace period.
+    private func scheduleWindowlessRecoveryTermination() {
+        windowlessRecoveryTerminationTask?.cancel()
+        let deadline = Date().addingTimeInterval(30)
+        windowlessRecoveryTerminationTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled, let self else { return }
+
+                if NSApp.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) {
+                    self.windowlessRecoveryTerminationTask = nil
+                    return
+                }
+
+                let recoverySettled = !self.model.isPerformingMirrorHandoffOrRecovery
+                let recoveryTimedOut = Date() >= deadline
+                guard recoverySettled || recoveryTimedOut else { continue }
+
+                if recoveryTimedOut {
+                    Logger.log("Windowless recovery exceeded 30 seconds; terminating stale app session.")
+                }
+                self.windowlessRecoveryTerminationTask = nil
+                NSApp.terminate(nil)
+                return
+            }
+        }
+    }
+
+    /// Explicit Quit must never wait for transport recovery. This also avoids
+    /// document/restoration state introducing a second termination veto.
+    public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        windowlessRecoveryTerminationTask?.cancel()
+        windowlessRecoveryTerminationTask = nil
+        return .terminateNow
     }
 
     public func applicationDidBecomeActive(_ notification: Notification) {
@@ -569,6 +613,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
     public func applicationWillTerminate(_ notification: Notification) {
         Logger.log("Application will terminate")
+        windowlessRecoveryTerminationTask?.cancel()
+        windowlessRecoveryTerminationTask = nil
         if let keyMonitor {
             NSEvent.removeMonitor(keyMonitor)
             self.keyMonitor = nil
