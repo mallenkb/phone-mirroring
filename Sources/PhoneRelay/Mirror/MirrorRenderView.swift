@@ -142,6 +142,22 @@ final class MirrorRenderView: NSView {
         hideLoadingViewIfNeeded()
     }
 
+    /// Queue the frame that triggers the chooser-to-mirror transition without
+    /// exposing the mirror's separate three-second loading treatment. In the
+    /// hosted path this view is already attached at alpha zero above the chooser,
+    /// so the cross-fade starts with phone pixels queued in a live layer tree.
+    func enqueueFirstVisibleFrame(_ sample: CMSampleBuffer, isKeyFrame: Bool) {
+        enqueue(sample, isKeyFrame: isKeyFrame)
+        // A failed display layer can reject a non-keyframe while it waits to
+        // resynchronize. In that rare case, retain the loading treatment rather
+        // than exposing a black renderer as though a frame had been accepted.
+        guard firstFrameReadyToDisplay else { return }
+        loadingView.layer?.removeAllAnimations()
+        loadingView.alphaValue = 0
+        loadingView.isHidden = true
+        hasRenderedFirstFrame = true
+    }
+
     func setStreamSize(width: UInt32, height: UInt32) {
         aspect = CGSize(width: CGFloat(width), height: CGFloat(height))
         needsLayout = true

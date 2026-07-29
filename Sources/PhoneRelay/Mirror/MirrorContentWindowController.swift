@@ -16,6 +16,58 @@ private enum MirrorShellStyle {
 final class MirrorContentWindowController: NSWindowController, NSWindowDelegate {
     private static weak var activeController: MirrorContentWindowController?
 
+    /// Everything the SwiftUI connection surface owns on the persistent phone
+    /// window. A mirror session temporarily overlays the content and replaces the
+    /// window policy, then restores this snapshot when the stream ends. Keeping the same
+    /// NSWindow avoids the visible order-out/new-window handoff that made the app
+    /// appear to close and reopen while connecting.
+    @MainActor
+    private struct HostedWindowSnapshot {
+        let contentView: NSView?
+        let delegate: NSWindowDelegate?
+        let styleMask: NSWindow.StyleMask
+        let title: String
+        let titleVisibility: NSWindow.TitleVisibility
+        let titlebarAppearsTransparent: Bool
+        let isOpaque: Bool
+        let backgroundColor: NSColor
+        let hasShadow: Bool
+        let isRestorable: Bool
+        let isMovable: Bool
+        let isMovableByWindowBackground: Bool
+        let acceptsMouseMovedEvents: Bool
+        let contentAspectRatio: NSSize
+        let minSize: NSSize
+        let maxSize: NSSize
+        let contentMinSize: NSSize
+        let contentMaxSize: NSSize
+        let level: NSWindow.Level
+        let collectionBehavior: NSWindow.CollectionBehavior
+
+        init(window: NSWindow) {
+            contentView = window.contentView
+            delegate = window.delegate
+            styleMask = window.styleMask
+            title = window.title
+            titleVisibility = window.titleVisibility
+            titlebarAppearsTransparent = window.titlebarAppearsTransparent
+            isOpaque = window.isOpaque
+            backgroundColor = window.backgroundColor
+            hasShadow = window.hasShadow
+            isRestorable = window.isRestorable
+            isMovable = window.isMovable
+            isMovableByWindowBackground = window.isMovableByWindowBackground
+            acceptsMouseMovedEvents = window.acceptsMouseMovedEvents
+            contentAspectRatio = window.contentAspectRatio
+            minSize = window.minSize
+            maxSize = window.maxSize
+            contentMinSize = window.contentMinSize
+            contentMaxSize = window.contentMaxSize
+            level = window.level
+            collectionBehavior = window.collectionBehavior
+        }
+    }
+
     static let cornerRadius: CGFloat = 34
     /// Standard macOS titlebar height. Anything larger and the AppKit chrome
     /// reads as a heavy banner instead of a window's title bar.
@@ -124,37 +176,57 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private var recordingToolbarCancellable: AnyCancellable?
     private var appActivationObservers: [NSObjectProtocol] = []
     private var activeCaptureCueView: MirrorCaptureCueView?
+    private let hostedWindowSnapshot: HostedWindowSnapshot?
 
-    init(model: AppModel, session: MirrorSession, launchFrame: NSRect? = nil) {
+    var isUsingHostedWindow: Bool { hostedWindowSnapshot != nil }
+
+    init(
+        model: AppModel,
+        session: MirrorSession,
+        launchFrame: NSRect? = nil,
+        hostWindow: NSWindow? = nil,
+        prepareRenderView: ((MirrorRenderView) -> Void)? = nil
+    ) {
         self.model = model
         self.session = session
         self.launchFrame = launchFrame
-        let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 390, height: 850)
-        let initialSize = Self.initialWrappedShellSize(
-            for: Self.defaultMirrorSize,
-            visibleFrame: visible,
-            maximumHeightBasis: Self.resolutionHeight(for: NSScreen.main, fallbackVisibleFrame: visible)
-        )
-        let frame = NSRect(
-            x: 0,
-            y: 0,
-            width: initialSize.width,
-            height: initialSize.height
-        )
-        let window = MirrorContentWindow(
-            contentRect: frame,
-            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        window.isReleasedWhenClosed = false
-        super.init(window: window)
-        window.delegate = self
-        configure(window: window)
-        installContent()
+        hostedWindowSnapshot = hostWindow.map(HostedWindowSnapshot.init(window:))
+
+        let presentationWindow: NSWindow
+        if let hostWindow {
+            presentationWindow = hostWindow
+        } else {
+            let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 390, height: 850)
+            let initialSize = Self.initialWrappedShellSize(
+                for: Self.defaultMirrorSize,
+                visibleFrame: visible,
+                maximumHeightBasis: Self.resolutionHeight(for: NSScreen.main, fallbackVisibleFrame: visible)
+            )
+            let frame = NSRect(
+                x: 0,
+                y: 0,
+                width: initialSize.width,
+                height: initialSize.height
+            )
+            let window = MirrorContentWindow(
+                contentRect: frame,
+                styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+                backing: .buffered,
+                defer: false
+            )
+            window.isReleasedWhenClosed = false
+            presentationWindow = window
+        }
+
+        super.init(window: presentationWindow)
+        if hostWindow != nil {
+            prepareHostedWindowForMirror(presentationWindow)
+        }
+        presentationWindow.delegate = self
+        configure(window: presentationWindow)
+        installContent(prepareRenderView: prepareRenderView)
         installAppActivationObservers()
-        window.styleMask.remove(.titled)
-        window.contentAspectRatio = initialSize
+        presentationWindow.styleMask.remove(.titled)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -317,6 +389,64 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         }
         window.makeFirstResponder(renderView)
         updateFullscreenPresentationIfNeeded()
+    }
+
+    /// End the mirror presentation without closing the persistent phone window.
+    /// Standalone mirror windows retain the existing close behavior as a fallback
+    /// for tests and any call site that does not provide a host window.
+    func dismissPresentation() {
+        guard let snapshot = hostedWindowSnapshot, let window else {
+            close()
+            return
+        }
+
+        if Self.activeController === self {
+            Self.activeController = nil
+        }
+        tearDownPresentationObservers()
+        if let toolbar = toolbarWindow {
+            window.removeChildWindow(toolbar)
+            toolbar.delegate = nil
+            toolbar.orderOut(nil)
+            toolbar.close()
+            toolbarWindow = nil
+        }
+
+        renderView.onMouseMoved = nil
+        renderView.onPointerEvent = nil
+        renderView.onKeyEvent = nil
+        renderView.onDropFiles = nil
+        rootView.onHoverChange = nil
+        rootView.onAppearanceChange = nil
+        rootView.removeFromSuperview()
+
+        // Preserve the mirror's final on-screen frame. AppModel deliberately
+        // transitions that same window back to the chooser size after it marks
+        // the session ended; restoring the old frame here would create a second
+        // visible jump before that state update arrives.
+        let currentFrame = window.frame
+        window.delegate = snapshot.delegate
+        window.styleMask = snapshot.styleMask
+        window.title = snapshot.title
+        window.titleVisibility = snapshot.titleVisibility
+        window.titlebarAppearsTransparent = snapshot.titlebarAppearsTransparent
+        window.isOpaque = snapshot.isOpaque
+        window.backgroundColor = snapshot.backgroundColor
+        window.hasShadow = snapshot.hasShadow
+        window.isRestorable = snapshot.isRestorable
+        window.isMovable = snapshot.isMovable
+        window.isMovableByWindowBackground = snapshot.isMovableByWindowBackground
+        window.acceptsMouseMovedEvents = snapshot.acceptsMouseMovedEvents
+        window.contentAspectRatio = snapshot.contentAspectRatio
+        window.minSize = snapshot.minSize
+        window.maxSize = snapshot.maxSize
+        window.contentMinSize = snapshot.contentMinSize
+        window.contentMaxSize = snapshot.contentMaxSize
+        window.level = snapshot.level
+        window.collectionBehavior = snapshot.collectionBehavior
+        window.contentView = snapshot.contentView
+        window.setFrame(currentFrame, display: true, animate: false)
+        window.makeKeyAndOrderFront(nil)
     }
 
     static func supersededMirrorWindows(
@@ -520,6 +650,40 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         window.standardWindowButton(.zoomButton)?.isHidden = false
     }
 
+    private func prepareHostedWindowForMirror(_ window: NSWindow) {
+        window.styleMask.insert([.closable, .miniaturizable, .fullSizeContentView])
+        // The chooser pins the phone card to one fixed content size. Release
+        // those constraints before applying the stream's aspect-aware limits.
+        window.minSize = NSSize(width: 1, height: 1)
+        window.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        window.contentMinSize = NSSize(width: 1, height: 1)
+        window.contentMaxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+    }
+
+    private func tearDownPresentationObservers() {
+        hideWorkItem?.cancel()
+        hideWorkItem = nil
+        stopRevealMonitoring()
+        for observer in appActivationObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        appActivationObservers.removeAll()
+        captureCueCancellable = nil
+        transferActivityCancellable = nil
+        deviceTitleCancellable = nil
+        alwaysOnTopCancellable = nil
+        alwaysOnTopToolbarCancellable = nil
+        chromeBarVisibilityCancellable = nil
+        recordingToolbarCancellable = nil
+        hideActiveStatusCue()
+    }
+
     private func applyWindowSizeLimits(to window: NSWindow, aspect: CGFloat) {
         let limits = Self.sizeLimits(
             visibleFrame: window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame,
@@ -636,9 +800,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         )
     }
 
-    private func installContent() {
+    private func installContent(prepareRenderView: ((MirrorRenderView) -> Void)? = nil) {
         guard let window else { return }
-        rootView.frame = NSRect(origin: .zero, size: window.frame.size)
+        let hostedContentView = hostedWindowSnapshot?.contentView
+        rootView.frame = hostedContentView?.bounds
+            ?? NSRect(origin: .zero, size: window.frame.size)
         rootView.autoresizingMask = [.width, .height]
         rootView.wantsLayer = true
         rootView.layer?.cornerRadius = Self.cornerRadius
@@ -754,7 +920,27 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         ])
         applyScaledRenderInsets()
 
-        window.contentView = rootView
+        if let hostedContentView {
+            // Keep the SwiftUI chooser mounted underneath the mirror. Attaching
+            // the mirror root at alpha zero gives AVSampleBufferDisplayLayer a
+            // live layer tree before the first sample is queued, then a short
+            // cross-fade turns the transition into an in-place state change.
+            rootView.alphaValue = 0
+            hostedContentView.addSubview(rootView, positioned: .above, relativeTo: nil)
+            prepareRenderView?(renderView)
+            if Self.shouldAnimateChromeForCurrentProcess {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.16
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    rootView.animator().alphaValue = 1
+                }
+            } else {
+                rootView.alphaValue = 1
+            }
+        } else {
+            prepareRenderView?(renderView)
+            window.contentView = rootView
+        }
         window.makeFirstResponder(renderView)
         applyAlwaysOnTop(model.mirrorAlwaysOnTopEnabled)
         alwaysOnTopCancellable = model.$mirrorAlwaysOnTopEnabled
@@ -1479,12 +1665,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     func windowWillClose(_ notification: Notification) {
-        hideWorkItem?.cancel()
-        stopRevealMonitoring()
-        for observer in appActivationObservers {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        appActivationObservers.removeAll()
+        tearDownPresentationObservers()
         if let window, let toolbar = toolbarWindow {
             window.removeChildWindow(toolbar)
             toolbar.orderOut(nil)

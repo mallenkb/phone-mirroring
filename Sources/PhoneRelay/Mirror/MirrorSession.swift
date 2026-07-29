@@ -1,4 +1,5 @@
 import AppKit
+import CoreMedia
 import Foundation
 import Network
 
@@ -31,6 +32,7 @@ final class MirrorSession {
     }
 
     private weak var model: AppModel?
+    private weak var hostWindow: NSWindow?
     private let serial: String?
     private let launchFrame: NSRect?
     private let scid: UInt32
@@ -48,23 +50,38 @@ final class MirrorSession {
     private var deviceLockMonitorTask: Task<Void, Never>?
     private var screenOffDeadline: Date?
     private var deviceLockState: AndroidDeviceLockState = .unknown
+    private var firstFrameDeadlineTask: Task<Void, Never>?
 
     private var streamWidth: UInt32 = 0
     private var streamHeight: UInt32 = 0
+    private var streamDeviceName = ""
     private var isStopping = false
     private var didStop = false
     private var didNotifyReadyToDisplay = false
 
+    /// A header proves the scrcpy socket opened, but some device/codec failures
+    /// never deliver a decoded frame afterward. The audio stall watchdog cannot
+    /// cover video-only sessions, so bound this initial visual readiness phase.
+    nonisolated static let firstFrameTimeoutNanoseconds: UInt64 = 8_000_000_000
+
     var onSessionEnded: ((NSRect?) -> Void)?
     var onReadyToDisplay: (() -> Void)?
 
-    init(model: AppModel, serial: String?, launchFrame: NSRect? = nil) {
+    init(
+        model: AppModel,
+        serial: String?,
+        launchFrame: NSRect? = nil,
+        hostWindow: NSWindow? = nil
+    ) {
         self.model = model
+        self.hostWindow = hostWindow
         self.serial = serial
         self.launchFrame = launchFrame
         self.scid = UInt32.random(in: 1...UInt32(Int32.max))
         self.localPort = Self.allocatePort()
     }
+
+    var usesHostWindow: Bool { hostWindow != nil }
 
     func start() async throws {
         guard windowController == nil else { throw SessionError.alreadyRunning }
@@ -134,7 +151,7 @@ final class MirrorSession {
         decoder.onSample = { [weak self] sample, isKeyFrame in
             Task { @MainActor in
                 guard let self, !self.didStop, !self.isStopping else { return }
-                self.windowController?.renderView.enqueue(sample, isKeyFrame: isKeyFrame)
+                self.handleDecodedSample(sample, isKeyFrame: isKeyFrame)
             }
         }
 
@@ -200,6 +217,8 @@ final class MirrorSession {
         screenOffTask = nil
         deviceLockMonitorTask?.cancel()
         deviceLockMonitorTask = nil
+        firstFrameDeadlineTask?.cancel()
+        firstFrameDeadlineTask = nil
         screenOffDeadline = nil
         controlChannel?.close()
         controlChannel = nil
@@ -207,7 +226,7 @@ final class MirrorSession {
         stream = nil
         audioPlayer?.stop()
         audioPlayer = nil
-        windowController?.close()
+        windowController?.dismissPresentation()
         windowController = nil
         sessionEnded?(finalWindowFrame)
 
@@ -481,18 +500,59 @@ final class MirrorSession {
         }
         streamWidth = header.width
         streamHeight = header.height
+        streamDeviceName = header.deviceName
         Logger.log("MirrorSession header: device=\(header.deviceName) codec=\(String(format: "0x%08x", header.codecID)) size=\(header.width)x\(header.height)")
-        if windowController == nil, let model {
-            let controller = MirrorContentWindowController(model: model, session: self, launchFrame: launchFrame)
-            windowController = controller
-            scheduleAutomaticScreenOffIfNeeded()
-            startDeviceLockMonitoringIfNeeded()
-        }
-        windowController?.renderView.setLoadingDeviceName(header.deviceName)
-        windowController?.show()
-        windowController?.setStreamSize(width: header.width, height: header.height)
         controlChannel?.updateDeviceSize(width: header.width, height: header.height)
+        startFirstFrameDeadlineIfNeeded()
+    }
+
+    private func handleDecodedSample(_ sample: CMSampleBuffer, isKeyFrame: Bool) {
+        if let windowController {
+            windowController.renderView.enqueue(sample, isKeyFrame: isKeyFrame)
+            return
+        }
+
+        guard streamWidth > 0, streamHeight > 0, let model else { return }
+        firstFrameDeadlineTask?.cancel()
+        firstFrameDeadlineTask = nil
+        let deviceName = streamDeviceName
+        let usesHostedPresentation = hostWindow != nil
+        let controller = MirrorContentWindowController(
+            model: model,
+            session: self,
+            launchFrame: launchFrame,
+            hostWindow: hostWindow,
+            prepareRenderView: { renderView in
+                renderView.setLoadingDeviceName(deviceName)
+                if usesHostedPresentation {
+                    renderView.enqueueFirstVisibleFrame(sample, isKeyFrame: isKeyFrame)
+                } else {
+                    renderView.enqueue(sample, isKeyFrame: isKeyFrame)
+                }
+            }
+        )
+        windowController = controller
+        scheduleAutomaticScreenOffIfNeeded()
+        startDeviceLockMonitoringIfNeeded()
+        controller.show()
+        controller.setStreamSize(width: streamWidth, height: streamHeight)
+        controlChannel?.updateDeviceSize(width: streamWidth, height: streamHeight)
         notifyReadyToDisplay()
+    }
+
+    private func startFirstFrameDeadlineIfNeeded() {
+        guard windowController == nil, firstFrameDeadlineTask == nil else { return }
+        firstFrameDeadlineTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.firstFrameTimeoutNanoseconds)
+            guard !Task.isCancelled,
+                  let self,
+                  !self.didStop,
+                  !self.isStopping,
+                  self.windowController == nil else { return }
+            self.firstFrameDeadlineTask = nil
+            Logger.log("MirrorSession first-frame timeout after stream header; ending stalled launch")
+            self.stop()
+        }
     }
 
     private func notifyReadyToDisplay() {

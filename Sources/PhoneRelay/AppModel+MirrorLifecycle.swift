@@ -290,7 +290,12 @@ extension AppModel {
                     isAwaitingReconnect: isAwaitingReconnect
                 ))
         keepConnectionChooserVisibleForNextMirrorLaunch = false
-        let session = MirrorSession(model: self, serial: serial, launchFrame: launchFrame)
+        let session = MirrorSession(
+            model: self,
+            serial: serial,
+            launchFrame: launchFrame,
+            hostWindow: connectionWindow
+        )
         session.onSessionEnded = { [weak self, weak session] finalMirrorFrame in
             guard let self else { return }
             if self.mirrorSession === session {
@@ -329,7 +334,9 @@ extension AppModel {
             self.transportIntent = .automatic
             self.isRecoveringConnection = false
             self.isAwaitingReconnect = false
-            self.hideConnectionWindowForNativeMirror()
+            if !session.usesHostWindow {
+                self.hideConnectionWindowForNativeMirror()
+            }
         }
 
         mirrorLaunchTask?.cancel()
@@ -339,7 +346,7 @@ extension AppModel {
         selectedDevice.states = [.mirroringReady, .companionConnected]
         lastMirrorStartAt = Date()
         missingMirrorTransportPollMisses = 0
-        if !keepConnectionWindowVisible {
+        if !keepConnectionWindowVisible, !session.usesHostWindow {
             hideConnectionWindowForNativeMirror()
         }
 

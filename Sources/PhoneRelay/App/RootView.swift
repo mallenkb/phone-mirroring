@@ -43,6 +43,15 @@ struct WindowRegistrationView: NSViewRepresentable {
     private func configure(window: NSWindow?, coordinator: Coordinator) {
         guard let window else { return }
         model.registerConnectionWindow(window)
+        // While the mirror root is cross-fading above the chooser, SwiftUI stays
+        // mounted underneath it. Published model updates can therefore revisit
+        // this representable; do not reapply the chooser's fixed size/style over
+        // the active mirror window. The mirror controller owns those policies
+        // until the session returns to the chooser state.
+        if model.isMirroring {
+            coordinator.setMirroring(true)
+            return
+        }
         configurePhoneWindow(window, coordinator: coordinator)
     }
 
