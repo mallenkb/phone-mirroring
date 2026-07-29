@@ -1272,11 +1272,13 @@ extension AppModel {
     /// prepare-only behavior without waiting for the background delay.
     func prepareWirelessHandoffForTesting(
         _ device: AuthorizedADBDevice,
-        activatePreparedMirror: Bool = true
+        activatePreparedMirror: Bool = true,
+        mirrorGeneration: Int? = nil
     ) async -> Bool {
         await prepareWirelessMirror(
             from: device,
-            activatePreparedMirror: activatePreparedMirror
+            activatePreparedMirror: activatePreparedMirror,
+            mirrorGeneration: mirrorGeneration
         )
     }
 
@@ -2505,10 +2507,15 @@ extension AppModel {
                     // to listener verification; definitive failures immediately
                     // fall through to TLS/mDNS instead of consuming the budget.
                     wirelessEnabled = commandResult != .failed
-                    if !wirelessEnabled,
-                       usbWiFiHandoffCandidate?.usbSerial == usbDevice.serial,
-                       usbWiFiHandoffCandidate?.address == legacyAddress {
-                        usbWiFiHandoffCandidate = nil
+                    if !wirelessEnabled {
+                        // A definitive tcpip failure is a session verdict, same
+                        // as the release behavior: don't re-run the destructive
+                        // restart on the next cycle for this phone.
+                        failedLegacyHandoffSerials.insert(usbDevice.serial)
+                        if usbWiFiHandoffCandidate?.usbSerial == usbDevice.serial,
+                           usbWiFiHandoffCandidate?.address == legacyAddress {
+                            usbWiFiHandoffCandidate = nil
+                        }
                     }
                     Logger.log("Wi-Fi handoff phase=tcpip-enable usb=\(usbDevice.serial) result=\(String(describing: commandResult)) verifying_listener=\(wirelessEnabled) output=\(tcpipOutput.trimmingCharacters(in: .whitespacesAndNewlines))")
                 }
@@ -2543,11 +2550,14 @@ extension AppModel {
                         shellTimeout: Self.wirelessHandoffShellTimeout,
                         allowADBServerRestart: false
                     )
-                    guard ownsHandoff() else { return false }
                     connectAttempts += readiness.connectAttempts
                     noRouteToHostFailures += readiness.noRouteToHostFailures
                     Logger.log("Wi-Fi handoff phase=legacy-readiness address=\(legacyAddress) ready=\(readiness.isReady) attempts=\(readiness.connectAttempts) no_route=\(readiness.noRouteToHostFailures)")
                     if readiness.isReady {
+                        // Only a current attempt may promote transports; a
+                        // stale one stops here. The failure verdict below is
+                        // deliberately NOT ownership-gated — see that comment.
+                        guard ownsHandoff() else { return false }
                         DiagnosticsService.shared.capture(
                             handoffAttempt.isRetry ? .wifiRetrySucceeded : .wifiHandoffSucceeded,
                             properties: DiagnosticsService.shared.propertiesForCompletedAttempt(handoffAttempt, transport: "wifi")
@@ -2597,17 +2607,24 @@ extension AppModel {
                     // the takeover cancels this task. Marking the serial failed
                     // here would disable tcpip for the whole session on a phone
                     // that is actually mid-restart and about to come up.
+                    if Task.isCancelled {
+                        return false
+                    }
+                    // Wireless adb is on but unreachable from the Mac; don't keep
+                    // restarting adbd (and killing the USB mirror) next time.
+                    // Recorded even when the mirror generation moved on: our own
+                    // tcpip restart is what bumps it, and gating this verdict on
+                    // ownership re-armed tcpip every cycle — a USB mirror that
+                    // died every few seconds while Wi-Fi stayed unreachable.
+                    if mayRunTCPIP {
+                        failedLegacyHandoffSerials.insert(usbDevice.serial)
+                    }
                     if !ownsHandoff() {
                         return false
                     }
                     if usbWiFiHandoffCandidate?.usbSerial == usbDevice.serial,
                        usbWiFiHandoffCandidate?.address == legacyAddress {
                         usbWiFiHandoffCandidate = nil
-                    }
-                    // Wireless adb is on but unreachable from the Mac; don't keep
-                    // restarting adbd (and killing the USB mirror) next time.
-                    if mayRunTCPIP {
-                        failedLegacyHandoffSerials.insert(usbDevice.serial)
                     }
                 }
             } else {
