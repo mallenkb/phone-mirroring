@@ -227,6 +227,10 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         installContent(prepareRenderView: prepareRenderView)
         installAppActivationObservers()
         presentationWindow.styleMask.remove(.titled)
+        // Removing .titled clears the aspect constraint `configure` just set,
+        // so re-apply it — otherwise a pre-header window resizes with a zero
+        // (NaN) aspect until the first stream header lands.
+        presentationWindow.contentAspectRatio = presentationWindow.frame.size
     }
 
     required init?(coder: NSCoder) { nil }

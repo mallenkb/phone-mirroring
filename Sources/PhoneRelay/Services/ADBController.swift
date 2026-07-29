@@ -71,8 +71,40 @@ struct ADBController: Sendable {
         }.value
     }
 
+    /// Single-flight prewarm of the adb daemon, shared by every background
+    /// poller. Without it the first `adb devices -l` after launch is killed at
+    /// its 2s timeout while a cold `start-server` is still spawning, and the
+    /// first few `adb mdns services` polls answer from an empty backend — the
+    /// phone only shows up seconds later. Concurrent callers await the *same*
+    /// start rather than each racing their own.
+    private static let serverPrimeLock = NSLock()
+    nonisolated(unsafe) private static var serverPrimeTask: Task<Void, Never>?
+
+    /// Synchronous so the lock is never held across a suspension point.
+    private static func sharedServerPrimeTask(for controller: ADBController) -> Task<Void, Never> {
+        serverPrimeLock.lock()
+        defer { serverPrimeLock.unlock() }
+        if let existing = serverPrimeTask { return existing }
+        let task = Task.detached(priority: .userInitiated) {
+            _ = controller.run(["start-server"], timeout: 6)
+        }
+        serverPrimeTask = task
+        return task
+    }
+
+    func primeServerIfNeeded() async {
+        await Self.sharedServerPrimeTask(for: self).value
+    }
+
+    /// `adb mdns services` sits on the 1s discovery poll's critical path, so it
+    /// gets an explicit short timeout instead of Tooling's 5s adb default. A
+    /// wedged daemon used to stretch a "1 second" poll cycle past 6s.
+    nonisolated static let mdnsServicesTimeout: TimeInterval = 2
+
     func mdnsServices() -> [DiscoveredPhone] {
-        let adbPhones = Self.parseMDNSServices(run(["mdns", "services"]))
+        let adbPhones = Self.parseMDNSServices(
+            run(["mdns", "services"], timeout: Self.mdnsServicesTimeout)
+        )
         guard adbPhones.isEmpty else { return adbPhones }
         return Self.rateLimitedDNSServiceDiscoveredPhones()
     }
@@ -124,9 +156,30 @@ struct ADBController: Sendable {
     private static let resolveCacheLock = NSLock()
     nonisolated(unsafe) private static var resolvedPhonesByService: [DNSService: DiscoveredPhone] = [:]
     nonisolated(unsafe) private static var failedResolveAt: [DNSService: Date] = [:]
+    /// Services with a resolve currently running off-poll, so a 1s poll can't
+    /// queue a second `dns-sd -L` for a service already being resolved.
+    nonisolated(unsafe) private static var resolvesInFlight: Set<DNSService> = []
+    /// Last known advertised set, so an off-poll resolve that lands after its
+    /// service stopped advertising is discarded instead of surfacing a phone
+    /// that is already gone (and inviting a connect to a dead address).
+    nonisolated(unsafe) private static var advertisedServices: Set<DNSService> = []
     /// Failed resolves retry on this cadence rather than every 1s poll.
     nonisolated static let resolveRetryInterval: TimeInterval = 5
 
+    /// Every `dns-sd -L` spawn runs here, never on the discovery poll. A first
+    /// sighting therefore costs one extra poll (~1s) instead of blocking the
+    /// poll for up to 1s per unresolved service — three service types for one
+    /// phone used to add ~3s to the cycle that first saw it.
+    private static let resolveQueue = DispatchQueue(
+        label: "phonerelay.discovery.resolve",
+        qos: .utility
+    )
+
+    nonisolated static func defaultResolveScheduler(_ work: @escaping @Sendable () -> Void) {
+        resolveQueue.async(execute: work)
+    }
+
+    @Sendable
     nonisolated static func defaultServiceResolver(_ service: DNSService) -> DiscoveredPhone? {
         let resolved = Tooling.runResult(
             "dns-sd",
@@ -140,45 +193,61 @@ struct ADBController: Sendable {
         )
     }
 
+    /// Returns only what is already resolved, and schedules resolution of
+    /// anything new off-poll. Never blocks the caller on a `dns-sd` spawn.
     static func resolvedPhones(
         for services: [DNSService],
         now: Date = Date(),
-        resolve: (DNSService) -> DiscoveredPhone? = defaultServiceResolver
+        resolve: @escaping @Sendable (DNSService) -> DiscoveredPhone? = defaultServiceResolver,
+        schedule: (@escaping @Sendable () -> Void) -> Void = defaultResolveScheduler
     ) -> [DiscoveredPhone] {
+        let current = Set(services)
+        resolveCacheLock.lock()
+        advertisedServices = current
+        // Forget services that stopped advertising so their return re-resolves.
+        resolvedPhonesByService = resolvedPhonesByService.filter { current.contains($0.key) }
+        failedResolveAt = failedResolveAt.filter { current.contains($0.key) }
+        resolveCacheLock.unlock()
+
         var phones: [DiscoveredPhone] = []
+        var pending: [DNSService] = []
         for service in services {
             resolveCacheLock.lock()
             let cached = resolvedPhonesByService[service]
             let lastFailure = failedResolveAt[service]
+            let isInFlight = resolvesInFlight.contains(service)
+            if cached == nil,
+               !isInFlight,
+               !(lastFailure.map { now.timeIntervalSince($0) < resolveRetryInterval } ?? false) {
+                resolvesInFlight.insert(service)
+                pending.append(service)
+            }
             resolveCacheLock.unlock()
 
             if var phone = cached {
                 phone.lastSeen = now
                 phones.append(phone)
-                continue
-            }
-            if let lastFailure, now.timeIntervalSince(lastFailure) < resolveRetryInterval {
-                continue
-            }
-            if let phone = resolve(service) {
-                resolveCacheLock.lock()
-                resolvedPhonesByService[service] = phone
-                failedResolveAt.removeValue(forKey: service)
-                resolveCacheLock.unlock()
-                phones.append(phone)
-            } else {
-                resolveCacheLock.lock()
-                failedResolveAt[service] = now
-                resolveCacheLock.unlock()
             }
         }
 
-        // Forget services that stopped advertising so their return re-resolves.
-        let current = Set(services)
-        resolveCacheLock.lock()
-        resolvedPhonesByService = resolvedPhonesByService.filter { current.contains($0.key) }
-        failedResolveAt = failedResolveAt.filter { current.contains($0.key) }
-        resolveCacheLock.unlock()
+        for service in pending {
+            schedule {
+                let resolved = resolve(service)
+                resolveCacheLock.lock()
+                resolvesInFlight.remove(service)
+                // Dropped from the advertised set while we were resolving —
+                // discard rather than surface a phone that has gone away.
+                if advertisedServices.contains(service) {
+                    if let resolved {
+                        resolvedPhonesByService[service] = resolved
+                        failedResolveAt.removeValue(forKey: service)
+                    } else {
+                        failedResolveAt[service] = now
+                    }
+                }
+                resolveCacheLock.unlock()
+            }
+        }
 
         return dedupeMDNSPhones(phones)
     }
@@ -188,6 +257,8 @@ struct ADBController: Sendable {
         resolveCacheLock.lock()
         resolvedPhonesByService = [:]
         failedResolveAt = [:]
+        resolvesInFlight = []
+        advertisedServices = []
         resolveCacheLock.unlock()
     }
     #endif

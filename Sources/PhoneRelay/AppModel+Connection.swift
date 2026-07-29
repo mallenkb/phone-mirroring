@@ -1347,6 +1347,11 @@ extension AppModel {
         guard connectionCoordinator.deviceWatcherTask == nil else { return }
         let adb = self.adb
         connectionCoordinator.deviceWatcherTask = Task { [weak self] in
+            // A cold daemon outlives `adbDeviceListTimeout`, so the first poll
+            // after launch was reliably killed mid-`start-server` and reported
+            // no devices. Warm it once (shared single-flight with discovery)
+            // before the loop instead of burning the first polls on a race.
+            await adb.primeServerIfNeeded()
             while !Task.isCancelled {
                 let output = await Task.detached {
                     adb.run(["devices", "-l"], timeout: Self.adbDeviceListTimeout)

@@ -26,19 +26,33 @@ final class BonjourServiceMonitor: @unchecked Sendable {
     /// Types whose browser hit `.failed`. While any browser is down the
     /// monitor reports unavailable so callers use the legacy dns-sd sweep —
     /// a partial view would silently hide, say, pairable phones from the QR
-    /// flow. (`.waiting`, e.g. Local Network denied, is not failure: the
-    /// browser recovers on its own the moment permission is granted.)
+    /// flow.
     private var failedTypes: Set<String> = []
+    /// Types whose browser is currently `.ready`. A browser that is merely
+    /// `.waiting` — which is exactly what a denied Local Network permission
+    /// looks like — reports no services at all, and treating that as "nothing
+    /// is advertised" made discovery look permanently stuck with no fallback.
+    /// Anything short of ready for every type is therefore unavailable, so
+    /// callers drop to the legacy dns-sd sweep until the browsers recover.
+    private var readyTypes: Set<String> = []
     private var servicesByType: [String: Set<String>] = [:]
 
+    /// Whether the browser set can be trusted to answer for *all* service
+    /// types. Split out from `currentServices()` so the rule is testable
+    /// without standing up real `NWBrowser`s.
+    nonisolated static func isAvailable(readyTypes: Set<String>, failedTypes: Set<String>) -> Bool {
+        failedTypes.isEmpty && Set(serviceTypes).isSubset(of: readyTypes)
+    }
+
     /// The currently-advertised adb services, or nil when the monitor can't
-    /// provide a trustworthy answer (a browser failed) and the caller should
-    /// fall back to the legacy sweep. Starts the browsers on first call.
+    /// provide a trustworthy answer (a browser failed, or hasn't come up) and
+    /// the caller should fall back to the legacy sweep. Starts the browsers on
+    /// first call.
     func currentServices() -> [ADBController.DNSService]? {
         startIfNeeded()
         lock.lock()
         defer { lock.unlock() }
-        guard failedTypes.isEmpty else { return nil }
+        guard Self.isAvailable(readyTypes: readyTypes, failedTypes: failedTypes) else { return nil }
         return servicesByType
             .flatMap { type, names in
                 names.map { ADBController.DNSService(instance: $0, serviceType: type) }
@@ -66,10 +80,22 @@ final class BonjourServiceMonitor: @unchecked Sendable {
                 switch state {
                 case .failed(let error):
                     self.failedTypes.insert(type)
+                    self.readyTypes.remove(type)
                     self.lock.unlock()
                     Logger.log("Bonjour monitor browser failed type=\(type) error=\(error)")
                 case .ready:
                     self.failedTypes.remove(type)
+                    self.readyTypes.insert(type)
+                    self.lock.unlock()
+                case .waiting(let error):
+                    // Local Network denied, no interface, etc. The browser
+                    // still reports zero services, so stop claiming authority
+                    // and let the caller sweep instead of showing nothing.
+                    self.readyTypes.remove(type)
+                    self.lock.unlock()
+                    Logger.log("Bonjour monitor browser waiting type=\(type) error=\(error)")
+                case .cancelled:
+                    self.readyTypes.remove(type)
                     self.lock.unlock()
                 default:
                     self.lock.unlock()
