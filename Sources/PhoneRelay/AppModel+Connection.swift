@@ -1322,6 +1322,19 @@ extension AppModel {
                 )
                 return
             }
+            // A prior arm already proved that this Mac cannot reach the
+            // phone's Wi-Fi endpoint. Do not spend another handoff budget or
+            // restart adbd again while the breaker is active; preserve the
+            // transport the user just plugged in.
+            if connectionCoordinator.isLegacyHandoffCoolingDown(serial: readyUSBDevice.serial) {
+                Logger.log("Wi-Fi handoff cooling down for \(readyUSBDevice.serial); starting stable USB mirror immediately")
+                startMirroringOverUSB(
+                    readyUSBDevice,
+                    manual: false,
+                    prepareWirelessHandoff: false
+                )
+                return
+            }
             let shouldAttemptHandoff = Self.shouldAttemptWirelessHandoff(
                 from: readyUSBDevice,
                 preferUSBMirroring: preferUSBMirroring,
@@ -1844,7 +1857,8 @@ extension AppModel {
                     hasUSBConnectTask: self.connectionCoordinator.usbConnectTask != nil,
                     isAwaitingReconnect: self.isAwaitingReconnect,
                     selectedSerial: self.selectedDevice.adbSerial
-                ), let serial = self.selectedDevice.adbSerial,
+                ), !self.connectionCoordinator.isPreparingWiFiHandoff,
+                   let serial = self.selectedDevice.adbSerial,
                    let liveDevice = Self.liveSelectedOrRememberedDevice(
                     selectedSerial: serial,
                     pairedPhones: self.autoConnectEligiblePairedPhones,
@@ -2856,6 +2870,18 @@ extension AppModel {
                 && !hasLiveMirror
                 && !alreadyListening
                 && !connectionCoordinator.isLegacyHandoffCoolingDown(serial: usbDevice.serial)
+
+            if mayRunTCPIP {
+                let hostRouteUnavailable = await Task.detached {
+                    Self.macRouteToWirelessHostIsUnavailable(legacyAddress)
+                }.value
+                guard ownsHandoff() else { return false }
+                if hostRouteUnavailable {
+                    connectionCoordinator.noteLegacyHandoffFailure(serial: usbDevice.serial)
+                    Logger.log("Wi-Fi handoff phase=host-route-unavailable usb=\(usbDevice.serial) address=\(legacyAddress); preserving USB")
+                    return false
+                }
+            }
             Logger.log("Wi-Fi handoff phase=legacy-probe address=\(legacyAddress) listening=\(alreadyListening) may_enable=\(mayRunTCPIP)")
 
             if alreadyListening || mayRunTCPIP {
@@ -3033,7 +3059,9 @@ extension AppModel {
         }
 
         guard remainingBudget() > 0.05 else {
-            if connectAttempts > 0, connectAttempts == noRouteToHostFailures {
+            if connectAttempts > 0,
+               connectAttempts == noRouteToHostFailures,
+               !localNetworkPermissionGrantedForOnboarding {
                 presentLocalNetworkPermissionHint()
             }
             return false
@@ -3116,7 +3144,9 @@ extension AppModel {
         }
 
         guard remainingBudget() > 0.05 else {
-            if connectAttempts > 0, connectAttempts == noRouteToHostFailures {
+            if connectAttempts > 0,
+               connectAttempts == noRouteToHostFailures,
+               !localNetworkPermissionGrantedForOnboarding {
                 presentLocalNetworkPermissionHint()
             }
             return false
@@ -3184,7 +3214,9 @@ extension AppModel {
 
         }
 
-        if connectAttempts > 0, connectAttempts == noRouteToHostFailures {
+        if connectAttempts > 0,
+           connectAttempts == noRouteToHostFailures,
+           !localNetworkPermissionGrantedForOnboarding {
             presentLocalNetworkPermissionHint()
         }
         Logger.log("Wi-Fi handoff phase=failed usb=\(usbDevice.serial) connect_attempts=\(connectAttempts) no_route=\(noRouteToHostFailures) budget_remaining=\(String(format: "%.2f", remainingBudget()))")
