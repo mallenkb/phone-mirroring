@@ -38,13 +38,13 @@ struct FigmaMirrorExperienceView: View {
         model.isActivelyConnecting || model.isMirroring
     }
     private var isUSBButtonBusy: Bool {
-        inlineConnectingTransport == .usb
+        inlineConnectingTransport == .usb && !model.isMirroring
     }
     private var isWirelessButtonBusy: Bool {
-        inlineConnectingTransport == .wifi
+        inlineConnectingTransport == .wifi && !model.isMirroring
     }
     private var isChooserButtonDisabled: Bool {
-        inlineConnectingTransport != nil
+        inlineConnectingTransport != nil || model.isMirroring
     }
     private var effectiveUSBConnectionAvailable: Bool {
         inlineConnectingTransport == nil
@@ -130,6 +130,12 @@ struct FigmaMirrorExperienceView: View {
             // The row attempt has resolved (mirroring started, or it failed and
             // returned to idle) — drop back to the normal loading-surface rules.
             if !connecting { inlineConnectingTransport = nil }
+        }
+        .onChange(of: model.isMirroring) { mirroring in
+            // The chooser can intentionally remain visible beside the mirror.
+            // Once the first frame path owns the session, its row must stop
+            // presenting an in-progress state and must not start a duplicate.
+            if mirroring { inlineConnectingTransport = nil }
         }
     }
 

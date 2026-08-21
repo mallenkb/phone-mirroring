@@ -72,6 +72,42 @@ final class USBAttachNudgeTests: XCTestCase {
         )
     }
 
+    func testDetachedSerialBecomesEligibleWhenItReturns() {
+        let whileAttached = AppModel.reconciledWirelessArmSeenSerials(
+            previouslySeen: ["USB-1"],
+            attachedSerials: ["USB-1"]
+        )
+        let afterDetach = AppModel.reconciledWirelessArmSeenSerials(
+            previouslySeen: whileAttached,
+            attachedSerials: []
+        )
+        let afterReplug = AppModel.reconciledWirelessArmSeenSerials(
+            previouslySeen: afterDetach,
+            attachedSerials: ["USB-1"]
+        )
+
+        XCTAssertEqual(whileAttached, ["USB-1"])
+        XCTAssertTrue(afterDetach.isEmpty)
+        XCTAssertTrue(afterReplug.isEmpty)
+    }
+
+    func testStartingOneArmDoesNotMarkOtherAttachedPhonesSeen() {
+        let seen = AppModel.reconciledWirelessArmSeenSerials(
+            previouslySeen: [],
+            attachedSerials: ["USB-1", "USB-2"],
+            startingSerial: "USB-1"
+        )
+
+        XCTAssertEqual(seen, ["USB-1"])
+        XCTAssertTrue(
+            AppModel.shouldArmWirelessForUSBSerial(
+                "USB-2",
+                seenSerials: seen,
+                lastAttemptAt: nil
+            )
+        )
+    }
+
     // MARK: - Anti-ping-pong pin vs a failing route
 
     /// The pin protects a healthy pursued Wi-Fi route from USB presence.

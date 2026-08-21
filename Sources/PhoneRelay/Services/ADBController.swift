@@ -102,13 +102,18 @@ struct ADBController: Sendable {
     nonisolated(unsafe) private static var serverPrimeTask: Task<Void, Never>?
     nonisolated(unsafe) private static var serverPrimeInFlight = false
     nonisolated(unsafe) private static var serverPrimeCompletedAt: Date?
+    nonisolated(unsafe) private static var serverPrimeExecutablePath: String?
     /// Reuse a just-completed warm-up across launch, discovery, and reconnect.
     /// Later connection work still refreshes adb normally, and `kill-server`
     /// invalidates this state immediately.
     nonisolated static let serverPrimeReuseWindow: TimeInterval = 2
 
-    private static func finishServerPrime() {
+    private static func finishServerPrime(executablePath: String?) {
         serverPrimeLock.lock()
+        guard serverPrimeExecutablePath == executablePath else {
+            serverPrimeLock.unlock()
+            return
+        }
         serverPrimeInFlight = false
         serverPrimeCompletedAt = Date()
         serverPrimeLock.unlock()
@@ -119,28 +124,35 @@ struct ADBController: Sendable {
         serverPrimeTask = nil
         serverPrimeInFlight = false
         serverPrimeCompletedAt = nil
+        serverPrimeExecutablePath = nil
         serverPrimeLock.unlock()
     }
 
     /// Synchronous so the lock is never held across a suspension point.
     private static func sharedServerPrimeTask(for controller: ADBController) -> Task<Void, Never> {
+        let executablePath = Tooling.toolPath(named: "adb")
         serverPrimeLock.lock()
         defer { serverPrimeLock.unlock() }
-        if serverPrimeInFlight, let existing = serverPrimeTask {
+        if serverPrimeInFlight,
+           serverPrimeExecutablePath == executablePath,
+           let existing = serverPrimeTask {
             return existing
         }
         if let completedAt = serverPrimeCompletedAt,
            Date().timeIntervalSince(completedAt) < serverPrimeReuseWindow,
+           serverPrimeExecutablePath == executablePath,
            let existing = serverPrimeTask {
             return existing
         }
         serverPrimeInFlight = true
+        serverPrimeCompletedAt = nil
+        serverPrimeExecutablePath = executablePath
         let task = Task.detached(priority: .userInitiated) {
             let startedAt = DispatchTime.now().uptimeNanoseconds
             _ = controller.run(["start-server"], timeout: 6)
             let elapsedMilliseconds = (DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
             Logger.log("ADB server prime phase=started duration_ms=\(elapsedMilliseconds)")
-            Self.finishServerPrime()
+            Self.finishServerPrime(executablePath: executablePath)
         }
         serverPrimeTask = task
         return task

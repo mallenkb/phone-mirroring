@@ -687,7 +687,11 @@ extension AppModel {
             in: discoveredPhones,
             allowSingleCandidateFallback: allowsSingleLiveCandidate
         )?.address
-        let liveAddress = authorizedAddress ?? discoveredAddress
+        // A resolved discovery endpoint is immediately dialable. An authorized
+        // service-name row can still fail as an `adb connect` target, so use it
+        // only for the direct shell-ready fast path above and prefer discovery
+        // for any reconnect command that follows.
+        let liveAddress = discoveredAddress ?? authorizedAddress
         let savedAddress = record.resolvedWiFiAddress ?? record.lastAddress
         let currentNetworkFingerprint = WiFiAddressRecovery.currentNetworkFingerprint()
         let networkChanged = connectionCoordinator.preferCurrentNetworkForNextReconnect
@@ -709,29 +713,59 @@ extension AppModel {
                 connectAttempts: 0,
                 noRouteToHostFailures: 0
             )
-        } else if networkChanged {
-            Logger.log("Automatic reconnect detected a new network; prioritizing live discovery and current subnets for \(record.displayName)")
-            if let liveAddress {
-                result = await Self.connectToRememberedWirelessReadiness(
-                    adb: adb,
-                    savedAddress: liveAddress,
-                    candidateAddresses: [liveAddress],
-                    restrictDialsToReachableOrStable: true,
-                    readinessAttempts: 2,
-                    delayNanoseconds: Self.wirelessHandoffRetryDelayNanoseconds,
-                    preflightLocalNetworkAccess: { address in
-                        await Self.preflightLocalNetworkAccess(address: address)
-                    },
-                    connectTimeout: Self.wirelessHandoffConnectTimeout,
-                    shellTimeout: Self.wirelessHandoffShellTimeout
-                )
-            } else {
-                result = RememberedWirelessConnectResult(
-                    connectedAddress: nil,
-                    connectAttempts: 0,
-                    noRouteToHostFailures: 0
-                )
+        } else if let liveAddress {
+            // Discovery has already resolved the phone's current endpoint. Dial
+            // that single route first instead of probing stale saved and :5555
+            // candidates before it. Healthy discoveries now reach mirror launch
+            // after one readiness round; saved routes remain the fallback.
+            Logger.log("Automatic reconnect prioritizing fresh live endpoint for \(record.displayName)")
+            result = await Self.connectToRememberedWirelessReadiness(
+                adb: adb,
+                savedAddress: liveAddress,
+                candidateAddresses: [liveAddress],
+                restrictDialsToReachableOrStable: true,
+                readinessAttempts: 2,
+                delayNanoseconds: Self.wirelessHandoffRetryDelayNanoseconds,
+                preflightLocalNetworkAccess: { address in
+                    await Self.preflightLocalNetworkAccess(address: address)
+                },
+                connectTimeout: Self.wirelessHandoffConnectTimeout,
+                shellTimeout: Self.wirelessHandoffShellTimeout
+            )
+
+            if result.connectedAddress == nil, !networkChanged {
+                let fallbackCandidates = Self.canonicalReconnectCandidateAddresses(
+                    savedAddress: savedAddress,
+                    liveAddress: nil
+                ).filter { $0 != liveAddress }
+                if !fallbackCandidates.isEmpty {
+                    let fallback = await Self.connectToRememberedWirelessReadiness(
+                        adb: adb,
+                        savedAddress: savedAddress,
+                        candidateAddresses: fallbackCandidates,
+                        restrictDialsToReachableOrStable: true,
+                        readinessAttempts: 2,
+                        delayNanoseconds: Self.wirelessHandoffRetryDelayNanoseconds,
+                        preflightLocalNetworkAccess: { address in
+                            await Self.preflightLocalNetworkAccess(address: address)
+                        },
+                        connectTimeout: Self.wirelessHandoffConnectTimeout,
+                        shellTimeout: Self.wirelessHandoffShellTimeout
+                    )
+                    result.connectAttempts += fallback.connectAttempts
+                    result.noRouteToHostFailures += fallback.noRouteToHostFailures
+                    result.sawReachableNoRoute = result.sawReachableNoRoute
+                        || fallback.sawReachableNoRoute
+                    result.connectedAddress = fallback.connectedAddress
+                }
             }
+        } else if networkChanged {
+            Logger.log("Automatic reconnect detected a new network with no live endpoint for \(record.displayName)")
+            result = RememberedWirelessConnectResult(
+                connectedAddress: nil,
+                connectAttempts: 0,
+                noRouteToHostFailures: 0
+            )
         } else {
             let candidates = Self.canonicalReconnectCandidateAddresses(
                 savedAddress: savedAddress,
@@ -764,10 +798,20 @@ extension AppModel {
         guard ownsAttempt() else { return .failed(.temporarilyUnavailable) }
 
         if let connectedAddress = result.connectedAddress {
-            let sessionAddress = await stabilizeAutomaticWirelessAddress(
-                connectedAddress,
-                adb: adb
-            )
+            let sessionAddress: String
+            if Self.shouldStabilizeAutomaticWirelessAddress(
+                connectedAddress: connectedAddress,
+                hasFreshLiveEndpoint: liveAddress != nil
+            ) {
+                sessionAddress = await stabilizeAutomaticWirelessAddress(
+                    connectedAddress,
+                    adb: adb
+                )
+            } else {
+                // Fresh discovery or an already-authorized route is ready now.
+                // Do not restart adbd to manufacture :5555 before first frame.
+                sessionAddress = connectedAddress
+            }
             guard ownsAttempt() else { return .failed(.temporarilyUnavailable) }
             return .connected(sessionAddress: sessionAddress)
         }
@@ -827,6 +871,14 @@ extension AppModel {
         }
     }
 
+    nonisolated static func shouldStabilizeAutomaticWirelessAddress(
+        connectedAddress: String,
+        hasFreshLiveEndpoint: Bool
+    ) -> Bool {
+        !hasFreshLiveEndpoint
+            && shouldPromoteToLegacyTCPIP(connectedAddress: connectedAddress)
+    }
+
     func completeAutomaticWirelessReconnect(
         record: PairedPhoneRecord,
         sessionAddress: String,
@@ -837,16 +889,13 @@ extension AppModel {
             taskGeneration: taskGeneration,
             attemptGeneration: attemptGeneration
         ) else { return false }
-        let adb = self.adb
-        let deviceName = await Self.connectedDeviceName(
-            adb: adb,
-            serial: sessionAddress,
-            fallback: record.displayName
+        // Discovery and the watcher already supplied identity. Avoid another
+        // `adb devices -l` subprocess on the verified route before first frame.
+        let deviceName = Self.mirrorWindowDeviceTitle(
+            name: latestAuthorizedADBDevices.first(where: {
+                !$0.isUSB && $0.serial == sessionAddress
+            })?.model ?? record.displayName
         )
-        guard connectionCoordinator.ownsAutomaticReconnectTask(
-            taskGeneration: taskGeneration,
-            attemptGeneration: attemptGeneration
-        ) else { return false }
         let existingStableAddress = record.resolvedWiFiAddress.flatMap { address in
             Self.persistableWirelessAddress(address).flatMap {
                 Self.port(in: $0) == Self.legacyADBWirelessPort ? $0 : nil
@@ -968,57 +1017,12 @@ extension AppModel {
                     )
                     return
                 }
-                var mirrorAddress = address
-                if Self.shouldPromoteToLegacyTCPIP(connectedAddress: address) {
-                    switch await Self.promoteToLegacyTCPIP(
-                        adb: adb,
-                        sourceSerial: address,
-                        preflightLocalNetworkAccess: { address in
-                            await Self.preflightLocalNetworkAccess(address: address)
-                        }
-                    ) {
-                    case .promoted(let promotedAddress):
-                        mirrorAddress = promotedAddress
-                    case .unavailable:
-                        break
-                    case .transportLost(let legacyAddress):
-                        // The promotion's adbd restart killed the transport we
-                        // just verified. Give the 5555 listener one more pass;
-                        // if it still isn't up, fail cleanly instead of
-                        // launching a mirror against a dead address.
-                        let retry = await Self.connectToRememberedWirelessReadiness(
-                            adb: adb,
-                            savedAddress: legacyAddress,
-                            readinessAttempts: 2,
-                            preflightLocalNetworkAccess: { address in
-                                await Self.preflightLocalNetworkAccess(address: address)
-                            }
-                        )
-                        guard !Task.isCancelled,
-                              self.mirrorStartGeneration == mirrorGeneration,
-                              self.connectionCoordinator.isCurrentDiscoveredWiFiConnect(connectGeneration)
-                        else {
-                            self.completeDiscoveredWiFiConnect(
-                                generation: connectGeneration,
-                                address: address,
-                                resetManualIntent: true
-                            )
-                            return
-                        }
-                        guard let recoveredAddress = retry.connectedAddress else {
-                            Logger.log("Legacy tcpip promotion lost transport \(address); \(legacyAddress) not ready yet")
-                            self.noteAutoConnectFailure(for: phone)
-                            self.isAutoConnecting = false
-                            self.completeDiscoveredWiFiConnect(
-                                generation: connectGeneration,
-                                address: address,
-                                resetManualIntent: true
-                            )
-                            return
-                        }
-                        mirrorAddress = recoveredAddress
-                    }
-                }
+                // This discovery endpoint has already passed connect plus shell
+                // readiness. Promoting it to legacy :5555 restarts adbd and can
+                // add several retry windows before first frame, or lose the
+                // working transport entirely. Persist and launch the verified
+                // endpoint now; route maintenance must not block the mirror.
+                let mirrorAddress = address
                 guard !Task.isCancelled,
                       self.mirrorStartGeneration == mirrorGeneration,
                       self.connectionCoordinator.isCurrentDiscoveredWiFiConnect(connectGeneration)
@@ -1032,18 +1036,11 @@ extension AppModel {
                 }
                 self.failedAutoConnectTargets.removeValue(forKey: address)
                 self.failedAutoConnectTargets.removeValue(forKey: mirrorAddress)
-                let deviceName = await Self.connectedDeviceName(adb: adb, serial: mirrorAddress, fallback: label)
-                guard !Task.isCancelled,
-                      self.mirrorStartGeneration == mirrorGeneration,
-                      self.connectionCoordinator.isCurrentDiscoveredWiFiConnect(connectGeneration)
-                else {
-                    self.completeDiscoveredWiFiConnect(
-                        generation: connectGeneration,
-                        address: address,
-                        resetManualIntent: true
-                    )
-                    return
-                }
+                // The watcher already owns device-list refreshes. Avoid another
+                // `adb devices -l` subprocess between readiness and launch.
+                let deviceName = self.latestAuthorizedADBDevices.first(where: {
+                    !$0.isUSB && $0.serial == mirrorAddress
+                })?.model ?? label
                 let matchingRecord = Self.recordForDiscoveredWiFiRoute(
                     records: self.pairedPhones,
                     selectedDevice: self.selectedDevice,
@@ -1068,7 +1065,9 @@ extension AppModel {
                     address: address,
                     resetManualIntent: false
                 )
-                self.startMirroring(manual: true)
+                self.prepareManualMirrorLaunch()
+                self.stopDisconnectRecovery()
+                self.launchNativeMirror(serial: mirrorAddress)
             } else {
                 self.noteAutoConnectFailure(for: phone)
                 self.isAutoConnecting = false
@@ -1397,7 +1396,10 @@ extension AppModel {
             wifiAddress: device.serial
         )
         stopQRCodePairingSession()
-        startMirroring()
+        // This exact adb transport already passed a shell sentinel above. Going
+        // through startWirelessMirroring would rediscover and reconnect it, then
+        // potentially promote it to :5555 before launching. Launch it directly.
+        launchNativeMirror(serial: device.serial)
     }
 
     /// If a configure-first `adb tcpip` attempt did not produce a usable Wi-Fi
@@ -3265,6 +3267,7 @@ extension AppModel {
             address: address,
             displayName: displayName
         )
+        connectionCoordinator.clearLegacyHandoffFailure(serial: usbDevice.serial)
         touchPairedPhone(
             id: usbDevice.serial,
             displayName: displayName,
@@ -3314,6 +3317,7 @@ extension AppModel {
             address: address,
             displayName: displayName
         )
+        connectionCoordinator.clearLegacyHandoffFailure(serial: usbDevice.serial)
         touchPairedPhone(
             id: usbDevice.serial,
             displayName: displayName,
@@ -3597,7 +3601,11 @@ extension AppModel {
 
         if let wirelessDevice = latestAuthorizedADBDevices.first(where: { !$0.isUSB }) {
             select(device: wirelessDevice)
-            startMirroring(manual: true)
+            // The watcher already reports this exact transport as authorized.
+            // A manual click should launch it, not rediscover and reconnect it.
+            prepareManualMirrorLaunch()
+            stopDisconnectRecovery()
+            launchNativeMirror(serial: wirelessDevice.serial)
             return
         }
 
@@ -4105,6 +4113,21 @@ extension AppModel {
         return now.timeIntervalSince(lastAttemptAt) >= retryInterval
     }
 
+    /// Keeps attach-edge bookkeeping aligned with the USB transports that are
+    /// actually present. A detached serial becomes eligible when it returns,
+    /// while only the serial whose arm starts is marked as handled.
+    nonisolated static func reconciledWirelessArmSeenSerials(
+        previouslySeen: Set<String>,
+        attachedSerials: Set<String>,
+        startingSerial: String? = nil
+    ) -> Set<String> {
+        var reconciled = previouslySeen.intersection(attachedSerials)
+        if let startingSerial {
+            reconciled.insert(startingSerial)
+        }
+        return reconciled
+    }
+
     /// Re-arms `adb tcpip 5555` the moment a cable appears, *without* starting a
     /// mirror.
     ///
@@ -4121,6 +4144,10 @@ extension AppModel {
     /// tcpip` restarts adbd and would drop it (INVARIANTS.md rule 3).
     func armWirelessDebuggingForAttachedUSB(authorized: [AuthorizedADBDevice]) {
         let usbSerials = Set(authorized.filter(\.isUSB).map(\.serial))
+        wirelessArmSeenUSBSerials = Self.reconciledWirelessArmSeenSerials(
+            previouslySeen: wirelessArmSeenUSBSerials,
+            attachedSerials: usbSerials
+        )
 
         // A mirror (or anything else that owns adb) makes this unsafe or
         // redundant: the normal handoff already arms Wi-Fi on the paths that
@@ -4168,9 +4195,14 @@ extension AppModel {
             cancelWirelessReconnectWork()
         }
 
-        // Marking seen only once an arm actually starts keeps a serial that
-        // yielded to healthy work eligible on every later poll.
-        wirelessArmSeenUSBSerials = usbSerials
+        // Mark only the arm that actually starts. Other attached phones remain
+        // eligible on the next poll, and this serial becomes eligible again
+        // after a real detach/replug edge (subject to the retry interval).
+        wirelessArmSeenUSBSerials = Self.reconciledWirelessArmSeenSerials(
+            previouslySeen: wirelessArmSeenUSBSerials,
+            attachedSerials: usbSerials,
+            startingSerial: serial
+        )
 
         lastWirelessArmAttemptAt[serial] = now
         let handoffGeneration = connectionCoordinator.beginUSBWiFiHandoff()

@@ -56,14 +56,7 @@ extension AppModel {
         guard manual || !isAutoMirrorHeldForOnboarding else { return }
 
         if manual {
-            keepConnectionChooserVisibleForNextMirrorLaunch = true
-            resumeDiscoveryAfterManualConnect()
-            // A deliberate retry clears backoff.
-            setAutoConnectSuspendedForSelectedDevice(false)
-            consecutiveQuickMirrorFailures = 0
-            autoMirrorBackoffUntil = nil
-            suppressMirrorAudioForReconnect = false
-            isAwaitingReconnect = false
+            prepareManualMirrorLaunch()
         } else if let until = autoMirrorBackoffUntil, Date() < until {
             return
         }
@@ -81,6 +74,20 @@ extension AppModel {
             return
         }
         launchNativeMirror(serial: serial)
+    }
+
+    /// Apply manual-connect ownership and retry semantics without selecting a
+    /// route. Callers that already verified an exact adb transport can then
+    /// launch it directly instead of sending it through wireless discovery a
+    /// second time.
+    func prepareManualMirrorLaunch() {
+        keepConnectionChooserVisibleForNextMirrorLaunch = true
+        resumeDiscoveryAfterManualConnect()
+        setAutoConnectSuspendedForSelectedDevice(false)
+        consecutiveQuickMirrorFailures = 0
+        autoMirrorBackoffUntil = nil
+        suppressMirrorAudioForReconnect = false
+        isAwaitingReconnect = false
     }
 
     func startWirelessMirroring(savedTarget: String) {

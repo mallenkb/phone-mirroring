@@ -3949,6 +3949,59 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertTrue(AppModel.shouldPromoteToLegacyTCPIP(connectedAddress: "192.0.2.44:42111"))
     }
 
+    func testAutomaticReconnectDefersStabilizationForFreshLiveEndpoint() {
+        XCTAssertFalse(AppModel.shouldStabilizeAutomaticWirelessAddress(
+            connectedAddress: "192.0.2.44:42111",
+            hasFreshLiveEndpoint: true
+        ))
+        XCTAssertTrue(AppModel.shouldStabilizeAutomaticWirelessAddress(
+            connectedAddress: "192.0.2.44:42111",
+            hasFreshLiveEndpoint: false
+        ))
+        XCTAssertFalse(AppModel.shouldStabilizeAutomaticWirelessAddress(
+            connectedAddress: "192.0.2.44:5555",
+            hasFreshLiveEndpoint: false
+        ))
+    }
+
+    func testDiscoveredWiFiLaunchUsesVerifiedRouteWithoutRediscovery() throws {
+        let source = try SourceTestSupport.appModelImplementation()
+        guard let functionRange = source.range(of: "func connectAndMirror(phone: DiscoveredPhone)"),
+              let nextFunctionRange = source.range(
+                of: "private func completeDiscoveredWiFiConnect",
+                range: functionRange.upperBound..<source.endIndex
+              )
+        else {
+            XCTFail("connectAndMirror(phone:) source not found")
+            return
+        }
+
+        let body = String(source[functionRange.lowerBound..<nextFunctionRange.lowerBound])
+        XCTAssertTrue(body.contains("self.prepareManualMirrorLaunch()"))
+        XCTAssertTrue(body.contains("self.launchNativeMirror(serial: mirrorAddress)"))
+        XCTAssertFalse(body.contains("Self.promoteToLegacyTCPIP("))
+        XCTAssertFalse(body.contains("await Self.connectedDeviceName("))
+        XCTAssertFalse(body.contains("self.startMirroring(manual: true)"))
+    }
+
+    func testAuthorizedWiFiButtonLaunchesKnownTransportDirectly() throws {
+        let source = try SourceTestSupport.appModelImplementation()
+        guard let functionRange = source.range(of: "func connectViaAvailableWireless()"),
+              let nextFunctionRange = source.range(
+                of: "func beginManualUSBConnection",
+                range: functionRange.upperBound..<source.endIndex
+              )
+        else {
+            XCTFail("connectViaAvailableWireless() source not found")
+            return
+        }
+
+        let body = String(source[functionRange.lowerBound..<nextFunctionRange.lowerBound])
+        XCTAssertTrue(body.contains("prepareManualMirrorLaunch()"))
+        XCTAssertTrue(body.contains("launchNativeMirror(serial: wirelessDevice.serial)"))
+        XCTAssertFalse(body.contains("startMirroring(manual: true)"))
+    }
+
     func testNormalizedManualPairingAddressRequiresExplicitPort() {
         XCTAssertEqual(AppModel.normalizedManualPairingAddress("192.168.1.23:37123"), "192.168.1.23:37123")
         XCTAssertEqual(AppModel.normalizedManualPairingAddress("  192.168.1.23:37123 "), "192.168.1.23:37123")
@@ -4162,6 +4215,29 @@ final class ADBDeviceParsingTests: XCTestCase {
         await ADBController().ensureServerStarted()
 
         XCTAssertEqual(loggedCalls(fake.log), ["start-server"])
+    }
+
+    func testADBServerPrimeDoesNotReuseTaskForDifferentExecutable() async throws {
+        let first = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        exit 0
+        """)
+
+        await ADBController().ensureServerStarted()
+        XCTAssertEqual(loggedCalls(first.log), ["start-server"])
+        first.cleanup()
+
+        let second = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        exit 0
+        """)
+        defer { second.cleanup() }
+
+        await ADBController().ensureServerStarted()
+
+        XCTAssertEqual(loggedCalls(second.log), ["start-server"])
     }
 
     // MARK: - Fake adb helpers
