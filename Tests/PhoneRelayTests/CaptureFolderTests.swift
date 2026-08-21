@@ -95,6 +95,50 @@ final class CaptureFolderTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: captureURL.path))
     }
 
+    // MARK: - Screenshot → clipboard
+
+    /// A capture lands on the clipboard as image data, so it pastes inline
+    /// rather than as a file attachment. Uses a private pasteboard: a test must
+    /// never wipe whatever the user has copied.
+    func testScreenshotIsCopiedToClipboardAsImageData() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhoneRelayClipboardTest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        // Smallest valid PNG: a 1×1 transparent pixel.
+        let pngBase64 = """
+        iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk\
+        YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==
+        """
+        let png = try XCTUnwrap(Data(base64Encoded: pngBase64))
+        let url = base.appendingPathComponent("Android-Mirroring-Screenshot_test.png")
+        try png.write(to: url)
+
+        let pasteboard = NSPasteboard(name: .init("PhoneRelayTestPasteboard-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        XCTAssertTrue(model.copyScreenshotToClipboard(at: url, pasteboard: pasteboard))
+        XCTAssertEqual(pasteboard.data(forType: .png), png)
+    }
+
+    /// A missing or unreadable file must not clear the clipboard the user
+    /// already had — the copy is skipped, not half-applied.
+    func testUnreadableScreenshotLeavesClipboardAlone() {
+        let pasteboard = NSPasteboard(name: .init("PhoneRelayTestPasteboard-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("keep me", forType: .string)
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhoneRelay-missing-\(UUID().uuidString).png")
+
+        XCTAssertFalse(model.copyScreenshotToClipboard(at: missing, pasteboard: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), "keep me")
+    }
+
     func testSettingsViewExposesSeparateCaptureFolderControls() throws {
         let source = try String(contentsOfFile: "Sources/PhoneRelay/Views/SettingsView.swift", encoding: .utf8)
 

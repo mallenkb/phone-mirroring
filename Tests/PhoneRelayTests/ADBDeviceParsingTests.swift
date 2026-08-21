@@ -550,7 +550,9 @@ final class ADBDeviceParsingTests: XCTestCase {
         let body = String(source[start.lowerBound..<end.lowerBound])
 
         let liveWiFi = try XCTUnwrap(body.range(of: "Self.liveWirelessAuthorizedDevice("))
-        let discoveredWiFi = try XCTUnwrap(body.range(of: "Self.rememberedConnectablePhone(for: record, in: discoveredPhones)"))
+        let discoveredWiFi = try XCTUnwrap(
+            body.range(of: "Self.rememberedConnectablePhone(", range: liveWiFi.upperBound..<body.endIndex)
+        )
         let savedWiFi = try XCTUnwrap(body.range(of: "reconnectOverWiFi("))
         let liveUSB = try XCTUnwrap(body.range(of: "connectViaSavedUSB(record: record, explicit: false)"))
 
@@ -2597,6 +2599,117 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
     }
 
+    // MARK: - Failing wireless routes must not veto the USB handoff
+
+    /// A wireless entry whose route is provably failing (dead `:5555` listener,
+    /// refused dials) must not block the USB handoff — otherwise a stale or
+    /// dying wireless transport pins Wi-Fi-first policy forever and plugging
+    /// in the cable does nothing.
+    func testFailingWirelessDeviceDoesNotVetoUSBHandoff() {
+        let usbDevice = AuthorizedADBDevice(
+            serial: "RFCT10ZLTAJ",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: true
+        )
+        let dyingWirelessDevice = AuthorizedADBDevice(
+            serial: "192.168.68.57:5555",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: false
+        )
+
+        XCTAssertTrue(
+            AppModel.shouldPrioritizeUSBHandoff(
+                authorizedDevices: [usbDevice, dyingWirelessDevice],
+                lastAttemptedSerial: nil,
+                preferUSBMirroring: false,
+                isMirroring: false,
+                isPairing: false,
+                failingWirelessSerials: ["192.168.68.57:5555"]
+            )
+        )
+    }
+
+    func testHealthyWirelessDeviceStillVetoesUSBHandoff() {
+        let usbDevice = AuthorizedADBDevice(
+            serial: "RFCT10ZLTAJ",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: true
+        )
+        let healthyWirelessDevice = AuthorizedADBDevice(
+            serial: "192.168.68.57:5555",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: false
+        )
+
+        XCTAssertFalse(
+            AppModel.shouldPrioritizeUSBHandoff(
+                authorizedDevices: [usbDevice, healthyWirelessDevice],
+                lastAttemptedSerial: nil,
+                preferUSBMirroring: false,
+                isMirroring: false,
+                isPairing: false,
+                failingWirelessSerials: []
+            )
+        )
+    }
+
+    // MARK: - Failing-route detection
+
+    func testIsWirelessReconnectFailingMatchesByUSBSerialAndAddress() {
+        let record = PairedPhoneRecord(
+            id: "RFCT10ZLTAJ",
+            displayName: "SM S906B",
+            lastAddress: "192.168.68.57:5555",
+            usbSerial: "RFCT10ZLTAJ",
+            firstPaired: Date(),
+            lastConnected: Date()
+        )
+
+        // No failures recorded yet: a first attempt in flight is not a verdict.
+        XCTAssertFalse(
+            AppModel.isWirelessReconnectFailing(
+                records: [record],
+                serial: "RFCT10ZLTAJ",
+                listenerMissingRecordIDs: [],
+                retryFailureCounts: [:]
+            )
+        )
+
+        // Refused dials recorded by record ID.
+        XCTAssertTrue(
+            AppModel.isWirelessReconnectFailing(
+                records: [record],
+                serial: "RFCT10ZLTAJ",
+                listenerMissingRecordIDs: [],
+                retryFailureCounts: ["RFCT10ZLTAJ": 1]
+            )
+        )
+
+        // The LAN sweep proved the adb listener gone.
+        XCTAssertTrue(
+            AppModel.isWirelessReconnectFailing(
+                records: [record],
+                serial: "192.168.68.57:5555",
+                listenerMissingRecordIDs: ["RFCT10ZLTAJ"],
+                retryFailureCounts: [:]
+            )
+        )
+
+        // An unrelated phone's failures do not leak into this one.
+        XCTAssertFalse(
+            AppModel.isWirelessReconnectFailing(
+                records: [record],
+                serial: "OTHERSERIAL",
+                listenerMissingRecordIDs: ["RFCT10ZLTAJ"],
+                retryFailureCounts: ["RFCT10ZLTAJ": 3]
+            )
+        )
+    }
+
     func testUSBPresenceInterruptsStuckReconnectOverlay() {
         let usbDevice = AuthorizedADBDevice(
             serial: "TESTDEVICE001",
@@ -3015,12 +3128,59 @@ final class ADBDeviceParsingTests: XCTestCase {
             address: "192.0.2.57:5555",
             attempts: 3,
             delayNanoseconds: 1,
-            tcpPortProbe: { _ in true }
+            tcpPortProbe: { _ in true },
+            allowADBServerRestart: true
         )
 
         XCTAssertTrue(readiness.isReady)
         let calls = loggedCalls(fake.log)
         XCTAssertTrue(calls.contains("connect 192.0.2.57:5555"))
+        XCTAssertTrue(calls.contains("kill-server"))
+        XCTAssertTrue(calls.contains("start-server"))
+        XCTAssertEqual(calls.filter { $0 == "connect 192.0.2.57:5555" }.count, 2)
+    }
+
+    func testWirelessReadinessRestartsADBWhenReachableListenerHitsHostProtocolFailure() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        STATE="$ADB_FAKE_LOG.state"
+        if [ "$1" = "connect" ]; then
+          if [ -f "$STATE" ]; then
+            echo "connected to $2"
+          else
+            echo "error: protocol fault (couldn't read status): Connection reset by peer"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "kill-server" ]; then
+          echo "killed"
+          exit 0
+        fi
+        if [ "$1" = "start-server" ]; then
+          touch "$STATE"
+          echo "started"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let readiness = await AppModel.waitForADBWirelessTargetReadiness(
+            adb: ADBController(),
+            address: "192.0.2.57:5555",
+            attempts: 3,
+            delayNanoseconds: 1,
+            tcpPortProbe: { _ in true },
+            allowADBServerRestart: true
+        )
+
+        XCTAssertTrue(readiness.isReady)
+        let calls = loggedCalls(fake.log)
         XCTAssertTrue(calls.contains("kill-server"))
         XCTAssertTrue(calls.contains("start-server"))
         XCTAssertEqual(calls.filter { $0 == "connect 192.0.2.57:5555" }.count, 2)
@@ -3661,6 +3821,77 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(tcpipAfterSecond, 1)
     }
 
+    /// The destructive `tcpip` restart drops the live USB mirror, whose
+    /// relaunch bumps the mirror generation before the readiness probes
+    /// finish. The unreachable verdict must still be recorded: gating it on
+    /// generation ownership left the failed set empty, so every reconnect
+    /// re-ran `tcpip` and killed the fresh USB mirror again — a ~15s crash
+    /// loop whenever Wi-Fi was unreachable (e.g. Local Network denied).
+    @MainActor
+    func testHandoffFailureVerdictSurvivesMirrorGenerationBump() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "devices" ]; then
+          echo "List of devices attached"
+          echo "TESTDEVICE001 device usb:100000001X product:raven model:Pixel_6_Pro device:raven transport_id:1"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "ip" ]; then
+          echo "default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.44"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "tcpip" ]; then
+          echo "restarting in TCP mode port: 5555"
+          exit 0
+        fi
+        if [ "$1" = "connect" ]; then
+          echo "failed to connect to '$2': No route to host"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        // First call is the pre-tcpip listener probe; the second is the first
+        // readiness probe, by which point `adb tcpip` has restarted adbd and
+        // (in production) killed the USB mirror — bump the generation exactly
+        // there to reproduce the takeover relaunch.
+        let probeCalls = LockedCounter()
+        AppModel.adbTCPPortProbe = { _ in
+            if probeCalls.incrementAndGet() == 2 {
+                await MainActor.run { model.mirrorStartGeneration += 1 }
+            }
+            return false
+        }
+        defer { AppModel.adbTCPPortProbe = { await AppModel.adbTCPPortAcceptsConnection($0) } }
+
+        let usb = AuthorizedADBDevice(
+            serial: "TESTDEVICE001",
+            product: "raven",
+            model: "Pixel_6_Pro",
+            isUSB: true
+        )
+
+        _ = await model.prepareWirelessHandoffForTesting(
+            usb,
+            mirrorGeneration: model.mirrorStartGeneration
+        )
+        XCTAssertTrue(
+            model.legacyHandoffFailedSerialsForTesting.contains("TESTDEVICE001"),
+            "the unreachable-after-tcpip verdict must survive a mirror generation bump"
+        )
+
+        _ = await model.prepareWirelessHandoffForTesting(
+            usb,
+            mirrorGeneration: model.mirrorStartGeneration
+        )
+        let tcpipCalls = loggedCalls(fake.log)
+            .filter { $0 == "-s TESTDEVICE001 tcpip 5555" }.count
+        XCTAssertEqual(tcpipCalls, 1, "a later handoff must not re-run the destructive tcpip restart")
+    }
+
     func testOrderedByReachabilityDialsLiveCandidateFirstButKeepsPreferenceOrder() {
         let candidates = ["192.0.2.44:40123", "192.0.2.44:5555"]
         // Only the legacy listener answers → it must be dialed first.
@@ -3716,6 +3947,59 @@ final class ADBDeviceParsingTests: XCTestCase {
     func testShouldPromoteToLegacyTCPIPSkipsAddressesAlreadyOnPort5555() {
         XCTAssertFalse(AppModel.shouldPromoteToLegacyTCPIP(connectedAddress: "192.0.2.44:5555"))
         XCTAssertTrue(AppModel.shouldPromoteToLegacyTCPIP(connectedAddress: "192.0.2.44:42111"))
+    }
+
+    func testAutomaticReconnectDefersStabilizationForFreshLiveEndpoint() {
+        XCTAssertFalse(AppModel.shouldStabilizeAutomaticWirelessAddress(
+            connectedAddress: "192.0.2.44:42111",
+            hasFreshLiveEndpoint: true
+        ))
+        XCTAssertTrue(AppModel.shouldStabilizeAutomaticWirelessAddress(
+            connectedAddress: "192.0.2.44:42111",
+            hasFreshLiveEndpoint: false
+        ))
+        XCTAssertFalse(AppModel.shouldStabilizeAutomaticWirelessAddress(
+            connectedAddress: "192.0.2.44:5555",
+            hasFreshLiveEndpoint: false
+        ))
+    }
+
+    func testDiscoveredWiFiLaunchUsesVerifiedRouteWithoutRediscovery() throws {
+        let source = try SourceTestSupport.appModelImplementation()
+        guard let functionRange = source.range(of: "func connectAndMirror(phone: DiscoveredPhone)"),
+              let nextFunctionRange = source.range(
+                of: "private func completeDiscoveredWiFiConnect",
+                range: functionRange.upperBound..<source.endIndex
+              )
+        else {
+            XCTFail("connectAndMirror(phone:) source not found")
+            return
+        }
+
+        let body = String(source[functionRange.lowerBound..<nextFunctionRange.lowerBound])
+        XCTAssertTrue(body.contains("self.prepareManualMirrorLaunch()"))
+        XCTAssertTrue(body.contains("self.launchNativeMirror(serial: mirrorAddress)"))
+        XCTAssertFalse(body.contains("Self.promoteToLegacyTCPIP("))
+        XCTAssertFalse(body.contains("await Self.connectedDeviceName("))
+        XCTAssertFalse(body.contains("self.startMirroring(manual: true)"))
+    }
+
+    func testAuthorizedWiFiButtonLaunchesKnownTransportDirectly() throws {
+        let source = try SourceTestSupport.appModelImplementation()
+        guard let functionRange = source.range(of: "func connectViaAvailableWireless()"),
+              let nextFunctionRange = source.range(
+                of: "func beginManualUSBConnection",
+                range: functionRange.upperBound..<source.endIndex
+              )
+        else {
+            XCTFail("connectViaAvailableWireless() source not found")
+            return
+        }
+
+        let body = String(source[functionRange.lowerBound..<nextFunctionRange.lowerBound])
+        XCTAssertTrue(body.contains("prepareManualMirrorLaunch()"))
+        XCTAssertTrue(body.contains("launchNativeMirror(serial: wirelessDevice.serial)"))
+        XCTAssertFalse(body.contains("startMirroring(manual: true)"))
     }
 
     func testNormalizedManualPairingAddressRequiresExplicitPort() {
@@ -3933,6 +4217,29 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(loggedCalls(fake.log), ["start-server"])
     }
 
+    func testADBServerPrimeDoesNotReuseTaskForDifferentExecutable() async throws {
+        let first = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        exit 0
+        """)
+
+        await ADBController().ensureServerStarted()
+        XCTAssertEqual(loggedCalls(first.log), ["start-server"])
+        first.cleanup()
+
+        let second = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        exit 0
+        """)
+        defer { second.cleanup() }
+
+        await ADBController().ensureServerStarted()
+
+        XCTAssertEqual(loggedCalls(second.log), ["start-server"])
+    }
+
     // MARK: - Fake adb helpers
 
     /// Writes an executable fake `adb` to a throwaway directory, points the
@@ -4004,5 +4311,18 @@ private actor TCPProbeRecorder {
 
     func snapshot() -> [String] {
         addresses
+    }
+}
+
+/// Thread-safe call counter for probe hooks that fire off the main actor.
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func incrementAndGet() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+        return count
     }
 }

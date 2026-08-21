@@ -56,6 +56,22 @@ enum WiFiAddressRecovery {
         var lastKnownIP: String?
     }
 
+    /// What a recovery pass learned, beyond the address itself. `didSweep` plus
+    /// an empty `openHostCount` is the one signal that distinguishes "the phone
+    /// moved to another IP" from "nothing on this LAN speaks adb at all" — the
+    /// latter means the `tcpip` listener is gone (a phone reboot drops it), and
+    /// only a cable can bring it back.
+    struct Outcome: Equatable, Sendable {
+        var address: String?
+        var didSweep = false
+        var scannedHostCount = 0
+        var openHostCount = 0
+
+        var foundNoADBListener: Bool {
+            address == nil && didSweep && openHostCount == 0
+        }
+    }
+
     /// Resolves the phone's current `host:port`, or nil if it can't be found on
     /// the local network. The returned address is *not* yet verified as
     /// adb-ready — the caller should run its normal readiness probe.
@@ -63,19 +79,45 @@ enum WiFiAddressRecovery {
         adb: ADBController,
         target: Target,
         port: Int = defaultPort,
+        prioritizeCurrentNetwork: Bool = false,
         sweep: ((_ hosts: [String]) async -> [String])? = nil,
         readARP: (() -> [String: String])? = nil,
         localSubnets: (() -> [String])? = nil
     ) async -> String? {
+        await recoverDetailed(
+            adb: adb,
+            target: target,
+            port: port,
+            prioritizeCurrentNetwork: prioritizeCurrentNetwork,
+            sweep: sweep,
+            readARP: readARP,
+            localSubnets: localSubnets
+        ).address
+    }
+
+    /// `recover` plus the evidence the caller needs to explain a failure.
+    static func recoverDetailed(
+        adb: ADBController,
+        target: Target,
+        port: Int = defaultPort,
+        prioritizeCurrentNetwork: Bool = false,
+        sweep: ((_ hosts: [String]) async -> [String])? = nil,
+        readARP: (() -> [String: String])? = nil,
+        localSubnets: (() -> [String])? = nil,
+        // Injectable so a test can exercise the open-port branch without
+        // dialing real hosts with the user's live adb.
+        runADB: (@Sendable ([String], TimeInterval) -> String)? = nil
+    ) async -> Outcome {
         let prefixes = Array(
             subnetPrefixes(
                 lastKnownIP: target.lastKnownIP,
-                localSubnets: (localSubnets ?? Self.localIPv4Subnets)()
+                localSubnets: (localSubnets ?? Self.localIPv4Subnets)(),
+                prioritizeCurrentNetwork: prioritizeCurrentNetwork
             ).prefix(maxTotalPrefixes)
         )
         guard !prefixes.isEmpty else {
             Logger.log("Wi-Fi recovery: no candidate IPv4 subnet to scan")
-            return nil
+            return Outcome()
         }
 
         let runSweep = sweep ?? { hostList in
@@ -96,40 +138,116 @@ enum WiFiAddressRecovery {
             let arp = readARPTable()
             if let ip = matchIP(forMAC: target.macAddress, in: arp, preferring: Set(openHosts)) {
                 Logger.log("Wi-Fi recovery: MAC \(target.macAddress ?? "?") resolved to \(ip) after \(index + 1)/\(prefixes.count) subnet(s)")
-                return "\(ip):\(port)"
+                return Outcome(
+                    address: "\(ip):\(port)",
+                    didSweep: true,
+                    scannedHostCount: scannedHosts,
+                    openHostCount: openHosts.count
+                )
             }
         }
         Logger.log("Wi-Fi recovery: scanned \(scannedHosts) hosts across \(prefixes.count) subnet(s); \(openHosts.count) with :\(port) open, no MAC match")
+        let sweptOutcome = Outcome(
+            address: nil,
+            didSweep: true,
+            scannedHostCount: scannedHosts,
+            openHostCount: openHosts.count
+        )
 
         // Fallback: confirm by adb identity on the hosts that answer on 5555.
         if let ip = await matchByADBIdentity(
             openHosts: openHosts,
             target: target,
             port: port,
-            runADB: { arguments, timeout in adb.run(arguments, timeout: timeout) }
+            runADB: runADB ?? { arguments, timeout in adb.run(arguments, timeout: timeout) }
         ) {
             Logger.log("Wi-Fi recovery: adb identity matched \(target.displayName) at \(ip)")
-            return "\(ip):\(port)"
+            var matched = sweptOutcome
+            matched.address = "\(ip):\(port)"
+            return matched
         }
 
         Logger.log("Wi-Fi recovery: no match for \(target.displayName)")
-        return nil
+        return sweptOutcome
     }
 
     // MARK: - Subnet math (pure)
 
-    /// Candidate `/24` prefixes to scan, last-known subnet first, then the Mac's
-    /// own LAN subnets expanded from their real netmasks. Deduped, preserving
-    /// priority order.
-    static func subnetPrefixes(lastKnownIP: String?, localSubnets: [String]) -> [String] {
+    /// Candidate `/24` prefixes to scan, deduped in caller-selected priority.
+    /// Normal recovery keeps the last-known subnet first. A confirmed network
+    /// change checks the Mac's current routable subnets before stale context.
+    static func subnetPrefixes(
+        lastKnownIP: String?,
+        localSubnets: [String],
+        prioritizeCurrentNetwork: Bool = false
+    ) -> [String] {
         var prefixes: [String] = []
         func add(_ prefix: String?) {
             guard let prefix, !prefixes.contains(prefix) else { return }
             prefixes.append(prefix)
         }
-        add(lastKnownIP.flatMap(ipv4Host(in:)).flatMap(subnetPrefix(forIPv4:)))
-        localSubnets.forEach(add)
+        let lastKnownPrefix = lastKnownIP.flatMap(ipv4Host(in:)).flatMap(subnetPrefix(forIPv4:))
+        if prioritizeCurrentNetwork {
+            localSubnets.forEach(add)
+            add(lastKnownPrefix)
+        } else {
+            add(lastKnownPrefix)
+            localSubnets.forEach(add)
+        }
         return prefixes
+    }
+
+    /// Local network context for route ordering. Interface name, host address,
+    /// and netmask distinguish most LAN changes, including two networks that
+    /// use the same private subnet. This avoids SSID permission and private APIs.
+    static func currentNetworkFingerprint() -> String? {
+        let signatures = localIPv4InterfaceSignatures().sorted()
+        guard !signatures.isEmpty else { return nil }
+        return signatures.joined(separator: "|")
+    }
+
+    private static func localIPv4InterfaceSignatures() -> [String] {
+        var signatures: [String] = []
+        var ifaddrPointer: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddrPointer) == 0 else { return [] }
+        defer { freeifaddrs(ifaddrPointer) }
+
+        var cursor = ifaddrPointer
+        while let interface = cursor {
+            defer { cursor = interface.pointee.ifa_next }
+            let flags = Int32(interface.pointee.ifa_flags)
+            guard (flags & IFF_UP) == IFF_UP,
+                  (flags & IFF_LOOPBACK) == 0,
+                  (flags & IFF_BROADCAST) == IFF_BROADCAST,
+                  let address = interface.pointee.ifa_addr,
+                  address.pointee.sa_family == UInt8(AF_INET)
+            else { continue }
+
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(
+                address, socklen_t(address.pointee.sa_len),
+                &host, socklen_t(host.count),
+                nil, 0, NI_NUMERICHOST
+            ) == 0 else { continue }
+            let hostAddress = String(cString: host)
+            guard !hostAddress.hasPrefix("169.254.") else { continue }
+
+            var netmask = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let netmaskText: String
+            if let mask = interface.pointee.ifa_netmask,
+               getnameinfo(
+                    mask, socklen_t(mask.pointee.sa_len),
+                    &netmask, socklen_t(netmask.count),
+                    nil, 0, NI_NUMERICHOST
+               ) == 0 {
+                netmaskText = String(cString: netmask)
+            } else {
+                netmaskText = "unknown"
+            }
+            let interfaceName = String(cString: interface.pointee.ifa_name)
+            signatures.append("\(interfaceName):\(hostAddress)/\(netmaskText)")
+        }
+        return Array(Set(signatures))
     }
 
     /// "192.168.1.42" → "192.168.1." ; nil for non-IPv4 input.

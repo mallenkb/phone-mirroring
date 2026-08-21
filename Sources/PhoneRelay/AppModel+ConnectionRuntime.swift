@@ -51,6 +51,21 @@ extension AppModel {
         set { connectionCoordinator.wifiAddressRecoveryAttemptedAt = newValue }
     }
 
+    var wirelessListenerMissingRecordIDs: Set<String> {
+        get { connectionCoordinator.wirelessListenerMissingRecordIDs }
+        set { connectionCoordinator.wirelessListenerMissingRecordIDs = newValue }
+    }
+
+    var wirelessArmSeenUSBSerials: Set<String> {
+        get { connectionCoordinator.wirelessArmSeenUSBSerials }
+        set { connectionCoordinator.wirelessArmSeenUSBSerials = newValue }
+    }
+
+    var lastWirelessArmAttemptAt: [String: Date] {
+        get { connectionCoordinator.lastWirelessArmAttemptAt }
+        set { connectionCoordinator.lastWirelessArmAttemptAt = newValue }
+    }
+
     var savedWiFiStatusProbeInFlight: Bool {
         get { connectionCoordinator.savedWiFiStatusProbeInFlight }
         set { connectionCoordinator.savedWiFiStatusProbeInFlight = newValue }
@@ -116,7 +131,7 @@ extension AppModel {
         set { connectionCoordinator.usbWiFiHandoffCandidate = newValue }
     }
 
-    var failedLegacyHandoffSerials: Set<String> {
+    var failedLegacyHandoffSerials: [String: ConnectionCoordinator.LegacyHandoffFailureState] {
         get { connectionCoordinator.failedLegacyHandoffSerials }
         set { connectionCoordinator.failedLegacyHandoffSerials = newValue }
     }

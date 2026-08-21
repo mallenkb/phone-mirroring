@@ -6,6 +6,65 @@ final class MDNSParserTests: XCTestCase {
         XCTAssertEqual(DiscoveryService.pollIntervalNanoseconds, 1_000_000_000)
     }
 
+    /// The sleep is the *remainder* of the poll interval, so a slow
+    /// `adb mdns services` can't stretch the real cadence past 1s.
+    func testPollSleepSubtractsTimeAlreadySpentPolling() {
+        XCTAssertEqual(
+            DiscoveryService.sleepNanoseconds(afterElapsed: 0),
+            DiscoveryService.pollIntervalNanoseconds
+        )
+        XCTAssertEqual(
+            DiscoveryService.sleepNanoseconds(afterElapsed: 900_000_000),
+            100_000_000
+        )
+    }
+
+    /// …but a poll that outruns the whole interval still gets a floor, so a
+    /// wedged adb can't turn discovery into a back-to-back process spawner.
+    func testPollSleepKeepsAMinimumGapWhenAPollOverrunsTheInterval() {
+        XCTAssertEqual(
+            DiscoveryService.sleepNanoseconds(afterElapsed: 5_000_000_000),
+            DiscoveryService.minimumPollGapNanoseconds
+        )
+        XCTAssertEqual(
+            DiscoveryService.sleepNanoseconds(afterElapsed: 990_000_000),
+            DiscoveryService.minimumPollGapNanoseconds
+        )
+    }
+
+    /// `adb mdns services` runs on the 1s poll's critical path and must not
+    /// inherit Tooling's 5s adb default.
+    func testMDNSServicesUsesAShortExplicitTimeout() {
+        XCTAssertEqual(ADBController.mdnsServicesTimeout, 2)
+        XCTAssertLessThan(
+            ADBController.mdnsServicesTimeout,
+            TimeInterval(DiscoveryService.pollIntervalNanoseconds) / 1_000_000_000 * 3
+        )
+    }
+
+    /// A browser that is only `.waiting` (Local Network denied) reports zero
+    /// services; treating that as authoritative made discovery look stuck.
+    func testBonjourMonitorIsUnavailableUntilEveryBrowserIsReady() {
+        let allTypes = Set(BonjourServiceMonitor.serviceTypes)
+        XCTAssertTrue(
+            BonjourServiceMonitor.isAvailable(readyTypes: allTypes, failedTypes: [])
+        )
+        XCTAssertFalse(
+            BonjourServiceMonitor.isAvailable(readyTypes: [], failedTypes: []),
+            "no browser is ready yet — callers must fall back to the dns-sd sweep"
+        )
+        XCTAssertFalse(
+            BonjourServiceMonitor.isAvailable(
+                readyTypes: allTypes.subtracting(["_adb._tcp"]),
+                failedTypes: []
+            ),
+            "a partial view would silently hide a whole service type"
+        )
+        XCTAssertFalse(
+            BonjourServiceMonitor.isAvailable(readyTypes: allTypes, failedTypes: ["_adb._tcp"])
+        )
+    }
+
     @MainActor
     func testDiscoveryPollingDoesNotBlockMainActor() async {
         let pollStarted = LockedFlag()
