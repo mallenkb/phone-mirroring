@@ -1284,7 +1284,24 @@ extension AppModel {
         let output = await Task.detached {
             adb.run(["-s", usbSerial, "shell", "ping", "-c", "1", "-W", "1", localAddress], timeout: timeout)
         }.value
-        Logger.log("ADB Wi-Fi handoff route prime usb=\(usbSerial) phoneTarget=\(wirelessAddress) macAddress=\(localAddress) output=\(output.trimmingCharacters(in: .whitespacesAndNewlines))")
+        Logger.log("ADB Wi-Fi handoff route prime usb=\(usbSerial) phoneTarget=\(wirelessAddress) macTarget=\(localAddress) output=\(output.trimmingCharacters(in: .whitespacesAndNewlines))")
+    }
+
+    /// `adb tcpip` restarts adbd and can temporarily remove the usable USB
+    /// transport. Only block that destructive step when macOS itself reports
+    /// an explicit route failure to the phone. A plain ping timeout is not
+    /// enough evidence because many phones and access points drop ICMP while
+    /// still allowing ADB TCP traffic.
+    nonisolated static func macRouteToWirelessHostIsUnavailable(
+        _ wirelessAddress: String
+    ) -> Bool {
+        guard let host = host(in: wirelessAddress) else { return false }
+        let result = Tooling.runResult(
+            "ping",
+            arguments: ["-c", "1", "-W", "500", host],
+            timeout: 1.25
+        )
+        return result.output.localizedCaseInsensitiveContains("no route to host")
     }
 
     nonisolated static func localIPv4Address(matchingRemoteAddress remoteAddress: String) -> String? {
