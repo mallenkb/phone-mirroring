@@ -128,28 +128,45 @@ extension AppModel {
                 let record = Self.recordsByMostRecent(self.pairedPhones).first { record in
                     record.id == selectedID || record.lastAddress == savedTarget
                 }
+                let allowSingleCandidateFallback = self.pairedPhones
+                    .filter(Self.isWirelessRecord)
+                    .count == 1
                 let refreshedPhone = record.flatMap {
-                    Self.rememberedConnectablePhone(for: $0, in: phones)
-                } ?? (phones.filter { $0.kind.isConnectable }.count == 1
+                    Self.rememberedConnectablePhone(
+                        for: $0,
+                        in: phones,
+                        allowSingleCandidateFallback: allowSingleCandidateFallback
+                    )
+                } ?? (allowSingleCandidateFallback
+                    && phones.filter { $0.kind.isConnectable }.count == 1
                     ? phones.first(where: { $0.kind.isConnectable })
                     : nil)
 
                 if let refreshedPhone {
-                    let connectOutput = await Task.detached {
-                        adb.run(["connect", refreshedPhone.address])
-                    }.value
-                    if Self.adbConnectSucceeded(connectOutput) {
-                        target = refreshedPhone.address
+                    let refreshedReadiness = await Self.connectToRememberedWirelessReadiness(
+                        adb: adb,
+                        savedAddress: refreshedPhone.address,
+                        candidateAddresses: [refreshedPhone.address],
+                        restrictDialsToReachableOrStable: true,
+                        readinessAttempts: 2,
+                        preflightLocalNetworkAccess: { address in
+                            await Self.preflightLocalNetworkAccess(address: address)
+                        }
+                    )
+                    if let refreshedAddress = refreshedReadiness.connectedAddress {
+                        target = refreshedAddress
                         let deviceName = await Self.connectedDeviceName(
                             adb: adb,
-                            serial: refreshedPhone.address,
+                            serial: refreshedAddress,
                             fallback: record?.displayName ?? selectedName
                         )
                         guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
                         self.touchPairedPhone(
                             id: refreshedPhone.id,
                             displayName: deviceName,
-                            address: refreshedPhone.address
+                            address: refreshedAddress,
+                            usbSerial: record?.resolvedUSBSerial,
+                            wifiAddress: refreshedAddress
                         )
                         self.selectedDevice.name = deviceName
                     }
@@ -172,7 +189,8 @@ extension AppModel {
                 self.touchPairedPhone(
                     id: selectedID,
                     displayName: selectedName,
-                    address: refreshedSavedTarget
+                    address: refreshedSavedTarget,
+                    wifiAddress: refreshedSavedTarget
                 )
             }
             self.selectedDevice.adbSerial = target
@@ -415,7 +433,10 @@ extension AppModel {
         guard let usbSerial,
               let candidate = usbWiFiHandoffCandidate,
               candidate.usbSerial == usbSerial,
-              transportIntent.permitsPreparedWiFiTakeover(for: usbSerial)
+              transportIntent.permitsPreparedWiFiTakeover(for: usbSerial),
+              !isMirroring,
+              mirrorSession == nil,
+              mirrorLaunchTask == nil
         else { return false }
 
         Logger.log("USB mirror ended; attempting prepared Wi-Fi handoff address=\(candidate.address)")
@@ -459,7 +480,12 @@ extension AppModel {
                 },
                 maximumDuration: Self.wirelessHandoffTakeoverMaxDuration,
                 connectTimeout: Self.wirelessHandoffConnectTimeout,
-                shellTimeout: Self.wirelessHandoffShellTimeout
+                shellTimeout: Self.wirelessHandoffShellTimeout,
+                // The USB session has ended and the guard above proves there is
+                // no replacement mirror to disrupt. If the phone's TCP listener
+                // is reachable but the host adb protocol wedged as USB vanished,
+                // restart the app-owned daemon once inside this takeover flight.
+                allowADBServerRestart: true
             )
 
             guard let self, !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
@@ -474,12 +500,14 @@ extension AppModel {
                 ])
                 // The Wi-Fi route came up after all — undo any "blocks
                 // adb-over-Wi-Fi" verdict a racing handoff attempt recorded.
-                self.failedLegacyHandoffSerials.remove(candidate.usbSerial)
+                self.connectionCoordinator.clearLegacyHandoffFailure(serial: candidate.usbSerial)
                 self.wirelessPinnedUSBSerials.insert(candidate.usbSerial)
                 self.touchPairedPhone(
                     id: candidate.usbSerial,
                     displayName: candidate.displayName,
-                    address: candidate.address
+                    address: candidate.address,
+                    usbSerial: candidate.usbSerial,
+                    wifiAddress: candidate.address
                 )
                 self.selectedDevice.adbSerial = candidate.address
                 self.selectedDevice.name = candidate.displayName
@@ -770,6 +798,9 @@ extension AppModel {
                 }
                 if activeErrorTitle == Self.wifiPairingRequiredErrorTitle {
                     return "Pair phone again"
+                }
+                if activeErrorTitle == Self.wifiListenerMissingErrorTitle {
+                    return "Plug in once"
                 }
                 return "Action needed"
             }

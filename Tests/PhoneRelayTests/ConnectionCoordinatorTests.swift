@@ -135,6 +135,52 @@ final class ConnectionCoordinatorTests: XCTestCase {
         )
     }
 
+    // MARK: - Legacy tcpip circuit breaker
+
+    /// The breaker bars `adb tcpip` for a while, not forever: a phone that
+    /// failed once — typically adbd mid-restart right after a reboot — must be
+    /// armable again without relaunching the app.
+    func testLegacyHandoffBreakerExpiresInsteadOfLastingTheSession() {
+        let coordinator = ConnectionCoordinator()
+        let now = Date()
+        coordinator.noteLegacyHandoffFailure(serial: "USB-1", now: now)
+
+        XCTAssertTrue(coordinator.isLegacyHandoffCoolingDown(serial: "USB-1", now: now))
+        XCTAssertTrue(
+            coordinator.isLegacyHandoffCoolingDown(serial: "USB-1", now: now.addingTimeInterval(59))
+        )
+        XCTAssertFalse(
+            coordinator.isLegacyHandoffCoolingDown(serial: "USB-1", now: now.addingTimeInterval(61))
+        )
+        XCTAssertFalse(coordinator.isLegacyHandoffCoolingDown(serial: "USB-2", now: now))
+    }
+
+    /// Repeat failures escalate steeply, so a phone that truly can't do wireless
+    /// adb isn't restarted on a loop (the old "USB mirror dies every few
+    /// seconds" pathology the session-long verdict was protecting against).
+    func testLegacyHandoffBreakerEscalates() {
+        XCTAssertEqual(ConnectionCoordinator.legacyHandoffRetryDelay(failureCount: 1), 60)
+        XCTAssertEqual(ConnectionCoordinator.legacyHandoffRetryDelay(failureCount: 2), 300)
+        XCTAssertEqual(ConnectionCoordinator.legacyHandoffRetryDelay(failureCount: 3), 1800)
+        XCTAssertEqual(ConnectionCoordinator.legacyHandoffRetryDelay(failureCount: 9), 1800)
+
+        let coordinator = ConnectionCoordinator()
+        let now = Date()
+        coordinator.noteLegacyHandoffFailure(serial: "USB-1", now: now)
+        coordinator.noteLegacyHandoffFailure(serial: "USB-1", now: now)
+        XCTAssertTrue(
+            coordinator.isLegacyHandoffCoolingDown(serial: "USB-1", now: now.addingTimeInterval(120))
+        )
+    }
+
+    /// A proven Wi-Fi route clears the verdict outright.
+    func testClearLegacyHandoffFailureUnblocksImmediately() {
+        let coordinator = ConnectionCoordinator()
+        coordinator.noteLegacyHandoffFailure(serial: "USB-1")
+        coordinator.clearLegacyHandoffFailure(serial: "USB-1")
+        XCTAssertFalse(coordinator.isLegacyHandoffCoolingDown(serial: "USB-1"))
+    }
+
     func testResetClearsConnectionRuntimeState() {
         let coordinator = ConnectionCoordinator()
         coordinator.isAutoReconnectSuppressedForManualDisconnect = true
@@ -144,7 +190,7 @@ final class ConnectionCoordinatorTests: XCTestCase {
         coordinator.wirelessPinnedUSBSerials = ["USB-1"]
         coordinator.transportIntent = .manualUSB(serial: "USB-1")
         coordinator.launchReconnectDeadline = Date()
-        coordinator.failedLegacyHandoffSerials = ["USB-1"]
+        coordinator.noteLegacyHandoffFailure(serial: "USB-1")
 
         coordinator.reset()
 

@@ -84,7 +84,7 @@ enum Tooling {
     /// Outcome of running a CLI tool. `succeeded` lets callers branch on the
     /// real process exit status instead of string-matching stdout, which is
     /// brittle against localized output and benign "error" substrings.
-    struct RunResult {
+    struct RunResult: Sendable {
         var output: String
         var exitCode: Int32
         var timedOut: Bool

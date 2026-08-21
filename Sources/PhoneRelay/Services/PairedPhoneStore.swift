@@ -79,13 +79,19 @@ struct PairedPhoneStore {
         displayName: String,
         address: String,
         usbSerial: String? = nil,
+        observedWiFiIPAddress: String? = nil,
         wifiAddress: String? = nil,
+        isVerifiedWirelessEndpoint: Bool = true,
+        wifiAddressLastVerifiedAt: Date? = nil,
+        wifiNetworkFingerprint: String? = nil,
         wifiMACAddress: String? = nil,
         now: Date = .now
     ) -> [PairedPhoneRecord] {
         let sanitizedDisplayName = Self.sanitizedDisplayName(displayName)
         let resolvedUSBSerial = Self.resolvedUSBSerial(address: address, explicitUSBSerial: usbSerial)
-        let resolvedWiFiAddress = Self.resolvedWiFiAddress(address: address, explicitWiFiAddress: wifiAddress)
+        let resolvedWiFiAddress = isVerifiedWirelessEndpoint
+            ? Self.resolvedWiFiAddress(address: address, explicitWiFiAddress: wifiAddress)
+            : nil
         let resolvedMACAddress = PairedPhoneRecord.normalizedMACAddress(wifiMACAddress)
         let matchingIndexes = matchingRecordIndexes(
             in: records,
@@ -106,7 +112,12 @@ struct PairedPhoneStore {
                     wifiAddress: resolvedWiFiAddress
                 ),
                 usbSerial: resolvedUSBSerial,
+                observedWiFiIPAddress: observedWiFiIPAddress,
                 wifiAddress: resolvedWiFiAddress,
+                wifiAddressLastVerifiedAt: resolvedWiFiAddress == nil
+                    ? nil
+                    : (wifiAddressLastVerifiedAt ?? now),
+                wifiNetworkFingerprint: resolvedWiFiAddress == nil ? nil : wifiNetworkFingerprint,
                 wifiMACAddress: resolvedMACAddress,
                 firstPaired: now,
                 lastConnected: now
@@ -125,7 +136,15 @@ struct PairedPhoneStore {
                 wifiAddress: resolvedWiFiAddress ?? matchingIndexes.compactMap { records[$0].resolvedWiFiAddress }.first
             ),
             usbSerial: resolvedUSBSerial ?? matchingIndexes.compactMap { records[$0].resolvedUSBSerial }.first,
+            observedWiFiIPAddress: observedWiFiIPAddress
+                ?? matchingIndexes.compactMap { records[$0].observedWiFiIPAddress }.first,
             wifiAddress: resolvedWiFiAddress ?? matchingIndexes.compactMap { records[$0].resolvedWiFiAddress }.first,
+            wifiAddressLastVerifiedAt: resolvedWiFiAddress == nil
+                ? matchingIndexes.compactMap { records[$0].wifiAddressLastVerifiedAt }.max()
+                : (wifiAddressLastVerifiedAt ?? now),
+            wifiNetworkFingerprint: resolvedWiFiAddress == nil
+                ? matchingIndexes.compactMap { records[$0].wifiNetworkFingerprint }.first
+                : wifiNetworkFingerprint,
             wifiMACAddress: resolvedMACAddress ?? matchingIndexes.compactMap { records[$0].wifiMACAddress }.first,
             firstPaired: firstPaired,
             lastConnected: now
@@ -171,7 +190,12 @@ struct PairedPhoneStore {
                 wifiAddress: latest.resolvedWiFiAddress ?? older.resolvedWiFiAddress
             ),
             usbSerial: latest.resolvedUSBSerial ?? older.resolvedUSBSerial,
+            observedWiFiIPAddress: latest.observedWiFiIPAddress ?? older.observedWiFiIPAddress,
             wifiAddress: latest.resolvedWiFiAddress ?? older.resolvedWiFiAddress,
+            wifiAddressLastVerifiedAt: [latest.wifiAddressLastVerifiedAt, older.wifiAddressLastVerifiedAt]
+                .compactMap { $0 }
+                .max(),
+            wifiNetworkFingerprint: latest.wifiNetworkFingerprint ?? older.wifiNetworkFingerprint,
             wifiMACAddress: latest.wifiMACAddress ?? older.wifiMACAddress,
             firstPaired: min(existing.firstPaired, incoming.firstPaired),
             lastConnected: max(existing.lastConnected, incoming.lastConnected),

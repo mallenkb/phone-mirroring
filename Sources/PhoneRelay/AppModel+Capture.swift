@@ -151,7 +151,7 @@ extension AppModel {
 
         var title: String {
             switch kind {
-            case .screenshot: return "Screenshot captured"
+            case .screenshot: return "Screenshot copied"
             case .recordingStarted: return "Recording started"
             case .recordingSaving: return "Saving recording..."
             case .recordingStopped: return "Recording saved"
@@ -248,6 +248,7 @@ extension AppModel {
             case .success(let url):
                 Logger.log("Saved screenshot: \(url.path)")
                 self.lastCaptureURL = url
+                self.copyScreenshotToClipboard(at: url)
             case .failure(.adbMissing):
                 self.reportError("Screenshot failed", "adb wasn’t found. Install Android platform-tools and try again.")
             case .failure(.emptyOutput):
@@ -257,6 +258,37 @@ extension AppModel {
                 self.reportError("Screenshot failed", Self.mirrorFailureMessage(for: NSError(domain: "screenshot", code: 0, userInfo: [NSLocalizedDescriptionKey: message])))
             }
         }
+    }
+
+    /// Puts a freshly captured screenshot on the clipboard as well as on disk,
+    /// matching what macOS' own screenshot tool does when its target is set to
+    /// the clipboard: paste straight into a message instead of going hunting in
+    /// Finder. The file is still written, so Reveal in Finder and the capture
+    /// folder preference keep working.
+    ///
+    /// Only the PNG data goes on the pasteboard — deliberately not the file URL.
+    /// An item carrying both makes some apps attach the file rather than inline
+    /// the image, which is the opposite of what "copy to clipboard" is for.
+    /// - Parameter pasteboard: injectable so tests never clobber the user's own
+    ///   clipboard.
+    @discardableResult
+    func copyScreenshotToClipboard(
+        at url: URL,
+        pasteboard: NSPasteboard = .general
+    ) -> Bool {
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else {
+            Logger.log("Screenshot clipboard copy skipped: could not read \(url.lastPathComponent)")
+            return false
+        }
+        let item = NSPasteboardItem()
+        item.setData(data, forType: .png)
+        pasteboard.clearContents()
+        guard pasteboard.writeObjects([item]) else {
+            Logger.log("Screenshot clipboard copy failed for \(url.lastPathComponent)")
+            return false
+        }
+        Logger.log("Copied screenshot to clipboard: \(url.lastPathComponent)")
+        return true
     }
 
     func toggleScreenRecording() {

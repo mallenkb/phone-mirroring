@@ -249,11 +249,13 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         XCTAssertTrue(helpers.contains("connectToRememberedWireless("))
         // Automatic reconnect must never share the wire with a user-initiated
         // connect flow: both the entry point and the loop guard on manual work.
+        // The third site is the cable-arrival Wi-Fi arm, which runs `adb tcpip`
+        // and so must yield to any connect the user started.
         XCTAssertEqual(
             source.components(
                 separatedBy: "!connectionCoordinator.hasManualConnectionWorkInFlight"
             ).count - 1,
-            2
+            3
         )
     }
 

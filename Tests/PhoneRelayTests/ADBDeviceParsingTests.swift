@@ -550,7 +550,9 @@ final class ADBDeviceParsingTests: XCTestCase {
         let body = String(source[start.lowerBound..<end.lowerBound])
 
         let liveWiFi = try XCTUnwrap(body.range(of: "Self.liveWirelessAuthorizedDevice("))
-        let discoveredWiFi = try XCTUnwrap(body.range(of: "Self.rememberedConnectablePhone(for: record, in: discoveredPhones)"))
+        let discoveredWiFi = try XCTUnwrap(
+            body.range(of: "Self.rememberedConnectablePhone(", range: liveWiFi.upperBound..<body.endIndex)
+        )
         let savedWiFi = try XCTUnwrap(body.range(of: "reconnectOverWiFi("))
         let liveUSB = try XCTUnwrap(body.range(of: "connectViaSavedUSB(record: record, explicit: false)"))
 
@@ -2597,6 +2599,117 @@ final class ADBDeviceParsingTests: XCTestCase {
         )
     }
 
+    // MARK: - Failing wireless routes must not veto the USB handoff
+
+    /// A wireless entry whose route is provably failing (dead `:5555` listener,
+    /// refused dials) must not block the USB handoff — otherwise a stale or
+    /// dying wireless transport pins Wi-Fi-first policy forever and plugging
+    /// in the cable does nothing.
+    func testFailingWirelessDeviceDoesNotVetoUSBHandoff() {
+        let usbDevice = AuthorizedADBDevice(
+            serial: "RFCT10ZLTAJ",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: true
+        )
+        let dyingWirelessDevice = AuthorizedADBDevice(
+            serial: "192.168.68.57:5555",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: false
+        )
+
+        XCTAssertTrue(
+            AppModel.shouldPrioritizeUSBHandoff(
+                authorizedDevices: [usbDevice, dyingWirelessDevice],
+                lastAttemptedSerial: nil,
+                preferUSBMirroring: false,
+                isMirroring: false,
+                isPairing: false,
+                failingWirelessSerials: ["192.168.68.57:5555"]
+            )
+        )
+    }
+
+    func testHealthyWirelessDeviceStillVetoesUSBHandoff() {
+        let usbDevice = AuthorizedADBDevice(
+            serial: "RFCT10ZLTAJ",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: true
+        )
+        let healthyWirelessDevice = AuthorizedADBDevice(
+            serial: "192.168.68.57:5555",
+            product: "g0sxxx",
+            model: "SM-S906B",
+            isUSB: false
+        )
+
+        XCTAssertFalse(
+            AppModel.shouldPrioritizeUSBHandoff(
+                authorizedDevices: [usbDevice, healthyWirelessDevice],
+                lastAttemptedSerial: nil,
+                preferUSBMirroring: false,
+                isMirroring: false,
+                isPairing: false,
+                failingWirelessSerials: []
+            )
+        )
+    }
+
+    // MARK: - Failing-route detection
+
+    func testIsWirelessReconnectFailingMatchesByUSBSerialAndAddress() {
+        let record = PairedPhoneRecord(
+            id: "RFCT10ZLTAJ",
+            displayName: "SM S906B",
+            lastAddress: "192.168.68.57:5555",
+            usbSerial: "RFCT10ZLTAJ",
+            firstPaired: Date(),
+            lastConnected: Date()
+        )
+
+        // No failures recorded yet: a first attempt in flight is not a verdict.
+        XCTAssertFalse(
+            AppModel.isWirelessReconnectFailing(
+                records: [record],
+                serial: "RFCT10ZLTAJ",
+                listenerMissingRecordIDs: [],
+                retryFailureCounts: [:]
+            )
+        )
+
+        // Refused dials recorded by record ID.
+        XCTAssertTrue(
+            AppModel.isWirelessReconnectFailing(
+                records: [record],
+                serial: "RFCT10ZLTAJ",
+                listenerMissingRecordIDs: [],
+                retryFailureCounts: ["RFCT10ZLTAJ": 1]
+            )
+        )
+
+        // The LAN sweep proved the adb listener gone.
+        XCTAssertTrue(
+            AppModel.isWirelessReconnectFailing(
+                records: [record],
+                serial: "192.168.68.57:5555",
+                listenerMissingRecordIDs: ["RFCT10ZLTAJ"],
+                retryFailureCounts: [:]
+            )
+        )
+
+        // An unrelated phone's failures do not leak into this one.
+        XCTAssertFalse(
+            AppModel.isWirelessReconnectFailing(
+                records: [record],
+                serial: "OTHERSERIAL",
+                listenerMissingRecordIDs: ["RFCT10ZLTAJ"],
+                retryFailureCounts: ["RFCT10ZLTAJ": 3]
+            )
+        )
+    }
+
     func testUSBPresenceInterruptsStuckReconnectOverlay() {
         let usbDevice = AuthorizedADBDevice(
             serial: "TESTDEVICE001",
@@ -3015,12 +3128,59 @@ final class ADBDeviceParsingTests: XCTestCase {
             address: "192.0.2.57:5555",
             attempts: 3,
             delayNanoseconds: 1,
-            tcpPortProbe: { _ in true }
+            tcpPortProbe: { _ in true },
+            allowADBServerRestart: true
         )
 
         XCTAssertTrue(readiness.isReady)
         let calls = loggedCalls(fake.log)
         XCTAssertTrue(calls.contains("connect 192.0.2.57:5555"))
+        XCTAssertTrue(calls.contains("kill-server"))
+        XCTAssertTrue(calls.contains("start-server"))
+        XCTAssertEqual(calls.filter { $0 == "connect 192.0.2.57:5555" }.count, 2)
+    }
+
+    func testWirelessReadinessRestartsADBWhenReachableListenerHitsHostProtocolFailure() async throws {
+        let fake = try installFakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        STATE="$ADB_FAKE_LOG.state"
+        if [ "$1" = "connect" ]; then
+          if [ -f "$STATE" ]; then
+            echo "connected to $2"
+          else
+            echo "error: protocol fault (couldn't read status): Connection reset by peer"
+          fi
+          exit 0
+        fi
+        if [ "$1" = "kill-server" ]; then
+          echo "killed"
+          exit 0
+        fi
+        if [ "$1" = "start-server" ]; then
+          touch "$STATE"
+          echo "started"
+          exit 0
+        fi
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          echo "wifi-adb-ok"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+
+        let readiness = await AppModel.waitForADBWirelessTargetReadiness(
+            adb: ADBController(),
+            address: "192.0.2.57:5555",
+            attempts: 3,
+            delayNanoseconds: 1,
+            tcpPortProbe: { _ in true },
+            allowADBServerRestart: true
+        )
+
+        XCTAssertTrue(readiness.isReady)
+        let calls = loggedCalls(fake.log)
         XCTAssertTrue(calls.contains("kill-server"))
         XCTAssertTrue(calls.contains("start-server"))
         XCTAssertEqual(calls.filter { $0 == "connect 192.0.2.57:5555" }.count, 2)

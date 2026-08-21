@@ -52,41 +52,95 @@ struct ADBController: Sendable {
 
     @discardableResult
     func run(_ arguments: [String], timeout: TimeInterval? = nil) -> String {
-        guard Self.executionPolicy(for: arguments) == .serialized else {
-            return Tooling.run("adb", arguments: arguments, timeout: timeout)
+        let command = Self.commandWord(in: arguments)
+        let output: String
+        if Self.executionPolicy(for: arguments) == .serialized {
+            Self.commandLock.lock()
+            output = Tooling.run("adb", arguments: arguments, timeout: timeout)
+            Self.commandLock.unlock()
+        } else {
+            output = Tooling.run("adb", arguments: arguments, timeout: timeout)
         }
-        Self.commandLock.lock()
-        defer { Self.commandLock.unlock() }
-        return Tooling.run("adb", arguments: arguments, timeout: timeout)
+        if command == "kill-server" {
+            Self.invalidateServerPrime()
+        }
+        return output
+    }
+
+    /// Executes adb while preserving its process result. Readiness checks must
+    /// prove success from the exit status and timeout bit, not infer it from
+    /// the absence of an error substring in merged output.
+    func runResult(_ arguments: [String], timeout: TimeInterval? = nil) -> Tooling.RunResult {
+        let command = Self.commandWord(in: arguments)
+        let result: Tooling.RunResult
+        if Self.executionPolicy(for: arguments) == .serialized {
+            Self.commandLock.lock()
+            result = Tooling.runResult("adb", arguments: arguments, timeout: timeout)
+            Self.commandLock.unlock()
+        } else {
+            result = Tooling.runResult("adb", arguments: arguments, timeout: timeout)
+        }
+        if command == "kill-server" {
+            Self.invalidateServerPrime()
+        }
+        return result
     }
 
     /// Starts adb if needed without killing existing USB or Wi-Fi transports.
     /// Use this before normal connect/pair flows. A cold start can take a few
     /// seconds, so it must not be interrupted mid-spawn.
     func ensureServerStarted() async {
-        // A cold `adb start-server` regularly takes longer than 2s; killing it
-        // mid-spawn left connect flows racing a half-started daemon.
-        _ = await Task.detached(priority: .userInitiated) {
-            self.run(["start-server"], timeout: 6)
-        }.value
+        await Self.sharedServerPrimeTask(for: self).value
     }
 
-    /// Single-flight prewarm of the adb daemon, shared by every background
-    /// poller. Without it the first `adb devices -l` after launch is killed at
-    /// its 2s timeout while a cold `start-server` is still spawning, and the
-    /// first few `adb mdns services` polls answer from an empty backend — the
-    /// phone only shows up seconds later. Concurrent callers await the *same*
-    /// start rather than each racing their own.
+    /// Single-flight prewarm of the adb daemon, shared by the device watcher
+    /// and connection workflows. Bonjour discovery is intentionally independent
+    /// so network presence can surface while a cold adb daemon is starting.
+    /// Concurrent adb callers await the *same* start rather than racing their
+    /// own daemon processes.
     private static let serverPrimeLock = NSLock()
     nonisolated(unsafe) private static var serverPrimeTask: Task<Void, Never>?
+    nonisolated(unsafe) private static var serverPrimeInFlight = false
+    nonisolated(unsafe) private static var serverPrimeCompletedAt: Date?
+    /// Reuse a just-completed warm-up across launch, discovery, and reconnect.
+    /// Later connection work still refreshes adb normally, and `kill-server`
+    /// invalidates this state immediately.
+    nonisolated static let serverPrimeReuseWindow: TimeInterval = 2
+
+    private static func finishServerPrime() {
+        serverPrimeLock.lock()
+        serverPrimeInFlight = false
+        serverPrimeCompletedAt = Date()
+        serverPrimeLock.unlock()
+    }
+
+    private static func invalidateServerPrime() {
+        serverPrimeLock.lock()
+        serverPrimeTask = nil
+        serverPrimeInFlight = false
+        serverPrimeCompletedAt = nil
+        serverPrimeLock.unlock()
+    }
 
     /// Synchronous so the lock is never held across a suspension point.
     private static func sharedServerPrimeTask(for controller: ADBController) -> Task<Void, Never> {
         serverPrimeLock.lock()
         defer { serverPrimeLock.unlock() }
-        if let existing = serverPrimeTask { return existing }
+        if serverPrimeInFlight, let existing = serverPrimeTask {
+            return existing
+        }
+        if let completedAt = serverPrimeCompletedAt,
+           Date().timeIntervalSince(completedAt) < serverPrimeReuseWindow,
+           let existing = serverPrimeTask {
+            return existing
+        }
+        serverPrimeInFlight = true
         let task = Task.detached(priority: .userInitiated) {
+            let startedAt = DispatchTime.now().uptimeNanoseconds
             _ = controller.run(["start-server"], timeout: 6)
+            let elapsedMilliseconds = (DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
+            Logger.log("ADB server prime phase=started duration_ms=\(elapsedMilliseconds)")
+            Self.finishServerPrime()
         }
         serverPrimeTask = task
         return task
@@ -96,12 +150,29 @@ struct ADBController: Sendable {
         await Self.sharedServerPrimeTask(for: self).value
     }
 
-    /// `adb mdns services` sits on the 1s discovery poll's critical path, so it
-    /// gets an explicit short timeout instead of Tooling's 5s adb default. A
-    /// wedged daemon used to stretch a "1 second" poll cycle past 6s.
+    /// When Bonjour is unavailable, `adb mdns services` is the first fallback.
+    /// Keep it bounded so a wedged daemon cannot stall the fallback cycle.
     nonisolated static let mdnsServicesTimeout: TimeInterval = 2
 
     func mdnsServices() -> [DiscoveredPhone] {
+        let snapshot = BonjourServiceMonitor.shared.serviceSnapshot()
+        switch snapshot {
+        case .available(let services):
+            // Resolution completion emits a wake event, so a newly-seen
+            // service does not need either a one-second poll delay or an adb
+            // subprocess on this path.
+            return Self.resolvedPhones(for: services)
+
+        case .warming:
+            // Do not launch the three sequential legacy dns-sd sweeps while
+            // NWBrowser is merely starting. Its ready/result event wakes the
+            // discovery service immediately, usually within the same second.
+            return []
+
+        case .unavailable:
+            break
+        }
+
         let adbPhones = Self.parseMDNSServices(
             run(["mdns", "services"], timeout: Self.mdnsServicesTimeout)
         )
@@ -166,14 +237,43 @@ struct ADBController: Sendable {
     /// Failed resolves retry on this cadence rather than every 1s poll.
     nonisolated static let resolveRetryInterval: TimeInterval = 5
 
-    /// Every `dns-sd -L` spawn runs here, never on the discovery poll. A first
-    /// sighting therefore costs one extra poll (~1s) instead of blocking the
-    /// poll for up to 1s per unresolved service — three service types for one
-    /// phone used to add ~3s to the cycle that first saw it.
+    /// Every `dns-sd -L` spawn runs here, never on the discovery poll. New
+    /// service types resolve concurrently, bounded by Bonjour's three adb
+    /// types, so a phone advertising both TLS and legacy endpoints is not
+    /// serialized behind several one-second resolver windows.
     private static let resolveQueue = DispatchQueue(
         label: "phonerelay.discovery.resolve",
-        qos: .utility
+        qos: .userInitiated,
+        attributes: .concurrent
     )
+
+    // MARK: - Event-driven discovery wakeups
+
+    private static let discoveryObserverLock = NSLock()
+    nonisolated(unsafe) private static var discoveryObservers: [UUID: @Sendable () -> Void] = [:]
+
+    static func addDiscoveryObserver(
+        _ observer: @escaping @Sendable () -> Void
+    ) -> UUID {
+        let id = UUID()
+        discoveryObserverLock.lock()
+        discoveryObservers[id] = observer
+        discoveryObserverLock.unlock()
+        return id
+    }
+
+    static func removeDiscoveryObserver(_ id: UUID) {
+        discoveryObserverLock.lock()
+        discoveryObservers.removeValue(forKey: id)
+        discoveryObserverLock.unlock()
+    }
+
+    static func notifyDiscoveryObservers() {
+        discoveryObserverLock.lock()
+        let observers = Array(discoveryObservers.values)
+        discoveryObserverLock.unlock()
+        observers.forEach { $0() }
+    }
 
     nonisolated static func defaultResolveScheduler(_ work: @escaping @Sendable () -> Void) {
         resolveQueue.async(execute: work)
@@ -233,6 +333,7 @@ struct ADBController: Sendable {
         for service in pending {
             schedule {
                 let resolved = resolve(service)
+                var didChange = false
                 resolveCacheLock.lock()
                 resolvesInFlight.remove(service)
                 // Dropped from the advertised set while we were resolving —
@@ -241,11 +342,15 @@ struct ADBController: Sendable {
                     if let resolved {
                         resolvedPhonesByService[service] = resolved
                         failedResolveAt.removeValue(forKey: service)
+                        didChange = true
                     } else {
                         failedResolveAt[service] = now
                     }
                 }
                 resolveCacheLock.unlock()
+                if didChange {
+                    notifyDiscoveryObservers()
+                }
             }
         }
 
