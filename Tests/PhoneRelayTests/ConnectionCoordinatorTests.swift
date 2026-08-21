@@ -215,6 +215,25 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(ConnectionCoordinator.automaticReconnectDelay(failureCount: 20), 30)
     }
 
+    func testForegroundAutomaticReconnectCanCapBackgroundBackoff() {
+        let coordinator = ConnectionCoordinator()
+        let now = Date(timeIntervalSince1970: 1_000)
+
+        for _ in 0..<4 {
+            _ = coordinator.recordAutomaticReconnectFailure(
+                recordID: "phone-a",
+                failure: .temporarilyUnavailable,
+                now: now,
+                maximumDelay: 5
+            )
+        }
+
+        XCTAssertEqual(
+            coordinator.automaticRetryStates["phone-a"]?.nextRetryAt,
+            now.addingTimeInterval(5)
+        )
+    }
+
     func testRetryHistoryIsPhoneKeyedAndRouteEvidenceBypassesOnce() {
         let coordinator = ConnectionCoordinator()
         let now = Date(timeIntervalSince1970: 1_000)

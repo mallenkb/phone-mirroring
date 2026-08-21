@@ -613,7 +613,12 @@ extension AppModel {
                 let retryAt = connectionCoordinator.recordAutomaticReconnectFailure(
                     recordID: record.id,
                     failure: failure,
-                    notBefore: autoMirrorBackoffUntil
+                    notBefore: autoMirrorBackoffUntil,
+                    // The user is looking at the connect screen. Keep the
+                    // saved endpoint hot instead of parking a known IP behind
+                    // the background 10/20/30-second ladder. Whole-subnet
+                    // recovery remains independently throttled below.
+                    maximumDelay: isConnectionAttemptForegrounded ? 5 : nil
                 )
                 let failureCount = connectionCoordinator.automaticRetryStates[record.id]?.failureCount ?? 1
                 Logger.log(
@@ -816,7 +821,7 @@ extension AppModel {
             return .connected(sessionAddress: sessionAddress)
         }
 
-        if result.sawNoRouteToHost {
+        if result.sawNoRouteToHost && !localNetworkPermissionGrantedForOnboarding {
             presentLocalNetworkPermissionHint()
             return .failed(.localNetworkDenied)
         }
@@ -1276,11 +1281,11 @@ extension AppModel {
             target: target,
             prioritizeCurrentNetwork: prioritizeCurrentNetwork
         )
-        // A completed sweep that found nothing listening on :5555 anywhere on
-        // the LAN is not "the phone moved" — it's "the phone isn't offering
-        // wireless adb at all", which is what a reboot does to `tcpip` mode.
-        // Remember that so the failure message can name the actual fix.
-        if outcome.foundNoADBListener {
+        // This recovery only runs when the record carries a matchable device
+        // identity. A completed sweep with no identity match proves that this
+        // phone has no usable :5555 listener, even when an unrelated phone or
+        // development board happens to expose that port on the same LAN.
+        if outcome.address == nil && outcome.didSweep {
             wirelessListenerMissingRecordIDs.insert(record.id)
         } else {
             wirelessListenerMissingRecordIDs.remove(record.id)

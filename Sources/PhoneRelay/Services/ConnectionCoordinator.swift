@@ -550,15 +550,17 @@ final class ConnectionCoordinator {
         recordID: String,
         failure: AutomaticReconnectFailure,
         now: Date = Date(),
-        notBefore: Date? = nil
+        notBefore: Date? = nil,
+        maximumDelay: TimeInterval? = nil
     ) -> Date {
         var retry = automaticRetryStates[recordID] ?? AutomaticRetryState()
         retry.consumedEvidenceKeys.formUnion(pendingAutomaticEvidenceKeys)
         pendingAutomaticEvidenceKeys.removeAll()
         retry.failureCount += 1
         retry.lastFailure = failure
+        let backoff = Self.automaticReconnectDelay(failureCount: retry.failureCount)
         let scheduled = now.addingTimeInterval(
-            Self.automaticReconnectDelay(failureCount: retry.failureCount)
+            maximumDelay.map { min(backoff, max(0, $0)) } ?? backoff
         )
         let retryAt = max(scheduled, notBefore ?? scheduled)
         retry.nextRetryAt = retryAt

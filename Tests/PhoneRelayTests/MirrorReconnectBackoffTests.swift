@@ -2005,7 +2005,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         XCTAssertEqual(AppModel.ConnectionPillState.noPhone.text, "No phone connected")
         XCTAssertEqual(AppModel.ConnectionPillState.actionNeeded.text, "Action needed")
         XCTAssertEqual(AppModel.ConnectionPillState.reconnecting.text, "Reconnecting")
-        XCTAssertEqual(AppModel.ConnectionPillState.waitingForPhone.text, "Waiting for phone")
+        XCTAssertEqual(AppModel.ConnectionPillState.waitingForPhone.text, "Retrying saved Wi-Fi")
         XCTAssertEqual(AppModel.ConnectionPillState.failed.text, "Connection failed")
     }
 
@@ -2060,7 +2060,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
             model.connectionCoordinator.automaticRetryStates[record.id]?.failureCount = 4
             XCTAssertTrue(model.isAutomaticReconnectAtPlateau)
             XCTAssertEqual(model.connectionPillState, .waitingForPhone)
-            XCTAssertEqual(model.connectionPillText, "Waiting for phone")
+            XCTAssertEqual(model.connectionPillText, "Retrying saved Wi-Fi")
         }
     }
 
@@ -2101,6 +2101,34 @@ final class MirrorReconnectBackoffTests: XCTestCase {
             ),
             "Pair phone again"
         )
+    }
+
+    @MainActor
+    func testConnectionPillSurfacesMissingListenerAsActionNeededAtPlateau() {
+        withoutExplicitDeviceSetupRequired {
+            let record = PairedPhoneRecord(
+                id: "phone-a",
+                displayName: "Phone A",
+                lastAddress: "192.0.2.44:5555",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 200)
+            )
+            let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+            model.connectionCoordinator.automaticRetryStates[record.id] = .init(
+                failureCount: 4,
+                nextRetryAt: Date().addingTimeInterval(30),
+                lastFailure: .wirelessListenerMissing
+            )
+            model.connectionCoordinator.automaticReconnectState = .waiting(
+                recordID: record.id,
+                retryAt: Date().addingTimeInterval(30),
+                failure: .wirelessListenerMissing
+            )
+            model.reportError(AppModel.wifiListenerMissingErrorTitle, "Plug in once.")
+
+            XCTAssertEqual(model.connectionPillState, .actionNeeded)
+            XCTAssertEqual(model.connectionPillText, "Plug in once")
+        }
     }
 
     func testConnectionPillTextKeepsActionNeededCopySimple() {

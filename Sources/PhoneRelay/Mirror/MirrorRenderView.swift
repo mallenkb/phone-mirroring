@@ -143,9 +143,9 @@ final class MirrorRenderView: NSView {
     }
 
     /// Queue the frame that triggers the chooser-to-mirror transition without
-    /// exposing the mirror's separate three-second loading treatment. In the
-    /// hosted path this view is already attached at alpha zero above the chooser,
-    /// so the cross-fade starts with phone pixels queued in a live layer tree.
+    /// exposing the mirror's separate three-second loading treatment. The hosted
+    /// path installs this renderer as the window content before queuing, so the
+    /// saved chooser cannot obscure accepted phone pixels.
     func enqueueFirstVisibleFrame(_ sample: CMSampleBuffer, isKeyFrame: Bool) {
         enqueue(sample, isKeyFrame: isKeyFrame)
         // A failed display layer can reject a non-keyframe while it waits to

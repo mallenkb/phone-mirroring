@@ -704,7 +704,7 @@ extension AppModel {
             case .actionNeeded: return "Action needed"
             case .connecting: return "Connecting"
             case .reconnecting: return "Reconnecting"
-            case .waitingForPhone: return "Waiting for phone"
+            case .waitingForPhone: return "Retrying saved Wi-Fi"
             case .online: return "Online"
             case .failed: return "Connection failed"
             }
@@ -741,9 +741,14 @@ extension AppModel {
            !latestHasUnauthorizedUSBDevice,
            activeError?.title != Self.localNetworkBlockedErrorTitle,
            let plateauFailure = automaticReconnectPlateauFailure {
-            // Pairing-required is proven (the phone advertises pairing only),
-            // so surface the action instead of an open-ended wait.
-            return plateauFailure == .pairingRequired ? .actionNeeded : .waitingForPhone
+            // Pairing and a missing listener both require a phone-side action.
+            // Other failures keep retrying the remembered endpoint.
+            switch plateauFailure {
+            case .pairingRequired, .wirelessListenerMissing:
+                return .actionNeeded
+            default:
+                return .waitingForPhone
+            }
         }
         return Self.resolveConnectionPillState(
             hasError: hasBlockingError,
