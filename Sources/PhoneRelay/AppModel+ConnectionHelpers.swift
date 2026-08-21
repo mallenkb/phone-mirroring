@@ -598,7 +598,11 @@ extension AppModel {
     ) -> PairedPhoneRecord? {
         let ordered = recordsByMostRecent(records)
         if let remembered = ordered.first(where: {
-            rememberedConnectablePhone(for: $0, in: [phone]) != nil
+            rememberedConnectablePhone(
+                for: $0,
+                in: [phone],
+                allowSingleCandidateFallback: false
+            ) != nil
         }) {
             return remembered
         }
@@ -669,8 +673,14 @@ extension AppModel {
         records: [PairedPhoneRecord],
         in phones: [DiscoveredPhone]
     ) -> DiscoveredPhone? {
-        for record in recordsByMostRecent(records) {
-            if let phone = rememberedConnectablePhone(for: record, in: phones) {
+        let ordered = recordsByMostRecent(records)
+        let allowSingleCandidateFallback = ordered.filter(isWirelessRecord).count == 1
+        for record in ordered {
+            if let phone = rememberedConnectablePhone(
+                for: record,
+                in: phones,
+                allowSingleCandidateFallback: allowSingleCandidateFallback
+            ) {
                 return phone
             }
         }
@@ -948,6 +958,20 @@ extension AppModel {
         output.localizedCaseInsensitiveContains("no route to host")
     }
 
+    /// The phone listener accepted a raw TCP connection, but the host adb
+    /// daemon failed its own client protocol. This appeared after a live USB
+    /// transport vanished: repeated `adb connect` calls timed out or reset even
+    /// though port 5555 stayed reachable, then the same endpoint connected once
+    /// the daemon recovered. Only a quiescent caller may use this signal to
+    /// authorize the one-shot server restart below.
+    nonisolated static func outputIndicatesADBHostTransportFailure(_ output: String) -> Bool {
+        let lower = output.lowercased()
+        return lower.contains("adb timed out")
+            || lower.contains("protocol fault")
+            || lower.contains("couldn't read status")
+            || lower.contains("connection reset by peer")
+    }
+
     nonisolated static func adbTCPPortAcceptsConnection(
         _ address: String,
         timeoutNanoseconds: UInt64 = wirelessHandoffTCPProbeTimeoutNanoseconds
@@ -1016,7 +1040,7 @@ extension AppModel {
         maximumDuration: TimeInterval? = nil,
         connectTimeout: TimeInterval = 5,
         shellTimeout: TimeInterval = 2,
-        allowADBServerRestart: Bool = true
+        allowADBServerRestart: Bool = false
     ) async -> Bool {
         await waitForADBWirelessTargetReadiness(
             adb: adb,
@@ -1033,10 +1057,10 @@ extension AppModel {
         ).isReady
     }
 
-    /// `allowADBServerRestart` gates the one-shot `adb kill-server` escalation:
-    /// it clears stale daemon state, but it also drops *every* adb transport —
-    /// pass `false` whenever a live mirror session could be riding on another
-    /// transport (e.g. the background USB→Wi-Fi handoff).
+    /// `allowADBServerRestart` gates the one-shot `adb kill-server` escalation.
+    /// It defaults off because a daemon restart drops every adb transport. Only
+    /// an explicit recovery action that has proven the app is quiescent may opt
+    /// in; ordinary readiness and reconnect flows stay transport-local.
     nonisolated static func waitForADBWirelessTargetReadiness(
         adb: ADBController,
         address: String,
@@ -1048,7 +1072,7 @@ extension AppModel {
         maximumDuration: TimeInterval? = nil,
         connectTimeout: TimeInterval = 5,
         shellTimeout: TimeInterval = 2,
-        allowADBServerRestart: Bool = true
+        allowADBServerRestart: Bool = false
     ) async -> WirelessTargetReadiness {
         guard !Task.isCancelled else {
             return WirelessTargetReadiness(
@@ -1075,7 +1099,7 @@ extension AppModel {
         var connectAttempts = 0
         var noRouteToHostFailures = 0
         var sawReachableNoRoute = false
-        var restartedADBServerAfterReachableNoRoute = false
+        var restartedADBServerAfterReachableFailure = false
         for attempt in 0..<attempts {
             if let remaining = remainingBudget(), remaining <= 0 {
                 return WirelessTargetReadiness(
@@ -1161,22 +1185,28 @@ extension AppModel {
                 adb.run(["connect", address], timeout: connectCommandTimeout)
             }.value
             Logger.log("ADB Wi-Fi handoff connect attempt \(attempt + 1)/\(attempts) address=\(address) output=\(connectOutput.trimmingCharacters(in: .whitespacesAndNewlines))")
-            if outputIndicatesLocalNetworkBlocked(connectOutput) {
+            let localNetworkBlocked = outputIndicatesLocalNetworkBlocked(connectOutput)
+            let adbHostTransportFailed = outputIndicatesADBHostTransportFailure(connectOutput)
+            if localNetworkBlocked {
                 noRouteToHostFailures += 1
                 if portAcceptedThisAttempt {
                     sawReachableNoRoute = true
                 }
-                if allowADBServerRestart,
-                   tcpPortProbe != nil,
-                   !restartedADBServerAfterReachableNoRoute,
-                   attempt + 1 < attempts {
-                    restartedADBServerAfterReachableNoRoute = true
-                    Logger.log("ADB Wi-Fi handoff connect saw 'No route to host' after TCP probe accepted \(address); restarting adb server once to clear stale daemon state.")
-                    await Task.detached(priority: .userInitiated) {
-                        _ = adb.run(["kill-server"], timeout: 3)
-                    }.value
-                    await adb.ensureServerStarted()
-                }
+            }
+            if allowADBServerRestart,
+               portAcceptedThisAttempt,
+               localNetworkBlocked || adbHostTransportFailed,
+               !restartedADBServerAfterReachableFailure,
+               attempt + 1 < attempts {
+                restartedADBServerAfterReachableFailure = true
+                let reason = localNetworkBlocked
+                    ? "No route to host"
+                    : "host adb protocol failure"
+                Logger.log("ADB Wi-Fi handoff connect saw \(reason) after TCP probe accepted \(address); restarting adb server once to clear stale daemon state.")
+                await Task.detached(priority: .userInitiated) {
+                    _ = adb.run(["kill-server"], timeout: 3)
+                }.value
+                await adb.ensureServerStarted()
             }
             connectAttempts += 1
             guard adbConnectSucceeded(connectOutput) else {
@@ -1190,11 +1220,16 @@ extension AppModel {
                     noRouteToHostFailures: noRouteToHostFailures
                 )
             }
-            let shellOutput = await Task.detached {
-                adb.run(["-s", address, "shell", "echo", "wifi-adb-ok"], timeout: shellCommandTimeout)
+            let shellResult = await Task.detached {
+                adb.runResult(
+                    ["-s", address, "shell", "echo", "wifi-adb-ok"],
+                    timeout: shellCommandTimeout
+                )
             }.value
+            let shellOutput = shellResult.output
             Logger.log("ADB Wi-Fi handoff shell readiness attempt \(attempt + 1)/\(attempts) address=\(address) output=\(shellOutput.trimmingCharacters(in: .whitespacesAndNewlines))")
-            if shellOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "wifi-adb-ok" {
+            if shellResult.succeeded,
+               shellOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "wifi-adb-ok" {
                 return WirelessTargetReadiness(
                     isReady: true,
                     connectAttempts: connectAttempts,

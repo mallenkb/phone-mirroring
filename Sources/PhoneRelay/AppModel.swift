@@ -956,6 +956,10 @@ final class AppModel: ObservableObject {
     nonisolated static let wirelessHandoffTCPIPTimeout: TimeInterval = 3
     nonisolated static let wirelessHandoffPreflightTimeoutNanoseconds: UInt64 = 1_200_000_000
     nonisolated static let wirelessHandoffTCPProbeTimeoutNanoseconds: UInt64 = 450_000_000
+    /// A route already reported online by `adb devices` gets one strict shell
+    /// proof before any mDNS, TCP-probe, or reconnect work. Healthy transports
+    /// answer immediately; stale watcher state is abandoned quickly.
+    nonisolated static let automaticReconnectLiveShellTimeout: TimeInterval = 0.8
     /// The takeover wait runs right after `adb tcpip` dropped the USB mirror,
     /// so it races the phone's adbd restart (1–4s) plus the first TLS-probe /
     /// connect round-trips. Sized so the attempts cap never binds before the
@@ -1503,12 +1507,21 @@ final class AppModel: ObservableObject {
             in: latestAuthorizedADBDevices
         ) {
             stopQRCodePairingSession()
-            select(device: wirelessDevice, for: record)
-            startMirroring(manual: true)
+            var liveRecord = record
+            liveRecord.lastAddress = wirelessDevice.serial
+            liveRecord.wifiAddress = wirelessDevice.serial
+            reconnectOverWiFi(
+                preferredRecord: liveRecord,
+                restrictToPreferredRecord: true
+            )
             return
         }
 
-        if let phone = Self.rememberedConnectablePhone(for: record, in: discoveredPhones) {
+        if let phone = Self.rememberedConnectablePhone(
+            for: record,
+            in: discoveredPhones,
+            allowSingleCandidateFallback: pairedPhones.filter(Self.isWirelessRecord).count == 1
+        ) {
             stopQRCodePairingSession()
             connectAndMirror(phone: phone)
             return
@@ -1616,8 +1629,13 @@ final class AppModel: ObservableObject {
             in: latestAuthorizedADBDevices
         ) {
             stopQRCodePairingSession()
-            select(device: wirelessDevice, for: record)
-            startMirroring(manual: true)
+            var liveRecord = record
+            liveRecord.lastAddress = wirelessDevice.serial
+            liveRecord.wifiAddress = wirelessDevice.serial
+            reconnectOverWiFi(
+                preferredRecord: liveRecord,
+                restrictToPreferredRecord: true
+            )
             return
         }
 
@@ -1799,7 +1817,11 @@ final class AppModel: ObservableObject {
                 let livePhones = await Task.detached { adb.connectableMDNSTargets() }.value
                 for record in wirelessRecords {
                     if Task.isCancelled { return }
-                    guard let phone = Self.rememberedConnectablePhone(for: record, in: livePhones) else { continue }
+                    guard let phone = Self.rememberedConnectablePhone(
+                        for: record,
+                        in: livePhones,
+                        allowSingleCandidateFallback: wirelessRecords.count == 1
+                    ) else { continue }
                     self.reconnectAttemptCount += 1
                     if await Self.waitForADBWirelessTargetReady(
                         adb: adb,

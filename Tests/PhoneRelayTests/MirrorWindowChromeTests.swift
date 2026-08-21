@@ -847,6 +847,33 @@ final class MirrorWindowChromeTests: XCTestCase {
     }
 
     @MainActor
+    func testHostedMirrorReplacesAndRestoresConnectionContentView() throws {
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        let hostWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 390, height: 850),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let connectionContentView = NSView(frame: hostWindow.contentView?.bounds ?? .zero)
+        hostWindow.contentView = connectionContentView
+        let session = MirrorSession(model: model, serial: nil, hostWindow: hostWindow)
+        let controller = MirrorContentWindowController(
+            model: model,
+            session: session,
+            hostWindow: hostWindow
+        )
+
+        XCTAssertTrue(controller.isUsingHostedWindow)
+        XCTAssertTrue(hostWindow.contentView is MirrorRootView)
+        XCTAssertFalse(hostWindow.contentView === connectionContentView)
+
+        controller.dismissPresentation()
+
+        XCTAssertTrue(hostWindow.contentView === connectionContentView)
+    }
+
+    @MainActor
     func testNativeMirrorShellLetsPhonePixelsFillToTopEdge() {
         XCTAssertEqual(MirrorContentWindowController.screenLeftInset, 0)
         XCTAssertEqual(MirrorContentWindowController.screenRightInset, 0)

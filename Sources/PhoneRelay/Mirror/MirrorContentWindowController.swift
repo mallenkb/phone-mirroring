@@ -227,6 +227,10 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         installContent(prepareRenderView: prepareRenderView)
         installAppActivationObservers()
         presentationWindow.styleMask.remove(.titled)
+        // Removing .titled clears the aspect constraint `configure` just set,
+        // so re-apply it — otherwise a pre-header window resizes with a zero
+        // (NaN) aspect until the first stream header lands.
+        presentationWindow.contentAspectRatio = presentationWindow.frame.size
     }
 
     required init?(coder: NSCoder) { nil }
@@ -920,23 +924,15 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         ])
         applyScaledRenderInsets()
 
-        if let hostedContentView {
-            // Keep the SwiftUI chooser mounted underneath the mirror. Attaching
-            // the mirror root at alpha zero gives AVSampleBufferDisplayLayer a
-            // live layer tree before the first sample is queued, then a short
-            // cross-fade turns the transition into an in-place state change.
-            rootView.alphaValue = 0
-            hostedContentView.addSubview(rootView, positioned: .above, relativeTo: nil)
+        if hostedContentView != nil {
+            // SwiftUI owns and may reorder every child of its hosting view.
+            // Adding the mirror as a sibling above that tree was therefore not
+            // stable: a later published-model update could put the chooser back
+            // on top while the hidden renderer continued receiving input.
+            // Replace the window content for the session instead. The snapshot
+            // retains the chooser and dismissPresentation restores it intact.
+            window.contentView = rootView
             prepareRenderView?(renderView)
-            if Self.shouldAnimateChromeForCurrentProcess {
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.16
-                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                    rootView.animator().alphaValue = 1
-                }
-            } else {
-                rootView.alphaValue = 1
-            }
         } else {
             prepareRenderView?(renderView)
             window.contentView = rootView

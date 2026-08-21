@@ -246,7 +246,16 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
     var displayName: String
     var lastAddress: String
     var usbSerial: String?
+    /// Last Wi-Fi IP observed over a trusted transport such as USB. This is
+    /// identity/recovery metadata only and must never be dialed until a full
+    /// ADB readiness check promotes an endpoint into `wifiAddress`.
+    var observedWiFiIPAddress: String?
     var wifiAddress: String?
+    /// Network context and time for the last successful ADB shell on
+    /// `wifiAddress`. A network-context change deprioritizes that endpoint
+    /// until it is verified again.
+    var wifiAddressLastVerifiedAt: Date?
+    var wifiNetworkFingerprint: String?
     /// The phone's Wi-Fi MAC, normalized to lowercase colon form. Stable across
     /// DHCP lease changes on the same SSID, so it's the anchor we use to find the
     /// phone's new IP after it moves (see `WiFiAddressRecovery`).
@@ -268,7 +277,10 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
         displayName: String,
         lastAddress: String,
         usbSerial: String? = nil,
+        observedWiFiIPAddress: String? = nil,
         wifiAddress: String? = nil,
+        wifiAddressLastVerifiedAt: Date? = nil,
+        wifiNetworkFingerprint: String? = nil,
         wifiMACAddress: String? = nil,
         firstPaired: Date,
         lastConnected: Date,
@@ -278,7 +290,11 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
         self.displayName = displayName
         self.lastAddress = lastAddress
         self.usbSerial = usbSerial ?? (Self.isWirelessADBAddress(lastAddress) ? nil : lastAddress)
+        self.observedWiFiIPAddress = Self.normalizedIPv4Address(observedWiFiIPAddress)
         self.wifiAddress = wifiAddress ?? (Self.isWirelessADBAddress(lastAddress) ? lastAddress : nil)
+        self.wifiAddressLastVerifiedAt = wifiAddressLastVerifiedAt
+            ?? (self.wifiAddress == nil ? nil : lastConnected)
+        self.wifiNetworkFingerprint = Self.normalizedOptionalValue(wifiNetworkFingerprint)
         self.wifiMACAddress = Self.normalizedMACAddress(wifiMACAddress)
         self.firstPaired = firstPaired
         self.lastConnected = lastConnected
@@ -293,7 +309,10 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
         adbSerial: String? = nil,
         firstPaired: Date,
         lastConnected: Date,
+        observedWiFiIPAddress: String? = nil,
         wifiAddress: String? = nil,
+        wifiAddressLastVerifiedAt: Date? = nil,
+        wifiNetworkFingerprint: String? = nil,
         wifiMACAddress: String? = nil,
         autoConnectSuspended: Bool = false
     ) {
@@ -302,7 +321,10 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
             displayName: displayName.isEmpty ? model : displayName,
             lastAddress: lastAddress,
             usbSerial: adbSerial,
+            observedWiFiIPAddress: observedWiFiIPAddress,
             wifiAddress: wifiAddress,
+            wifiAddressLastVerifiedAt: wifiAddressLastVerifiedAt,
+            wifiNetworkFingerprint: wifiNetworkFingerprint,
             wifiMACAddress: wifiMACAddress,
             firstPaired: firstPaired,
             lastConnected: lastConnected,
@@ -315,7 +337,10 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
         case displayName
         case lastAddress
         case usbSerial
+        case observedWiFiIPAddress
         case wifiAddress
+        case wifiAddressLastVerifiedAt
+        case wifiNetworkFingerprint
         case wifiMACAddress
         case firstPaired
         case lastConnected
@@ -329,14 +354,43 @@ struct PairedPhoneRecord: Codable, Identifiable, Equatable, Hashable {
         lastAddress = try container.decode(String.self, forKey: .lastAddress)
         usbSerial = try container.decodeIfPresent(String.self, forKey: .usbSerial)
             ?? (Self.isWirelessADBAddress(lastAddress) ? nil : lastAddress)
+        observedWiFiIPAddress = Self.normalizedIPv4Address(
+            try container.decodeIfPresent(String.self, forKey: .observedWiFiIPAddress)
+        )
         wifiAddress = try container.decodeIfPresent(String.self, forKey: .wifiAddress)
             ?? (Self.isWirelessADBAddress(lastAddress) ? lastAddress : nil)
+        firstPaired = try container.decode(Date.self, forKey: .firstPaired)
+        lastConnected = try container.decode(Date.self, forKey: .lastConnected)
+        wifiAddressLastVerifiedAt = try container.decodeIfPresent(
+            Date.self,
+            forKey: .wifiAddressLastVerifiedAt
+        ) ?? (wifiAddress == nil ? nil : lastConnected)
+        wifiNetworkFingerprint = Self.normalizedOptionalValue(
+            try container.decodeIfPresent(String.self, forKey: .wifiNetworkFingerprint)
+        )
         wifiMACAddress = Self.normalizedMACAddress(
             try container.decodeIfPresent(String.self, forKey: .wifiMACAddress)
         )
-        firstPaired = try container.decode(Date.self, forKey: .firstPaired)
-        lastConnected = try container.decode(Date.self, forKey: .lastConnected)
         autoConnectSuspended = try container.decodeIfPresent(Bool.self, forKey: .autoConnectSuspended) ?? false
+    }
+
+    private static func normalizedOptionalValue(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
+    private static func normalizedIPv4Address(_ raw: String?) -> String? {
+        guard let candidate = normalizedOptionalValue(raw) else { return nil }
+        let octets = candidate.split(separator: ".", omittingEmptySubsequences: false)
+        guard octets.count == 4,
+              octets.allSatisfy({ octet in
+                  guard !octet.isEmpty, octet.allSatisfy(\.isNumber), let value = Int(octet) else {
+                      return false
+                  }
+                  return (0...255).contains(value)
+              }) else { return nil }
+        return candidate
     }
 
     static func isWirelessADBAddress(_ address: String) -> Bool {

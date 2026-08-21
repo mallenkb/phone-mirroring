@@ -254,6 +254,66 @@ final class WiFiAddressRecoveryTests: XCTestCase {
         )
         XCTAssertNil(resolved)
     }
+
+    // MARK: - Outcome evidence ("moved" vs "no listener anywhere")
+
+    /// A completed sweep with nothing on :5555 is the phone's tcpip listener
+    /// being gone — the case only a cable fixes.
+    func testRecoverDetailedReportsMissingListenerWhenSweepFindsNoOpenPort() async {
+        let outcome = await WiFiAddressRecovery.recoverDetailed(
+            adb: ADBController(),
+            target: .init(
+                macAddress: "AA:BB:CC:DD:EE:FF",
+                usbSerial: nil,
+                displayName: "Pixel 8",
+                lastKnownIP: "192.168.1.50:5555"
+            ),
+            sweep: { _ in [] },
+            readARP: { ["192.168.1.73": "11:22:33:44:55:66"] },
+            localSubnets: { ["192.168.1."] }
+        )
+        XCTAssertNil(outcome.address)
+        XCTAssertTrue(outcome.didSweep)
+        XCTAssertEqual(outcome.openHostCount, 0)
+        XCTAssertTrue(outcome.foundNoADBListener)
+    }
+
+    /// Hosts answering on :5555 mean wireless adb is alive on this LAN; the
+    /// phone simply wasn't matched. Telling the user to plug in would be wrong.
+    func testRecoverDetailedDoesNotClaimMissingListenerWhenPortsAreOpen() async {
+        let outcome = await WiFiAddressRecovery.recoverDetailed(
+            adb: ADBController(),
+            target: .init(
+                macAddress: "AA:BB:CC:DD:EE:FF",
+                usbSerial: nil,
+                displayName: "Pixel 8",
+                lastKnownIP: "192.168.1.50:5555"
+            ),
+            sweep: { _ in ["192.168.1.44"] },
+            readARP: { ["192.168.1.73": "11:22:33:44:55:66"] },
+            localSubnets: { ["192.168.1."] },
+            runADB: { arguments, _ in
+                arguments.first == "connect" ? "connected to 192.168.1.44:5555" : "SOMEONE-ELSE\n"
+            }
+        )
+        XCTAssertNil(outcome.address)
+        XCTAssertTrue(outcome.didSweep)
+        XCTAssertEqual(outcome.openHostCount, 1)
+        XCTAssertFalse(outcome.foundNoADBListener)
+    }
+
+    /// No subnet to scan means no evidence at all — never a listener verdict.
+    func testRecoverDetailedWithoutSweepMakesNoListenerClaim() async {
+        let outcome = await WiFiAddressRecovery.recoverDetailed(
+            adb: ADBController(),
+            target: .init(macAddress: "aa:bb:cc:dd:ee:ff", usbSerial: nil, displayName: "X", lastKnownIP: nil),
+            sweep: { _ in [] },
+            readARP: { [:] },
+            localSubnets: { [] }
+        )
+        XCTAssertFalse(outcome.didSweep)
+        XCTAssertFalse(outcome.foundNoADBListener)
+    }
 }
 
 /// Thread-safe recorder for the adb commands a fake `runADB` closure receives —

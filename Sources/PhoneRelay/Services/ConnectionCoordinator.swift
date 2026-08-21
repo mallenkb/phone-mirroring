@@ -40,6 +40,10 @@ final class ConnectionCoordinator {
         case temporarilyUnavailable
         case localNetworkDenied
         case pairingRequired
+        /// The address sweep proved nothing on this LAN answers on the adb
+        /// port. `tcpip 5555` does not survive a phone reboot and cannot be
+        /// re-enabled over the air, so only a cable clears this one.
+        case wirelessListenerMissing
         case adbUnavailable
         case unauthorizedUSB
         case mirrorCrashBackoff
@@ -64,6 +68,57 @@ final class ConnectionCoordinator {
         var usbSerial: String
         var address: String
         var displayName: String
+    }
+
+    /// Circuit-breaker state for the destructive `adb tcpip` step, per USB
+    /// serial. `adb tcpip` restarts adbd and drops the cable, so a phone that
+    /// genuinely cannot do wireless adb must not be restarted on every cycle
+    /// (that was the "USB mirror dies every few seconds" pathology). The
+    /// verdict used to last the whole session, which also meant one transient
+    /// failure — adbd mid-restart after a phone reboot, a Wi-Fi blip — disabled
+    /// the *only* path this app has to re-arm `:5555` until relaunch. So the
+    /// breaker now escalates instead: retry is allowed after a delay that grows
+    /// steeply, capping at 30 minutes.
+    struct LegacyHandoffFailureState: Equatable, Sendable {
+        var failureCount = 0
+        var retryAt = Date.distantPast
+    }
+
+    nonisolated static func legacyHandoffRetryDelay(failureCount: Int) -> TimeInterval {
+        switch failureCount {
+        case ..<1: return 0
+        case 1: return 60
+        case 2: return 300
+        default: return 1800
+        }
+    }
+
+    /// True while `adb tcpip` is barred for this serial. A serial that has
+    /// never failed, or whose escalating delay has elapsed, may try again.
+    func isLegacyHandoffCoolingDown(serial: String, now: Date = Date()) -> Bool {
+        guard let state = failedLegacyHandoffSerials[serial] else { return false }
+        return now < state.retryAt
+    }
+
+    func legacyHandoffRetryDate(serial: String) -> Date? {
+        failedLegacyHandoffSerials[serial]?.retryAt
+    }
+
+    @discardableResult
+    func noteLegacyHandoffFailure(serial: String, now: Date = Date()) -> Date {
+        var state = failedLegacyHandoffSerials[serial] ?? LegacyHandoffFailureState()
+        state.failureCount += 1
+        state.retryAt = now.addingTimeInterval(
+            Self.legacyHandoffRetryDelay(failureCount: state.failureCount)
+        )
+        failedLegacyHandoffSerials[serial] = state
+        return state.retryAt
+    }
+
+    /// A proven-good wireless route clears the verdict outright: the phone can
+    /// evidently do adb over Wi-Fi, so the next cable deserves a clean slate.
+    func clearLegacyHandoffFailure(serial: String) {
+        failedLegacyHandoffSerials.removeValue(forKey: serial)
     }
 
     /// A user's transport choice applies only to the connection currently being
@@ -103,9 +158,17 @@ final class ConnectionCoordinator {
     var failedAutoConnectTargets: [String: Date] = [:]
     var autoConnectTargetsInFlight: Set<String> = []
     var wifiAddressRecoveryAttemptedAt: [String: Date] = [:]
+    /// Records whose last address sweep found *no* host on the LAN listening on
+    /// the adb port. That is the phone's `tcpip` listener being gone rather than
+    /// its IP having moved, so the fix is a cable, not more waiting.
+    var wirelessListenerMissingRecordIDs: Set<String> = []
     var savedWiFiStatusProbeInFlight = false
     var lastSavedWiFiStatusProbeAt: Date?
     var previousAuthorizedSerials: Set<String> = []
+    /// USB serials already considered for a cable-arrival Wi-Fi arm, so the
+    /// arm fires on the plug-in edge instead of on every watcher poll.
+    var wirelessArmSeenUSBSerials: Set<String> = []
+    var lastWirelessArmAttemptAt: [String: Date] = [:]
     var lastUSBHandoffSerial: String?
     var wirelessPinnedUSBSerials: Set<String> = []
     var transportIntent: TransportIntent = .automatic
@@ -116,15 +179,18 @@ final class ConnectionCoordinator {
     var adbDaemonRecoveryInFlight = false
     var sessionAutoConnectSuspendedRecordIDs = Set<PairedPhoneRecord.ID>()
     var usbWiFiHandoffCandidate: USBWiFiHandoffCandidate?
-    var failedLegacyHandoffSerials: Set<String> = []
+    var failedLegacyHandoffSerials: [String: LegacyHandoffFailureState] = [:]
     private(set) var usbWiFiHandoffGeneration = 0
+    private(set) var activeUSBWiFiHandoffGeneration: Int?
     private(set) var discoveredWiFiConnectGeneration = 0
+    private(set) var wirelessRouteVerificationGeneration = 0
 
     // Event sources and watcher suspension belong to the same lifecycle as the
     // connection tasks. Keeping them here prevents AppModel teardown from
     // needing to know every monitor/task pair.
     var networkPathMonitor: NWPathMonitor?
     var lastNetworkPathWasSatisfied: Bool?
+    var preferCurrentNetworkForNextReconnect = false
     var didWakeObserver: NSObjectProtocol?
     var lastSystemEventReconnectNudgeAt: Date?
     var usbAttachMonitor: USBAttachMonitor?
@@ -139,12 +205,16 @@ final class ConnectionCoordinator {
     var usbWiFiHandoffTask: Task<Void, Never>?
     var usbWiFiTakeoverTask: Task<Void, Never>?
     var discoveredWiFiConnectTask: Task<Void, Never>?
+    var wirelessRouteVerificationTask: Task<Void, Never>?
     var wirelessStartTask: Task<Void, Never>?
     var reconnectTask: Task<Void, Never>?
     var disconnectRecoveryTask: Task<Void, Never>?
     var automaticReconnectTask: Task<Void, Never>?
     var automaticReconnectState: AutomaticReconnectState = .idle
     var automaticReconnectGeneration = 0
+    private(set) var automaticReconnectTaskGeneration = 0
+    var automaticReconnectRecordCursor = 0
+    var automaticReconnectPreferredRecordID: String?
     var automaticDiscoveryEventID: UInt64 = 0
     var automaticRetryStates: [String: AutomaticRetryState] = [:]
     var automaticReconnectBypassPending = false
@@ -160,6 +230,7 @@ final class ConnectionCoordinator {
         usbWiFiHandoffTask?.cancel()
         usbWiFiTakeoverTask?.cancel()
         discoveredWiFiConnectTask?.cancel()
+        wirelessRouteVerificationTask?.cancel()
         wirelessStartTask?.cancel()
         reconnectTask?.cancel()
         disconnectRecoveryTask?.cancel()
@@ -174,6 +245,7 @@ final class ConnectionCoordinator {
 
     var hasActiveConnectionAttempt: Bool {
         usbConnectTask != nil
+            || activeUSBWiFiHandoffGeneration != nil
             || usbWiFiHandoffTask != nil
             || usbWiFiTakeoverTask != nil
             || discoveredWiFiConnectTask != nil
@@ -186,13 +258,15 @@ final class ConnectionCoordinator {
         wirelessStartTask != nil
             || discoveredWiFiConnectTask != nil
             || reconnectTask != nil
+            || activeUSBWiFiHandoffGeneration != nil
             || usbWiFiHandoffTask != nil
             || usbWiFiTakeoverTask != nil
             || automaticReconnectTask != nil
     }
 
     var isPreparingWiFiHandoff: Bool {
-        usbWiFiHandoffTask != nil
+        activeUSBWiFiHandoffGeneration != nil
+            || usbWiFiHandoffTask != nil
             || usbWiFiTakeoverTask != nil
             || discoveredWiFiConnectTask != nil
             || wirelessStartTask != nil
@@ -206,6 +280,7 @@ final class ConnectionCoordinator {
     var hasManualConnectionWorkInFlight: Bool {
         usbConnectTask != nil
             || discoveredWiFiConnectTask != nil
+            || activeUSBWiFiHandoffGeneration != nil
             || usbWiFiHandoffTask != nil
             || usbWiFiTakeoverTask != nil
             || wirelessStartTask != nil
@@ -220,6 +295,14 @@ final class ConnectionCoordinator {
         return false
     }
 
+    /// Per-record failure counts from the retry states, keyed by record ID.
+    /// A nonzero count is proof the pursued wireless route is *failing*, which
+    /// lets cable-arrival work (re-arm `tcpip`, USB interrupt) supersede the
+    /// parked loop without disturbing a healthy first attempt.
+    var automaticRetryFailureCounts: [String: Int] {
+        automaticRetryStates.mapValues(\.failureCount)
+    }
+
     /// Cancels every workflow owned by this coordinator. Mirror launch,
     /// recording, and presentation tasks intentionally remain separate
     /// lifecycles and are cancelled by their owning AppModel subsystems.
@@ -231,6 +314,7 @@ final class ConnectionCoordinator {
         cancelUSBWiFiHandoff()
         cancel(&usbWiFiTakeoverTask)
         cancelDiscoveredWiFiConnect()
+        cancelWirelessRouteVerification()
         cancel(&wirelessStartTask)
         cancel(&reconnectTask)
         cancel(&disconnectRecoveryTask)
@@ -243,6 +327,7 @@ final class ConnectionCoordinator {
     func cancelWirelessReconnectWork() {
         cancel(&reconnectTask)
         cancelDiscoveredWiFiConnect()
+        cancelWirelessRouteVerification()
         cancel(&wirelessStartTask)
         cancel(&disconnectRecoveryTask)
         cancel(&usbWiFiTakeoverTask)
@@ -256,20 +341,24 @@ final class ConnectionCoordinator {
     /// handle alone—decides whether it may mutate connection state.
     func beginUSBWiFiHandoff() -> Int {
         cancelUSBWiFiHandoff()
+        activeUSBWiFiHandoffGeneration = usbWiFiHandoffGeneration
         return usbWiFiHandoffGeneration
     }
 
     func isCurrentUSBWiFiHandoff(_ generation: Int) -> Bool {
         usbWiFiHandoffGeneration == generation
+            && activeUSBWiFiHandoffGeneration == generation
     }
 
     func finishUSBWiFiHandoff(_ generation: Int) {
         guard isCurrentUSBWiFiHandoff(generation) else { return }
+        activeUSBWiFiHandoffGeneration = nil
         usbWiFiHandoffTask = nil
     }
 
     func cancelUSBWiFiHandoff() {
         usbWiFiHandoffGeneration &+= 1
+        activeUSBWiFiHandoffGeneration = nil
         cancel(&usbWiFiHandoffTask)
     }
 
@@ -292,6 +381,25 @@ final class ConnectionCoordinator {
         cancel(&discoveredWiFiConnectTask)
     }
 
+    func beginWirelessRouteVerification() -> Int {
+        cancelWirelessRouteVerification()
+        return wirelessRouteVerificationGeneration
+    }
+
+    func isCurrentWirelessRouteVerification(_ generation: Int) -> Bool {
+        wirelessRouteVerificationGeneration == generation
+    }
+
+    func finishWirelessRouteVerification(_ generation: Int) {
+        guard isCurrentWirelessRouteVerification(generation) else { return }
+        wirelessRouteVerificationTask = nil
+    }
+
+    func cancelWirelessRouteVerification() {
+        wirelessRouteVerificationGeneration &+= 1
+        cancel(&wirelessRouteVerificationTask)
+    }
+
     func reset() {
         cancelAll()
         stopEventMonitoring()
@@ -303,9 +411,12 @@ final class ConnectionCoordinator {
         failedAutoConnectTargets.removeAll()
         autoConnectTargetsInFlight.removeAll()
         wifiAddressRecoveryAttemptedAt.removeAll()
+        wirelessListenerMissingRecordIDs.removeAll()
         savedWiFiStatusProbeInFlight = false
         lastSavedWiFiStatusProbeAt = nil
         previousAuthorizedSerials.removeAll()
+        wirelessArmSeenUSBSerials.removeAll()
+        lastWirelessArmAttemptAt.removeAll()
         lastUSBHandoffSerial = nil
         wirelessPinnedUSBSerials.removeAll()
         transportIntent = .automatic
@@ -314,11 +425,15 @@ final class ConnectionCoordinator {
         launchReconnectDeadline = nil
         lastADBDaemonRecoveryAt = nil
         adbDaemonRecoveryInFlight = false
+        preferCurrentNetworkForNextReconnect = false
         sessionAutoConnectSuspendedRecordIDs.removeAll()
         usbWiFiHandoffCandidate = nil
         failedLegacyHandoffSerials.removeAll()
         automaticReconnectState = .idle
-        automaticReconnectGeneration = 0
+        // Ownership generations stay monotonic across reset so a cancelled,
+        // non-cooperative adb call can never regain an old epoch by ABA.
+        automaticReconnectRecordCursor = 0
+        automaticReconnectPreferredRecordID = nil
         automaticDiscoveryEventID = 0
         automaticRetryStates.removeAll()
         automaticReconnectBypassPending = false
@@ -372,6 +487,31 @@ final class ConnectionCoordinator {
         }
     }
 
+    /// Owns the task handle itself, independently of the per-attempt generation.
+    /// A cancelled adb process can return after a replacement task has started;
+    /// only the replacement owner may clear the handle or mutate shared state.
+    func beginAutomaticReconnectTask() -> Int {
+        automaticReconnectTaskGeneration &+= 1
+        return automaticReconnectTaskGeneration
+    }
+
+    func ownsAutomaticReconnectTask(
+        taskGeneration: Int,
+        attemptGeneration: Int? = nil
+    ) -> Bool {
+        guard automaticReconnectTaskGeneration == taskGeneration,
+              !isAutoReconnectSuppressedForManualDisconnect else { return false }
+        if let attemptGeneration {
+            return automaticReconnectGeneration == attemptGeneration
+        }
+        return true
+    }
+
+    func finishAutomaticReconnectTask(_ taskGeneration: Int) {
+        guard automaticReconnectTaskGeneration == taskGeneration else { return }
+        automaticReconnectTask = nil
+    }
+
     func beginAutomaticReconnect(recordID: String) -> Int? {
         guard !isAutoReconnectSuppressedForManualDisconnect,
               automaticReconnectState != .manuallyDisconnected else { return nil }
@@ -410,15 +550,17 @@ final class ConnectionCoordinator {
         recordID: String,
         failure: AutomaticReconnectFailure,
         now: Date = Date(),
-        notBefore: Date? = nil
+        notBefore: Date? = nil,
+        maximumDelay: TimeInterval? = nil
     ) -> Date {
         var retry = automaticRetryStates[recordID] ?? AutomaticRetryState()
         retry.consumedEvidenceKeys.formUnion(pendingAutomaticEvidenceKeys)
         pendingAutomaticEvidenceKeys.removeAll()
         retry.failureCount += 1
         retry.lastFailure = failure
+        let backoff = Self.automaticReconnectDelay(failureCount: retry.failureCount)
         let scheduled = now.addingTimeInterval(
-            Self.automaticReconnectDelay(failureCount: retry.failureCount)
+            maximumDelay.map { min(backoff, max(0, $0)) } ?? backoff
         )
         let retryAt = max(scheduled, notBefore ?? scheduled)
         retry.nextRetryAt = retryAt
@@ -436,6 +578,8 @@ final class ConnectionCoordinator {
             automaticRetryStates.removeValue(forKey: recordID)
         }
         automaticReconnectState = .connected(recordID: recordID)
+        automaticReconnectBypassPending = false
+        automaticReconnectPreferredRecordID = nil
         pendingAutomaticEvidenceKeys.removeAll()
     }
 
@@ -477,6 +621,7 @@ final class ConnectionCoordinator {
     }
 
     func cancelAutomaticReconnect(clearRetryState: Bool) {
+        automaticReconnectTaskGeneration &+= 1
         automaticReconnectTask?.cancel()
         automaticReconnectTask = nil
         automaticReconnectSleepGeneration &+= 1
@@ -487,6 +632,7 @@ final class ConnectionCoordinator {
             automaticRetryStates.removeAll()
         }
         automaticReconnectBypassPending = false
+        automaticReconnectPreferredRecordID = nil
         if automaticReconnectState != .manuallyDisconnected {
             automaticReconnectState = .idle
         }
