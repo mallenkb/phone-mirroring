@@ -160,7 +160,10 @@ extension AppModel {
         // jump onto a stale saved Wi-Fi route.
         guard let address = Self.recordsByMostRecent(autoConnectEligiblePairedPhones)
             .compactMap(\.resolvedWiFiAddress)
-            .first(where: { manualDisconnectBaselineSerials.contains($0) })
+            .first(where: {
+                manualDisconnectBaselineSerials.contains($0)
+                    && (legacyWirelessCompatibilityEnabled || !Self.isLegacyWirelessAddress($0))
+            })
         else { return }
 
         manualDisconnectWiFiProbeInFlight = true
@@ -175,13 +178,16 @@ extension AppModel {
     }
 
     /// ADB does not automatically re-add a wireless target after Wi-Fi drops; the
-    /// saved `<ip>:5555` route must be nudged with `adb connect`. This keeps the
+    /// saved route must be nudged with `adb connect`. This keeps the
     /// status UI fresh in the background without using the heavier mirror-start
     /// reconnect path or its longer failure cooldown.
     func probeSavedWiFiStatusIfNeeded(authorized: [AuthorizedADBDevice]) {
         guard !savedWiFiStatusProbeInFlight else { return }
         let records = Self.recordsByMostRecent(autoConnectEligiblePairedPhones)
-        guard let record = records.first(where: { $0.resolvedWiFiAddress != nil }),
+        guard let record = records.first(where: { record in
+            guard let address = record.resolvedWiFiAddress else { return false }
+            return legacyWirelessCompatibilityEnabled || !Self.isLegacyWirelessAddress(address)
+        }),
               let address = record.resolvedWiFiAddress else {
             return
         }
@@ -683,15 +689,25 @@ extension AppModel {
         let allowsSingleLiveCandidate = autoConnectEligiblePairedPhones
             .filter(Self.isWirelessRecord)
             .count == 1
-        let authorizedAddress = Self.liveWirelessAuthorizedDevice(
+        let authorizedCandidate = Self.liveWirelessAuthorizedDevice(
             for: record,
             in: latestAuthorizedADBDevices
         )?.serial
-        let discoveredAddress = Self.rememberedConnectablePhone(
+        let authorizedAddress = authorizedCandidate.flatMap { address in
+            legacyWirelessCompatibilityEnabled || !Self.isLegacyWirelessAddress(address)
+                ? address
+                : nil
+        }
+        let discoveredCandidate = Self.rememberedConnectablePhone(
             for: record,
             in: discoveredPhones,
             allowSingleCandidateFallback: allowsSingleLiveCandidate
         )?.address
+        let discoveredAddress = discoveredCandidate.flatMap { address in
+            legacyWirelessCompatibilityEnabled || !Self.isLegacyWirelessAddress(address)
+                ? address
+                : nil
+        }
         // A resolved discovery endpoint is immediately dialable. An authorized
         // service-name row can still fail as an `adb connect` target, so use it
         // only for the direct shell-ready fast path above and prefer discovery
@@ -728,6 +744,7 @@ extension AppModel {
                 adb: adb,
                 savedAddress: liveAddress,
                 candidateAddresses: [liveAddress],
+                allowLegacyCompatibility: legacyWirelessCompatibilityEnabled,
                 restrictDialsToReachableOrStable: true,
                 readinessAttempts: 2,
                 delayNanoseconds: Self.wirelessHandoffRetryDelayNanoseconds,
@@ -741,13 +758,15 @@ extension AppModel {
             if result.connectedAddress == nil, !networkChanged {
                 let fallbackCandidates = Self.canonicalReconnectCandidateAddresses(
                     savedAddress: savedAddress,
-                    liveAddress: nil
+                    liveAddress: nil,
+                    allowLegacyCompatibility: legacyWirelessCompatibilityEnabled
                 ).filter { $0 != liveAddress }
                 if !fallbackCandidates.isEmpty {
                     let fallback = await Self.connectToRememberedWirelessReadiness(
                         adb: adb,
                         savedAddress: savedAddress,
                         candidateAddresses: fallbackCandidates,
+                        allowLegacyCompatibility: legacyWirelessCompatibilityEnabled,
                         restrictDialsToReachableOrStable: true,
                         readinessAttempts: 2,
                         delayNanoseconds: Self.wirelessHandoffRetryDelayNanoseconds,
@@ -774,12 +793,14 @@ extension AppModel {
         } else {
             let candidates = Self.canonicalReconnectCandidateAddresses(
                 savedAddress: savedAddress,
-                liveAddress: liveAddress
+                liveAddress: liveAddress,
+                allowLegacyCompatibility: legacyWirelessCompatibilityEnabled
             )
             result = await Self.connectToRememberedWirelessReadiness(
                 adb: adb,
                 savedAddress: savedAddress,
                 candidateAddresses: candidates,
+                allowLegacyCompatibility: legacyWirelessCompatibilityEnabled,
                 restrictDialsToReachableOrStable: true,
                 readinessAttempts: 2,
                 delayNanoseconds: Self.wirelessHandoffRetryDelayNanoseconds,
@@ -793,6 +814,7 @@ extension AppModel {
         guard ownsAttempt() else { return .failed(.temporarilyUnavailable) }
 
         if result.connectedAddress == nil,
+           legacyWirelessCompatibilityEnabled,
            let recovered = await recoverChangedWiFiAddress(
                 for: record,
                 ignoreCooldown: networkChanged,
@@ -804,7 +826,8 @@ extension AppModel {
 
         if let connectedAddress = result.connectedAddress {
             let sessionAddress: String
-            if Self.shouldStabilizeAutomaticWirelessAddress(
+            if legacyWirelessCompatibilityEnabled,
+               Self.shouldStabilizeAutomaticWirelessAddress(
                 connectedAddress: connectedAddress,
                 hasFreshLiveEndpoint: liveAddress != nil
             ) {
@@ -849,6 +872,7 @@ extension AppModel {
         _ connectedAddress: String,
         adb: ADBController
     ) async -> String {
+        guard legacyWirelessCompatibilityEnabled else { return connectedAddress }
         guard Self.shouldPromoteToLegacyTCPIP(connectedAddress: connectedAddress) else {
             return connectedAddress
         }
@@ -867,6 +891,7 @@ extension AppModel {
             let recovered = await Self.connectToRememberedWirelessReadiness(
                 adb: adb,
                 savedAddress: legacyAddress,
+                allowLegacyCompatibility: true,
                 readinessAttempts: 2,
                 preflightLocalNetworkAccess: { address in
                     await Self.preflightLocalNetworkAccess(address: address)
@@ -901,17 +926,13 @@ extension AppModel {
                 !$0.isUSB && $0.serial == sessionAddress
             })?.model ?? record.displayName
         )
-        let existingStableAddress = record.resolvedWiFiAddress.flatMap { address in
-            Self.persistableWirelessAddress(address).flatMap {
-                Self.port(in: $0) == Self.legacyADBWirelessPort ? $0 : nil
-            }
-        }
         let addressToPersist = Self.automaticWirelessAddressToPersist(
             sessionAddress: sessionAddress,
-            existingWirelessAddress: record.resolvedWiFiAddress
+            existingWirelessAddress: record.resolvedWiFiAddress,
+            allowLegacyCompatibility: legacyWirelessCompatibilityEnabled
         )
         let touchAddress = addressToPersist
-            ?? existingStableAddress
+            ?? record.resolvedUSBSerial
             ?? record.lastAddress
 
         touchPairedPhone(
@@ -968,6 +989,15 @@ extension AppModel {
     func connectAndMirror(phone: DiscoveredPhone) {
         guard !explicitDeviceSetupRequired else {
             if transportIntent.requiresWiFi { transportIntent = .automatic }
+            return
+        }
+        guard legacyWirelessCompatibilityEnabled
+                || (phone.kind != .legacyTCPIP && !Self.isLegacyWirelessAddress(phone.address))
+        else {
+            noteConnectionStall(
+                .wirelessRouteMissing,
+                detail: "Secure Wireless debugging is required. Enable legacy compatibility in Settings only for a phone that cannot use it."
+            )
             return
         }
         let address = phone.address
@@ -1110,29 +1140,44 @@ extension AppModel {
         guard !explicitDeviceSetupRequired else { return }
         guard Self.isWirelessRecord(record) else { return }
         let savedAddress = record.resolvedWiFiAddress ?? record.lastAddress
-        let liveAddress = Self.rememberedConnectablePhone(
+        let liveCandidate = Self.rememberedConnectablePhone(
             for: record,
             in: discoveredPhones,
             allowSingleCandidateFallback: autoConnectEligiblePairedPhones
                 .filter(Self.isWirelessRecord)
                 .count == 1
         )?.address
+        let liveAddress = liveCandidate.flatMap { address in
+            legacyWirelessCompatibilityEnabled || !Self.isLegacyWirelessAddress(address)
+                ? address
+                : nil
+        }
         let candidateAddresses = Self.canonicalReconnectCandidateAddresses(
             savedAddress: savedAddress,
-            liveAddress: liveAddress
+            liveAddress: liveAddress,
+            allowLegacyCompatibility: legacyWirelessCompatibilityEnabled
         )
+        guard !candidateAddresses.isEmpty else {
+            noteConnectionStall(
+                .wirelessRouteMissing,
+                detail: "This saved phone only has a legacy port 5555 route. Pair with Android Wireless debugging or enable legacy compatibility in Settings."
+            )
+            return
+        }
         guard !autoConnectTargetsInFlight.contains(savedAddress) else { return }
         guard !isAutoConnectAddressCoolingDown(savedAddress) else { return }
         autoConnectTargetsInFlight.insert(savedAddress)
         select(record: record)
 
         let adb = self.adb
+        let allowLegacyCompatibility = legacyWirelessCompatibilityEnabled
         Task { [weak self] in
             await adb.ensureServerStarted()
             let result = await Self.connectToRememberedWirelessReadiness(
                 adb: adb,
                 savedAddress: savedAddress,
                 candidateAddresses: candidateAddresses,
+                allowLegacyCompatibility: allowLegacyCompatibility,
                 restrictDialsToReachableOrStable: true,
                 readinessAttempts: 2,
                 preflightLocalNetworkAccess: { address in
@@ -1249,6 +1294,10 @@ extension AppModel {
         ignoreCooldown: Bool = false,
         prioritizeCurrentNetwork: Bool = false
     ) async -> String? {
+        guard legacyWirelessCompatibilityEnabled,
+              let savedAddress = record.resolvedWiFiAddress,
+              Self.isLegacyWirelessAddress(savedAddress)
+        else { return nil }
         let now = Date()
         if Self.shouldThrottleWiFiRecovery(
             lastAttemptAt: wifiAddressRecoveryAttemptedAt[record.id],
@@ -1295,6 +1344,7 @@ extension AppModel {
         let readiness = await Self.connectToRememberedWirelessReadiness(
             adb: adb,
             savedAddress: recovered,
+            allowLegacyCompatibility: true,
             readinessAttempts: 2,
             preflightLocalNetworkAccess: { address in
                 await Self.preflightLocalNetworkAccess(address: address)
@@ -1306,6 +1356,15 @@ extension AppModel {
     func mirrorAuthorizedDevicePreferringWireless(_ device: AuthorizedADBDevice) async {
         guard !isMirroring, !isPairing else { return }
         guard !isAutoMirrorHeldForOnboarding else { return }
+        if !device.isUSB,
+           Self.isLegacyWirelessAddress(device.serial),
+           !legacyWirelessCompatibilityEnabled {
+            noteConnectionStall(
+                .wirelessRouteMissing,
+                detail: "A legacy port 5555 transport is available, but secure Wireless debugging is required unless compatibility is enabled in Settings."
+            )
+            return
+        }
         // A transport already present in `adb devices` wins without another
         // connect. Cancel the automatic resolver before launching so it cannot
         // create or promote a competing route behind the mirror.
@@ -1438,6 +1497,7 @@ extension AppModel {
             adb: adb,
             savedAddress: wirelessAddress,
             candidateAddresses: [wirelessAddress],
+            allowLegacyCompatibility: legacyWirelessCompatibilityEnabled,
             readinessAttempts: 2,
             preflightLocalNetworkAccess: { address in
                 await Self.preflightLocalNetworkAccess(address: address)
@@ -1538,11 +1598,16 @@ extension AppModel {
         // concrete host:port endpoint. A USB serial passed through a handoff
         // callback must update USB metadata without clobbering the remembered
         // wireless route.
-        let guardedWiFiAddress = Self.persistableWirelessAddress(wifiAddress)
+        let guardedWiFiAddress = Self.persistableWirelessAddress(wifiAddress).flatMap { candidate in
+            Self.isAllowedWirelessAddress(
+                candidate,
+                allowLegacyCompatibility: legacyWirelessCompatibilityEnabled
+            ) ? candidate : nil
+        }
         let existingAddress = pairedPhones.first { record in
             record.id == id
-                || record.resolvedUSBSerial == usbSerial
-                || record.resolvedWiFiAddress == guardedWiFiAddress
+                || (usbSerial != nil && record.resolvedUSBSerial == usbSerial)
+                || (guardedWiFiAddress != nil && record.resolvedWiFiAddress == guardedWiFiAddress)
         }?.lastAddress
         let guardedAddress: String
         if wifiAddress != nil, guardedWiFiAddress == nil {
@@ -2152,21 +2217,40 @@ extension AppModel {
             Logger.log("adb daemon recovery skipped (\(reason)): mirror/pairing active, already running, or cooling down")
             return
         }
-        lastADBDaemonRecoveryAt = Date()
-        adbDaemonRecoveryInFlight = true
-        Logger.log("adb daemon recovery (\(reason)): step 1/3 restarting app-owned adb server")
+        let generation = connectionCoordinator.beginADBDaemonRecovery()
         let adb = self.adb
-        Task { [weak self] in
+        connectionCoordinator.adbDaemonRecoveryTask = Task { [weak self] in
+            await Task.yield()
+            guard let self,
+                  !Task.isCancelled,
+                  self.connectionCoordinator.isCurrentADBDaemonRecovery(generation)
+            else { return }
+            guard !self.isMirroring,
+                  self.mirrorSession == nil,
+                  self.mirrorLaunchTask == nil,
+                  !self.isPairing
+            else {
+                Logger.log("adb daemon recovery cancelled (\(reason)): mirror or pairing became active")
+                self.connectionCoordinator.finishADBDaemonRecovery(generation)
+                return
+            }
+            self.lastADBDaemonRecoveryAt = Date()
+            Logger.log("adb daemon recovery (\(reason)): step 1/3 restarting app-owned adb server")
             _ = await Task.detached(priority: .userInitiated) {
                 adb.run(["kill-server"], timeout: 3)
             }.value
+            guard !Task.isCancelled,
+                  self.connectionCoordinator.isCurrentADBDaemonRecovery(generation)
+            else { return }
             await adb.ensureServerStarted()
             Logger.log("adb daemon recovery (\(reason)): step 2/3 server restarted; rescanning devices")
             let output = await Task.detached {
                 adb.run(["devices", "-l"], timeout: Self.adbDeviceListTimeout)
             }.value
-            guard let self else { return }
-            self.adbDaemonRecoveryInFlight = false
+            guard !Task.isCancelled,
+                  self.connectionCoordinator.isCurrentADBDaemonRecovery(generation)
+            else { return }
+            self.connectionCoordinator.finishADBDaemonRecovery(generation)
             self.applyDevicePresence(output)
             // Past failures were evidence about the old daemon — forget them
             // and let the watcher act immediately.
@@ -2661,11 +2745,20 @@ extension AppModel {
                     serial: connectablePhone.address,
                     fallback: "Android device"
                 )
+                let hardwareSerial = await Self.connectedHardwareSerial(
+                    adb: adb,
+                    transportSerial: connectablePhone.address
+                )
                 guard !Task.isCancelled else { return }
-                self.finishQRCodePairing(with: connectablePhone, displayName: deviceName)
+                self.finishQRCodePairing(
+                    with: connectablePhone,
+                    displayName: deviceName,
+                    hardwareSerial: hardwareSerial
+                )
                 self.prepareQRCodePairingLegacyTCPIPInBackground(
                     phone: connectablePhone,
-                    displayName: deviceName
+                    displayName: deviceName,
+                    hardwareSerial: hardwareSerial
                 )
                 return
             }
@@ -2680,19 +2773,25 @@ extension AppModel {
         startQRCodePairingWatcher()
     }
 
-    func finishQRCodePairing(with phone: DiscoveredPhone, displayName: String) {
+    func finishQRCodePairing(
+        with phone: DiscoveredPhone,
+        displayName: String,
+        hardwareSerial: String?
+    ) {
         isPairing = false
         isQRCodePairingWaiting = false
         connectionCoordinator.qrPairingTask = nil
         qrPairingSession = nil
+        let identity = hardwareSerial ?? phone.id
         touchPairedPhone(
-            id: phone.id,
+            id: identity,
             displayName: displayName,
             address: phone.address,
+            usbSerial: hardwareSerial,
             wifiAddress: phone.address
         )
         selectedDevice = MirrorDevice(
-            id: phone.id,
+            id: identity,
             name: displayName,
             model: "Android",
             battery: selectedDevice.battery,
@@ -2709,14 +2808,17 @@ extension AppModel {
 
     func prepareQRCodePairingLegacyTCPIPInBackground(
         phone: DiscoveredPhone,
-        displayName: String
+        displayName: String,
+        hardwareSerial: String?
     ) {
+        guard legacyWirelessCompatibilityEnabled else { return }
         guard Self.shouldPromoteToLegacyTCPIP(connectedAddress: phone.address) else { return }
         let adb = self.adb
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard let self, !Task.isCancelled else { return }
-            guard !self.isMirroring,
+            guard self.legacyWirelessCompatibilityEnabled,
+                  !self.isMirroring,
                   self.mirrorLaunchTask == nil,
                   self.selectedDevice.adbSerial == phone.address
             else {
@@ -2734,9 +2836,10 @@ extension AppModel {
             }
             guard !Task.isCancelled else { return }
             self.touchPairedPhone(
-                id: phone.id,
+                id: hardwareSerial ?? phone.id,
                 displayName: displayName,
                 address: legacyAddress,
+                usbSerial: hardwareSerial,
                 wifiAddress: legacyAddress
             )
             Logger.log("Prepared QR Wi-Fi reconnect route address=\(legacyAddress)")
@@ -2827,28 +2930,46 @@ extension AppModel {
         }
         Logger.log("Wi-Fi handoff phase=identity-captured usb=\(usbDevice.serial) mac=\(wifiMACAddress ?? "unavailable")")
 
-        // Prefer the legacy `adb tcpip 5555` listener. It's the only wireless
-        // adb path that stays reachable without the phone's Wireless debugging
-        // toggle, so the address we remember keeps working on later "same
-        // Wi-Fi" reconnects (until the phone reboots, which drops tcpip mode).
-        if let legacyAddress = Self.legacyTCPIPDebuggingAddress(routeOutput: routeOutput) {
-            if usbWiFiHandoffCandidate?.usbSerial == usbDevice.serial,
-               usbWiFiHandoffCandidate?.address != legacyAddress {
-                usbWiFiHandoffCandidate = nil
-            }
-            // Learn the phone's current Wi-Fi IP on every USB connect, but keep
-            // it as observation metadata until TCP and ADB shell readiness prove
-            // a concrete endpoint safe to prefer.
-            guard ownsHandoff() else { return false }
+        if let observedWiFiIP = Self.wifiIPAddress(in: routeOutput) {
             touchPairedPhone(
                 id: usbDevice.serial,
                 displayName: selectedDisplayName(for: usbDevice.model),
                 address: usbDevice.serial,
                 usbSerial: usbDevice.serial,
-                observedWiFiIPAddress: Self.host(in: legacyAddress),
+                observedWiFiIPAddress: observedWiFiIP,
                 wifiMACAddress: wifiMACAddress
             )
+        }
 
+        // Resolve Android's authenticated Wireless-debugging endpoint before
+        // considering the compatibility listener. Even when compatibility is
+        // enabled, a phone that advertises TLS stays on TLS.
+        let tlsAddress: String?
+        if let tlsPortTimeout = boundedTimeout(Self.wirelessHandoffRouteQueryTimeout) {
+            let tlsPortOutput = await Task.detached {
+                adb.run(
+                    ["-s", usbDevice.serial, "shell", "getprop", "service.adb.tls.port"],
+                    timeout: tlsPortTimeout
+                )
+            }.value
+            guard ownsHandoff() else { return false }
+            tlsAddress = Self.wirelessDebuggingAddress(
+                routeOutput: routeOutput,
+                tlsPortOutput: tlsPortOutput
+            )
+        } else {
+            tlsAddress = nil
+        }
+
+        // Port 5555 remains an explicit compatibility path for older phones.
+        // Secure Wireless debugging continues below whenever it is advertised.
+        if legacyWirelessCompatibilityEnabled,
+           tlsAddress == nil,
+           let legacyAddress = Self.legacyTCPIPDebuggingAddress(routeOutput: routeOutput) {
+            if usbWiFiHandoffCandidate?.usbSerial == usbDevice.serial,
+               usbWiFiHandoffCandidate?.address != legacyAddress {
+                usbWiFiHandoffCandidate = nil
+            }
             // A closed port only means "tcpip is not enabled" when the Mac
             // and phone share a directly routable LAN. On another network the
             // exact same probe result means handoff cannot work, and restarting
@@ -3066,28 +3187,9 @@ extension AppModel {
             }
             return false
         }
-        // Fallback for phones that block `adb tcpip` but already expose Android
-        // 11 Wireless debugging. Its random TLS port stops answering once the
-        // toggle is turned off, so we only reach for it if 5555 didn't take.
-        guard let tlsPortTimeout = boundedTimeout(Self.wirelessHandoffRouteQueryTimeout) else {
-            return false
-        }
-        let tlsPortOutput = await Task.detached {
-            adb.run(["-s", usbDevice.serial, "shell", "getprop", "service.adb.tls.port"], timeout: tlsPortTimeout)
-        }.value
-        guard ownsHandoff() else { return false }
-        guard let tcpPortTimeout = boundedTimeout(Self.wirelessHandoffRouteQueryTimeout) else {
-            return false
-        }
-        let tcpPortOutput = await Task.detached {
-            adb.run(["-s", usbDevice.serial, "shell", "getprop", "service.adb.tcp.port"], timeout: tcpPortTimeout)
-        }.value
-        guard ownsHandoff() else { return false }
-        if let tlsAddress = Self.wirelessDebuggingAddress(
-            routeOutput: routeOutput,
-            tlsPortOutput: tlsPortOutput,
-            tcpPortOutput: tcpPortOutput
-        ) {
+        // Android Wireless debugging is the normal path. Its authenticated
+        // port may change, so reconnect discovery refreshes the endpoint.
+        if let tlsAddress {
             let readiness = await Self.waitForADBWirelessTargetReadiness(
                 adb: adb,
                 address: tlsAddress,
@@ -3912,37 +4014,50 @@ extension AppModel {
                 serial: connectablePhone.address,
                 fallback: "Android device"
             )
+            let hardwareSerial = await Self.connectedHardwareSerial(
+                adb: adb,
+                transportSerial: connectablePhone.address
+            )
             guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
             let pairedPhone: DiscoveredPhone
-            switch await Self.promoteToLegacyTCPIP(
-                adb: adb,
-                sourceSerial: connectablePhone.address,
-                preflightLocalNetworkAccess: { address in
-                    await Self.preflightLocalNetworkAccess(address: address)
-                }
-            ) {
-            case .promoted(let legacyAddress):
-                pairedPhone = DiscoveredPhone(
-                    id: legacyAddress,
-                    address: legacyAddress,
-                    kind: .connectable,
-                    lastSeen: .now
-                )
-                self.manualADBTarget = Self.host(in: legacyAddress) ?? legacyAddress
-            case .transportLost(let legacyAddress):
-                self.failManualWirelessPairing(
-                    "Paired, but Wi-Fi is still starting",
-                    "Pairing succeeded and Phone Relay prepared \(legacyAddress), but Android has not finished restarting wireless debugging. Wait a moment and try Wi-Fi again."
-                )
-                return
-            case .unavailable:
+            if !self.legacyWirelessCompatibilityEnabled {
                 pairedPhone = connectablePhone
                 self.manualADBTarget = connectablePhone.address
+            } else {
+                switch await Self.promoteToLegacyTCPIP(
+                    adb: adb,
+                    sourceSerial: connectablePhone.address,
+                    preflightLocalNetworkAccess: { address in
+                        await Self.preflightLocalNetworkAccess(address: address)
+                    }
+                ) {
+                case .promoted(let legacyAddress):
+                    pairedPhone = DiscoveredPhone(
+                        id: legacyAddress,
+                        address: legacyAddress,
+                        kind: .connectable,
+                        lastSeen: .now
+                    )
+                    self.manualADBTarget = Self.host(in: legacyAddress) ?? legacyAddress
+                case .transportLost(let legacyAddress):
+                    self.failManualWirelessPairing(
+                        "Paired, but Wi-Fi is still starting",
+                        "Pairing succeeded and Phone Relay prepared \(legacyAddress), but Android has not finished restarting wireless debugging. Wait a moment and try Wi-Fi again."
+                    )
+                    return
+                case .unavailable:
+                    pairedPhone = connectablePhone
+                    self.manualADBTarget = connectablePhone.address
+                }
             }
 
             self.connectionCoordinator.reconnectTask = nil
             self.isManualWirelessPairing = false
-            self.finishQRCodePairing(with: pairedPhone, displayName: deviceName)
+            self.finishQRCodePairing(
+                with: pairedPhone,
+                displayName: deviceName,
+                hardwareSerial: hardwareSerial
+            )
         }
     }
 
@@ -3956,6 +4071,13 @@ extension AppModel {
 
     func connectManualADBTarget() {
         guard !isMirroring, !isPairing, !isManualADBTargetConnecting else { return }
+        guard legacyWirelessCompatibilityEnabled else {
+            reportError(
+                "Legacy Wi-Fi compatibility is off",
+                "An IP-only connection uses unencrypted ADB on port 5555. Enable legacy compatibility in Settings only if this phone cannot use secure Wireless debugging."
+            )
+            return
+        }
         guard let address = Self.normalizedManualADBTarget(manualADBTarget) else {
             reportError("Invalid IP address", "Enter the phone IP address using numbers and dots, for example 192.168.1.23.")
             return
@@ -3983,6 +4105,7 @@ extension AppModel {
 
         let adb = self.adb
         let generation = mirrorStartGeneration
+        let allowLegacyCompatibility = legacyWirelessCompatibilityEnabled
         connectionCoordinator.reconnectTask = Task { [weak self] in
             await adb.ensureServerStarted()
             var candidateAddresses = initialCandidateAddresses
@@ -3990,6 +4113,7 @@ extension AppModel {
                 adb: adb,
                 savedAddress: address,
                 candidateAddresses: candidateAddresses,
+                allowLegacyCompatibility: allowLegacyCompatibility,
                 readinessAttempts: 3,
                 delayNanoseconds: 500_000_000,
                 preflightLocalNetworkAccess: { target in
@@ -4014,6 +4138,7 @@ extension AppModel {
                         adb: adb,
                         savedAddress: address,
                         candidateAddresses: candidateAddresses,
+                        allowLegacyCompatibility: allowLegacyCompatibility,
                         readinessAttempts: 3,
                         delayNanoseconds: 500_000_000,
                         preflightLocalNetworkAccess: { target in
@@ -4035,6 +4160,7 @@ extension AppModel {
                     adb: adb,
                     savedAddress: address,
                     candidateAddresses: candidateAddresses,
+                    allowLegacyCompatibility: allowLegacyCompatibility,
                     readinessAttempts: 3,
                     delayNanoseconds: 500_000_000,
                     preflightLocalNetworkAccess: { target in
@@ -4180,6 +4306,13 @@ extension AppModel {
     /// every other connection workflow, and to a live mirror above all — `adb
     /// tcpip` restarts adbd and would drop it (INVARIANTS.md rule 3).
     func armWirelessDebuggingForAttachedUSB(authorized: [AuthorizedADBDevice]) {
+        // Cable-arrival arming exists only for the unencrypted Android 10-era
+        // compatibility transport. Secure Wireless debugging is discovered
+        // and connected without restarting adbd.
+        guard legacyWirelessCompatibilityEnabled else {
+            wirelessArmSeenUSBSerials.removeAll()
+            return
+        }
         let usbSerials = Set(authorized.filter(\.isUSB).map(\.serial))
         wirelessArmSeenUSBSerials = Self.reconciledWirelessArmSeenSerials(
             previouslySeen: wirelessArmSeenUSBSerials,
@@ -4336,13 +4469,17 @@ extension AppModel {
     }
 
     func mostRecentPairedPhone(in phones: [DiscoveredPhone]) -> DiscoveredPhone? {
+        let allowedPhones = phones.filter {
+            legacyWirelessCompatibilityEnabled
+                || ($0.kind != .legacyTCPIP && !Self.isLegacyWirelessAddress($0.address))
+        }
         let records = Self.recordsByMostRecent(autoConnectEligiblePairedPhones)
             .filter(Self.isWirelessRecord)
         let allowSingleCandidateFallback = records.count == 1
         for record in records {
             if let phone = Self.rememberedConnectablePhone(
                 for: record,
-                in: phones,
+                in: allowedPhones,
                 allowSingleCandidateFallback: allowSingleCandidateFallback
             ) {
                 return phone
@@ -4361,6 +4498,9 @@ extension AppModel {
             )
         }
         return phones.filter { phone in
+            guard legacyWirelessCompatibilityEnabled
+                    || (phone.kind != .legacyTCPIP && !Self.isLegacyWirelessAddress(phone.address))
+            else { return false }
             guard let failedAt = failedAutoConnectTargets[phone.address] else { return true }
             return !Self.isAutoConnectFailureCoolingDown(
                 failedAt: failedAt,

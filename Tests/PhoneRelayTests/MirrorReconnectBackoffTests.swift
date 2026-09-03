@@ -209,8 +209,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
-    func testRememberedWirelessAutoConnectRecordSkipsCoolingDownSavedRoute() {
-        let first = PairedPhoneRecord(
+    func testRememberedWirelessAutoConnectRecordSkipsCoolingDownSavedRoute() {        let first = PairedPhoneRecord(
             id: "first",
             displayName: "First",
             lastAddress: "192.168.68.57:5555",
@@ -502,8 +501,8 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         model.setDiscoveredPhonesForTesting([
             DiscoveredPhone(
                 id: "adb-RFCT10ZLTAJ",
-                address: "192.168.68.54:5555",
-                kind: .connectable,
+                address: "192.168.68.54:42111",
+                kind: .wirelessDebugging,
                 lastSeen: Date(timeIntervalSince1970: 100)
             )
         ])
@@ -558,6 +557,8 @@ final class MirrorReconnectBackoffTests: XCTestCase {
             lastConnected: .now
         )
         let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+        model.legacyWirelessCompatibilityEnabled = true
+        defer { model.legacyWirelessCompatibilityEnabled = false }
         model.selectedDevice = MirrorDevice(
             id: record.id,
             name: record.displayName,
@@ -628,7 +629,8 @@ final class MirrorReconnectBackoffTests: XCTestCase {
             AppModel.liveConnectionRoutes(
                 for: record,
                 authorizedDevices: [wifi],
-                discoveredPhones: []
+                discoveredPhones: [],
+                allowLegacyCompatibility: true
             ).statusLabel,
             "Wi-Fi available"
         )
@@ -636,9 +638,25 @@ final class MirrorReconnectBackoffTests: XCTestCase {
             AppModel.liveConnectionRoutes(
                 for: record,
                 authorizedDevices: [usb, wifi],
-                discoveredPhones: []
+                discoveredPhones: [],
+                allowLegacyCompatibility: true
             ).statusLabel,
             "Wi-Fi and USB available"
+        )
+
+        let secureWiFi = AuthorizedADBDevice(
+            serial: "192.168.68.54:37183",
+            product: "g0sxxx",
+            model: "SM S906B",
+            isUSB: false
+        )
+        XCTAssertEqual(
+            AppModel.liveConnectionRoutes(
+                for: record,
+                authorizedDevices: [wifi, secureWiFi],
+                discoveredPhones: []
+            ).wifiAddress,
+            secureWiFi.serial
         )
 
         let unrelatedDiscovery = DiscoveredPhone(
@@ -657,8 +675,9 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     }
 
     @MainActor
-    func testFirstRunAuthorizedWiFiIsAvailableWithoutSavedUSBSetup() {
+    func testFirstRunLegacyWiFiRequiresCompatibilityWithoutSavedUSBSetup() {
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.legacyWirelessCompatibilityEnabled = false
         model.applyDevicePresence("""
         List of devices attached
         192.168.68.67:5555     device product:g0sxxx model:SM_S906B device:g0s transport_id:1
@@ -666,6 +685,11 @@ final class MirrorReconnectBackoffTests: XCTestCase {
 
         XCTAssertTrue(model.isFirstTimeUSBSetup)
         XCTAssertFalse(model.isUSBConnectionAvailable)
+        XCTAssertFalse(model.isLiveWirelessConnectionAvailable)
+        XCTAssertNil(model.connectionTransportLabel)
+
+        model.legacyWirelessCompatibilityEnabled = true
+        defer { model.legacyWirelessCompatibilityEnabled = false }
         XCTAssertTrue(model.isLiveWirelessConnectionAvailable)
         XCTAssertEqual(model.connectionTransportLabel, "Wi-Fi")
     }
@@ -673,6 +697,8 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     @MainActor
     func testConnectionChooserClearsUSBWithoutClearingOnlineWireless() {
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.legacyWirelessCompatibilityEnabled = true
+        defer { model.legacyWirelessCompatibilityEnabled = false }
         model.applyDevicePresence("""
         List of devices attached
         RFCT10ZLTAJ            device usb:1-1 product:g0sxxx model:SM_S906B device:g0s transport_id:1
@@ -694,6 +720,8 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     @MainActor
     func testConnectionChooserAddsUSBWithoutClearingOnlineWireless() {
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.legacyWirelessCompatibilityEnabled = true
+        defer { model.legacyWirelessCompatibilityEnabled = false }
         model.applyDevicePresence("""
         List of devices attached
         192.168.68.54:5555     device product:g0sxxx model:SM_S906B device:g0s transport_id:2
