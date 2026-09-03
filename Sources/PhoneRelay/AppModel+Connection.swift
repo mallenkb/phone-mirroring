@@ -203,6 +203,8 @@ extension AppModel {
             isMirroring: isMirroring,
             hasWirelessWorkInFlight: connectionCoordinator.isPreparingWiFiHandoff
                 || connectionCoordinator.isAutomaticReconnectDialing,
+            isListenerMissing: connectionCoordinator.wirelessListenerMissingRecordIDs
+                .contains(record.id),
             lastProbeAt: lastSavedWiFiStatusProbeAt
         ) else {
             return
@@ -366,10 +368,37 @@ extension AppModel {
         case failed(ConnectionCoordinator.AutomaticReconnectFailure)
     }
 
+    /// Pure decision: does this reconnect failure warrant the "plug in once"
+    /// prompt right now? Only the listener-missing verdict qualifies, and it
+    /// qualifies on the first failure — the sweep already proved the listener
+    /// gone, so a second dial adds information about nothing.
+    nonisolated static func shouldSurfaceListenerMissingPrompt(
+        failure: ConnectionCoordinator.AutomaticReconnectFailure,
+        failureCount: Int
+    ) -> Bool {
+        failure == .wirelessListenerMissing && failureCount >= 1
+    }
+
     func nextAutomaticReconnectRecord(now: Date = Date()) -> PairedPhoneRecord? {
-        let records = Self.recordsByMostRecent(autoConnectEligiblePairedPhones)
+        var records = Self.recordsByMostRecent(autoConnectEligiblePairedPhones)
             .filter(Self.isWirelessRecord)
         guard !records.isEmpty else { return nil }
+
+        // A record whose LAN sweep proved the adb listener gone is parked: no
+        // timer-driven redial can bring it back, so selecting it would only
+        // burn another sweep + dial cycle every backoff window. Only a cable
+        // (whose successful arm clears the verdict) or fresh evidence — a
+        // discovery/network/wake bypass, which may mean the phone's state
+        // actually changed — unparks it. With every record parked the loop
+        // exits to idle instead of churning, and any later trigger restarts it.
+        let hasFreshEvidence = connectionCoordinator.automaticReconnectBypassPending
+            || connectionCoordinator.automaticReconnectPreferredRecordID != nil
+        if !hasFreshEvidence {
+            records = records.filter {
+                !connectionCoordinator.wirelessListenerMissingRecordIDs.contains($0.id)
+            }
+            guard !records.isEmpty else { return nil }
+        }
         let allowSingleCandidateFallback = records.count == 1
 
         if let preferredID = connectionCoordinator.automaticReconnectPreferredRecordID,
@@ -631,10 +660,14 @@ extension AppModel {
                     "Automatic reconnect phase=attempt-failed phone=\(record.displayName) task=\(taskGeneration) attempt=\(generation) failure=\(failure.rawValue) count=\(failureCount) retry_in=\(String(format: "%.1f", max(0, retryAt.timeIntervalSinceNow)))s"
                 )
                 // A swept-and-silent LAN is proof, not a guess: nothing here
-                // speaks adb, so more waiting cannot help. Say so early —
-                // two attempts, not four — because the fix is a two-second
-                // cable and the alternative is watching a spinner.
-                if failure == .wirelessListenerMissing, failureCount >= 2 {
+                // speaks adb, so more waiting cannot help. Say so on the first
+                // proof — not after repeat dials — because the fix is a
+                // two-second cable and the alternative is watching a spinner
+                // while the loop churns a dead port.
+                if Self.shouldSurfaceListenerMissingPrompt(
+                    failure: failure,
+                    failureCount: failureCount
+                ) {
                     if activeError?.title != Self.wifiListenerMissingErrorTitle {
                         reportError(
                             Self.wifiListenerMissingErrorTitle,
@@ -1575,7 +1608,8 @@ extension AppModel {
 
         if let record = Self.rememberedWirelessAutoConnectRecord(
             in: records,
-            failedTargets: failedAutoConnectTargets
+            failedTargets: failedAutoConnectTargets,
+            listenerMissingRecordIDs: connectionCoordinator.wirelessListenerMissingRecordIDs
         ) {
             lastPresenceAutoConnectAttemptAt = Date()
             isAutoConnecting = true
@@ -2568,6 +2602,7 @@ extension AppModel {
         isPairing: Bool,
         isMirroring: Bool,
         hasWirelessWorkInFlight: Bool,
+        isListenerMissing: Bool = false,
         lastProbeAt: Date?,
         now: Date = Date(),
         interval: TimeInterval = savedWiFiStatusProbeInterval
@@ -2576,7 +2611,11 @@ extension AppModel {
               !hasLiveWirelessDevice,
               !isPairing,
               !isMirroring,
-              !hasWirelessWorkInFlight else {
+              !hasWirelessWorkInFlight,
+              // The sweep already proved this route's listener gone. Probing
+              // is just another doomed `adb connect` every interval; the cable
+              // arm that clears the verdict re-enables the probe with it.
+              !isListenerMissing else {
             return false
         }
         guard let lastProbeAt else { return true }
@@ -2586,11 +2625,17 @@ extension AppModel {
     nonisolated static func rememberedWirelessAutoConnectRecord(
         in records: [PairedPhoneRecord],
         failedTargets: [String: Date],
+        listenerMissingRecordIDs: Set<String> = [],
         now: Date = Date(),
         cooldown: TimeInterval = autoConnectFailureCooldown
     ) -> PairedPhoneRecord? {
         records.first { record in
             guard isWirelessRecord(record) else { return false }
+            // A swept-and-silent LAN is proof the listener is gone, not a
+            // guess: re-selecting this record every presence poll would
+            // restart the whole dial cycle. It becomes eligible again the
+            // moment a cable arm clears the verdict.
+            guard !listenerMissingRecordIDs.contains(record.id) else { return false }
             guard let failedAt = failedTargets[record.lastAddress] else { return true }
             return !isAutoConnectFailureCoolingDown(
                 failedAt: failedAt,

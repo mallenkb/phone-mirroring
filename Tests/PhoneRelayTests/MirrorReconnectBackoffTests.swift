@@ -209,6 +209,158 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
+    // MARK: - Listener-missing parking (no churn on a proven-dead listener)
+
+    /// A swept-and-silent LAN is proof the listener is gone. Re-selecting the
+    /// record every presence poll would restart the whole sweep + dial cycle,
+    /// so the verdict parks the record until a cable arm clears it.
+    func testRememberedWirelessAutoConnectRecordSkipsListenerMissingRoute() {
+        let wifi = PairedPhoneRecord(
+            id: "adb-RFCT10ZLTAJ",
+            displayName: "SM S906B",
+            lastAddress: "192.168.68.57:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 300)
+        )
+
+        XCTAssertEqual(
+            AppModel.rememberedWirelessAutoConnectRecord(
+                in: [wifi],
+                failedTargets: [:],
+                listenerMissingRecordIDs: [],
+                now: Date(timeIntervalSince1970: 400)
+            ),
+            wifi
+        )
+        XCTAssertNil(
+            AppModel.rememberedWirelessAutoConnectRecord(
+                in: [wifi],
+                failedTargets: [:],
+                listenerMissingRecordIDs: ["adb-RFCT10ZLTAJ"],
+                now: Date(timeIntervalSince1970: 400)
+            )
+        )
+    }
+
+    func testProbeSavedWiFiStatusSkipsListenerMissingRoute() {
+        XCTAssertTrue(
+            AppModel.shouldProbeSavedWiFiStatus(
+                hasSavedWiFiRoute: true,
+                hasLiveWirelessDevice: false,
+                isPairing: false,
+                isMirroring: false,
+                hasWirelessWorkInFlight: false,
+                lastProbeAt: nil
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldProbeSavedWiFiStatus(
+                hasSavedWiFiRoute: true,
+                hasLiveWirelessDevice: false,
+                isPairing: false,
+                isMirroring: false,
+                hasWirelessWorkInFlight: false,
+                isListenerMissing: true,
+                lastProbeAt: nil
+            )
+        )
+    }
+
+    /// The verdict itself is the proof — a second dial adds information about
+    /// nothing — so the "plug in once" prompt surfaces on the first failure.
+    func testListenerMissingPromptSurfacesOnFirstFailure() {
+        XCTAssertTrue(
+            AppModel.shouldSurfaceListenerMissingPrompt(
+                failure: .wirelessListenerMissing,
+                failureCount: 1
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldSurfaceListenerMissingPrompt(
+                failure: .temporarilyUnavailable,
+                failureCount: 4
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldSurfaceListenerMissingPrompt(
+                failure: .wirelessListenerMissing,
+                failureCount: 0
+            )
+        )
+    }
+
+    /// With every wireless record parked, selection returns nil so the loop
+    /// exits to idle instead of churning a dead port every backoff window.
+    @MainActor
+    func testReconnectLoopParksListenerMissingRecord() {
+        withoutExplicitDeviceSetupRequired {
+            let record = PairedPhoneRecord(
+                id: "adb-RFCT10ZLTAJ",
+                displayName: "SM S906B",
+                lastAddress: "192.168.68.57:5555",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 300)
+            )
+            let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+
+            XCTAssertEqual(model.nextAutomaticReconnectRecord(), record)
+
+            model.connectionCoordinator.wirelessListenerMissingRecordIDs
+                .insert("adb-RFCT10ZLTAJ")
+            XCTAssertNil(model.nextAutomaticReconnectRecord())
+        }
+    }
+
+    @MainActor
+    func testReconnectLoopPrefersHealthyRecordOverParkedOne() {
+        withoutExplicitDeviceSetupRequired {
+            let parked = PairedPhoneRecord(
+                id: "parked",
+                displayName: "Parked",
+                lastAddress: "192.168.68.57:5555",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 300)
+            )
+            let healthy = PairedPhoneRecord(
+                id: "healthy",
+                displayName: "Healthy",
+                lastAddress: "192.168.68.58:5555",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 200)
+            )
+            let model = AppModel(startBackgroundServices: false, pairedPhones: [parked, healthy])
+            model.connectionCoordinator.wirelessListenerMissingRecordIDs.insert("parked")
+
+            XCTAssertEqual(model.nextAutomaticReconnectRecord(), healthy)
+        }
+    }
+
+    /// Fresh evidence (a discovery/network/wake bypass, or a preferred record
+    /// from matched discovery) unparks the verdict: the phone's state may
+    /// have actually changed, so one verification dial is warranted.
+    @MainActor
+    func testReconnectLoopHonorsFreshEvidenceOverListenerMissingVerdict() {
+        withoutExplicitDeviceSetupRequired {
+            let record = PairedPhoneRecord(
+                id: "adb-RFCT10ZLTAJ",
+                displayName: "SM S906B",
+                lastAddress: "192.168.68.57:5555",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 300)
+            )
+            let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+            model.connectionCoordinator.wirelessListenerMissingRecordIDs
+                .insert("adb-RFCT10ZLTAJ")
+
+            model.connectionCoordinator.automaticReconnectPreferredRecordID = record.id
+            XCTAssertEqual(model.nextAutomaticReconnectRecord(), record)
+
+            model.connectionCoordinator.automaticReconnectPreferredRecordID = nil
+            model.connectionCoordinator.automaticReconnectBypassPending = true
+            XCTAssertEqual(model.nextAutomaticReconnectRecord(), record)
+        }
+    }
+
     func testRememberedWirelessAutoConnectRecordSkipsCoolingDownSavedRoute() {        let first = PairedPhoneRecord(
             id: "first",
             displayName: "First",
