@@ -184,6 +184,7 @@ final class ConnectionCoordinator {
     private(set) var activeUSBWiFiHandoffGeneration: Int?
     private(set) var discoveredWiFiConnectGeneration = 0
     private(set) var wirelessRouteVerificationGeneration = 0
+    private(set) var adbDaemonRecoveryGeneration = 0
 
     // Event sources and watcher suspension belong to the same lifecycle as the
     // connection tasks. Keeping them here prevents AppModel teardown from
@@ -209,6 +210,7 @@ final class ConnectionCoordinator {
     var wirelessStartTask: Task<Void, Never>?
     var reconnectTask: Task<Void, Never>?
     var disconnectRecoveryTask: Task<Void, Never>?
+    var adbDaemonRecoveryTask: Task<Void, Never>?
     var automaticReconnectTask: Task<Void, Never>?
     var automaticReconnectState: AutomaticReconnectState = .idle
     var automaticReconnectGeneration = 0
@@ -234,6 +236,7 @@ final class ConnectionCoordinator {
         wirelessStartTask?.cancel()
         reconnectTask?.cancel()
         disconnectRecoveryTask?.cancel()
+        adbDaemonRecoveryTask?.cancel()
         automaticReconnectTask?.cancel()
         automaticReconnectWakeContinuation?.resume()
         networkPathMonitor?.cancel()
@@ -251,6 +254,7 @@ final class ConnectionCoordinator {
             || discoveredWiFiConnectTask != nil
             || wirelessStartTask != nil
             || reconnectTask != nil
+            || adbDaemonRecoveryTask != nil
             || automaticReconnectTask != nil
     }
 
@@ -318,6 +322,7 @@ final class ConnectionCoordinator {
         cancel(&wirelessStartTask)
         cancel(&reconnectTask)
         cancel(&disconnectRecoveryTask)
+        cancelADBDaemonRecovery()
         cancelAutomaticReconnect(clearRetryState: false)
     }
 
@@ -398,6 +403,28 @@ final class ConnectionCoordinator {
     func cancelWirelessRouteVerification() {
         wirelessRouteVerificationGeneration &+= 1
         cancel(&wirelessRouteVerificationTask)
+    }
+
+    func beginADBDaemonRecovery() -> Int {
+        cancelADBDaemonRecovery()
+        adbDaemonRecoveryInFlight = true
+        return adbDaemonRecoveryGeneration
+    }
+
+    func isCurrentADBDaemonRecovery(_ generation: Int) -> Bool {
+        adbDaemonRecoveryInFlight && adbDaemonRecoveryGeneration == generation
+    }
+
+    func finishADBDaemonRecovery(_ generation: Int) {
+        guard isCurrentADBDaemonRecovery(generation) else { return }
+        adbDaemonRecoveryInFlight = false
+        adbDaemonRecoveryTask = nil
+    }
+
+    func cancelADBDaemonRecovery() {
+        adbDaemonRecoveryGeneration &+= 1
+        adbDaemonRecoveryInFlight = false
+        cancel(&adbDaemonRecoveryTask)
     }
 
     func reset() {

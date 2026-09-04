@@ -15,6 +15,7 @@ final class ScrcpyServerHost: @unchecked Sendable {
     enum HostError: Error, CustomStringConvertible {
         case missingServerArtifact
         case missingAdb
+        case stopped
         case adbCommandFailed(stage: String, output: String)
 
         var description: String {
@@ -23,6 +24,8 @@ final class ScrcpyServerHost: @unchecked Sendable {
                 return "scrcpy-server resource was not bundled with the app."
             case .missingAdb:
                 return "adb is not on PATH and not bundled with the app."
+            case .stopped:
+                return "scrcpy server startup was cancelled."
             case .adbCommandFailed(let stage, let output):
                 return "\(stage) failed: \(output)"
             }
@@ -46,16 +49,19 @@ final class ScrcpyServerHost: @unchecked Sendable {
     private static let maxLoggedChunkCharacters = 4 * 1024
 
     private let options: Options
-    private var process: Process?
-    /// stdout/stderr are appended from two separate `readabilityHandler` queues
-    /// and read together from the termination handler — three threads — so all
-    /// access goes through `outputLock`. Concurrent `String` mutation would
-    /// otherwise be undefined behavior (this class is `@unchecked Sendable`, so
-    /// the compiler won't catch it).
-    private let outputLock = NSLock()
-    private var stdoutBuffer = ""
-    private var stderrBuffer = ""
-    private var reverseInstalled = false
+    private struct LifecycleState {
+        var process: Process?
+        var stdoutBuffer = ""
+        var stderrBuffer = ""
+        var reverseInstalled = false
+        var stopRequested = false
+    }
+
+    /// Startup, explicit stop, pipe callbacks, and process termination run on
+    /// different queues. One lock owns every mutable lifecycle field so a late
+    /// startup step cannot resurrect a process or reverse tunnel after stop.
+    private let stateLock = NSLock()
+    private var state = LifecycleState()
 
     init(options: Options) {
         self.options = options
@@ -65,6 +71,9 @@ final class ScrcpyServerHost: @unchecked Sendable {
     /// must have a TCP listener already bound to `options.localPort` before
     /// calling this so the device's first connection has somewhere to land.
     func prepareTunnel() throws {
+        guard stateLock.withLock({ !state.stopRequested }) else {
+            throw HostError.stopped
+        }
         guard let serverPath = Tooling.scrcpyServerPath() else {
             throw HostError.missingServerArtifact
         }
@@ -77,6 +86,9 @@ final class ScrcpyServerHost: @unchecked Sendable {
         if !push.succeeded {
             throw HostError.adbCommandFailed(stage: "adb push", output: push.output)
         }
+        guard stateLock.withLock({ !state.stopRequested }) else {
+            throw HostError.stopped
+        }
 
         let scidHex = String(format: "%08x", options.scid)
         let socketName = "scrcpy_\(scidHex)"
@@ -87,7 +99,18 @@ final class ScrcpyServerHost: @unchecked Sendable {
         if !reverse.succeeded {
             throw HostError.adbCommandFailed(stage: "adb reverse", output: reverse.output)
         }
-        reverseInstalled = true
+        let removeImmediately = stateLock.withLock {
+            guard !state.stopRequested else { return true }
+            state.reverseInstalled = true
+            return false
+        }
+        if removeImmediately {
+            _ = Tooling.run(
+                "adb",
+                arguments: adbBaseArgs() + ["reverse", "--remove", "localabstract:\(socketName)"]
+            )
+            throw HostError.stopped
+        }
 
         wakeDevice()
     }
@@ -96,6 +119,9 @@ final class ScrcpyServerHost: @unchecked Sendable {
     /// immediately. The server stays alive until `stop()` or the device
     /// disconnects.
     func start(onExit: @escaping (Int32, String) -> Void) throws {
+        guard stateLock.withLock({ !state.stopRequested }) else {
+            throw HostError.stopped
+        }
         guard let adbPath = Tooling.toolPath(named: "adb") else {
             throw HostError.missingAdb
         }
@@ -103,23 +129,28 @@ final class ScrcpyServerHost: @unchecked Sendable {
         let stdout = Pipe()
         let stderr = Pipe()
         process.executableURL = URL(fileURLWithPath: adbPath)
+        process.environment = Tooling.processEnvironment(for: "adb")
 
         var args = adbBaseArgs()
         args += Self.serverArguments(for: options)
         process.arguments = args
         process.standardOutput = stdout
         process.standardError = stderr
+        stateLock.withLock {
+            state.stdoutBuffer = ""
+            state.stderrBuffer = ""
+        }
 
         stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
-            self?.appendOutput(line, to: \.stdoutBuffer)
+            self?.appendOutput(line, toStdout: true)
             Logger.log("[scrcpy-server stdout] \(Self.truncatedLogChunk(line))")
         }
         stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
-            self?.appendOutput(line, to: \.stderrBuffer)
+            self?.appendOutput(line, toStdout: false)
             Logger.log("[scrcpy-server stderr] \(Self.truncatedLogChunk(line))")
         }
 
@@ -127,12 +158,27 @@ final class ScrcpyServerHost: @unchecked Sendable {
             guard let self else { return }
             stdout.fileHandleForReading.readabilityHandler = nil
             stderr.fileHandleForReading.readabilityHandler = nil
-            let combined = self.outputLock.withLock { self.stdoutBuffer + self.stderrBuffer }
+            let combined = self.stateLock.withLock {
+                if self.state.process === proc {
+                    self.state.process = nil
+                }
+                return self.state.stdoutBuffer + self.state.stderrBuffer
+            }
             onExit(proc.terminationStatus, combined)
         }
 
         try process.run()
-        self.process = process
+        let stopRequested = stateLock.withLock {
+            guard !state.stopRequested else { return true }
+            if process.isRunning {
+                state.process = process
+            }
+            return false
+        }
+        if stopRequested {
+            process.terminate()
+            throw HostError.stopped
+        }
     }
 
     static func serverArguments(for options: Options) -> [String] {
@@ -186,17 +232,25 @@ final class ScrcpyServerHost: @unchecked Sendable {
     }
 
     func stop() {
-        process?.terminate()
-        process = nil
+        let cleanup = stateLock.withLock { () -> (Process?, Bool, Bool) in
+            let firstStop = !state.stopRequested
+            state.stopRequested = true
+            let process = state.process
+            state.process = nil
+            let reverseInstalled = state.reverseInstalled
+            state.reverseInstalled = false
+            return (process, reverseInstalled, firstStop)
+        }
+        guard cleanup.2 else { return }
+        cleanup.0?.terminate()
         // Terminating the local `adb shell` does NOT necessarily kill the
         // device-side server; a leftover process holds the encoder/display and
         // makes the next launch abort. Kill it explicitly, scoped to this scid.
         let scidHex = String(format: "%08x", options.scid)
         _ = Tooling.run("adb", arguments: adbBaseArgs() + ["shell", "pkill", "-f", "scid=\(scidHex)"], timeout: 3)
-        if reverseInstalled {
+        if cleanup.1 {
             let socketName = "scrcpy_\(scidHex)"
             _ = Tooling.run("adb", arguments: adbBaseArgs() + ["reverse", "--remove", "localabstract:\(socketName)"])
-            reverseInstalled = false
         }
     }
 
@@ -214,11 +268,18 @@ final class ScrcpyServerHost: @unchecked Sendable {
         }
     }
 
-    private func appendOutput(_ output: String, to keyPath: ReferenceWritableKeyPath<ScrcpyServerHost, String>) {
-        outputLock.withLock {
-            self[keyPath: keyPath] += output
-            if self[keyPath: keyPath].count > Self.maxCapturedOutputCharacters {
-                self[keyPath: keyPath] = String(self[keyPath: keyPath].suffix(Self.maxCapturedOutputCharacters))
+    private func appendOutput(_ output: String, toStdout: Bool) {
+        stateLock.withLock {
+            if toStdout {
+                state.stdoutBuffer += output
+                if state.stdoutBuffer.count > Self.maxCapturedOutputCharacters {
+                    state.stdoutBuffer = String(state.stdoutBuffer.suffix(Self.maxCapturedOutputCharacters))
+                }
+            } else {
+                state.stderrBuffer += output
+                if state.stderrBuffer.count > Self.maxCapturedOutputCharacters {
+                    state.stderrBuffer = String(state.stderrBuffer.suffix(Self.maxCapturedOutputCharacters))
+                }
             }
         }
     }

@@ -147,6 +147,7 @@ final class AppModel: ObservableObject {
     nonisolated static let mirrorChromeBarVisibilityDefaultsKey = "MirrorBehavior.chromeBarVisibility"
     nonisolated static let mirrorAlwaysOnTopDefaultsKey = "MirrorBehavior.alwaysOnTopEnabled"
     nonisolated static let mirrorProfileDefaultsKey = "MirrorQuality.profile"
+    nonisolated static let legacyWirelessCompatibilityDefaultsKey = "Connection.allowLegacyADBWireless"
     nonisolated static let screenshotFolderPathDefaultsKey = "Capture.screenshotFolderPath"
     nonisolated static let screenshotFolderBookmarkDefaultsKey = "Capture.screenshotFolderBookmark"
     nonisolated static let recordingFolderPathDefaultsKey = "Capture.recordingFolderPath"
@@ -301,6 +302,29 @@ final class AppModel: ObservableObject {
         (UserDefaults.standard.object(forKey: "MirrorBehavior.dragAndDropFileTransferEnabled") as? Bool) ?? true {
         didSet {
             UserDefaults.standard.set(dragAndDropFileTransferEnabled, forKey: "MirrorBehavior.dragAndDropFileTransferEnabled")
+        }
+    }
+    /// Secure Android Wireless debugging still wins when available. Legacy port
+    /// 5555 compatibility starts enabled so manual IP connections work without
+    /// an extra settings step, and users can turn it off.
+    @Published var legacyWirelessCompatibilityEnabled: Bool =
+        (UserDefaults.standard.object(forKey: AppModel.legacyWirelessCompatibilityDefaultsKey) as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(
+                legacyWirelessCompatibilityEnabled,
+                forKey: Self.legacyWirelessCompatibilityDefaultsKey
+            )
+            if !legacyWirelessCompatibilityEnabled {
+                connectionCoordinator.cancelUSBWiFiHandoff()
+                connectionCoordinator.cancelAutomaticReconnect(clearRetryState: false)
+                connectionCoordinator.reconnectTask?.cancel()
+                connectionCoordinator.reconnectTask = nil
+                connectionCoordinator.usbWiFiTakeoverTask?.cancel()
+                connectionCoordinator.usbWiFiTakeoverTask = nil
+                usbWiFiHandoffCandidate = nil
+                connectionCoordinator.failedLegacyHandoffSerials.removeAll()
+                connectionCoordinator.wirelessListenerMissingRecordIDs.removeAll()
+            }
         }
     }
     @Published var mirrorScrollSpeedPercent: Int =
@@ -872,6 +896,7 @@ final class AppModel: ObservableObject {
     // Not private: read from AppModel extension files (pure-move split);
     // treat as private elsewhere.
     var mirrorSession: MirrorSession?
+    var notificationReplyWindows: [String: NotificationReplyWindowController] = [:]
     let mirrorLifecycle = MirrorLifecycleCoordinator()
     private lazy var notificationForwarder = NotificationForwarder(model: self)
     private let notificationAuthorizationRequester: NotificationAuthorizationRequester
@@ -1011,8 +1036,18 @@ final class AppModel: ObservableObject {
     }
 
     var isLiveWirelessConnectionAvailable: Bool {
-        latestAuthorizedADBDevices.contains { !$0.isUSB }
-            || discoveredPhones.contains { $0.kind.isConnectable }
+        latestAuthorizedADBDevices.contains {
+            !$0.isUSB
+                && Self.isAllowedWirelessAddress(
+                    $0.serial,
+                    allowLegacyCompatibility: legacyWirelessCompatibilityEnabled
+                )
+        } || discoveredPhones.contains {
+            Self.isAllowedConnectablePhone(
+                $0,
+                allowLegacyCompatibility: legacyWirelessCompatibilityEnabled
+            )
+        }
     }
 
     var isWirelessConnectionAvailable: Bool {
@@ -1020,7 +1055,7 @@ final class AppModel: ObservableObject {
             || hasRememberedWiFiHandoffRoute
     }
 
-    private var selectedConnectionRecord: PairedPhoneRecord? {
+    var selectedConnectionRecord: PairedPhoneRecord? {
         Self.recordsByMostRecent(pairedPhones).first {
             Self.recordMatchesSelectedDevice($0, selectedDevice: selectedDevice)
         }
@@ -1031,7 +1066,8 @@ final class AppModel: ObservableObject {
             Self.liveConnectionRoutes(
                 for: $0,
                 authorizedDevices: latestAuthorizedADBDevices,
-                discoveredPhones: discoveredPhones
+                discoveredPhones: discoveredPhones,
+                allowLegacyCompatibility: legacyWirelessCompatibilityEnabled
             )
         }
     }
@@ -1080,6 +1116,19 @@ final class AppModel: ObservableObject {
 
     var hasSavedWirelessConnection: Bool {
         !Self.recordsByMostRecent(pairedPhones).filter(Self.isWirelessRecord).isEmpty
+    }
+
+    var hasAllowedSavedWirelessConnection: Bool {
+        Self.recordsByMostRecent(pairedPhones).contains { record in
+            guard Self.isWirelessRecord(record),
+                  let address = record.resolvedWiFiAddress else {
+                return false
+            }
+            return Self.isAllowedWirelessAddress(
+                address,
+                allowLegacyCompatibility: legacyWirelessCompatibilityEnabled
+            )
+        }
     }
 
     var hasVisibleSavedWirelessConnection: Bool {
@@ -1180,7 +1229,15 @@ final class AppModel: ObservableObject {
     }
 
     var hasRememberedWiFiHandoffRoute: Bool {
-        Self.rememberedConnectablePhone(records: pairedPhones, in: discoveredPhones) != nil
+        Self.rememberedConnectablePhone(
+            records: pairedPhones,
+            in: discoveredPhones.filter {
+                Self.isAllowedConnectablePhone(
+                    $0,
+                    allowLegacyCompatibility: legacyWirelessCompatibilityEnabled
+                )
+            }
+        ) != nil
     }
 
     /// Whether we're still inside the brief post-launch window during which the
@@ -1505,6 +1562,9 @@ final class AppModel: ObservableObject {
         if let wirelessDevice = Self.liveWirelessAuthorizedDevice(
             for: record,
             in: latestAuthorizedADBDevices
+        ), Self.isAllowedWirelessAddress(
+            wirelessDevice.serial,
+            allowLegacyCompatibility: legacyWirelessCompatibilityEnabled
         ) {
             stopQRCodePairingSession()
             var liveRecord = record
@@ -1519,7 +1579,12 @@ final class AppModel: ObservableObject {
 
         if let phone = Self.rememberedConnectablePhone(
             for: record,
-            in: discoveredPhones,
+            in: discoveredPhones.filter {
+                Self.isAllowedConnectablePhone(
+                    $0,
+                    allowLegacyCompatibility: legacyWirelessCompatibilityEnabled
+                )
+            },
             allowSingleCandidateFallback: pairedPhones.filter(Self.isWirelessRecord).count == 1
         ) {
             stopQRCodePairingSession()
@@ -1618,15 +1683,11 @@ final class AppModel: ObservableObject {
 
     private func connectViaSavedWiFi(record: PairedPhoneRecord) {
         transportIntent = .manualWiFi
-        guard let wifiAddress = record.resolvedWiFiAddress else {
-            transportIntent = .automatic
-            reportError("Wi-Fi route unavailable", "Connect the phone with USB once while it is on Wi-Fi so Phone Relay can save its IP address.")
-            return
-        }
-
         if let wirelessDevice = Self.liveWirelessAuthorizedDevice(
             for: record,
-            in: latestAuthorizedADBDevices
+            in: latestAuthorizedADBDevices.filter {
+                Self.isAllowedWirelessAddress($0.serial, allowLegacyCompatibility: legacyWirelessCompatibilityEnabled)
+            }
         ) {
             stopQRCodePairingSession()
             var liveRecord = record
@@ -1644,6 +1705,12 @@ final class AppModel: ObservableObject {
             return
         }
 
+        guard let wifiAddress = record.resolvedWiFiAddress else {
+            transportIntent = .automatic
+            reportError("Wi-Fi route unavailable", "Connect the phone by USB, approve USB debugging, and choose Wi-Fi again to prepare its connection.")
+            return
+        }
+
         var wirelessRecord = record
         wirelessRecord.lastAddress = wifiAddress
         wirelessRecord.wifiAddress = wifiAddress
@@ -1656,8 +1723,8 @@ final class AppModel: ObservableObject {
 
     private func connectSavedWiFiViaUSB(record: PairedPhoneRecord, usbDevice: AuthorizedADBDevice) {
         stopQRCodePairingSession()
-        connectionCoordinator.wirelessStartTask?.cancel()
-        connectionCoordinator.reconnectTask?.cancel()
+        connectionCoordinator.cancelUSBWiFiHandoff()
+        cancelWirelessReconnectWork()
         isPairing = true
 
         let adb = self.adb
@@ -1670,18 +1737,21 @@ final class AppModel: ObservableObject {
                 preflightLocalNetworkAccess: { address in
                     await Self.preflightLocalNetworkAccess(address: address)
                 },
-                maximumDuration: Self.wirelessHandoffTakeoverMaxDuration
+                maximumDuration: Self.wirelessHandoffTakeoverMaxDuration,
+                allowLegacyCompatibility: self?.legacyWirelessCompatibilityEnabled ?? false
             )
 
             guard let self, !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
-            self.connectionCoordinator.wirelessStartTask = nil
-            self.isPairing = false
 
             guard let connectedAddress else {
+                self.connectionCoordinator.wirelessStartTask = nil
+                self.isPairing = false
                 self.transportIntent = .automatic
                 self.reportError(
                     "Wi-Fi route not ready",
-                    "Phone Relay found \(record.resolvedWiFiAddress ?? "the saved IP"), but could not connect on port \(Self.legacyADBWirelessPort). Keep USB connected and try Wi-Fi again."
+                    self.legacyWirelessCompatibilityEnabled
+                        ? "Phone Relay found \(record.resolvedWiFiAddress ?? "the saved IP"), but could not connect on port \(Self.legacyADBWirelessPort). Keep USB connected and try Wi-Fi again."
+                        : "Secure Wireless debugging is not available. Turn it on and pair this Mac, or enable legacy compatibility in Settings for an older phone."
                 )
                 return
             }
@@ -1691,6 +1761,10 @@ final class AppModel: ObservableObject {
                 serial: connectedAddress,
                 fallback: record.displayName
             )
+            guard !Task.isCancelled, self.mirrorStartGeneration == generation,
+                  !self.isMirroring, self.mirrorLaunchTask == nil else { return }
+            self.connectionCoordinator.wirelessStartTask = nil
+            self.isPairing = false
             self.touchPairedPhone(
                 id: record.id,
                 displayName: deviceName,
@@ -1710,7 +1784,9 @@ final class AppModel: ObservableObject {
                 adbSerial: connectedAddress
             )
             self.isSelectedDeviceOnline = true
-            self.startMirroring(manual: true)
+            self.prepareManualMirrorLaunch()
+            self.stopDisconnectRecovery()
+            self.launchNativeMirror(serial: connectedAddress)
         }
     }
 
@@ -1720,12 +1796,12 @@ final class AppModel: ObservableObject {
     nonisolated static let manualReconnectWindow: TimeInterval = 10
 
     /// User-initiated Wi-Fi reconnect. Unlike background auto-reconnect it bounces
-    /// the adb server first, then retries every saved wireless route — each gated
-    /// on a shell-readiness probe — for `manualReconnectWindow` seconds, falling
-    /// back to mDNS rediscovery if the phone's address changed. A successful TLS
-    /// session is promoted to a stable `:5555` listener so the next reconnect
-    /// survives the Wireless-debugging toggle. If every route is dead it explains
-    /// why. Never requires a USB cable up front.
+    /// the adb server first, then retries every allowed saved wireless route,
+    /// each gated on a shell-readiness probe, for `manualReconnectWindow`
+    /// seconds. It falls back to mDNS rediscovery if the phone's address changed.
+    /// TLS remains TLS; promotion to port 5555 happens only when the user enabled
+    /// legacy compatibility. If every route is dead it explains why. Never
+    /// requires a USB cable up front.
     func reconnectOverWiFi(
         preferredRecord: PairedPhoneRecord? = nil,
         inlineUntilConnected: Bool = false,
@@ -1786,7 +1862,8 @@ final class AppModel: ObservableObject {
                 if Task.isCancelled { return }
                 guard let self, self.mirrorStartGeneration == generation, !self.isMirroring else { return }
 
-                // Saved wireless routes, including the stable :5555 fallback.
+                // Saved wireless routes. The helper filters port 5555 unless
+                // the compatibility setting is currently enabled.
                 for record in wirelessRecords {
                     if Task.isCancelled { return }
                     guard let savedAddress = record.resolvedWiFiAddress else { continue }
@@ -1794,6 +1871,7 @@ final class AppModel: ObservableObject {
                     let result = await Self.connectToRememberedWirelessReadiness(
                         adb: adb,
                         savedAddress: savedAddress,
+                        allowLegacyCompatibility: self.legacyWirelessCompatibilityEnabled,
                         readinessAttempts: 1,
                         preflightLocalNetworkAccess: { address in
                             await Self.preflightLocalNetworkAccess(address: address)
@@ -1821,7 +1899,9 @@ final class AppModel: ObservableObject {
                         for: record,
                         in: livePhones,
                         allowSingleCandidateFallback: wirelessRecords.count == 1
-                    ) else { continue }
+                    ), self.legacyWirelessCompatibilityEnabled
+                        || (phone.kind != .legacyTCPIP && !Self.isLegacyWirelessAddress(phone.address))
+                    else { continue }
                     self.reconnectAttemptCount += 1
                     if await Self.waitForADBWirelessTargetReady(
                         adb: adb,
@@ -1844,10 +1924,9 @@ final class AppModel: ObservableObject {
                     }
                 }
 
-                // The saved address is dead and mDNS is silent — the case the
-                // auto-connect path handles but this button historically could
-                // not: a plain `tcpip 5555` phone whose DHCP lease moved. Hunt
-                // for its current IP by MAC once the cheap rounds have had a pass.
+                // With compatibility enabled, a saved port-5555 address may be
+                // dead because DHCP moved the phone. Hunt for its current IP by
+                // MAC once the cheap rounds have had a pass.
                 // A button press is a deliberate action, so it bypasses the
                 // per-phone recovery cooldown that throttles background polling.
                 if allowAddressRecovery, !attemptedWiFiAddressRecovery, round >= 1 {
@@ -1915,10 +1994,11 @@ final class AppModel: ObservableObject {
     ) async {
         let adb = self.adb
 
-        // Promote a random Wireless-debugging TLS port to a plain `tcpip 5555`
-        // listener so the next reconnect works without the toggle (no-op on :5555).
+        // Legacy compatibility remains available for older phones, but secure
+        // Wireless debugging never downgrades automatically when the setting is off.
         var address = connectedAddress
-        if Self.shouldPromoteToLegacyTCPIP(connectedAddress: connectedAddress) {
+        if legacyWirelessCompatibilityEnabled,
+           Self.shouldPromoteToLegacyTCPIP(connectedAddress: connectedAddress) {
             switch await Self.promoteToLegacyTCPIP(
                 adb: adb,
                 sourceSerial: connectedAddress,
@@ -1938,6 +2018,7 @@ final class AppModel: ObservableObject {
                 let retry = await Self.connectToRememberedWirelessReadiness(
                     adb: adb,
                     savedAddress: legacyAddress,
+                    allowLegacyCompatibility: true,
                     readinessAttempts: 2,
                     preflightLocalNetworkAccess: { address in
                         await Self.preflightLocalNetworkAccess(address: address)

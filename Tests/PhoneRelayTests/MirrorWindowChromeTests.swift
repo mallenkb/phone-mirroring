@@ -540,6 +540,7 @@ final class MirrorWindowChromeTests: XCTestCase {
             wifiAddress: "192.168.50.44:5555"
         )
         let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+        model.legacyWirelessCompatibilityEnabled = false
 
         XCTAssertTrue(model.hasSavedWirelessConnection)
         XCTAssertFalse(model.isWirelessConnectionAvailable)
@@ -554,6 +555,11 @@ final class MirrorWindowChromeTests: XCTestCase {
             )
         ])
 
+        XCTAssertFalse(model.isWirelessConnectionAvailable)
+        XCTAssertFalse(model.hasVisibleSavedWirelessConnection)
+
+        model.legacyWirelessCompatibilityEnabled = true
+        defer { model.legacyWirelessCompatibilityEnabled = false }
         XCTAssertTrue(model.isWirelessConnectionAvailable)
         XCTAssertTrue(model.hasVisibleSavedWirelessConnection)
     }
@@ -599,7 +605,10 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(source.contains("private var wifiChoiceSubtitle: String"))
         XCTAssertTrue(source.contains("effectiveWiFiConnectionAvailable"))
         XCTAssertTrue(source.contains("\"Phone found on Wi-Fi.\""))
-        XCTAssertTrue(source.contains("!model.isFirstTimeUSBSetup || effectiveWiFiConnectionAvailable"))
+        XCTAssertTrue(source.contains("\"Enter an IP address or pair with QR.\""))
+        XCTAssertTrue(source.contains("Text(\"Enter IP address\")"))
+        XCTAssertFalse(source.contains("if !model.isFirstTimeUSBSetup || effectiveWiFiConnectionAvailable"))
+        XCTAssertTrue(source.contains("title: \"Connect with Wi-Fi\""))
         XCTAssertTrue(source.contains("model.connectViaAvailableWireless()"))
     }
 

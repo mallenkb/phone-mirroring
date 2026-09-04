@@ -245,9 +245,9 @@ struct PairedPhoneStore {
             let record = records[index]
             return record.id == id
                 || record.lastAddress == address
-                || record.resolvedUSBSerial == usbSerial
+                || (usbSerial != nil && record.resolvedUSBSerial == usbSerial)
                 || record.resolvedUSBSerial == id
-                || record.resolvedWiFiAddress == wifiAddress
+                || (wifiAddress != nil && record.resolvedWiFiAddress == wifiAddress)
                 || (addressHost != nil && Self.host(in: record.lastAddress) == addressHost)
                 || (wifiHost != nil && record.resolvedWiFiAddress.flatMap(Self.host) == wifiHost)
                 || (

@@ -17,17 +17,20 @@ of these on purpose, update this file in the same commit.
    protocol timeout/reset. This also applies to tests: a test that reaches a
    real `kill-server` will kill the user's live mirror (observed 2026-07-02).
 
-2. **Reconnect prefers legacy `tcpip 5555` over Android-11 TLS wireless
-   debugging.** The `:5555` listener survives without the phone's
-   Wireless-debugging toggle; the TLS random port dies when the toggle goes
-   off. This preference applies only to endpoints that previously passed TCP
-   reachability plus an ADB shell sentinel. A Wi-Fi IP observed over USB is
-   identity metadata, not a dialable endpoint. Coordinator-owned reconnects
-   build candidates canonically: reachable verified `:5555`, other verified
-   routes, then freshly advertised TLS. After a network-path or stored-network
-   fingerprint change, live discovery and current routable subnets go first;
-   the stale endpoint must not consume the first attempt. `tcpip` mode does NOT
-   survive a phone reboot; the TLS route is the fallback for exactly that case.
+2. **Authenticated Wireless debugging is the default Wi-Fi transport.** A
+   fresh `_adb-tls-connect._tcp` endpoint wins over saved routes, and a verified
+   TLS endpoint may replace an older stored `:5555` route. Port 5555 is neither
+   synthesized, dialed, persisted, enabled, nor searched for while
+   `Connection.allowLegacyADBWireless` is off. The setting defaults to on. Even then,
+   an advertised TLS endpoint wins. A Wi-Fi IP observed over USB is identity
+   metadata, not a dialable endpoint. After a network-path or stored-network
+   fingerprint change, live TLS discovery goes first and a stale endpoint must
+   not consume the first attempt.
+
+   Legacy mode exists for Android 10 and vendor-limited devices. It is an
+   explicit security tradeoff because ADB authentication does not encrypt the
+   port-5555 session. Its listener does not survive a phone reboot, so cable
+   arming and subnet recovery remain available only while compatibility is on.
 
 3. **`adb tcpip` restarts the phone's adbd and drops the live USB mirror.**
    Automatic USB-to-Wi-Fi handoff is configure-first: prove the Mac has a route
@@ -40,7 +43,7 @@ of these on purpose, update this file in the same commit.
    background preparation must never restart adbd or promote away from its live
    USB mirror.
 
-   Two authorized owners exist. The first is the configure-first handoff
+   When legacy compatibility is enabled, two authorized owners exist. The first is the configure-first handoff
    (`activatePreparedMirror`). The second is the cable-arrival arm
    (`armWirelessWithoutMirroring`, `armWirelessDebuggingForAttachedUSB`), which
    runs `tcpip` while deliberately starting *no* mirror: `tcpip` mode dies on
@@ -122,9 +125,12 @@ of these on purpose, update this file in the same commit.
    now recognizes the stronger signature (its own TCP probe reached the port,
    but ADB was denied, timed out, or reset its host protocol), restarts the
    daemon once from the signed app while quiescent, and retries inside the same
-   budget. If manual recovery is ever required, stop the stale daemon and let
-   the **app's** poller respawn it. Never start the daemon with bare `adb`
-   commands from a shell while diagnosing the app; use the log file.
+   budget. Every Phone Relay ADB process uses private server port 5038, so a
+   shell or Android Studio daemon on the default port 5037 cannot take ownership
+   of the app's transports or Local Network attribution. If manual recovery is
+   ever required, stop the app-owned daemon through Phone Relay and let its
+   poller respawn it. Never diagnose the app by starting another client against
+   port 5038; use the log file.
 
 9. **Instant "No route to host" on every connect while phone→Mac pings work
    is a permission/attribution problem, not a network problem.** Check the
@@ -161,7 +167,16 @@ of these on purpose, update this file in the same commit.
     observed USB-side Wi-Fi IP separately. Promote `wifiAddress`, its network
     fingerprint, and verification time only after TCP plus ADB shell readiness
     succeeds. When adding a connect path, persist the verified winning route on
-    success.
+    success. After an authenticated network connect, read `ro.serialno` and use
+    that hardware identity instead of an address or mDNS instance name. Optional
+    identities may match only when the incoming value is non-nil; `nil == nil`
+    must never merge two phone records.
+
+13a. **Phone Files never trusts a lexical shared-storage prefix by itself.**
+    Reject dot traversal, quote every phone-side shell value, and resolve each
+    existing path with `readlink -f` before an operation that can follow a
+    symlink. Both the requested path and its resolved target must remain under
+    `/sdcard` or `/storage`; resolution failure is a closed boundary.
 
 ## Notifications
 

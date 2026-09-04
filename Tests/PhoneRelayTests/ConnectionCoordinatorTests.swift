@@ -5,7 +5,7 @@ import XCTest
 final class ConnectionCoordinatorTests: XCTestCase {
     func testCancelAllCancelsAndClearsEveryOwnedTask() {
         let coordinator = ConnectionCoordinator()
-        let tasks = (0..<11).map { _ in Task<Void, Never> { await Task.yield() } }
+        let tasks = (0..<12).map { _ in Task<Void, Never> { await Task.yield() } }
         coordinator.deviceWatcherTask = tasks[0]
         coordinator.qrPairingTask = tasks[1]
         coordinator.usbConnectTask = tasks[2]
@@ -16,7 +16,9 @@ final class ConnectionCoordinatorTests: XCTestCase {
         coordinator.wirelessStartTask = tasks[7]
         coordinator.reconnectTask = tasks[8]
         coordinator.disconnectRecoveryTask = tasks[9]
-        coordinator.automaticReconnectTask = tasks[10]
+        coordinator.adbDaemonRecoveryTask = tasks[10]
+        coordinator.adbDaemonRecoveryInFlight = true
+        coordinator.automaticReconnectTask = tasks[11]
 
         coordinator.cancelAll()
 
@@ -31,6 +33,8 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.wirelessStartTask)
         XCTAssertNil(coordinator.reconnectTask)
         XCTAssertNil(coordinator.disconnectRecoveryTask)
+        XCTAssertNil(coordinator.adbDaemonRecoveryTask)
+        XCTAssertFalse(coordinator.adbDaemonRecoveryInFlight)
         XCTAssertNil(coordinator.automaticReconnectTask)
         XCTAssertFalse(coordinator.hasActiveConnectionAttempt)
         XCTAssertFalse(coordinator.hasWirelessWorkInFlight)
@@ -114,6 +118,25 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertNotNil(coordinator.usbWiFiHandoffTask)
         coordinator.finishUSBWiFiHandoff(secondGeneration)
         XCTAssertNil(coordinator.usbWiFiHandoffTask)
+    }
+
+    func testADBDaemonRecoveryGenerationCancelsAndRejectsStaleCompletion() {
+        let coordinator = ConnectionCoordinator()
+        let firstGeneration = coordinator.beginADBDaemonRecovery()
+        let firstTask = Task<Void, Never> { await Task.yield() }
+        coordinator.adbDaemonRecoveryTask = firstTask
+
+        let secondGeneration = coordinator.beginADBDaemonRecovery()
+        coordinator.adbDaemonRecoveryTask = Task { await Task.yield() }
+
+        XCTAssertTrue(firstTask.isCancelled)
+        XCTAssertNotEqual(firstGeneration, secondGeneration)
+        XCTAssertTrue(coordinator.hasActiveConnectionAttempt)
+        coordinator.finishADBDaemonRecovery(firstGeneration)
+        XCTAssertNotNil(coordinator.adbDaemonRecoveryTask)
+        coordinator.finishADBDaemonRecovery(secondGeneration)
+        XCTAssertNil(coordinator.adbDaemonRecoveryTask)
+        XCTAssertFalse(coordinator.adbDaemonRecoveryInFlight)
     }
 
     func testExplicitUSBBlocksPreparedTakeoverOnlyForChosenSerial() {

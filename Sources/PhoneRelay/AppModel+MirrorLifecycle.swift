@@ -98,6 +98,7 @@ extension AppModel {
         let selectedName = selectedDevice.name
         let adb = self.adb
         let generation = mirrorStartGeneration
+        let allowLegacyCompatibility = legacyWirelessCompatibilityEnabled
 
         isPairing = true
 
@@ -110,6 +111,7 @@ extension AppModel {
                 let result = await Self.connectToRememberedWirelessReadiness(
                     adb: adb,
                     savedAddress: savedTarget,
+                    allowLegacyCompatibility: allowLegacyCompatibility,
                     preflightLocalNetworkAccess: { address in
                         await Self.preflightLocalNetworkAccess(address: address)
                     }
@@ -131,7 +133,12 @@ extension AppModel {
                     adb.connectableMDNSTargets()
                 }.value
                 guard !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
-                let phones = livePhones + self.discoveredPhones
+                let phones = (livePhones + self.discoveredPhones).filter {
+                    Self.isAllowedConnectablePhone(
+                        $0,
+                        allowLegacyCompatibility: allowLegacyCompatibility
+                    )
+                }
                 let record = Self.recordsByMostRecent(self.pairedPhones).first { record in
                     record.id == selectedID || record.lastAddress == savedTarget
                 }
@@ -154,6 +161,7 @@ extension AppModel {
                         adb: adb,
                         savedAddress: refreshedPhone.address,
                         candidateAddresses: [refreshedPhone.address],
+                        allowLegacyCompatibility: allowLegacyCompatibility,
                         restrictDialsToReachableOrStable: true,
                         readinessAttempts: 2,
                         preflightLocalNetworkAccess: { address in
@@ -440,6 +448,7 @@ extension AppModel {
         guard let usbSerial,
               let candidate = usbWiFiHandoffCandidate,
               candidate.usbSerial == usbSerial,
+              legacyWirelessCompatibilityEnabled || !Self.isLegacyWirelessAddress(candidate.address),
               transportIntent.permitsPreparedWiFiTakeover(for: usbSerial),
               !isMirroring,
               mirrorSession == nil,

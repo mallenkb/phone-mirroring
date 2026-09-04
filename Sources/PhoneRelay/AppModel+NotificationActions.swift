@@ -119,10 +119,7 @@ extension AppModel {
         }
     }
 
-    /// Types a reply into a message notification's inline RemoteInput on the
-    /// phone. Best-effort and app-dependent; if the inline reply can't be
-    /// driven it falls back to opening the conversation so the user can finish
-    /// the reply by hand.
+    /// Presents a native composer. Closing it retains the draft in memory.
     func replyToForwardedNotification(
         package: String,
         serial notificationSerial: String?,
@@ -132,40 +129,39 @@ extension AppModel {
         reply: String
     ) {
         let package = package.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reply = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !reply.isEmpty else { return }
-
-        let serial = (notificationSerial?.isEmpty == false ? notificationSerial : nil)
-            ?? selectedDevice.adbSerial
-        guard let serial, !serial.isEmpty else {
-            reportError("Can’t reply", "Connect the phone before replying to a forwarded notification.")
-            return
+        let serial = notificationSerial ?? ""
+        let key = notificationKey ?? ""
+        let windowKey = [serial, package, key, title ?? "", text ?? ""].joined(separator: "\u{1}")
+        if let existing = notificationReplyWindows[windowKey] { existing.present(); return }
+        let controller = NotificationReplyWindowController(
+            appName: NotificationForwarder.appLabel(for: package), sender: title ?? "",
+            message: text ?? "", draft: reply
+        )
+        controller.openConversation = { [weak self] in
+            self?.openSourceAppFromForwardedNotification(package: package, serial: serial,
+                notificationKey: key, title: title, text: text)
         }
-
-        NotificationTapService.tapQueue.async { [weak self] in
-            if NotificationTapService.replyToForwardedNotificationInShade(
-                serial: serial,
-                notificationKey: notificationKey,
-                title: title,
-                text: text,
-                reply: reply
-            ) {
-                NotificationActionMetrics.shared.record(.reply, outcome: .exact)
+        controller.sendReply = { [weak self] draft, completion in
+            guard let self, !serial.isEmpty, !key.isEmpty,
+                  self.selectedDevice.adbSerial == serial, self.mirrorSession != nil else {
+                completion(.failed("Connect and open the original phone mirror before sending."))
                 return
             }
-            NotificationActionMetrics.shared.record(.reply, outcome: .fallback)
-            // Couldn't drive the inline reply — open the conversation so the
-            // user can type it themselves.
-            Task { @MainActor [weak self] in
-                self?.openSourceAppFromForwardedNotification(
-                    package: package,
-                    serial: serial,
-                    notificationKey: notificationKey,
-                    title: title,
-                    text: text
-                )
+            NotificationTapService.tapQueue.async { [weak self] in
+                let outcome = NotificationReplyService.send(serial: serial, package: package,
+                    key: key, title: title ?? "", text: text ?? "", reply: draft) { value in
+                    DispatchQueue.main.sync {
+                        MainActor.assumeIsolated {
+                            guard let self, self.selectedDevice.adbSerial == serial else { return false }
+                            return self.mirrorSession?.pasteNotificationReply(value, serial: serial) == true
+                        }
+                    }
+                }
+                Task { @MainActor in completion(outcome) }
             }
         }
+        notificationReplyWindows[windowKey] = controller
+        controller.present()
     }
 
     /// Dismisses a forwarded notification on the phone by swiping its row out of

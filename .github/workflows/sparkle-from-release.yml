@@ -9,16 +9,25 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   sparkle:
     name: Generate Sparkle ZIP and appcast
     runs-on: macos-15
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      dmg_name: ${{ steps.version.outputs.dmg_name }}
+      zip_name: ${{ steps.version.outputs.zip_name }}
     env:
       WEBSITE_REPO: mallenkb/phonerelay-website
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
@@ -83,10 +92,13 @@ jobs:
         run: |
           set -euo pipefail
           SPARKLE_VERSION="2.9.3"
+          SPARKLE_SHA256="3a5d7fd698acc39c122e75764ed3614b472b284cc483f32ae7006d86c513370c"
           SPARKLE_URL="https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-for-Swift-Package-Manager.zip"
+          SPARKLE_ARCHIVE="$RUNNER_TEMP/Sparkle-${SPARKLE_VERSION}.zip"
           mkdir -p .build/artifacts/sparkle/Sparkle
-          curl --fail --location --retry 3 --output /tmp/Sparkle.zip "$SPARKLE_URL"
-          unzip -q -o /tmp/Sparkle.zip -d .build/artifacts/sparkle/Sparkle
+          curl --fail --location --retry 3 --output "$SPARKLE_ARCHIVE" "$SPARKLE_URL"
+          printf '%s  %s\n' "$SPARKLE_SHA256" "$SPARKLE_ARCHIVE" | shasum -a 256 -c -
+          unzip -q -o "$SPARKLE_ARCHIVE" -d .build/artifacts/sparkle/Sparkle
           test -x .build/artifacts/sparkle/Sparkle/bin/generate_appcast
 
       - name: Create Sparkle ZIP and appcast
@@ -107,13 +119,46 @@ jobs:
           grep -q "${{ steps.version.outputs.zip_name }}" dist/sparkle/appcast.xml
           grep -q 'sparkle:edSignature=' dist/sparkle/appcast.xml
 
+      - name: Stage signed Sparkle assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sparkle-assets-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/sparkle/${{ steps.version.outputs.zip_name }}
+            dist/sparkle/appcast.xml
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish verified Sparkle assets
+    needs: sparkle
+    runs-on: macos-15
+    permissions:
+      contents: write
+    env:
+      WEBSITE_REPO: mallenkb/phonerelay-website
+    steps:
+      - name: Download signed Sparkle assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sparkle-assets-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/sparkle
+
+      - name: Verify staged Sparkle assets
+        run: |
+          set -euo pipefail
+          test -f "dist/sparkle/${{ needs.sparkle.outputs.zip_name }}"
+          test -f dist/sparkle/appcast.xml
+          grep -q "${{ needs.sparkle.outputs.zip_name }}" dist/sparkle/appcast.xml
+          grep -q 'sparkle:edSignature=' dist/sparkle/appcast.xml
+
       - name: Upload Sparkle release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release upload "${{ steps.version.outputs.tag }}" \
-            "dist/sparkle/${{ steps.version.outputs.zip_name }}" \
+          gh release upload "${{ needs.sparkle.outputs.tag }}" \
+            "dist/sparkle/${{ needs.sparkle.outputs.zip_name }}" \
             dist/sparkle/appcast.xml \
             --clobber
 
@@ -126,6 +171,6 @@ jobs:
           gh workflow run update-download.yml \
             --repo "$WEBSITE_REPO" \
             --ref main \
-            -f version="${{ steps.version.outputs.version }}" \
-            -f tag="${{ steps.version.outputs.tag }}" \
-            -f download_url="https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/${{ steps.version.outputs.dmg_name }}"
+            -f version="${{ needs.sparkle.outputs.version }}" \
+            -f tag="${{ needs.sparkle.outputs.tag }}" \
+            -f download_url="https://github.com/${{ github.repository }}/releases/download/${{ needs.sparkle.outputs.tag }}/${{ needs.sparkle.outputs.dmg_name }}"

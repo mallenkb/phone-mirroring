@@ -4,11 +4,23 @@ import os
 
 /// Discovery + execution of bundled or Homebrew CLI tools.
 enum Tooling {
+    /// Keep Phone Relay's adb daemon separate from the shell and Android Studio.
+    /// The daemon inherits macOS Local Network attribution from its launcher, so
+    /// sharing port 5037 lets an unrelated process poison every Wi-Fi connect.
+    static let privateADBServerPort = "5038"
+
     private static let processOutputQueue = DispatchQueue(
         label: "phonerelay.tooling.process-output",
         qos: .userInitiated,
         attributes: .concurrent
     )
+
+    static func processEnvironment(for toolName: String) -> [String: String]? {
+        guard toolName == "adb" else { return nil }
+        var environment = ProcessInfo.processInfo.environment
+        environment["ANDROID_ADB_SERVER_PORT"] = privateADBServerPort
+        return environment
+    }
 
     static func toolPath(named name: String) -> String? {
 #if DEBUG
@@ -92,16 +104,45 @@ enum Tooling {
         var succeeded: Bool { launched && !timedOut && exitCode == 0 }
     }
 
-    /// Reference box so the background drain thread can hand the captured bytes
-    /// back across the semaphore without tripping concurrency checks.
-    private final class DataBox: @unchecked Sendable { var data = Data() }
+    /// Lock-protected storage shared by pipe drain tasks. The lock keeps the
+    /// inherited-descriptor timeout path safe even if a reader finishes late.
+    private final class DataBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var data = Data()
+
+        func store(_ value: Data) {
+            lock.withLock { data = value }
+        }
+
+        func snapshot() -> Data {
+            lock.withLock { data }
+        }
+    }
 
     private static func readAvailableData(from handle: FileHandle) -> Data {
-        do {
-            return try handle.readToEnd() ?? Data()
-        } catch {
-            return Data()
+        var captured = Data()
+        while true {
+            do {
+                let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
+                guard !chunk.isEmpty else { return captured }
+                captured.append(chunk)
+            } catch {
+                return captured
+            }
         }
+    }
+
+    /// Give normal pipe readers a brief chance to observe EOF. If a spawned
+    /// descendant inherited a pipe and kept it open, close our read handles so
+    /// the command result cannot hang forever. DataBox makes a late drain safe.
+    private static func finishDraining(
+        _ group: DispatchGroup,
+        handles: [FileHandle],
+        grace: TimeInterval = 1
+    ) {
+        guard group.wait(timeout: .now() + grace) == .timedOut else { return }
+        handles.forEach { try? $0.close() }
+        _ = group.wait(timeout: .now() + grace)
     }
 
     /// Runs a tool, draining stdout+stderr on a background queue (so a child
@@ -124,22 +165,24 @@ enum Tooling {
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
+        process.environment = processEnvironment(for: name)
         process.standardOutput = pipe
         process.standardError = pipe
 
         let handle = pipe.fileHandleForReading
         let box = DataBox()
-        let readDone = DispatchSemaphore(value: 0)
+        let drainGroup = DispatchGroup()
+        drainGroup.enter()
         processOutputQueue.async {
-            box.data = readAvailableData(from: handle)
-            readDone.signal()
+            box.store(readAvailableData(from: handle))
+            drainGroup.leave()
         }
 
         do {
             try process.run()
         } catch {
             handle.closeFile()
-            readDone.signal()
+            finishDraining(drainGroup, handles: [handle])
             return RunResult(
                 output: "Failed to run \(name): \(error.localizedDescription)",
                 exitCode: -1, timedOut: false, launched: false
@@ -163,8 +206,8 @@ enum Tooling {
         }
 
         process.waitUntilExit()
-        _ = readDone.wait(timeout: .now() + 1)
-        let output = String(data: box.data, encoding: .utf8) ?? ""
+        finishDraining(drainGroup, handles: [handle])
+        let output = String(data: box.snapshot(), encoding: .utf8) ?? ""
         return RunResult(
             output: output,
             exitCode: process.terminationStatus,
@@ -200,20 +243,24 @@ enum Tooling {
         let stderrPipe = Pipe()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
+        process.environment = processEnvironment(for: name)
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
         let stdoutHandle = stdoutPipe.fileHandleForReading
         let stderrHandle = stderrPipe.fileHandleForReading
         let box = DataBox()
-        let readDone = DispatchSemaphore(value: 0)
+        let drainGroup = DispatchGroup()
+        drainGroup.enter()
         processOutputQueue.async {
-            box.data = readAvailableData(from: stdoutHandle)
-            readDone.signal()
+            box.store(readAvailableData(from: stdoutHandle))
+            drainGroup.leave()
         }
         // stderr must be drained too, or a chatty child deadlocks on a full pipe.
+        drainGroup.enter()
         processOutputQueue.async {
             _ = readAvailableData(from: stderrHandle)
+            drainGroup.leave()
         }
 
         do {
@@ -221,7 +268,7 @@ enum Tooling {
         } catch {
             stdoutHandle.closeFile()
             stderrHandle.closeFile()
-            readDone.signal()
+            finishDraining(drainGroup, handles: [stdoutHandle, stderrHandle])
             return DataRunResult(data: Data(), exitCode: -1, timedOut: false, launched: false)
         }
 
@@ -242,9 +289,9 @@ enum Tooling {
         }
 
         process.waitUntilExit()
-        _ = readDone.wait(timeout: .now() + 1)
+        finishDraining(drainGroup, handles: [stdoutHandle, stderrHandle])
         return DataRunResult(
-            data: box.data,
+            data: box.snapshot(),
             exitCode: process.terminationStatus,
             timedOut: timedOut,
             launched: true

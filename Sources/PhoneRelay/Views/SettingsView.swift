@@ -441,76 +441,91 @@ struct SettingsView: View {
             ("System", [snapshot.adbStatus, snapshot.localNetworkPermission])
         ]
 
-        return SettingsGroup(
-            title: "Connection health",
-            footnote: "Live status for the active connection, each transport, and the macOS services they depend on. Fix Connection safely restarts the app's adb daemon and rescans — it never interrupts an active mirror."
-        ) {
-            VStack(alignment: .leading, spacing: 18) {
-                ForEach(categories, id: \.title) { category in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(category.title)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.secondary)
-
-                        LazyVGrid(
-                            columns: [
-                                GridItem(.flexible(), spacing: 10, alignment: .top),
-                                GridItem(.flexible(), spacing: 10, alignment: .top)
-                            ],
-                            alignment: .leading,
-                            spacing: 10
-                        ) {
-                            ForEach(category.items) { item in
-                                connectionHealthMetric(item)
-                            }
-                        }
-                    }
-                }
-
-                HStack(spacing: 10) {
-                    Button {
-                        model.fixConnection()
-                    } label: {
-                        Label("Fix Connection", systemImage: "wrench.and.screwdriver")
-                    }
-                    Text("Clears reconnect throttles and restarts the app-owned adb daemon (skipped while mirroring).")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                // Only surface the fix row when there's actually something to do.
-                // When the device is reachable it's just noise, so hide it; when
-                // Local Network is the blocker it carries a one-tap CTA to grant it.
-                if snapshot.recommendedFix != AppModel.noActionNeededRecommendedFix {
-                    Divider()
-
-                    HStack(alignment: .center, spacing: 12) {
-                        Image(systemName: "wrench.and.screwdriver")
-                            .font(.system(size: 15, weight: .regular))
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: 22, alignment: .center)
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Next recommended fix")
-                                .font(.system(size: 13, weight: .semibold))
-                            Text(snapshot.recommendedFix)
-                                .font(.footnote)
+        return VStack(alignment: .leading, spacing: 18) {
+            SettingsGroup(
+                title: "Connection health",
+                footnote: "Live status for the active connection, each transport, and the macOS services they depend on. Fix Connection safely restarts the app's adb daemon and rescans. It never interrupts an active mirror."
+            ) {
+                VStack(alignment: .leading, spacing: 18) {
+                    ForEach(categories, id: \.title) { category in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(category.title)
+                                .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
 
-                        if snapshot.recommendedFix == AppModel.localNetworkRecommendedFix {
-                            Button("Open Local Network") {
-                                model.openLocalNetworkSettings()
+                            LazyVGrid(
+                                columns: [
+                                    GridItem(.flexible(), spacing: 10, alignment: .top),
+                                    GridItem(.flexible(), spacing: 10, alignment: .top)
+                                ],
+                                alignment: .leading,
+                                spacing: 10
+                            ) {
+                                ForEach(category.items) { item in
+                                    connectionHealthMetric(item)
+                                }
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
+                        }
+                    }
+
+                    HStack(spacing: 10) {
+                        Button {
+                            model.fixConnection()
+                        } label: {
+                            Label("Fix Connection", systemImage: "wrench.and.screwdriver")
+                        }
+                        Text("Clears reconnect throttles and restarts the app-owned adb daemon (skipped while mirroring).")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    // Only surface the fix row when there's actually something to do.
+                    // When the device is reachable it's just noise, so hide it; when
+                    // Local Network is the blocker it carries a one-tap CTA to grant it.
+                    if snapshot.recommendedFix != AppModel.noActionNeededRecommendedFix {
+                        Divider()
+
+                        HStack(alignment: .center, spacing: 12) {
+                            Image(systemName: "wrench.and.screwdriver")
+                                .font(.system(size: 15, weight: .regular))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 22, alignment: .center)
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Next recommended fix")
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text(snapshot.recommendedFix)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                            if snapshot.recommendedFix == AppModel.localNetworkRecommendedFix {
+                                Button("Open Local Network") {
+                                    model.openLocalNetworkSettings()
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
                         }
                     }
                 }
+                .padding(14)
             }
-            .padding(14)
+
+            SettingsGroup(
+                title: "Wi-Fi security",
+                footnote: "Secure Wireless debugging stays encrypted and respects the phone's trusted-network setting."
+            ) {
+                toggleRow(
+                    icon: "exclamationmark.shield",
+                    isOn: $model.legacyWirelessCompatibilityEnabled,
+                    title: "Allow legacy ADB on port 5555",
+                    subtitle: "Enabled by default for manual Wi-Fi IP connections.",
+                    detail: "Legacy ADB may require an authorized key, but its traffic is not TLS encrypted. Turn this off if you use only secure Wireless debugging."
+                )
+            }
         }
     }
 
@@ -1145,7 +1160,8 @@ struct SettingsView: View {
         AppModel.liveConnectionRoutes(
             for: record,
             authorizedDevices: model.latestAuthorizedADBDevices,
-            discoveredPhones: model.discoveredPhones
+            discoveredPhones: model.discoveredPhones,
+            allowLegacyCompatibility: model.legacyWirelessCompatibilityEnabled
         )
     }
 

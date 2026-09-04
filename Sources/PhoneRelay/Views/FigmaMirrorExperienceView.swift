@@ -65,7 +65,7 @@ struct FigmaMirrorExperienceView: View {
     private var wifiChoiceSubtitle: String {
         effectiveWiFiConnectionAvailable
             ? "Phone found on Wi-Fi."
-            : "No cable. Mirror by Wi-Fi IP address."
+            : "Enter an IP address or pair with QR."
     }
     private var isCurrentUSBSessionOnline: Bool {
         guard model.isMirroring || model.isSelectedDeviceOnline else { return false }
@@ -268,38 +268,47 @@ struct FigmaMirrorExperienceView: View {
                         }
                     )
 
-                    if !model.isFirstTimeUSBSetup || effectiveWiFiConnectionAvailable {
-                        connectionChoiceRow(
-                            iconName: "wifi",
-                            title: "Connect with Wi-Fi IP",
-                            subtitle: wifiChoiceSubtitle,
-                            showsProgress: isWirelessButtonBusy,
-                            isDisabled: isChooserButtonDisabled,
-                            isAvailable: effectiveWiFiConnectionAvailable,
-                            width: width,
-                            scale: scale,
-                            action: {
-                                usbAvailabilityBeforeConnect = model.isMatchingUSBConnectionAvailable
-                                wifiAvailabilityBeforeConnect = model.isMatchingLiveWirelessConnectionAvailable
-	                            if effectiveWiFiConnectionAvailable {
-	                                inlineConnectingTransport = .wifi
-	                                model.connectViaAvailableWireless()
-	                            } else if model.hasSavedWirelessConnection {
-	                                inlineConnectingTransport = .wifi
-	                                model.connectViaAvailableWireless()
-	                            } else if AppModel.normalizedManualADBTarget(model.manualADBTarget) != nil {
-	                                inlineConnectingTransport = .wifi
-	                                model.connectManualADBTarget()
-                                } else {
-                                    navigate(to: .wirelessPairing)
-                                    model.ensureQRCodePairingSession()
-                                }
+                    connectionChoiceRow(
+                        iconName: "wifi",
+                        title: "Connect with Wi-Fi",
+                        subtitle: wifiChoiceSubtitle,
+                        showsProgress: isWirelessButtonBusy,
+                        isDisabled: isChooserButtonDisabled,
+                        isAvailable: effectiveWiFiConnectionAvailable,
+                        width: width,
+                        scale: scale,
+                        action: {
+                            usbAvailabilityBeforeConnect = model.isMatchingUSBConnectionAvailable
+                            wifiAvailabilityBeforeConnect = model.isMatchingLiveWirelessConnectionAvailable
+                            if effectiveWiFiConnectionAvailable || model.hasAllowedSavedWirelessConnection {
+                                inlineConnectingTransport = .wifi
+                                model.connectViaAvailableWireless()
+                            } else if model.legacyWirelessCompatibilityEnabled,
+                                      AppModel.normalizedManualADBTarget(model.manualADBTarget) != nil {
+                                inlineConnectingTransport = .wifi
+                                model.connectManualADBTarget()
+                            } else {
+                                navigate(to: .wirelessPairing)
+                                model.ensureQRCodePairingSession()
                             }
-                        )
-                    }
+                        }
+                    )
                 }
 
                 VStack(spacing: 8 * scale) {
+                    Button {
+                        navigate(to: .wirelessPairing)
+                        model.ensureQRCodePairingSession()
+                    } label: {
+                        Text("Enter IP address")
+                            .font(.system(size: 14 * scale, weight: .regular))
+                            .foregroundStyle(accent)
+                            .underline()
+                            .frame(height: 28 * scale)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isChooserButtonDisabled)
+
                     Button(action: showConnectionHelpSheet) {
                         Text("Can't connect?")
                             .font(.system(size: 14 * scale, weight: .regular))
@@ -328,9 +337,7 @@ struct FigmaMirrorExperienceView: View {
 
     private func wirelessPairingScreen(width: CGFloat, scale: CGFloat) -> some View {
         VStack(spacing: 23.273 * scale) {
-            // "Message and description" — centered as a group. WiFi Only is the
-            // first wireless path; Wireless Debugging QR pairing is the fallback
-            // when no legacy Wi-Fi adb listener is available yet.
+            // Keep manual IP entry visible before the larger QR panel.
             VStack(spacing: 16 * scale) {
                 VStack(spacing: 11.636 * scale) {
                     Image(systemName: "wifi")
@@ -340,11 +347,11 @@ struct FigmaMirrorExperienceView: View {
 
                     VStack(spacing: 8 * scale) {
                         VStack(spacing: 2 * scale) {
-                            Text("Connect with Wi-Fi IP Only")
+                            Text("Connect with Wi-Fi")
                                 .font(.system(size: 14 * scale, weight: .bold))
                                 .foregroundStyle(.white)
 
-                            Text("No cable. Enter Wi-Fi IP or scan QR for Wireless Debugging.")
+                            Text("Enter the phone's Wi-Fi IP address, or pair with QR below.")
                                 .font(.system(size: 12 * scale, weight: .regular))
                                 .foregroundStyle(.white.opacity(0.7))
                                 .multilineTextAlignment(.center)
@@ -353,12 +360,20 @@ struct FigmaMirrorExperienceView: View {
                     }
                 }
 
-                manualADBTargetRow(width: width - 32 * scale, scale: scale)
+                if model.legacyWirelessCompatibilityEnabled {
+                    manualADBTargetRow(width: width - 32 * scale, scale: scale)
 
-                Text("or")
-                    .font(.system(size: 12 * scale, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .frame(width: width)
+                    Text("or pair with Wireless debugging")
+                        .font(.system(size: 12 * scale, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .frame(width: width)
+                } else {
+                    Text("For older phones, enable legacy ADB compatibility in Settings to connect by IP on port 5555.")
+                        .font(.system(size: 11 * scale, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .multilineTextAlignment(.center)
+                        .frame(width: width - 32 * scale)
+                }
 
                 wirelessDebuggingQRCodeSection(width: width, scale: scale)
             }
@@ -971,7 +986,10 @@ struct FigmaMirrorExperienceView: View {
 
     private func manualADBTargetRow(width: CGFloat, scale: CGFloat) -> some View {
         let isConnecting = model.isManualADBTargetConnecting
-        let connectEnabled = !model.isActivelyConnecting
+        // Background reconnect/discovery must not lock out an explicit IP.
+        let connectEnabled = !model.isMirroring && !model.isPairing
+            && model.mirrorLaunchTask == nil
+            && model.legacyWirelessCompatibilityEnabled
             && AppModel.normalizedManualADBTarget(model.manualADBTarget) != nil
 
         return VStack(alignment: .leading, spacing: 6 * scale) {

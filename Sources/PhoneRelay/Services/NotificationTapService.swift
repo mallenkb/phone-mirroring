@@ -120,105 +120,6 @@ enum NotificationTapService {
         return false
     }
 
-    // MARK: - Inline reply (best-effort)
-
-    /// Replies to a message-style notification through its inline RemoteInput
-    /// action in the shade: locate the row, tap its "Reply" affordance, type
-    /// the reply, then tap the send glyph. This is best-effort and
-    /// app/locale-dependent — it only matches an English "Reply" action and the
-    /// send button is icon-only, so it returns `false` on any miss and the
-    /// caller falls back to simply opening the conversation so the user can
-    /// type by hand. The shade is always collapsed again on the way out.
-    static func replyToForwardedNotificationInShade(
-        serial: String,
-        notificationKey: String?,
-        title: String?,
-        text: String?,
-        reply: String
-    ) -> Bool {
-        let reply = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-        let title = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let text = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !reply.isEmpty, !title.isEmpty || !text.isEmpty else { return false }
-
-        guard wakeUnlockAndExpandShade(serial: serial, notificationKey: notificationKey) else {
-            return false
-        }
-
-        var replyPoint: CGPoint?
-        var imageSize: CGSize?
-        for pass in 1...2 {
-            Thread.sleep(forTimeInterval: pass == 1 ? 0.8 : 0.6)
-            guard let screenshot = capturePhoneScreenPNG(serial: serial) else { break }
-            imageSize = pngPixelSize(screenshot)
-            let lines = recognizedTextLines(inPNG: screenshot)
-            guard let rowPoint = forwardedNotificationTapPoint(in: lines, title: title, text: text) else {
-                if pass == 1 { continue }
-                break
-            }
-            let band = (imageSize?.height ?? 0) * 0.25
-            replyPoint = replyAffordancePoint(in: lines, belowRowY: rowPoint.y, maxDistance: band)
-            break
-        }
-
-        guard let replyPoint, let imageWidth = imageSize?.width else {
-            log("No inline reply action found for forwarded notification", notificationKey: notificationKey)
-            collapseShade(serial: serial)
-            return false
-        }
-
-        let tapReply = Tooling.runResult(
-            "adb",
-            arguments: [
-                "-s", serial, "shell", "input", "tap",
-                "\(Int(replyPoint.x.rounded()))", "\(Int(replyPoint.y.rounded()))"
-            ],
-            timeout: 2
-        )
-        guard tapReply.succeeded else {
-            collapseShade(serial: serial)
-            return false
-        }
-
-        // Let the keyboard slide up and the inline field take focus.
-        Thread.sleep(forTimeInterval: 0.9)
-
-        let typed = Tooling.runResult(
-            "adb",
-            arguments: ["-s", serial, "shell", "input", "text", shellEscapedForInputText(reply)],
-            timeout: 4
-        )
-        guard typed.succeeded else {
-            log("Could not type reply for forwarded notification", notificationKey: notificationKey, privateOutput: typed.output)
-            collapseShade(serial: serial)
-            return false
-        }
-
-        // The send button is an icon at the right end of the input field, so it
-        // can't be OCR'd directly. Re-screenshot to find the y of our just-typed
-        // text and tap to its right; fall back to the reply affordance's y.
-        Thread.sleep(forTimeInterval: 0.4)
-        var sendY = replyPoint.y
-        if let screenshot = capturePhoneScreenPNG(serial: serial) {
-            let lines = recognizedTextLines(inPNG: screenshot)
-            if let typedPoint = forwardedNotificationTapPoint(in: lines, title: nil, text: reply) {
-                sendY = typedPoint.y
-            }
-        }
-        _ = Tooling.runResult(
-            "adb",
-            arguments: [
-                "-s", serial, "shell", "input", "tap",
-                "\(Int((imageWidth * 0.93).rounded()))", "\(Int(sendY.rounded()))"
-            ],
-            timeout: 2
-        )
-
-        Thread.sleep(forTimeInterval: 0.4)
-        collapseShade(serial: serial)
-        log("Sent inline reply for forwarded notification", notificationKey: notificationKey)
-        return true
-    }
 
     // MARK: - Dismiss / Mark as read (best-effort)
 
@@ -334,7 +235,7 @@ enum NotificationTapService {
     /// one to be unlocked by hand), and pulls the notification shade down.
     /// Returns false — with nothing left expanded — if the phone stays locked
     /// or the shade won't open, so the caller can fall back to launching the app.
-    private static func wakeUnlockAndExpandShade(serial: String, notificationKey: String?) -> Bool {
+    static func wakeUnlockAndExpandShade(serial: String, notificationKey: String?) -> Bool {
         _ = Tooling.runResult(
             "adb",
             arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"],

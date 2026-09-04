@@ -460,19 +460,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
     /// Registers the two banner categories: every forwarded notification offers
     /// "Open" (tap-through to the phone), and message-style ones additionally
-    /// offer an inline "Reply" text field.
+    /// offer "Reply", which opens the retained native composer.
     private func registerForwardedNotificationCategories() {
         let openAction = UNNotificationAction(
             identifier: NotificationForwarder.Action.open,
             title: "Open",
             options: [.foreground]
         )
-        let replyAction = UNTextInputNotificationAction(
+        let replyAction = UNNotificationAction(
             identifier: NotificationForwarder.Action.reply,
             title: "Reply",
-            options: [],
-            textInputButtonTitle: "Send",
-            textInputPlaceholder: "Reply"
+            options: [.foreground]
         )
         let markReadAction = UNNotificationAction(
             identifier: NotificationForwarder.Action.markRead,
@@ -521,9 +519,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         let title = userInfo[NotificationForwarder.UserInfoKey.notificationTitle] as? String
         let text = userInfo[NotificationForwarder.UserInfoKey.notificationText] as? String
 
-        if response.actionIdentifier == NotificationForwarder.Action.reply,
-           let textResponse = response as? UNTextInputNotificationResponse {
-            let reply = textResponse.userText
+        if response.actionIdentifier == NotificationForwarder.Action.reply {
+            let reply = (response as? UNTextInputNotificationResponse)?.userText ?? ""
             await MainActor.run {
                 self.model.replyToForwardedNotification(
                     package: package,

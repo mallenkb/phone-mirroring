@@ -36,7 +36,7 @@ enum MediaCaptureService {
                 kind: "Screenshot",
                 extension: "png"
             ))
-            try result.data.write(to: url)
+            try result.data.write(to: url, options: .withoutOverwriting)
             return .success(url)
         } catch {
             return .failure(.commandFailed(error.localizedDescription))
@@ -53,8 +53,9 @@ enum MediaCaptureService {
     static func filename(kind: String, extension fileExtension: String, date: Date = Date()) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        return "Android-Mirroring-\(kind)_\(formatter.string(from: date)).\(fileExtension)"
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss-SSS"
+        let nonce = UUID().uuidString.prefix(8).lowercased()
+        return "Android-Mirroring-\(kind)_\(formatter.string(from: date))_\(nonce).\(fileExtension)"
     }
 
     private static func adbDeviceArguments(serial: String?) -> [String] {

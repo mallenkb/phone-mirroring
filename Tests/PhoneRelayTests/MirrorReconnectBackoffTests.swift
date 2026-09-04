@@ -209,8 +209,159 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
-    func testRememberedWirelessAutoConnectRecordSkipsCoolingDownSavedRoute() {
-        let first = PairedPhoneRecord(
+    // MARK: - Listener-missing parking (no churn on a proven-dead listener)
+
+    /// A swept-and-silent LAN is proof the listener is gone. Re-selecting the
+    /// record every presence poll would restart the whole sweep + dial cycle,
+    /// so the verdict parks the record until a cable arm clears it.
+    func testRememberedWirelessAutoConnectRecordSkipsListenerMissingRoute() {
+        let wifi = PairedPhoneRecord(
+            id: "adb-RFCT10ZLTAJ",
+            displayName: "SM S906B",
+            lastAddress: "192.168.68.57:5555",
+            firstPaired: Date(timeIntervalSince1970: 100),
+            lastConnected: Date(timeIntervalSince1970: 300)
+        )
+
+        XCTAssertEqual(
+            AppModel.rememberedWirelessAutoConnectRecord(
+                in: [wifi],
+                failedTargets: [:],
+                listenerMissingRecordIDs: [],
+                now: Date(timeIntervalSince1970: 400)
+            ),
+            wifi
+        )
+        XCTAssertNil(
+            AppModel.rememberedWirelessAutoConnectRecord(
+                in: [wifi],
+                failedTargets: [:],
+                listenerMissingRecordIDs: ["adb-RFCT10ZLTAJ"],
+                now: Date(timeIntervalSince1970: 400)
+            )
+        )
+    }
+
+    func testProbeSavedWiFiStatusSkipsListenerMissingRoute() {
+        XCTAssertTrue(
+            AppModel.shouldProbeSavedWiFiStatus(
+                hasSavedWiFiRoute: true,
+                hasLiveWirelessDevice: false,
+                isPairing: false,
+                isMirroring: false,
+                hasWirelessWorkInFlight: false,
+                lastProbeAt: nil
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldProbeSavedWiFiStatus(
+                hasSavedWiFiRoute: true,
+                hasLiveWirelessDevice: false,
+                isPairing: false,
+                isMirroring: false,
+                hasWirelessWorkInFlight: false,
+                isListenerMissing: true,
+                lastProbeAt: nil
+            )
+        )
+    }
+
+    /// The verdict itself is the proof — a second dial adds information about
+    /// nothing — so the "plug in once" prompt surfaces on the first failure.
+    func testListenerMissingPromptSurfacesOnFirstFailure() {
+        XCTAssertTrue(
+            AppModel.shouldSurfaceListenerMissingPrompt(
+                failure: .wirelessListenerMissing,
+                failureCount: 1
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldSurfaceListenerMissingPrompt(
+                failure: .temporarilyUnavailable,
+                failureCount: 4
+            )
+        )
+        XCTAssertFalse(
+            AppModel.shouldSurfaceListenerMissingPrompt(
+                failure: .wirelessListenerMissing,
+                failureCount: 0
+            )
+        )
+    }
+
+    /// With every wireless record parked, selection returns nil so the loop
+    /// exits to idle instead of churning a dead port every backoff window.
+    @MainActor
+    func testReconnectLoopParksListenerMissingRecord() {
+        withoutExplicitDeviceSetupRequired {
+            let record = PairedPhoneRecord(
+                id: "adb-RFCT10ZLTAJ",
+                displayName: "SM S906B",
+                lastAddress: "192.168.68.57:5555",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 300)
+            )
+            let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+
+            XCTAssertEqual(model.nextAutomaticReconnectRecord(), record)
+
+            model.connectionCoordinator.wirelessListenerMissingRecordIDs
+                .insert("adb-RFCT10ZLTAJ")
+            XCTAssertNil(model.nextAutomaticReconnectRecord())
+        }
+    }
+
+    @MainActor
+    func testReconnectLoopPrefersHealthyRecordOverParkedOne() {
+        withoutExplicitDeviceSetupRequired {
+            let parked = PairedPhoneRecord(
+                id: "parked",
+                displayName: "Parked",
+                lastAddress: "192.168.68.57:5555",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 300)
+            )
+            let healthy = PairedPhoneRecord(
+                id: "healthy",
+                displayName: "Healthy",
+                lastAddress: "192.168.68.58:5555",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 200)
+            )
+            let model = AppModel(startBackgroundServices: false, pairedPhones: [parked, healthy])
+            model.connectionCoordinator.wirelessListenerMissingRecordIDs.insert("parked")
+
+            XCTAssertEqual(model.nextAutomaticReconnectRecord(), healthy)
+        }
+    }
+
+    /// Fresh evidence (a discovery/network/wake bypass, or a preferred record
+    /// from matched discovery) unparks the verdict: the phone's state may
+    /// have actually changed, so one verification dial is warranted.
+    @MainActor
+    func testReconnectLoopHonorsFreshEvidenceOverListenerMissingVerdict() {
+        withoutExplicitDeviceSetupRequired {
+            let record = PairedPhoneRecord(
+                id: "adb-RFCT10ZLTAJ",
+                displayName: "SM S906B",
+                lastAddress: "192.168.68.57:5555",
+                firstPaired: Date(timeIntervalSince1970: 100),
+                lastConnected: Date(timeIntervalSince1970: 300)
+            )
+            let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+            model.connectionCoordinator.wirelessListenerMissingRecordIDs
+                .insert("adb-RFCT10ZLTAJ")
+
+            model.connectionCoordinator.automaticReconnectPreferredRecordID = record.id
+            XCTAssertEqual(model.nextAutomaticReconnectRecord(), record)
+
+            model.connectionCoordinator.automaticReconnectPreferredRecordID = nil
+            model.connectionCoordinator.automaticReconnectBypassPending = true
+            XCTAssertEqual(model.nextAutomaticReconnectRecord(), record)
+        }
+    }
+
+    func testRememberedWirelessAutoConnectRecordSkipsCoolingDownSavedRoute() {        let first = PairedPhoneRecord(
             id: "first",
             displayName: "First",
             lastAddress: "192.168.68.57:5555",
@@ -502,8 +653,8 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         model.setDiscoveredPhonesForTesting([
             DiscoveredPhone(
                 id: "adb-RFCT10ZLTAJ",
-                address: "192.168.68.54:5555",
-                kind: .connectable,
+                address: "192.168.68.54:42111",
+                kind: .wirelessDebugging,
                 lastSeen: Date(timeIntervalSince1970: 100)
             )
         ])
@@ -558,6 +709,8 @@ final class MirrorReconnectBackoffTests: XCTestCase {
             lastConnected: .now
         )
         let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
+        model.legacyWirelessCompatibilityEnabled = true
+        defer { model.legacyWirelessCompatibilityEnabled = false }
         model.selectedDevice = MirrorDevice(
             id: record.id,
             name: record.displayName,
@@ -628,7 +781,8 @@ final class MirrorReconnectBackoffTests: XCTestCase {
             AppModel.liveConnectionRoutes(
                 for: record,
                 authorizedDevices: [wifi],
-                discoveredPhones: []
+                discoveredPhones: [],
+                allowLegacyCompatibility: true
             ).statusLabel,
             "Wi-Fi available"
         )
@@ -636,9 +790,25 @@ final class MirrorReconnectBackoffTests: XCTestCase {
             AppModel.liveConnectionRoutes(
                 for: record,
                 authorizedDevices: [usb, wifi],
-                discoveredPhones: []
+                discoveredPhones: [],
+                allowLegacyCompatibility: true
             ).statusLabel,
             "Wi-Fi and USB available"
+        )
+
+        let secureWiFi = AuthorizedADBDevice(
+            serial: "192.168.68.54:37183",
+            product: "g0sxxx",
+            model: "SM S906B",
+            isUSB: false
+        )
+        XCTAssertEqual(
+            AppModel.liveConnectionRoutes(
+                for: record,
+                authorizedDevices: [wifi, secureWiFi],
+                discoveredPhones: []
+            ).wifiAddress,
+            secureWiFi.serial
         )
 
         let unrelatedDiscovery = DiscoveredPhone(
@@ -657,8 +827,9 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     }
 
     @MainActor
-    func testFirstRunAuthorizedWiFiIsAvailableWithoutSavedUSBSetup() {
+    func testFirstRunLegacyWiFiRequiresCompatibilityWithoutSavedUSBSetup() {
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.legacyWirelessCompatibilityEnabled = false
         model.applyDevicePresence("""
         List of devices attached
         192.168.68.67:5555     device product:g0sxxx model:SM_S906B device:g0s transport_id:1
@@ -666,6 +837,11 @@ final class MirrorReconnectBackoffTests: XCTestCase {
 
         XCTAssertTrue(model.isFirstTimeUSBSetup)
         XCTAssertFalse(model.isUSBConnectionAvailable)
+        XCTAssertFalse(model.isLiveWirelessConnectionAvailable)
+        XCTAssertNil(model.connectionTransportLabel)
+
+        model.legacyWirelessCompatibilityEnabled = true
+        defer { model.legacyWirelessCompatibilityEnabled = false }
         XCTAssertTrue(model.isLiveWirelessConnectionAvailable)
         XCTAssertEqual(model.connectionTransportLabel, "Wi-Fi")
     }
@@ -673,6 +849,8 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     @MainActor
     func testConnectionChooserClearsUSBWithoutClearingOnlineWireless() {
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.legacyWirelessCompatibilityEnabled = true
+        defer { model.legacyWirelessCompatibilityEnabled = false }
         model.applyDevicePresence("""
         List of devices attached
         RFCT10ZLTAJ            device usb:1-1 product:g0sxxx model:SM_S906B device:g0s transport_id:1
@@ -694,6 +872,8 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     @MainActor
     func testConnectionChooserAddsUSBWithoutClearingOnlineWireless() {
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
+        model.legacyWirelessCompatibilityEnabled = true
+        defer { model.legacyWirelessCompatibilityEnabled = false }
         model.applyDevicePresence("""
         List of devices attached
         192.168.68.54:5555     device product:g0sxxx model:SM_S906B device:g0s transport_id:2
@@ -1184,16 +1364,16 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
-    // The Wi-Fi chooser must reconnect ANY saved wireless device — including a
-    // reopened tcpip:5555 phone that isn't live/discovered yet — so the tap keys
-    // off hasSavedWirelessConnection, not the live-gated hasVisibleSavedWirelessConnection.
-    func testWiFiOptionReconnectsAnySavedWirelessDeviceNotJustVisibleOne() throws {
+    // The Wi-Fi chooser retries saved secure routes even when they are not live
+    // yet. Legacy port-5555 records remain excluded until compatibility is on.
+    func testWiFiOptionReconnectsAllowedSavedWirelessDeviceNotJustVisibleOne() throws {
         let source = try String(
             contentsOfFile: "Sources/PhoneRelay/Views/FigmaMirrorExperienceView.swift",
             encoding: .utf8
         )
-        XCTAssertTrue(source.contains("else if model.hasSavedWirelessConnection {"))
-        XCTAssertFalse(source.contains("else if model.hasVisibleSavedWirelessConnection {"))
+        XCTAssertTrue(source.contains("effectiveWiFiConnectionAvailable || model.hasAllowedSavedWirelessConnection"))
+        XCTAssertFalse(source.contains("model.hasSavedWirelessConnection"))
+        XCTAssertFalse(source.contains("model.hasVisibleSavedWirelessConnection"))
     }
 
     // MARK: - Connection-health "Next recommended fix"
