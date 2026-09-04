@@ -43,8 +43,14 @@ enum PhoneFileBrowserService {
     nonisolated static let defaultRoot = "/sdcard"
 
     nonisolated static func isPathAllowed(_ path: String) -> Bool {
-        allowedRootPrefixes.contains { prefix in
-            path == prefix || path.hasPrefix(prefix + "/")
+        guard path.hasPrefix("/"), !path.contains("\0") else { return false }
+        let components = path.split(separator: "/", omittingEmptySubsequences: true)
+        guard !components.isEmpty,
+              !components.contains(where: { $0 == "." || $0 == ".." })
+        else { return false }
+        let normalizedPath = "/" + components.joined(separator: "/")
+        return allowedRootPrefixes.contains { prefix in
+            normalizedPath == prefix || normalizedPath.hasPrefix(prefix + "/")
         }
     }
 
@@ -76,6 +82,31 @@ enum PhoneFileBrowserService {
         guard let slash = path.lastIndex(of: "/"), slash != path.startIndex else { return nil }
         let parent = String(path[path.startIndex..<slash])
         return isPathAllowed(parent) ? parent : nil
+    }
+
+    /// Resolve symlinks on the phone before any operation that may follow
+    /// them. A path may look like `/sdcard/...` while its final target lives
+    /// elsewhere, so both the lexical path and the resolved target must remain
+    /// inside shared storage. Failure is closed, including on devices without
+    /// a usable `readlink -f` implementation.
+    nonisolated static func resolvedAllowedPath(
+        serial: String,
+        path: String,
+        timeout: TimeInterval = 5
+    ) -> String? {
+        guard isPathAllowed(path) else { return nil }
+        let result = Tooling.runResult(
+            "adb",
+            arguments: ["-s", serial, "shell", "readlink", "-f", shellQuoted(path)],
+            timeout: timeout
+        )
+        guard result.succeeded else { return nil }
+        let lines = result.output
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard lines.count == 1, isPathAllowed(lines[0]) else { return nil }
+        return lines[0]
     }
 
     // MARK: - Directory listing
@@ -175,8 +206,10 @@ enum PhoneFileBrowserService {
         serial: String,
         path: String
     ) -> Result<ListingParseResult, ServiceError> {
-        guard isPathAllowed(path) else { return .failure(.pathNotAllowed) }
-        let target = path.hasSuffix("/") ? path : path + "/"
+        guard let resolvedPath = resolvedAllowedPath(serial: serial, path: path) else {
+            return .failure(.pathNotAllowed)
+        }
+        let target = resolvedPath.hasSuffix("/") ? resolvedPath : resolvedPath + "/"
         let result = Tooling.runResult(
             "adb",
             arguments: ["-s", serial, "shell", "ls", "-l", "-a", shellQuoted(target)],
@@ -193,10 +226,10 @@ enum PhoneFileBrowserService {
     /// Stats a single path via `ls -l -d` (one listing row, same parser).
     /// Returns nil when the path doesn't exist or isn't readable.
     nonisolated static func statPath(serial: String, path: String) -> PhoneFileEntry? {
-        guard isPathAllowed(path) else { return nil }
+        guard let resolvedPath = resolvedAllowedPath(serial: serial, path: path) else { return nil }
         let result = Tooling.runResult(
             "adb",
-            arguments: ["-s", serial, "shell", "ls", "-l", "-d", shellQuoted(path)],
+            arguments: ["-s", serial, "shell", "ls", "-l", "-d", shellQuoted(resolvedPath)],
             timeout: 10
         )
         guard result.succeeded else { return nil }
@@ -227,9 +260,10 @@ enum PhoneFileBrowserService {
     }
 
     nonisolated static func storageInfo(serial: String, path: String) -> PhoneStorageInfo? {
+        guard let resolvedPath = resolvedAllowedPath(serial: serial, path: path) else { return nil }
         let result = Tooling.runResult(
             "adb",
-            arguments: ["-s", serial, "shell", "df", "-k", shellQuoted(path)],
+            arguments: ["-s", serial, "shell", "df", "-k", shellQuoted(resolvedPath)],
             timeout: 10
         )
         guard result.succeeded else { return nil }
@@ -250,12 +284,12 @@ enum PhoneFileBrowserService {
         localPath: String,
         remoteDirectory: String
     ) -> OperationOutcome {
-        guard isPathAllowed(remoteDirectory) else {
+        guard let resolvedDirectory = resolvedAllowedPath(serial: serial, path: remoteDirectory) else {
             return OperationOutcome(succeeded: false, message: "Destination not allowed")
         }
         let result = Tooling.runResult(
             "adb",
-            arguments: ["-s", serial, "push", localPath, remoteDirectory + "/"],
+            arguments: ["-s", serial, "push", localPath, resolvedDirectory + "/"],
             timeout: 600
         )
         return OperationOutcome(succeeded: result.succeeded, message: oneLine(result.output))
@@ -268,12 +302,14 @@ enum PhoneFileBrowserService {
         remotePath: String,
         localDirectory: URL
     ) -> Result<URL, ServiceError> {
-        guard isPathAllowed(remotePath) else { return .failure(.pathNotAllowed) }
+        guard let resolvedPath = resolvedAllowedPath(serial: serial, path: remotePath) else {
+            return .failure(.pathNotAllowed)
+        }
         let name = (remotePath as NSString).lastPathComponent
         let destination = availableDestination(for: name, in: localDirectory)
         let result = Tooling.runResult(
             "adb",
-            arguments: ["-s", serial, "pull", remotePath, destination.path],
+            arguments: ["-s", serial, "pull", resolvedPath, destination.path],
             timeout: 600
         )
         guard result.succeeded else { return .failure(.operationFailed(oneLine(result.output))) }
@@ -298,7 +334,7 @@ enum PhoneFileBrowserService {
         remotePath: String,
         isDirectory: Bool
     ) -> OperationOutcome {
-        guard isPathAllowed(remotePath) else {
+        guard resolvedAllowedPath(serial: serial, path: remotePath) != nil else {
             return OperationOutcome(succeeded: false, message: "Path not allowed")
         }
         let flags = isDirectory ? "-rf" : "-f"
@@ -318,7 +354,10 @@ enum PhoneFileBrowserService {
         guard isValidEntryName(name) else {
             return OperationOutcome(succeeded: false, message: "Invalid folder name")
         }
-        let path = joined(parentPath, name)
+        guard let resolvedParent = resolvedAllowedPath(serial: serial, path: parentPath) else {
+            return OperationOutcome(succeeded: false, message: "Path not allowed")
+        }
+        let path = joined(resolvedParent, name)
         guard isPathAllowed(path) else {
             return OperationOutcome(succeeded: false, message: "Path not allowed")
         }
@@ -336,7 +375,9 @@ enum PhoneFileBrowserService {
         to newName: String
     ) -> OperationOutcome {
         guard isValidEntryName(newName),
-              let directory = parent(of: remotePath)
+              resolvedAllowedPath(serial: serial, path: remotePath) != nil,
+              let directory = parent(of: remotePath),
+              resolvedAllowedPath(serial: serial, path: directory) != nil
         else {
             return OperationOutcome(succeeded: false, message: "Invalid name")
         }
@@ -361,17 +402,21 @@ enum PhoneFileBrowserService {
         copy: Bool
     ) -> OperationOutcome {
         let name = (remotePath as NSString).lastPathComponent
-        let destination = joined(directory, name)
-        guard isPathAllowed(remotePath), isPathAllowed(destination) else {
+        let lexicalDestination = joined(directory, name)
+        guard isPathAllowed(remotePath), isPathAllowed(lexicalDestination) else {
             return OperationOutcome(succeeded: false, message: "Path not allowed")
         }
-        guard destination != remotePath else {
+        guard lexicalDestination != remotePath, directory != remotePath else {
             return OperationOutcome(succeeded: true, message: "")
         }
-        // A folder dropped onto its own row would otherwise run
-        // `mv <A> <A>/<A>` and surface a confusing shell error.
-        guard directory != remotePath else {
-            return OperationOutcome(succeeded: true, message: "")
+        guard resolvedAllowedPath(serial: serial, path: remotePath) != nil,
+              let resolvedDirectory = resolvedAllowedPath(serial: serial, path: directory)
+        else {
+            return OperationOutcome(succeeded: false, message: "Path not allowed")
+        }
+        let destination = joined(resolvedDirectory, name)
+        guard isPathAllowed(destination) else {
+            return OperationOutcome(succeeded: false, message: "Path not allowed")
         }
         let command = copy ? ["cp", "-r"] : ["mv"]
         let result = Tooling.runResult(
@@ -388,6 +433,7 @@ enum PhoneFileBrowserService {
     /// phone's Gallery. Tries the Android 11+ volume scan first, then the
     /// legacy broadcast; both failing is harmless (files still transferred).
     nonisolated static func requestMediaScan(serial: String, remotePath: String) {
+        guard let resolvedPath = resolvedAllowedPath(serial: serial, path: remotePath) else { return }
         let volumeScan = Tooling.runResult(
             "adb",
             arguments: [
@@ -403,7 +449,7 @@ enum PhoneFileBrowserService {
             arguments: [
                 "-s", serial, "shell", "am", "broadcast",
                 "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
-                "-d", "file://" + remotePath
+                "-d", shellQuoted("file://" + resolvedPath)
             ],
             timeout: 10
         )

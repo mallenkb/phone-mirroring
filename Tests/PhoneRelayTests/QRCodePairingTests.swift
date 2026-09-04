@@ -91,6 +91,22 @@ final class QRCodePairingTests: XCTestCase {
         )
     }
 
+    func testConnectableWirelessPhoneRejectsLegacyAdvertisementDuringSecurePairing() {
+        let legacy = DiscoveredPhone(
+            id: "adb-legacy",
+            address: "192.0.2.42:5555",
+            kind: .legacyTCPIP,
+            lastSeen: Date(timeIntervalSince1970: 200)
+        )
+
+        XCTAssertNil(
+            AppModel.connectableWirelessPhone(
+                matchingHostOf: "192.0.2.42:39555",
+                phones: [legacy]
+            )
+        )
+    }
+
     func testQRCodePairingStartsMirrorBeforeLegacyTCPIPPromotion() throws {
         let source = try SourceTestSupport.appModelImplementation()
         let watcher = try XCTUnwrap(
@@ -121,16 +137,24 @@ final class QRCodePairingTests: XCTestCase {
             body.contains("await Self.promoteToLegacyTCPIP"),
             "QR pairing must not block initial mirroring on legacy tcpip promotion."
         )
+        XCTAssertTrue(
+            source.contains("guard legacyWirelessCompatibilityEnabled else { return }"),
+            "Legacy reconnect preparation must stay behind the explicit compatibility setting."
+        )
     }
 
-    func testWirelessScreenShowsIPOnlyManualConnect() throws {
+    func testWirelessScreenKeepsManualIPEntryBeforeQRPanel() throws {
         let sourceURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent("Sources/PhoneRelay/Views/FigmaMirrorExperienceView.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
-        let ipRange = try XCTUnwrap(source.range(of: "Wi-Fi IP Only"))
-        let qrRange = try XCTUnwrap(source.range(of: "Wireless Debugging (scan QR)"))
+        let screenStart = try XCTUnwrap(source.range(of: "private func wirelessPairingScreen"))
+        let screenEnd = try XCTUnwrap(source.range(of: "private func fixedWirelessBackButton"))
+        let screen = String(source[screenStart.lowerBound..<screenEnd.lowerBound])
+        let ipRange = try XCTUnwrap(screen.range(of: "manualADBTargetRow("))
+        let qrRange = try XCTUnwrap(screen.range(of: "wirelessDebuggingQRCodeSection("))
         XCTAssertLessThan(ipRange.lowerBound, qrRange.lowerBound)
+        XCTAssertTrue(source.contains("if model.legacyWirelessCompatibilityEnabled"))
         XCTAssertTrue(source.contains("e.g. 192.168.1.23"))
         XCTAssertTrue(source.contains("Enter the phone Wi-Fi IP address only"))
         XCTAssertTrue(source.contains("Connect via Wi-Fi only"))

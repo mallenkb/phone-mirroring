@@ -31,28 +31,50 @@ extension AppModel {
         return Int(address[address.index(after: separator)...])
     }
 
-    /// Wireless addresses to try for a remembered phone, most-preferred first.
-    /// Always includes the stable legacy `:5555` port: an older record may have
-    /// saved a random Wireless-debugging TLS port that no longer answers once
-    /// the toggle is off, whereas a `tcpip` listener on 5555 survives without it.
-    nonisolated static func reconnectCandidateAddresses(for savedAddress: String) -> [String] {
+    nonisolated static func isLegacyWirelessAddress(_ address: String) -> Bool {
+        port(in: address) == legacyADBWirelessPort
+    }
+
+    nonisolated static func isAllowedWirelessAddress(
+        _ address: String,
+        allowLegacyCompatibility: Bool
+    ) -> Bool {
+        allowLegacyCompatibility || !isLegacyWirelessAddress(address)
+    }
+
+    nonisolated static func isAllowedConnectablePhone(
+        _ phone: DiscoveredPhone,
+        allowLegacyCompatibility: Bool
+    ) -> Bool {
+        phone.kind.isConnectable
+            && (allowLegacyCompatibility
+                || (phone.kind != .legacyTCPIP && !isLegacyWirelessAddress(phone.address)))
+    }
+
+    /// Wireless addresses to try for a remembered phone. Secure TLS endpoints
+    /// remain preferred. Port 5555 is included while legacy compatibility is
+    /// enabled, and a TLS address is never rewritten to 5555 otherwise.
+    nonisolated static func reconnectCandidateAddresses(
+        for savedAddress: String,
+        allowLegacyCompatibility: Bool = false
+    ) -> [String] {
+        if isLegacyWirelessAddress(savedAddress) {
+            return allowLegacyCompatibility ? [savedAddress] : []
+        }
         var candidates = [savedAddress]
-        if let host = host(in: savedAddress) {
-            let legacy = "\(host):\(legacyADBWirelessPort)"
-            if !candidates.contains(legacy) {
-                candidates.append(legacy)
-            }
+        if allowLegacyCompatibility, let host = host(in: savedAddress) {
+            candidates.append("\(host):\(legacyADBWirelessPort)")
         }
         return candidates
     }
 
-    /// Canonical reconnect order for one phone. Stable legacy listeners are
-    /// always preferred to random TLS ports, including when mDNS advertises a
-    /// fresh TLS endpoint. Reachability may move live endpoints ahead of dead
-    /// ones later, but never changes preference within the live group.
+    /// Canonical reconnect order for one phone. A fresh TLS advertisement wins,
+    /// followed by a saved TLS endpoint. Legacy candidates are appended only
+    /// when the user has explicitly enabled compatibility mode.
     nonisolated static func canonicalReconnectCandidateAddresses(
         savedAddress: String,
-        liveAddress: String?
+        liveAddress: String?,
+        allowLegacyCompatibility: Bool = false
     ) -> [String] {
         var candidates: [String] = []
 
@@ -61,27 +83,25 @@ extension AppModel {
             candidates.append(address)
         }
 
-        // Prefer :5555 on the remembered host, followed by :5555 on a newly
-        // discovered host after DHCP movement.
-        if let savedHost = host(in: savedAddress) {
-            append("\(savedHost):\(legacyADBWirelessPort)")
-        }
-        if let liveAddress, let liveHost = host(in: liveAddress) {
-            append("\(liveHost):\(legacyADBWirelessPort)")
-        }
-
-        if port(in: savedAddress) != legacyADBWirelessPort {
-            append(savedAddress)
-        }
         if let liveAddress, port(in: liveAddress) != legacyADBWirelessPort {
             append(liveAddress)
         }
-
-        // Service-name targets may not expose a host that can be rewritten.
-        if candidates.isEmpty {
+        if port(in: savedAddress) != legacyADBWirelessPort {
             append(savedAddress)
-            append(liveAddress)
         }
+
+        if allowLegacyCompatibility {
+            if let liveAddress, let liveHost = host(in: liveAddress) {
+                append("\(liveHost):\(legacyADBWirelessPort)")
+            }
+            if let savedHost = host(in: savedAddress) {
+                append("\(savedHost):\(legacyADBWirelessPort)")
+            }
+            if isLegacyWirelessAddress(savedAddress) {
+                append(savedAddress)
+            }
+        }
+
         return candidates
     }
 
@@ -94,21 +114,17 @@ extension AppModel {
         return address
     }
 
-    /// Chooses what, if anything, may replace the stored Wi-Fi route after a
-    /// verified session. A promoted/stable listener wins; a temporary TLS port
-    /// is stored only when there is no existing stable fallback.
+    /// Chooses what may replace the stored Wi-Fi route after a verified session.
+    /// A verified TLS endpoint replaces an older legacy address. Port 5555 is
+    /// persisted only while compatibility mode is enabled.
     nonisolated static func automaticWirelessAddressToPersist(
         sessionAddress: String,
-        existingWirelessAddress: String?
+        existingWirelessAddress: String?,
+        allowLegacyCompatibility: Bool = false
     ) -> String? {
-        let session = persistableWirelessAddress(sessionAddress)
-        let existingStable = persistableWirelessAddress(existingWirelessAddress).flatMap {
-            port(in: $0) == legacyADBWirelessPort ? $0 : nil
-        }
-        if let session, port(in: session) == legacyADBWirelessPort {
-            return session
-        }
-        if existingStable != nil {
+        _ = existingWirelessAddress
+        guard let session = persistableWirelessAddress(sessionAddress) else { return nil }
+        if isLegacyWirelessAddress(session), !allowLegacyCompatibility {
             return nil
         }
         return session
@@ -156,6 +172,7 @@ extension AppModel {
         adb: ADBController,
         savedAddress: String,
         candidateAddresses: [String]? = nil,
+        allowLegacyCompatibility: Bool = false,
         restrictDialsToReachableOrStable: Bool = false,
         readinessAttempts: Int = 1,
         delayNanoseconds: UInt64 = 700_000_000,
@@ -173,7 +190,13 @@ extension AppModel {
         var connectAttempts = 0
         var noRouteToHostFailures = 0
         var sawReachableNoRoute = false
-        var candidates = candidateAddresses ?? reconnectCandidateAddresses(for: savedAddress)
+        var candidates = candidateAddresses ?? reconnectCandidateAddresses(
+            for: savedAddress,
+            allowLegacyCompatibility: allowLegacyCompatibility
+        )
+        if !allowLegacyCompatibility {
+            candidates.removeAll(where: isLegacyWirelessAddress)
+        }
         if candidates.count > 1 {
             // One concurrent TCP probe round (~0.45s) so the candidate that is
             // actually alive gets dialed first — otherwise a stale saved
@@ -252,12 +275,14 @@ extension AppModel {
     nonisolated static func connectToRememberedWireless(
         adb: ADBController,
         savedAddress: String,
+        allowLegacyCompatibility: Bool = false,
         readinessAttempts: Int = 1,
         preflightLocalNetworkAccess: ((String) async -> Void)? = nil
     ) async -> String? {
         await connectToRememberedWirelessReadiness(
             adb: adb,
             savedAddress: savedAddress,
+            allowLegacyCompatibility: allowLegacyCompatibility,
             readinessAttempts: readinessAttempts,
             preflightLocalNetworkAccess: preflightLocalNetworkAccess
         ).connectedAddress
@@ -268,7 +293,9 @@ extension AppModel {
         usbDevice: AuthorizedADBDevice,
         readinessAttempts: Int = 1,
         preflightLocalNetworkAccess: ((String) async -> Void)? = nil,
-        maximumDuration: TimeInterval? = wirelessHandoffMaxDuration
+        maximumDuration: TimeInterval? = wirelessHandoffMaxDuration,
+        allowLegacyCompatibility: Bool = false,
+        expectedWirelessAddress: String? = nil
     ) async -> String? {
         let handoffStartedAt = Date()
         func remainingBudget() -> TimeInterval? {
@@ -286,6 +313,41 @@ extension AppModel {
         let routeOutput = await Task.detached {
             adb.run(["-s", usbDevice.serial, "shell", "ip", "route"], timeout: routeQueryTimeout)
         }.value
+        guard !Task.isCancelled else { return nil }
+        // A typed IP belongs to one phone. Never enable tcpip on a different
+        // attached device or substitute a discovered TLS port for that IP.
+        if let expectedWirelessAddress,
+           legacyTCPIPDebuggingAddress(routeOutput: routeOutput) != expectedWirelessAddress {
+            return nil
+        }
+
+        if expectedWirelessAddress == nil,
+           let tlsPortTimeout = boundedTimeout(wirelessHandoffRouteQueryTimeout) {
+            let tlsPortOutput = await Task.detached {
+                adb.run(
+                    ["-s", usbDevice.serial, "shell", "getprop", "service.adb.tls.port"],
+                    timeout: tlsPortTimeout
+                )
+            }.value
+            if let tlsAddress = wirelessDebuggingAddress(
+                routeOutput: routeOutput,
+                tlsPortOutput: tlsPortOutput
+            ), await waitForADBWirelessTargetReady(
+                adb: adb,
+                address: tlsAddress,
+                attempts: readinessAttempts,
+                delayNanoseconds: wirelessHandoffRetryDelayNanoseconds,
+                preflightLocalNetworkAccess: preflightLocalNetworkAccess,
+                tcpPortProbe: { address in await adbTCPPortProbe(address) },
+                maximumDuration: remainingBudget(),
+                connectTimeout: wirelessHandoffConnectTimeout,
+                shellTimeout: wirelessHandoffShellTimeout
+            ) {
+                return tlsAddress
+            }
+        }
+
+        guard !Task.isCancelled, allowLegacyCompatibility else { return nil }
         guard let wirelessAddress = legacyTCPIPDebuggingAddress(routeOutput: routeOutput) else {
             return nil
         }
@@ -302,7 +364,9 @@ extension AppModel {
         if await waitForADBWirelessTargetReady(
             adb: adb,
             address: wirelessAddress,
-            attempts: readinessAttempts,
+            // Reserve time for enabling tcpip and its restart. Spending all
+            // eight retries on a closed listener prevents USB recovery.
+            attempts: 1,
             delayNanoseconds: wirelessHandoffRetryDelayNanoseconds,
             preflightLocalNetworkAccess: preflightLocalNetworkAccess,
             primeRoute: {
@@ -318,20 +382,22 @@ extension AppModel {
             tcpPortProbe: { address in
                 await adbTCPPortProbe(address)
             },
-            maximumDuration: remainingBudget(),
+            maximumDuration: min(2, remainingBudget() ?? 2),
             connectTimeout: wirelessHandoffConnectTimeout,
             shellTimeout: wirelessHandoffShellTimeout
         ) {
             return wirelessAddress
         }
 
-        guard let tcpipTimeout = boundedTimeout(wirelessHandoffTCPIPTimeout) else {
+        guard !Task.isCancelled,
+              let tcpipTimeout = boundedTimeout(wirelessHandoffTCPIPTimeout) else {
             return nil
         }
         let tcpipOutput = await Task.detached {
             adb.run(["-s", usbDevice.serial, "tcpip", "\(legacyADBWirelessPort)"], timeout: tcpipTimeout)
         }.value
-        guard adbTCPIPSucceeded(tcpipOutput) else { return nil }
+        guard !Task.isCancelled,
+              adbTCPIPCommandResult(tcpipOutput) != .failed else { return nil }
 
         return await waitForADBWirelessTargetReady(
             adb: adb,
@@ -534,19 +600,41 @@ extension AppModel {
     nonisolated static func liveConnectionRoutes(
         for record: PairedPhoneRecord,
         authorizedDevices: [AuthorizedADBDevice],
-        discoveredPhones: [DiscoveredPhone]
+        discoveredPhones: [DiscoveredPhone],
+        allowLegacyCompatibility: Bool = false
     ) -> LiveConnectionRoutes {
-        let liveWiFiAddress = liveWirelessAuthorizedDevice(
+        let allowedAuthorizedDevices = authorizedDevices.filter { device in
+            device.isUSB
+                || isAllowedWirelessAddress(
+                    device.serial,
+                    allowLegacyCompatibility: allowLegacyCompatibility
+                )
+        }
+        let liveAuthorizedAddress = liveWirelessAuthorizedDevice(
             for: record,
-            in: authorizedDevices
-        )?.serial ?? rememberedConnectablePhone(
+            in: allowedAuthorizedDevices
+        )?.serial
+        let liveDiscoveredAddress = rememberedConnectablePhone(
             for: record,
-            in: discoveredPhones,
+            in: discoveredPhones.filter {
+                isAllowedConnectablePhone(
+                    $0,
+                    allowLegacyCompatibility: allowLegacyCompatibility
+                )
+            },
             allowSingleCandidateFallback: false
         )?.address
+        let liveWiFiAddress = [liveAuthorizedAddress, liveDiscoveredAddress]
+            .compactMap { $0 }
+            .first {
+                isAllowedWirelessAddress(
+                    $0,
+                    allowLegacyCompatibility: allowLegacyCompatibility
+                )
+            }
         let liveUSBSerial = liveUSBAuthorizedDevice(
             for: record,
-            in: authorizedDevices
+            in: allowedAuthorizedDevices
         )?.serial
 
         return LiveConnectionRoutes(
@@ -768,12 +856,10 @@ extension AppModel {
 
     nonisolated static func wirelessDebuggingAddress(
         routeOutput: String,
-        tlsPortOutput: String,
-        tcpPortOutput: String? = nil
+        tlsPortOutput: String
     ) -> String? {
         guard let wifiIP = wifiIPAddress(in: routeOutput) else { return nil }
-        let port = validPort(in: tlsPortOutput) ?? tcpPortOutput.flatMap(validPort)
-        guard let port else { return nil }
+        guard let port = validPort(in: tlsPortOutput) else { return nil }
         return "\(wifiIP):\(port)"
     }
 
@@ -1356,7 +1442,12 @@ extension AppModel {
         _ routeOutput: String,
         phones: [DiscoveredPhone]
     ) -> DiscoveredPhone? {
-        let connectablePhones = phones.filter { $0.kind.isConnectable }
+        // The secure handoff path must not silently accept an `_adb._tcp`
+        // listener. Legacy port 5555 is handled separately and only when the
+        // user has enabled compatibility mode.
+        let connectablePhones = phones.filter {
+            isAllowedConnectablePhone($0, allowLegacyCompatibility: false)
+        }
         guard let wifiIP = wifiIPAddress(in: routeOutput) else {
             return nil
         }
@@ -1367,7 +1458,12 @@ extension AppModel {
         matchingHostOf address: String,
         phones: [DiscoveredPhone]
     ) -> DiscoveredPhone? {
-        let connectablePhones = phones.filter { $0.kind.isConnectable }
+        // Pairing must complete on Android's TLS connect service. A legacy
+        // advertisement on the same host is not proof that the freshly paired
+        // transport is secure or belongs to this pairing session.
+        let connectablePhones = phones.filter {
+            isAllowedConnectablePhone($0, allowLegacyCompatibility: false)
+        }
         guard let expectedHost = host(in: address) else {
             return connectablePhones.first
         }
@@ -1420,7 +1516,9 @@ extension AppModel {
                 try? await Task.sleep(nanoseconds: 750_000_000)
                 continue
             }
-            if let phone = phones.first {
+            if let phone = phones.first(where: {
+                isAllowedConnectablePhone($0, allowLegacyCompatibility: false)
+            }) {
                 return phone
             }
             try? await Task.sleep(nanoseconds: 750_000_000)
@@ -1519,5 +1617,28 @@ extension AppModel {
             }
         }
         return mirrorWindowDeviceTitle(name: fallback)
+    }
+
+    /// Reads the hardware serial only after ADB has authenticated the transport.
+    /// Network addresses and mDNS instance names remain routing hints, never the
+    /// persisted device identity.
+    nonisolated static func connectedHardwareSerial(
+        adb: ADBController,
+        transportSerial: String
+    ) async -> String? {
+        let result = await Task.detached {
+            adb.runResult(
+                ["-s", transportSerial, "shell", "getprop", "ro.serialno"],
+                timeout: wirelessHandoffShellTimeout
+            )
+        }.value
+        guard result.succeeded else { return nil }
+        let value = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty,
+              value.count <= 256,
+              !value.localizedCaseInsensitiveContains("unknown"),
+              !value.localizedCaseInsensitiveContains("error")
+        else { return nil }
+        return value
     }
 }

@@ -95,6 +95,16 @@ final class CaptureFolderTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: captureURL.path))
     }
 
+    func testCaptureFilenamesRemainUniqueAtTheSameTimestamp() {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let first = MediaCaptureService.filename(kind: "Screenshot", extension: "png", date: date)
+        let second = MediaCaptureService.filename(kind: "Screenshot", extension: "png", date: date)
+
+        XCTAssertNotEqual(first, second)
+        XCTAssertTrue(first.hasPrefix("Android-Mirroring-Screenshot_"))
+        XCTAssertTrue(first.hasSuffix(".png"))
+    }
+
     // MARK: - Screenshot → clipboard
 
     /// A capture lands on the clipboard as image data, so it pastes inline

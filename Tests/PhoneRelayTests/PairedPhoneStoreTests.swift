@@ -20,6 +20,58 @@ final class PairedPhoneStoreTests: XCTestCase {
         XCTAssertEqual(updated[0].lastConnected, referenceDate)
     }
 
+    func testDistinctWiFiOnlyPhonesDoNotMatchOnMissingUSBIdentityAfterReload() {
+        let suiteName = "PhoneRelayTests.PairedPhoneStore.WiFiOnly.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            return XCTFail("Expected test UserDefaults suite to be available")
+        }
+        let isolatedStore = PairedPhoneStore(primaryDefaults: defaults, suiteNames: [])
+        var records = isolatedStore.touch(
+            [],
+            id: "adb-pixel",
+            displayName: "Pixel 8",
+            address: "192.0.2.41:37123",
+            now: referenceDate
+        )
+        records = isolatedStore.touch(
+            records,
+            id: "adb-galaxy",
+            displayName: "Galaxy S24",
+            address: "192.0.2.42:38123",
+            now: referenceDate.addingTimeInterval(60)
+        )
+        isolatedStore.save(records)
+
+        XCTAssertEqual(isolatedStore.load().map(\.id).sorted(), ["adb-galaxy", "adb-pixel"])
+    }
+
+    func testDistinctUSBOnlyPhonesDoNotMatchOnMissingWiFiIdentityAfterReload() {
+        let suiteName = "PhoneRelayTests.PairedPhoneStore.USBOnly.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            return XCTFail("Expected test UserDefaults suite to be available")
+        }
+        let isolatedStore = PairedPhoneStore(primaryDefaults: defaults, suiteNames: [])
+        var records = isolatedStore.touch(
+            [],
+            id: "USB-PIXEL-001",
+            displayName: "Pixel 8",
+            address: "USB-PIXEL-001",
+            now: referenceDate
+        )
+        records = isolatedStore.touch(
+            records,
+            id: "USB-GALAXY-002",
+            displayName: "Galaxy S24",
+            address: "USB-GALAXY-002",
+            now: referenceDate.addingTimeInterval(60)
+        )
+        isolatedStore.save(records)
+
+        XCTAssertEqual(isolatedStore.load().map(\.id).sorted(), ["USB-GALAXY-002", "USB-PIXEL-001"])
+    }
+
     func testTouchUpdatesExistingRecordWithoutChangingFirstPaired() {
         let initial = store.touch([], id: "phone-1", displayName: "Pixel", address: "198.51.100.5:5555", now: referenceDate)
         let later = referenceDate.addingTimeInterval(3600)

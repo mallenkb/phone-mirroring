@@ -79,6 +79,9 @@ final class NotificationForwarder {
     private var hasBaseline = false
     private var iconAttachmentCache: [String: URL] = [:]
     private var sourceIconCache: [String: URL] = [:]
+    private var iconResolutionTasks: [UUID: Task<Void, Never>] = [:]
+    private var resolvingIconKeys: Set<String> = []
+    private var deliveryGeneration: UInt64 = 0
 
     /// Cadence while a device is connected. `dumpsys notification` is cheap on a
     /// modern phone, so a few seconds keeps banners prompt without busy-looping.
@@ -108,6 +111,9 @@ final class NotificationForwarder {
     func stop() {
         task?.cancel()
         task = nil
+        deliveryGeneration &+= 1
+        iconResolutionTasks.values.forEach { $0.cancel() }
+        iconResolutionTasks.removeAll()
         seen.removeAll()
         seenOrder.removeAll()
         baselineSerial = nil
@@ -126,6 +132,9 @@ final class NotificationForwarder {
             // Switching phones re-baselines, so the new device's existing backlog
             // isn't dumped onto the Mac all at once.
             if serial != baselineSerial {
+                deliveryGeneration &+= 1
+                iconResolutionTasks.values.forEach { $0.cancel() }
+                iconResolutionTasks.removeAll()
                 baselineSerial = serial
                 hasBaseline = false
                 seen.removeAll()
@@ -202,20 +211,30 @@ final class NotificationForwarder {
             return
         }
 
-        Task { [weak self] in
+        // Never delay a message banner behind an APK download. Warm the icon
+        // cache for future messages without posting this banner a second time.
+        postResolved(entry: entry, serial: serial, avatarURL: nil, attachmentURL: nil)
+        guard resolvingIconKeys.insert(cacheKey).inserted else { return }
+        let taskID = UUID()
+        let generation = deliveryGeneration
+        let resolutionTask = Task { [weak self] in
             let icons = await Task.detached(priority: .utility) {
                 Self.resolveIcons(pkg: pkg, serial: serial)
             }.value
             guard let self else { return }
+            defer {
+                self.iconResolutionTasks[taskID] = nil
+                self.resolvingIconKeys.remove(cacheKey)
+            }
+            guard !Task.isCancelled,
+                  self.task != nil,
+                  self.deliveryGeneration == generation,
+                  self.baselineSerial == serial
+            else { return }
             if let avatarURL = icons.avatar { self.sourceIconCache[cacheKey] = avatarURL }
             if let attachmentURL = icons.attachment { self.iconAttachmentCache[cacheKey] = attachmentURL }
-            self.postResolved(
-                entry: entry,
-                serial: serial,
-                avatarURL: icons.avatar,
-                attachmentURL: icons.attachment
-            )
         }
+        iconResolutionTasks[taskID] = resolutionTask
     }
 
     /// Builds and delivers the macOS banner once the source-app icon URLs are
@@ -384,16 +403,14 @@ final class NotificationForwarder {
 
     // MARK: - adb fetch
 
-    private nonisolated static func fetchDump(serial: String) -> String? {
+    nonisolated static func fetchDump(serial: String) -> String? {
         var args: [String] = []
         if !serial.isEmpty { args += ["-s", serial] }
-        // The full dump is ~1 MB; an on-device `grep` trims it to the handful of
-        // lines we parse so we don't stream that over the (possibly congested)
-        // Wi-Fi link every cycle. Plain multi-`-e` grep (no `-E`/regex) keeps it
-        // portable across device shells.
+        // Keep the extras blocks, including continuation lines in expanded
+        // messages. Filtering individual lines silently truncated multiline text.
         args += [
             "shell",
-            "dumpsys notification --noredact | grep -e NotificationRecord -e android.title= -e android.text= -e android.template="
+            "dumpsys notification --noredact | sed -n '/NotificationRecord/p; /extras={/,/^ *}/p'"
         ]
         let result = Tooling.runResult("adb", arguments: args, timeout: 4)
         guard result.succeeded else { return nil }
@@ -567,14 +584,15 @@ final class NotificationForwarder {
     ///
     /// Strategy: a `NotificationRecord(0x…` line opens a record (carrying pkg,
     /// key, and flags); the first `android.title=`/`android.text=` line after it
-    /// supplies title/body, with `android.bigText` as a safe fallback when
-    /// `android.text` is missing/empty.
+    /// supplies title/body. Expanded `android.bigText` takes precedence, and
+    /// public-notification copies after the first extras block are ignored.
     nonisolated static func parse(_ dump: String) -> [Entry] {
         var entries: [Entry] = []
         var current: Entry?
         var haveTitle = false
         var haveText = false
         var fallbackText: String?
+        var extrasClosed = false
 
         func flush() {
             if var entry = current {
@@ -587,9 +605,10 @@ final class NotificationForwarder {
             haveTitle = false
             haveText = false
             fallbackText = nil
+            extrasClosed = false
         }
 
-        for rawLine in dump.split(whereSeparator: \.isNewline) {
+        for rawLine in notificationBundleLines(dump) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.contains("NotificationRecord(0x") {
                 flush()
@@ -602,6 +621,10 @@ final class NotificationForwarder {
                     category: token(after: "category=", in: line) ?? ""
                 )
                 fallbackText = nil
+            } else if line == "}" {
+                extrasClosed = true
+            } else if extrasClosed {
+                continue
             } else if current != nil, !haveTitle, line.hasPrefix("android.title=") {
                 current?.title = bundleValue(line) ?? ""
                 haveTitle = true
@@ -612,9 +635,11 @@ final class NotificationForwarder {
                     current?.text = text
                     haveText = true
                 }
-            } else if current != nil, !haveText, line.hasPrefix("android.bigText=") {
+            } else if current != nil, line.hasPrefix("android.bigText=") {
                 if let nextText = bundleValue(line), !nextText.isEmpty {
                     fallbackText = nextText
+                    current?.text = nextText
+                    haveText = true
                 }
             }
         }
@@ -678,6 +703,25 @@ final class NotificationForwarder {
     /// Extracts a value from an Android bundle dump line, e.g.
     /// `android.title=String (Uber)` → `Uber`; `android.text=null` → nil. Handles
     /// values that themselves contain parentheses by spanning to the outermost.
+    nonisolated static func notificationBundleLines(_ dump: String) -> [String] {
+        var lines: [String] = []
+        var pending: String?
+        for raw in dump.components(separatedBy: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            let startsField = line.hasPrefix("android.") || line.contains("NotificationRecord(0x") || line == "}"
+            if startsField, let previous = pending { lines.append(previous); pending = nil }
+            if let previous = pending {
+                pending = previous + "\n" + raw
+                if line.hasSuffix(")") { lines.append(pending!); pending = nil }
+            } else if (line.hasPrefix("android.text=") || line.hasPrefix("android.bigText=") || line.hasPrefix("android.title=")),
+                      line.contains(" ("), !line.hasSuffix(")") {
+                pending = line
+            } else { lines.append(line) }
+        }
+        if let pending { lines.append(pending) }
+        return lines
+    }
+
     nonisolated static func bundleValue(_ line: String) -> String? {
         guard let eq = line.firstIndex(of: "=") else { return nil }
         let rhs = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
@@ -703,6 +747,8 @@ final class NotificationForwarder {
             return "Messages"
         case "com.whatsapp":
             return "WhatsApp"
+        case "org.telegram.messenger", "org.telegram.messenger.web":
+            return "Telegram"
         case "com.whatsapp.w4b":
             return "WhatsApp Business"
         case "com.instagram.android":

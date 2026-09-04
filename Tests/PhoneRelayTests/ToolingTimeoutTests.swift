@@ -2,6 +2,14 @@ import XCTest
 @testable import PhoneRelay
 
 final class ToolingTimeoutTests: XCTestCase {
+    func testADBUsesPrivateDaemonPortWithoutChangingOtherTools() {
+        let environment = Tooling.processEnvironment(for: "adb")
+
+        XCTAssertEqual(environment?["ANDROID_ADB_SERVER_PORT"], Tooling.privateADBServerPort)
+        XCTAssertEqual(Tooling.privateADBServerPort, "5038")
+        XCTAssertNil(Tooling.processEnvironment(for: "unzip"))
+    }
+
     func testADBConnectCommandsAreSerialized() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PhoneRelayTests-\(UUID().uuidString)")

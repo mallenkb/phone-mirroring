@@ -53,7 +53,25 @@ args=(
 
 echo "Generating Sparkle appcast in $OUT_DIR"
 if [ -n "${SPARKLE_PRIVATE_KEY:-}" ]; then
-  printf '%s' "$SPARKLE_PRIVATE_KEY" | "$GENERATE_APPCAST" --ed-key-file - "${args[@]}"
+  # Do not leave the signing key in generate_appcast's inherited environment.
+  # Materialize it in a mode-0600 temporary file, remove the environment value,
+  # and erase the file on normal exit or interruption.
+  previous_umask="$(umask)"
+  umask 077
+  sparkle_key_file="$(mktemp "${TMPDIR:-/tmp}/phonerelay-sparkle-key.XXXXXX")"
+  umask "$previous_umask"
+  cleanup_sparkle_key() {
+    if [ -n "${sparkle_key_file:-}" ] && [ -f "$sparkle_key_file" ]; then
+      chmod 000 "$sparkle_key_file" 2>/dev/null || true
+      rm -f -- "$sparkle_key_file"
+    fi
+  }
+  trap cleanup_sparkle_key EXIT HUP INT TERM
+  printf '%s' "$SPARKLE_PRIVATE_KEY" > "$sparkle_key_file"
+  unset SPARKLE_PRIVATE_KEY
+  "$GENERATE_APPCAST" --ed-key-file "$sparkle_key_file" "${args[@]}"
+  cleanup_sparkle_key
+  trap - EXIT HUP INT TERM
 elif [ -n "${SPARKLE_ED_KEY_FILE:-}" ]; then
   "$GENERATE_APPCAST" --ed-key-file "$SPARKLE_ED_KEY_FILE" "${args[@]}"
 else

@@ -1364,16 +1364,16 @@ final class MirrorReconnectBackoffTests: XCTestCase {
         )
     }
 
-    // The Wi-Fi chooser must reconnect ANY saved wireless device — including a
-    // reopened tcpip:5555 phone that isn't live/discovered yet — so the tap keys
-    // off hasSavedWirelessConnection, not the live-gated hasVisibleSavedWirelessConnection.
-    func testWiFiOptionReconnectsAnySavedWirelessDeviceNotJustVisibleOne() throws {
+    // The Wi-Fi chooser retries saved secure routes even when they are not live
+    // yet. Legacy port-5555 records remain excluded until compatibility is on.
+    func testWiFiOptionReconnectsAllowedSavedWirelessDeviceNotJustVisibleOne() throws {
         let source = try String(
             contentsOfFile: "Sources/PhoneRelay/Views/FigmaMirrorExperienceView.swift",
             encoding: .utf8
         )
-        XCTAssertTrue(source.contains("else if model.hasSavedWirelessConnection {"))
-        XCTAssertFalse(source.contains("else if model.hasVisibleSavedWirelessConnection {"))
+        XCTAssertTrue(source.contains("effectiveWiFiConnectionAvailable || model.hasAllowedSavedWirelessConnection"))
+        XCTAssertFalse(source.contains("model.hasSavedWirelessConnection"))
+        XCTAssertFalse(source.contains("model.hasVisibleSavedWirelessConnection"))
     }
 
     // MARK: - Connection-health "Next recommended fix"

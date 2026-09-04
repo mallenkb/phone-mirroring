@@ -384,6 +384,10 @@ final class ReleaseReadinessTests: XCTestCase {
             contentsOf: Self.repoRoot().appendingPathComponent("scripts/make_sparkle_update.sh"),
             encoding: .utf8
         )
+        let sparkleRecoveryWorkflow = try String(
+            contentsOf: Self.repoRoot().appendingPathComponent(".github/workflows/sparkle-from-release.yml"),
+            encoding: .utf8
+        )
 
         XCTAssertTrue(releaseWorkflow.contains("scripts/make_sparkle_update.sh dist/PhoneRelay.app"))
         XCTAssertTrue(releaseWorkflow.contains("SPARKLE_PRIVATE_KEY"))
@@ -392,6 +396,15 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertTrue(pagesWorkflow.contains("gh release download --repo \"$REPO\" --pattern appcast.xml --output docs/appcast.xml --clobber"))
         XCTAssertTrue(sparkleScript.contains("ditto -c -k --keepParent"))
         XCTAssertTrue(sparkleScript.contains("generate_appcast"))
+        XCTAssertTrue(sparkleScript.contains("unset SPARKLE_PRIVATE_KEY"))
+        XCTAssertTrue(sparkleScript.contains("phonerelay-sparkle-key.XXXXXX"))
+        XCTAssertFalse(sparkleScript.contains(#"printf '%s' "$SPARKLE_PRIVATE_KEY" | "$GENERATE_APPCAST""#))
+        XCTAssertTrue(sparkleRecoveryWorkflow.contains("3a5d7fd698acc39c122e75764ed3614b472b284cc483f32ae7006d86c513370c"))
+        XCTAssertTrue(sparkleRecoveryWorkflow.contains("shasum -a 256 -c -"))
+        XCTAssertTrue(sparkleRecoveryWorkflow.contains("persist-credentials: false"))
+        XCTAssertTrue(sparkleRecoveryWorkflow.contains("name: Publish verified Sparkle assets"))
+        XCTAssertTrue(sparkleRecoveryWorkflow.contains("contents: read"))
+        XCTAssertTrue(sparkleRecoveryWorkflow.contains("contents: write"))
     }
 
     private static func waitForCaptureURL(in model: AppModel) async throws -> URL {

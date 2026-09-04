@@ -44,6 +44,14 @@ final class MirrorSession {
     private var audioPlayer: MirrorAudioPlayer?
     private var decoder = H264VideoToolboxDecoder()
     private(set) var controlChannel: ScrcpyControlChannel?
+    /// Uses Android's clipboard protocol, preserving Unicode and line breaks.
+    /// Callers must read back the focused phone editor before attempting Send.
+    func pasteNotificationReply(_ text: String, serial expectedSerial: String) -> Bool {
+        guard serial == expectedSerial, !isStopping, !didStop,
+              let controlChannel, text.utf8.count < (1 << 18) - 14 else { return false }
+        controlChannel.sendSetClipboard(text, paste: true)
+        return true
+    }
     private var clipboardBridge: ClipboardBridge?
     private var windowController: MirrorContentWindowController?
     private var screenOffTask: Task<Void, Never>?

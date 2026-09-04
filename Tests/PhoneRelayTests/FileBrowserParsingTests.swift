@@ -152,6 +152,21 @@ final class FileBrowserParsingTests: XCTestCase {
         XCTAssertFalse(PhoneFileBrowserService.isPathAllowed("/"))
     }
 
+    func testIsPathAllowedRejectsTraversalAndControlCharacters() {
+        XCTAssertFalse(PhoneFileBrowserService.isPathAllowed("/sdcard/../data/local/tmp"))
+        XCTAssertFalse(PhoneFileBrowserService.isPathAllowed("/sdcard/./Download"))
+        XCTAssertFalse(PhoneFileBrowserService.isPathAllowed("/storage/emulated/0/../../data"))
+        XCTAssertFalse(PhoneFileBrowserService.isPathAllowed("/sdcard/Photo\0name.jpg"))
+        XCTAssertFalse(PhoneFileBrowserService.isPathAllowed("sdcard/Download"))
+    }
+
+    func testMediaScanURIIsOneQuotedShellValue() {
+        XCTAssertEqual(
+            PhoneFileBrowserService.shellQuoted("file:///sdcard/DCIM/a'; touch /data/local/tmp/x; '.jpg"),
+            "'file:///sdcard/DCIM/a'\\''; touch /data/local/tmp/x; '\\''.jpg'"
+        )
+    }
+
     func testJoinedHandlesTrailingSlash() {
         XCTAssertEqual(PhoneFileBrowserService.joined("/sdcard", "Download"), "/sdcard/Download")
         XCTAssertEqual(PhoneFileBrowserService.joined("/sdcard/", "Download"), "/sdcard/Download")

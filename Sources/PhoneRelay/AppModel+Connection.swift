@@ -3006,7 +3006,7 @@ extension AppModel {
             tlsAddress = nil
         }
 
-        // Port 5555 remains an explicit compatibility path for older phones.
+        // Port 5555 remains a compatibility path for older phones.
         // Secure Wireless debugging continues below whenever it is advertised.
         if legacyWirelessCompatibilityEnabled,
            tlsAddress == nil,
@@ -3783,7 +3783,18 @@ extension AppModel {
         resumeDiscoveryAfterManualConnect()
         stopQRCodePairingSession()
 
-        if let wirelessDevice = latestAuthorizedADBDevices.first(where: { !$0.isUSB }) {
+        let record = selectedConnectionRecord ?? Self.recordsByMostRecent(pairedPhones).first
+        let allowedDevices = latestAuthorizedADBDevices.filter {
+            !$0.isUSB
+                && Self.isAllowedWirelessAddress(
+                    $0.serial,
+                    allowLegacyCompatibility: legacyWirelessCompatibilityEnabled
+                )
+        }
+        let wirelessDevice = record.map {
+            Self.liveWirelessAuthorizedDevice(for: $0, in: allowedDevices)
+        } ?? allowedDevices.first
+        if let wirelessDevice {
             select(device: wirelessDevice)
             // The watcher already reports this exact transport as authorized.
             // A manual click should launch it, not rediscover and reconnect it.
@@ -3793,12 +3804,26 @@ extension AppModel {
             return
         }
 
-        if let phone = discoveredPhones.first(where: { $0.kind.isConnectable }) {
+        let allowedPhones = discoveredPhones.filter {
+            Self.isAllowedConnectablePhone(
+                $0,
+                allowLegacyCompatibility: legacyWirelessCompatibilityEnabled
+            )
+        }
+        let phone = record.map {
+            Self.rememberedConnectablePhone(for: $0, in: allowedPhones, allowSingleCandidateFallback: pairedPhones.count == 1)
+        } ?? allowedPhones.first
+        if let phone {
             connectAndMirror(phone: phone)
             return
         }
 
-        if let record = Self.recordsByMostRecent(pairedPhones).first(where: Self.isWirelessRecord) {
+        if let record, Self.liveUSBAuthorizedDevice(for: record, in: latestAuthorizedADBDevices) != nil {
+            connect(record: record, transport: .wifi)
+            return
+        }
+
+        if let record, Self.isWirelessRecord(record) {
             reconnectOverWiFi(
                 preferredRecord: record,
                 inlineUntilConnected: true,
@@ -4115,7 +4140,8 @@ extension AppModel {
     }
 
     func connectManualADBTarget() {
-        guard !isMirroring, !isPairing, !isManualADBTargetConnecting else { return }
+        guard !isMirroring, mirrorSession == nil, mirrorLaunchTask == nil,
+              !isPairing, !isManualADBTargetConnecting else { return }
         guard legacyWirelessCompatibilityEnabled else {
             reportError(
                 "Legacy Wi-Fi compatibility is off",
@@ -4153,7 +4179,8 @@ extension AppModel {
         let allowLegacyCompatibility = legacyWirelessCompatibilityEnabled
         connectionCoordinator.reconnectTask = Task { [weak self] in
             await adb.ensureServerStarted()
-            var candidateAddresses = initialCandidateAddresses
+            guard !Task.isCancelled else { return }
+            let candidateAddresses = initialCandidateAddresses
             var result = await Self.connectToRememberedWirelessReadiness(
                 adb: adb,
                 savedAddress: address,
@@ -4169,33 +4196,36 @@ extension AppModel {
                 shellTimeout: 2
             )
             if result.connectedAddress == nil {
-                let freshPhones = await Task.detached { adb.connectableMDNSTargets() }.value
+                // IP-only mode needs tcpip enabled, not QR discovery. Read each
+                // cable's current IP and prepare only the phone the user named.
+                let presence = await Task.detached {
+                    adb.run(["devices", "-l"], timeout: 2)
+                }.value
                 guard let self, !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
-                let refreshedCandidates = Self.manualADBTargetCandidateAddresses(
-                    normalizedAddress: address,
-                    discoveredPhones: freshPhones + self.discoveredPhones,
-                    pairedPhones: self.pairedPhones
-                )
-                self.discoveredPhones = Self.mergedDiscoveredPhones(freshPhones + self.discoveredPhones)
-                if refreshedCandidates != candidateAddresses {
-                    candidateAddresses = refreshedCandidates
-                    result = await Self.connectToRememberedWirelessReadiness(
+                for usbDevice in Self.authorizedADBDevices(in: presence).filter(\.isUSB) {
+                    guard !Task.isCancelled, self.mirrorStartGeneration == generation,
+                          !self.isMirroring, self.mirrorLaunchTask == nil,
+                          self.legacyWirelessCompatibilityEnabled else { return }
+                    if let preparedAddress = await Self.connectToUSBDeviceOverCurrentWiFi(
                         adb: adb,
-                        savedAddress: address,
-                        candidateAddresses: candidateAddresses,
-                        allowLegacyCompatibility: allowLegacyCompatibility,
-                        readinessAttempts: 3,
-                        delayNanoseconds: 500_000_000,
+                        usbDevice: usbDevice,
+                        readinessAttempts: Self.wirelessHandoffReadinessAttempts,
                         preflightLocalNetworkAccess: { target in
                             await Self.preflightLocalNetworkAccess(address: target)
                         },
-                        maximumDuration: 6,
-                        connectTimeout: 4,
-                        shellTimeout: 2
-                    )
+                        allowLegacyCompatibility: allowLegacyCompatibility,
+                        expectedWirelessAddress: address
+                    ) {
+                        result.connectedAddress = preparedAddress
+                        break
+                    }
                 }
             }
-            if result.sawNoRouteToHost {
+            guard !Task.isCancelled else { return }
+            if result.connectedAddress == nil, result.sawNoRouteToHost {
+                guard let self, self.mirrorStartGeneration == generation,
+                      !self.isMirroring, self.mirrorSession == nil,
+                      self.mirrorLaunchTask == nil else { return }
                 Logger.log("Manual ADB connect to \(address) failed with only 'No route to host'; restarting adb server once before surfacing failure.")
                 await Task.detached(priority: .userInitiated) {
                     _ = adb.run(["kill-server"], timeout: 3)
@@ -4218,10 +4248,10 @@ extension AppModel {
             }
 
             guard let self, !Task.isCancelled, self.mirrorStartGeneration == generation else { return }
-            self.connectionCoordinator.reconnectTask = nil
-            self.isPairing = false
 
             guard let connectedAddress = result.connectedAddress else {
+                self.connectionCoordinator.reconnectTask = nil
+                self.isPairing = false
                 self.isManualADBTargetConnecting = false
                 self.isRecoveringConnection = false
                 self.isAwaitingReconnect = false
@@ -4237,9 +4267,7 @@ extension AppModel {
                 }
                 self.reportError(
                     Self.wifiConnectionNotReadyErrorTitle,
-                    matchedRecord.map {
-                        "Phone Relay could not reach \($0.displayName) at \(address) yet and will keep checking in the background. Keep the phone awake and on the same Wi-Fi, then try again. Use USB only if repeated attempts continue to fail."
-                    } ?? "Phone Relay could not reach \(address) yet. Keep the phone awake, on the same Wi-Fi, and make sure Wireless debugging is enabled. Try again or pair with QR; use USB only if the problem continues."
+                    "Phone Relay could not reach \(address). Keep both devices on the same Wi-Fi. Connect this phone by USB, approve USB debugging, and click Connect again so Phone Relay can enable the Wi-Fi connection. Check that the entered IP matches the phone's current Wi-Fi address."
                 )
                 self.showConnectionWindow(startsQRCodePairing: false)
                 return
@@ -4250,13 +4278,17 @@ extension AppModel {
                 serial: connectedAddress,
                 fallback: "Android device"
             )
+            guard !Task.isCancelled, self.mirrorStartGeneration == generation,
+                  !self.isMirroring, self.mirrorLaunchTask == nil else { return }
+            self.connectionCoordinator.reconnectTask = nil
+            self.isPairing = false
             self.selectedDevice = MirrorDevice(
                 id: connectedAddress,
                 name: deviceName,
                 model: "Android",
                 battery: self.selectedDevice.battery,
                 isCharging: self.selectedDevice.isCharging,
-                network: "Manual ADB",
+                network: "Wi-Fi",
                 lastSeen: .now,
                 states: [.mirroringReady, .companionConnected],
                 adbSerial: connectedAddress
@@ -4272,7 +4304,9 @@ extension AppModel {
             self.isManualADBTargetConnecting = false
             self.isRecoveringConnection = true
             self.isAwaitingReconnect = false
-            self.startMirroring(manual: true)
+            self.prepareManualMirrorLaunch()
+            self.stopDisconnectRecovery()
+            self.launchNativeMirror(serial: connectedAddress)
         }
     }
 
