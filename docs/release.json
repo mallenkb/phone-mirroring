@@ -1,13 +1,26 @@
 {
-  "tag_name": "v1.0.4",
-  "name": "Phone Relay 1.0.4",
-  "html_url": "https://github.com/mallenkb/phone-mirroring/releases/tag/v1.0.4",
-  "published_at": "2026-06-15T13:00:41Z",
+  "tag_name": "v1.0.44",
+  "name": "Phone Relay v1.0.44",
+  "html_url": "https://github.com/mallenkb/phone-mirroring/releases/tag/v1.0.44",
+  "published_at": "2026-09-04T22:37:47Z",
   "assets": [
     {
-      "name": "PhoneRelay.dmg",
-      "size": 16545595,
-      "browser_download_url": "https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.4/PhoneRelay.dmg"
+      "name": "PhoneRelay-1.0.44.dmg",
+      "size": 20363712,
+      "digest": "sha256:d2f806b0f3eb5887ca613f5777b5c24eed18d549415d71bb2eca1a85f2f66e58",
+      "browser_download_url": "https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.44/PhoneRelay-1.0.44.dmg"
+    },
+    {
+      "name": "PhoneRelay-1.0.44.zip",
+      "size": 19704322,
+      "digest": "sha256:7f1ae303807cf3750338ffa9ca38f5da62e9279f16270f7ab9759a0f893cdef6",
+      "browser_download_url": "https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.44/PhoneRelay-1.0.44.zip"
+    },
+    {
+      "name": "appcast.xml",
+      "size": 902,
+      "digest": "sha256:44cce80e4b78da79e0a280b27428b00a48e0a09b5125b96daa6cb0fb9c655b6d",
+      "browser_download_url": "https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.44/appcast.xml"
     }
   ]
 }
