@@ -188,6 +188,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          RELEASE_NOTES="docs/releases/${{ steps.version.outputs.tag }}.md"
+          test -f "$RELEASE_NOTES"
           if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
             gh release upload "${{ steps.version.outputs.tag }}" \
               "dist/${{ steps.version.outputs.dmg_name }}" \
@@ -196,14 +198,14 @@ jobs:
               --clobber
             gh release edit "${{ steps.version.outputs.tag }}" \
               --title "PhoneRelay ${{ steps.version.outputs.tag }}" \
-              --notes "PhoneRelay ${{ steps.version.outputs.version }}"
+              --notes-file "$RELEASE_NOTES"
           else
             gh release create "${{ steps.version.outputs.tag }}" \
               "dist/${{ steps.version.outputs.dmg_name }}" \
               "dist/sparkle/${{ steps.version.outputs.zip_name }}" \
               "dist/sparkle/appcast.xml" \
               --title "PhoneRelay ${{ steps.version.outputs.tag }}" \
-              --notes "PhoneRelay ${{ steps.version.outputs.version }}"
+              --notes-file "$RELEASE_NOTES"
           fi
 
       - name: Expose release asset URL
