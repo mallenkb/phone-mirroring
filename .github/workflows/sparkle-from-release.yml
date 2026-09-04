@@ -160,6 +160,7 @@ jobs:
           gh release upload "${{ needs.sparkle.outputs.tag }}" \
             "dist/sparkle/${{ needs.sparkle.outputs.zip_name }}" \
             dist/sparkle/appcast.xml \
+            --repo "${{ github.repository }}" \
             --clobber
 
       - name: Dispatch website update
