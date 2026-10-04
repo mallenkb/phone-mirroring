@@ -10,7 +10,9 @@ enum AndroidDeviceLockState: Equatable {
 /// transport. ADB's `-s` selector accepts both physical USB serials and
 /// wireless `host:port` serials, so the probe is transport-neutral.
 struct AndroidDeviceLockStateProbe {
-    nonisolated static let pollingIntervalNanoseconds: UInt64 = 1_000_000_000
+    /// Each probe is a `dumpsys window policy` on the phone. Two seconds
+    /// still shows the locked overlay promptly at half the phone-side cost.
+    nonisolated static let pollingIntervalNanoseconds: UInt64 = 2_000_000_000
 
     nonisolated static func adbArguments(serial: String?) -> [String] {
         var arguments: [String] = []

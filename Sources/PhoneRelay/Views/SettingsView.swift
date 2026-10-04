@@ -474,9 +474,18 @@ struct SettingsView: View {
                         } label: {
                             Label("Fix Connection", systemImage: "wrench.and.screwdriver")
                         }
-                        Text("Clears reconnect throttles and restarts the app-owned adb daemon (skipped while mirroring).")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                        .disabled(model.fixConnectionStatus != nil)
+                        if let status = model.fixConnectionStatus {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(status)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Clears reconnect throttles and restarts the app-owned adb daemon (skipped while mirroring). USB problems are also repaired automatically.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
                     }
 
                     // Only surface the fix row when there's actually something to do.

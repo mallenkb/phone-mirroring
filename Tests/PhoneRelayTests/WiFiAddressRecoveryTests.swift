@@ -360,3 +360,47 @@ private final class CommandRecorder: @unchecked Sendable {
         return commands
     }
 }
+
+/// Recently seen hosts are tried before the full subnet sweep.
+final class WiFiRecoveryRecentHostsTests: XCTestCase {
+    func testRecentLANHostsKeepOnlySearchedSubnetsAndSkipBroadcast() {
+        let arp = [
+            "192.168.68.1": "dc:62:79:68:9d:38",
+            "192.168.68.50": "dc:cc:e6:23:e7:4c",
+            "192.168.71.255": "ff:ff:ff:ff:ff:ff",
+            "10.0.0.5": "aa:aa:aa:aa:aa:aa"
+        ]
+        XCTAssertEqual(
+            WiFiAddressRecovery.recentLANHosts(in: arp, prefixes: ["192.168.68.", "192.168.71."]),
+            ["192.168.68.1", "192.168.68.50"]
+        )
+    }
+
+    func testPhoneAmongRecentHostsIsFoundWithoutAFullSweep() async {
+        let sweeps = SweepRecorder()
+        let outcome = await WiFiAddressRecovery.recoverDetailed(
+            adb: ADBController(),
+            target: .init(macAddress: nil, usbSerial: "RFCT10ZLTAJ", displayName: "SM S906B", lastKnownIP: "192.168.68.64"),
+            sweep: { hosts in
+                sweeps.record(hosts.count)
+                return hosts.filter { $0 == "192.168.68.50" }
+            },
+            readARP: { ["192.168.68.50": "dc:cc:e6:23:e7:4c", "192.168.68.1": "dc:62:79:68:9d:38"] },
+            localSubnets: { ["192.168.68."] },
+            runADB: { arguments, _ in
+                if arguments.first == "connect" { return "connected to \(arguments[1])" }
+                if arguments.contains("ro.serialno") { return "RFCT10ZLTAJ\n" }
+                return ""
+            }
+        )
+        XCTAssertEqual(outcome.address, "192.168.68.50:5555")
+        XCTAssertEqual(sweeps.counts, [2], "only the two recently seen hosts should be probed")
+    }
+}
+
+private final class SweepRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Int] = []
+    func record(_ count: Int) { lock.withLock { values.append(count) } }
+    var counts: [Int] { lock.withLock { values } }
+}

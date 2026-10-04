@@ -541,6 +541,8 @@ final class AppModel: ObservableObject {
     /// routes, empty QR discovery — and cleared when a mirror becomes ready,
     /// so "the app is doing nothing" is always explainable from Settings.
     @Published private(set) var lastConnectionStall: ConnectionStall?
+    /// What the last Fix Connection press did; shown next to the button.
+    @Published var fixConnectionStatus: String?
     /// Most recent saved screenshot or screen recording, for "reveal in Finder".
     // Setter not private: written from AppModel+Capture.swift (pure-move
     // split); treat as private elsewhere.
@@ -1284,6 +1286,7 @@ final class AppModel: ObservableObject {
 
         guard backgroundServicesEnabled else { return }
 
+        installLocalNetworkDenialReporter()
         startDiscovery()
         startDeviceWatcher()
         startSystemEventReconnectTriggers()
@@ -1478,7 +1481,7 @@ final class AppModel: ObservableObject {
         isShuttingDown = true
         restorePresentationModeIfNeeded(async: false)
         restoreRecordingTouchIndicatorsIfNeeded(async: false)
-        stopMirroring(suspendAutoConnect: false)
+        stopMirroring(suspendAutoConnect: false, reason: "app quitting")
         discovery.stop()
         notificationForwarder.stop()
         stopQRCodePairingSession()
@@ -2116,7 +2119,7 @@ final class AppModel: ObservableObject {
             records: pairedPhones
         )
         if isMirroring || mirrorSession != nil || mirrorLaunchTask != nil {
-            stopMirroring()
+            stopMirroring(reason: "all devices forgotten")
         }
         disconnectForgottenWirelessTargets(wirelessTargets)
         connectionCoordinator.usbConnectTask?.cancel()

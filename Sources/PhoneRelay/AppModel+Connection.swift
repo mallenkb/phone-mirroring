@@ -2362,7 +2362,39 @@ extension AppModel {
     /// construction: with a live mirror it only refreshes presence and clears
     /// throttles (never restarts the daemon out from under the stream);
     /// otherwise it forces the daemon respawn + rescan.
+    /// Presses inside this window are ignored, so repeated clicks while
+    /// nothing visibly happens don't queue repeated repairs.
+    nonisolated static let usbWiFiMACRefreshInterval: TimeInterval = 10 * 60
+
+    nonisolated static func shouldRefreshUSBWiFiMAC(lastRefreshedAt: Date?, now: Date = Date()) -> Bool {
+        guard let lastRefreshedAt else { return true }
+        return now.timeIntervalSince(lastRefreshedAt) >= usbWiFiMACRefreshInterval
+    }
+
+    nonisolated static let fixConnectionDebounce: TimeInterval = 3
+    nonisolated static let fixConnectionStatusDuration: TimeInterval = 6
+
+    nonisolated static func shouldAcceptFixConnection(lastPressAt: Date?, now: Date = Date()) -> Bool {
+        guard let lastPressAt else { return true }
+        return now.timeIntervalSince(lastPressAt) >= fixConnectionDebounce
+    }
+
+    private func showFixConnectionStatus(_ status: String) {
+        fixConnectionStatus = status
+        connectionCoordinator.fixConnectionStatusClearTask?.cancel()
+        connectionCoordinator.fixConnectionStatusClearTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.fixConnectionStatusDuration * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.fixConnectionStatus = nil
+        }
+    }
+
     func fixConnection() {
+        guard Self.shouldAcceptFixConnection(lastPressAt: connectionCoordinator.lastFixConnectionAt) else {
+            Logger.log("Fix Connection press ignored: previous press is still running")
+            return
+        }
+        connectionCoordinator.lastFixConnectionAt = Date()
         Logger.log("Fix Connection requested by user")
         hasShownLocalNetworkPermissionHint = false
         failedAutoConnectTargets.removeAll()
@@ -2374,8 +2406,10 @@ extension AppModel {
             scanADBDevices()
             wakeDeviceWatcher()
             scheduleUSBTransportHealthCheck(reason: "fix-connection button")
+            showFixConnectionStatus("Rescanned devices and checking USB. adb isn't restarted while mirroring.")
             return
         }
+        showFixConnectionStatus("Restarting the adb connection and rescanning devices…")
         recoverADBDaemonIfSafe(force: true, reason: "fix-connection button")
     }
 
@@ -3600,7 +3634,7 @@ extension AppModel {
         mirrorLaunchTask?.cancel()
         mirrorLaunchTask = nil
         mirrorSession?.onSessionEnded = nil
-        mirrorSession?.stop()
+        mirrorSession?.stop(reason: "switching transport")
         mirrorSession = nil
         isMirroring = false
         restorePresentationModeIfNeeded()
@@ -3927,7 +3961,7 @@ extension AppModel {
         mirrorLaunchTask?.cancel()
         mirrorLaunchTask = nil
         mirrorSession?.onSessionEnded = nil
-        mirrorSession?.stop()
+        mirrorSession?.stop(reason: "switching transport")
         mirrorSession = nil
         isMirroring = false
         restorePresentationModeIfNeeded()
@@ -4844,11 +4878,15 @@ extension AppModel {
             // A same-cable refresh that learned nothing new ends here, so the
             // periodic re-read doesn't clobber the manual-target field or
             // rewrite the store every interval. A missing MAC still falls
-            // through: it's the anchor recovery needs, worth re-resolving.
+            // through, and so does a MAC not re-read for a while: Android can
+            // rotate a randomized MAC while keeping the same DHCP lease.
             if isRefresh,
                let matchingRecord,
                matchingRecord.observedWiFiIPAddress == wifiIP,
-               matchingRecord.wifiMACAddress != nil {
+               matchingRecord.wifiMACAddress != nil,
+               !Self.shouldRefreshUSBWiFiMAC(
+                lastRefreshedAt: self.connectionCoordinator.usbWiFiMACRefreshedAt[usbDevice.serial]
+               ) {
                 return
             }
             self.manualADBTarget = wifiIP
@@ -4873,6 +4911,7 @@ extension AppModel {
                 Self.resolveWiFiMACAddress(adb: adb, serial: usbDevice.serial, routeOutput: routeOutput)
             }.value
             guard !Task.isCancelled, let wifiMAC else { return }
+            self.connectionCoordinator.usbWiFiMACRefreshedAt[usbDevice.serial] = Date()
 
             self.touchPairedPhone(
                 id: recordID,

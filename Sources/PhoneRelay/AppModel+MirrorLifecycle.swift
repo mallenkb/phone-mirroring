@@ -22,7 +22,7 @@ extension AppModel {
                     isLaunching: self.mirrorLaunchTask != nil
                   ) else { return }
             Logger.log("Restarting mirror to apply updated mirroring settings")
-            self.stopMirroring(suspendAutoConnect: false)
+            self.stopMirroring(suspendAutoConnect: false, reason: "settings changed")
             self.startMirroring(manual: true)
         }
     }
@@ -213,7 +213,10 @@ extension AppModel {
         }
     }
 
-    func stopMirroring(suspendAutoConnect: Bool = true) {
+    func stopMirroring(suspendAutoConnect: Bool = true, reason: String = "user disconnect") {
+        if isMirroring || mirrorSession != nil || mirrorLaunchTask != nil {
+            Logger.log("Stopping mirror reason=\(reason) suspendAutoConnect=\(suspendAutoConnect)")
+        }
         if suspendAutoConnect {
             setAutoConnectSuspendedForSelectedDevice(true)
             suppressAutoReconnectForManualDisconnect()
@@ -241,7 +244,7 @@ extension AppModel {
             reconnectAttemptCount = 0
         }
         mirrorSession?.onSessionEnded = nil
-        mirrorSession?.stop()
+        mirrorSession?.stop(reason: "mirror stopped by app")
         mirrorSession = nil
         isMirroring = false
         keepConnectionChooserVisibleForNextMirrorLaunch = false
@@ -272,7 +275,7 @@ extension AppModel {
         mirrorLaunchTask?.cancel()
         mirrorLaunchTask = nil
         mirrorSession?.onSessionEnded = nil
-        mirrorSession?.stop()
+        mirrorSession?.stop(reason: "mirror stopped by app")
         mirrorSession = nil
         isMirroring = false
         restorePresentationModeIfNeeded()
@@ -392,7 +395,7 @@ extension AppModel {
             } catch {
                 guard !Task.isCancelled, self.mirrorSession === session else { return }
                 session.onSessionEnded = nil
-                session.stop()
+                session.stop(reason: "launch failed: \(error.localizedDescription)")
                 self.mirrorSession = nil
                 self.isMirroring = false
                 self.mirrorLaunchTask = nil
@@ -1116,7 +1119,7 @@ extension AppModel {
     func disconnectFromSettings() {
         connectionWindowPrefersWirelessDetails = false
         connectionWindowNavigationResetID += 1
-        stopMirroring()
+        stopMirroring(reason: "disconnect from settings")
         showConnectionWindow(startsQRCodePairing: false)
         refreshDevicePresenceAfterManualDisconnect()
     }

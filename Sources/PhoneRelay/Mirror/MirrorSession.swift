@@ -153,7 +153,7 @@ final class MirrorSession {
                    String(describing: error).localizedCaseInsensitiveContains("audio") {
                     self.model?.disableMirrorAudioAfterSessionFailure()
                 }
-                self.stop()
+                self.stop(reason: "stream error")
             }
         }
         decoder.onSample = { [weak self] sample, isKeyFrame in
@@ -175,7 +175,7 @@ final class MirrorSession {
                        ScrcpyServerHost.isRecoverableAudioStartupFailure(code: code, output: output) {
                         self.model?.disableMirrorAudioAfterSessionFailure()
                     }
-                    self.stop()
+                    self.stop(reason: "phone server exited code=\(code)")
                 }
             }
 
@@ -205,10 +205,13 @@ final class MirrorSession {
         }
     }
 
-    func stop() {
+    /// Every stop logs why, so a mirror that ends is never a mystery in the
+    /// log (2026-10-04: one ended with only "scrcpy-server exited code=15").
+    func stop(reason: String) {
         guard !isStopping, !didStop else { return }
         isStopping = true
         didStop = true
+        Logger.log("MirrorSession stopping reason=\(reason) serial=\(serial ?? "none")")
 
         startupTask?.cancel()
         startupTask = nil
@@ -368,16 +371,20 @@ final class MirrorSession {
         windowController?.acceptsKeyboardInput == true
     }
 
-    func turnDeviceScreenOff() {
-        setDeviceScreenPower(.off)
+    func turnDeviceScreenOff(reason: String = "user request") {
+        setDeviceScreenPower(.off, reason: reason)
     }
 
     func toggleDeviceScreenPower() {
         // Manual ⌘L should control the phone display, not lock the phone.
-        turnDeviceScreenOff()
+        turnDeviceScreenOff(reason: "keyboard shortcut")
     }
 
-    private func setDeviceScreenPower(_ mode: ScrcpyControlChannel.DisplayPowerMode) {
+    /// Logged so a session that ends right after a display-power change can be
+    /// tied to it or ruled out (display-power OFF once aborted the scrcpy
+    /// server on the S906B; INVARIANTS.md rule 18).
+    private func setDeviceScreenPower(_ mode: ScrcpyControlChannel.DisplayPowerMode, reason: String) {
+        Logger.log("MirrorSession sending display power=\(mode == .off ? "off" : "on") reason=\(reason)")
         controlChannel?.sendDisplayPowerMode(mode)
     }
 
@@ -503,7 +510,7 @@ final class MirrorSession {
     private func handleHeader(_ header: ScrcpyVideoStream.StreamHeader) {
         guard Self.isValidStreamSize(width: header.width, height: header.height) else {
             Logger.log("MirrorSession rejected invalid header size: \(header.width)x\(header.height)")
-            stop()
+            stop(reason: "invalid stream header")
             return
         }
         streamWidth = header.width
@@ -559,7 +566,7 @@ final class MirrorSession {
                   self.windowController == nil else { return }
             self.firstFrameDeadlineTask = nil
             Logger.log("MirrorSession first-frame timeout after stream header; ending stalled launch")
-            self.stop()
+            self.stop(reason: "first-frame timeout")
         }
     }
 
@@ -572,7 +579,7 @@ final class MirrorSession {
     private func handleResize(width: UInt32, height: UInt32) {
         guard Self.isValidStreamSize(width: width, height: height) else {
             Logger.log("MirrorSession rejected invalid resize: \(width)x\(height)")
-            stop()
+            stop(reason: "invalid resize")
             return
         }
         streamWidth = width
@@ -675,7 +682,7 @@ final class MirrorSession {
     /// Turns the phone display off after the idle timeout while keeping the
     /// mirror stream running.
     private func applyIdlePowerSaving() async {
-        turnDeviceScreenOff()
+        turnDeviceScreenOff(reason: "idle \(Int(Self.automaticScreenOffDelay))s")
         screenOffDeadline = nil
     }
 

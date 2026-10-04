@@ -163,6 +163,7 @@ enum Tooling {
         arguments: [String],
         timeout overrideTimeout: TimeInterval? = nil
     ) -> RunResult {
+        if name == "adb" { ADBController.prepareDirectToolingCommand(arguments) }
         guard let path = toolPath(named: name) else {
             return RunResult(
                 output: "\(name) is missing. Install or bundle \(name).",
@@ -243,6 +244,7 @@ enum Tooling {
         arguments: [String],
         timeout overrideTimeout: TimeInterval? = nil
     ) -> DataRunResult {
+        if name == "adb" { ADBController.prepareDirectToolingCommand(arguments) }
         guard let path = toolPath(named: name) else {
             return DataRunResult(data: Data(), exitCode: -1, timedOut: false, launched: false)
         }

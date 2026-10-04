@@ -89,7 +89,19 @@ final class NotificationForwarder {
     /// Slower tick while no real device is selected — just enough to notice when
     /// one connects.
     private let idleInterval: TimeInterval = 5
+    /// After this many polls in a row return the same notification list, the
+    /// cadence relaxes to `quietPollInterval` until something changes. Each
+    /// poll is a full `dumpsys notification` on the phone, and most minutes
+    /// bring no new notification.
+    nonisolated static let quietAfterUnchangedPolls = 20
+    nonisolated static let quietPollInterval: TimeInterval = 6
+    private var lastDumpFingerprint: Int?
+    private var unchangedPolls = 0
     private static let maxSeen = 600
+
+    nonisolated static func pollInterval(unchangedPolls: Int, base: TimeInterval) -> TimeInterval {
+        unchangedPolls >= quietAfterUnchangedPolls ? max(base, quietPollInterval) : base
+    }
 
     init(model: AppModel) {
         self.model = model
@@ -139,6 +151,8 @@ final class NotificationForwarder {
                 hasBaseline = false
                 seen.removeAll()
                 seenOrder.removeAll()
+                lastDumpFingerprint = nil
+                unchangedPolls = 0
             }
 
             let dump = await Task.detached(priority: .utility) {
@@ -146,10 +160,18 @@ final class NotificationForwarder {
             }.value
 
             if !Task.isCancelled, let dump {
+                let fingerprint = dump.hashValue
+                if fingerprint == lastDumpFingerprint {
+                    unchangedPolls += 1
+                } else {
+                    lastDumpFingerprint = fingerprint
+                    unchangedPolls = 0
+                }
                 deliver(Self.parse(dump))
             }
 
-            try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+            let interval = Self.pollInterval(unchangedPolls: unchangedPolls, base: pollInterval)
+            try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
         }
     }
 

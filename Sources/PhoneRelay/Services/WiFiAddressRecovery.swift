@@ -128,6 +128,33 @@ enum WiFiAddressRecovery {
             await sweepForOpenPort(hostList, port: port)
         }
         let readARPTable = readARP ?? Self.readARPTable
+        let identityADB = runADB ?? { arguments, timeout in adb.run(arguments, timeout: timeout) }
+
+        // Fast path: hosts the Mac has talked to recently are in the ARP table,
+        // and the phone is almost always one of them. Probing those few first
+        // usually finds it without sweeping every address on a /22.
+        let recentHosts = prioritizedIdentityCandidates(
+            recentLANHosts(in: readARPTable(), prefixes: prefixes),
+            lastKnownIP: target.lastKnownIP
+        )
+        if !recentHosts.isEmpty {
+            let recentOpen = await runSweep(recentHosts)
+            if let ip = matchIP(forMAC: target.macAddress, in: readARPTable(), preferring: Set(recentOpen)),
+               recentOpen.contains(ip) {
+                Logger.log("Wi-Fi recovery: MAC matched recently seen host \(ip)")
+                return Outcome(address: "\(ip):\(port)", didSweep: false, openHostCount: recentOpen.count)
+            }
+            if !recentOpen.isEmpty,
+               let ip = await matchByADBIdentity(
+                openHosts: recentOpen,
+                target: target,
+                port: port,
+                runADB: identityADB
+               ) {
+                Logger.log("Wi-Fi recovery: adb identity matched \(target.displayName) at recently seen host \(ip)")
+                return Outcome(address: "\(ip):\(port)", didSweep: false, openHostCount: recentOpen.count)
+            }
+        }
 
         // Sweep one prefix at a time, last-known subnet first, checking the
         // stable MAC anchor after each slice — the phone usually keeps its
@@ -176,7 +203,7 @@ enum WiFiAddressRecovery {
             openHosts: openHosts,
             target: target,
             port: port,
-            runADB: runADB ?? { arguments, timeout in adb.run(arguments, timeout: timeout) }
+            runADB: identityADB
         ) {
             Logger.log("Wi-Fi recovery: adb identity matched \(target.displayName) at \(ip)")
             var matched = sweptOutcome
@@ -321,6 +348,20 @@ enum WiFiAddressRecovery {
     }
 
     // MARK: - Matching (pure)
+
+    /// IPv4 hosts in the ARP table that fall inside the subnets being searched.
+    static func recentLANHosts(in arp: [String: String], prefixes: [String]) -> [String] {
+        arp.keys
+            .filter { host in
+                guard isIPv4(host), let last = host.split(separator: ".").last.flatMap({ Int($0) }),
+                      (1...254).contains(last) else { return false }   // skip network/broadcast
+                return prefixes.contains { host.hasPrefix($0) }
+            }
+            .sorted { lhs, rhs in
+                lhs.split(separator: ".").compactMap { Int($0) }
+                    .lexicographicallyPrecedes(rhs.split(separator: ".").compactMap { Int($0) })
+            }
+    }
 
     /// The IP whose ARP entry equals the target MAC. When several map to the
     /// same MAC (rare), an open-on-5555 host wins.

@@ -166,6 +166,7 @@ final class BonjourServiceMonitor: @unchecked Sendable {
                 Logger.log("Bonjour monitor browser waiting type=\(type) error=\(error)")
                 if denied {
                     self.scheduleRestart(type: type)
+                    LocalNetworkDenialReporter.report(source: "Bonjour")
                 }
             case .cancelled:
                 self.unavailableTypes.insert(type)

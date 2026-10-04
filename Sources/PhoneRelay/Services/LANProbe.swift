@@ -73,6 +73,7 @@ enum LANProbe {
                 }
                 if isFirstDenial {
                     Logger.log("Local Network: macOS denied the app process; probing through a helper process. Remove stale Phone Relay rows in System Settings > Privacy & Security > Local Network to fix.")
+                    LocalNetworkDenialReporter.report(source: "port probe")
                 }
             }
         }
@@ -133,5 +134,28 @@ enum LANProbe {
         return await Task.detached(priority: .utility) {
             Tooling.runResult("nc", arguments: arguments, timeout: processTimeout).succeeded
         }.value
+    }
+}
+
+/// Reports, once per launch, that macOS denied the app process Local Network
+/// access. Discovery and probes keep working through adb and the helper
+/// process, so this is guidance for the user rather than an error.
+enum LocalNetworkDenialReporter {
+    nonisolated(unsafe) static var handler: (@Sendable (_ source: String) -> Void)?
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var didReport = false
+
+    static func report(source: String) {
+        let shouldReport = lock.withLock { () -> Bool in
+            guard !didReport else { return false }
+            didReport = true
+            return true
+        }
+        guard shouldReport else { return }
+        handler?(source)
+    }
+
+    static func resetForTesting() {
+        lock.withLock { didReport = false }
     }
 }

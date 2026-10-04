@@ -301,4 +301,92 @@ final class ADBServerPrimeTests: XCTestCase {
             .split(whereSeparator: \.isNewline).map(String.init) ?? []
         XCTAssertEqual(calls, ["kill-server", "start-server", "devices -l", "devices -l"])
     }
+
+    /// Notification polling and mirror start call adb straight through
+    /// Tooling; at launch they auto-started a second daemon.
+    func testDirectToolingCallsAlsoWaitForTheWarmUp() throws {
+        let fake = try FakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        exit 0
+        """)
+        defer { fake.cleanup() }
+        let original = ADBController.primesServerBeforeFirstCommand
+        ADBController.primesServerBeforeFirstCommand = true
+        defer { ADBController.primesServerBeforeFirstCommand = original }
+
+        _ = ADBController().run(["kill-server"], timeout: 2)
+        _ = Tooling.runResult("adb", arguments: ["-s", "X", "shell", "dumpsys", "notification"], timeout: 2)
+
+        let calls = (try? String(contentsOf: fake.log, encoding: .utf8))?
+            .split(whereSeparator: \.isNewline).map(String.init) ?? []
+        XCTAssertEqual(calls, ["kill-server", "start-server", "-s X shell dumpsys notification"])
+    }
+}
+
+/// Small rules behind the 2026-10-04 reliability pass.
+final class ConnectionPolishTests: XCTestCase {
+    func testFixConnectionIgnoresRepeatPressesForAFewSeconds() {
+        let now = Date()
+        XCTAssertTrue(AppModel.shouldAcceptFixConnection(lastPressAt: nil, now: now))
+        XCTAssertFalse(AppModel.shouldAcceptFixConnection(lastPressAt: now.addingTimeInterval(-1), now: now))
+        XCTAssertTrue(AppModel.shouldAcceptFixConnection(
+            lastPressAt: now.addingTimeInterval(-AppModel.fixConnectionDebounce - 0.1), now: now))
+    }
+
+    func testUSBRefreshRereadsTheMACPeriodically() {
+        let now = Date()
+        XCTAssertTrue(AppModel.shouldRefreshUSBWiFiMAC(lastRefreshedAt: nil, now: now))
+        XCTAssertFalse(AppModel.shouldRefreshUSBWiFiMAC(lastRefreshedAt: now.addingTimeInterval(-60), now: now))
+        XCTAssertTrue(AppModel.shouldRefreshUSBWiFiMAC(
+            lastRefreshedAt: now.addingTimeInterval(-AppModel.usbWiFiMACRefreshInterval), now: now))
+    }
+
+    func testRecentWirelessVerificationIsReusedOnlyBriefly() {
+        let original = AppModel.reusesRecentWirelessVerification
+        AppModel.reusesRecentWirelessVerification = true
+        defer { AppModel.reusesRecentWirelessVerification = original }
+        let address = "192.0.2.201:5555"
+        let now = Date()
+        AppModel.noteWirelessRouteVerified(address, at: now)
+        XCTAssertTrue(AppModel.wasWirelessRouteVerifiedRecently(address, now: now.addingTimeInterval(1)))
+        XCTAssertFalse(AppModel.wasWirelessRouteVerifiedRecently(
+            address, now: now.addingTimeInterval(AppModel.recentWirelessVerificationWindow + 0.1)))
+        AppModel.noteWirelessRouteVerified(address, at: now)
+        AppModel.forgetWirelessRouteVerification(address)
+        XCTAssertFalse(AppModel.wasWirelessRouteVerifiedRecently(address, now: now))
+    }
+
+    func testNotificationPollingRelaxesOnlyAfterAQuietStretch() {
+        XCTAssertEqual(NotificationForwarder.pollInterval(unchangedPolls: 0, base: 3), 3)
+        XCTAssertEqual(
+            NotificationForwarder.pollInterval(unchangedPolls: NotificationForwarder.quietAfterUnchangedPolls - 1, base: 3),
+            3
+        )
+        XCTAssertEqual(
+            NotificationForwarder.pollInterval(unchangedPolls: NotificationForwarder.quietAfterUnchangedPolls, base: 3),
+            NotificationForwarder.quietPollInterval
+        )
+    }
+
+    func testLocalNetworkDenialIsReportedOncePerLaunch() {
+        LocalNetworkDenialReporter.resetForTesting()
+        let counter = ProbeCallCounter2()
+        let original = LocalNetworkDenialReporter.handler
+        LocalNetworkDenialReporter.handler = { _ in counter.increment() }
+        defer {
+            LocalNetworkDenialReporter.handler = original
+            LocalNetworkDenialReporter.resetForTesting()
+        }
+        LocalNetworkDenialReporter.report(source: "Bonjour")
+        LocalNetworkDenialReporter.report(source: "port probe")
+        XCTAssertEqual(counter.value, 1)
+    }
+}
+
+private final class ProbeCallCounter2: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.withLock { count += 1 } }
+    var value: Int { lock.withLock { count } }
 }

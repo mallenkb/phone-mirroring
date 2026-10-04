@@ -165,8 +165,9 @@ final class SingleInstanceGuardTests: XCTestCase {
         let source = try String(contentsOfFile: "Sources/PhoneRelay/AppDelegate.swift", encoding: .utf8)
         let reopenRange = try XCTUnwrap(source.range(of: "public func applicationShouldHandleReopen"))
         let remainder = source[reopenRange.lowerBound...]
-        let returnRange = try XCTUnwrap(remainder.range(of: "return false"))
-        let reopenBody = remainder[..<returnRange.upperBound]
+        // The whole function: a yielding duplicate returns early at the top.
+        let endRange = try XCTUnwrap(remainder.range(of: "\n    }\n"))
+        let reopenBody = remainder[..<endRange.upperBound]
 
         XCTAssertTrue(reopenBody.contains("bringLaunchWindowToFront(target)"))
         XCTAssertTrue(reopenBody.contains("beginUserRequestedForegroundPresentation()"))

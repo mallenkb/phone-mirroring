@@ -216,6 +216,10 @@ final class ConnectionCoordinator {
     var lastADBUSBSerials: Set<String> = []
     /// The single in-flight lost-USB-transport repair episode.
     var usbTransportHealTask: Task<Void, Never>?
+    var lastFixConnectionAt: Date?
+    /// Last time the USB refresh re-read the phone's Wi-Fi MAC, per serial.
+    var usbWiFiMACRefreshedAt: [String: Date] = [:]
+    var fixConnectionStatusClearTask: Task<Void, Never>?
     var automaticReconnectTask: Task<Void, Never>?
     var automaticReconnectState: AutomaticReconnectState = .idle
     var automaticReconnectGeneration = 0

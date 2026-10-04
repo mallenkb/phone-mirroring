@@ -35,7 +35,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     private var filesWindow: NSWindow?
     private var filesModel: FileBrowserModel?
     private var statusItem: NSStatusItem?
-    private let model = AppModel()
+    /// Created on first use, after the duplicate-instance check. A stored
+    /// `let` built the model (which starts discovery, the device watcher,
+    /// reconnect and notification polling) before that check ran, so a
+    /// yielding duplicate briefly ran a second connection stack and even
+    /// auto-started a mirror next to the real instance (observed 2026-10-04).
+    private lazy var model = AppModel()
+    /// Set while this process hands off to an already running instance; no
+    /// lifecycle callback may create the model during that exit.
+    private var isYieldingToExistingInstance = false
     private var keyMonitor: Any?
     private var foregroundExitMonitor: Any?
     private var windowlessRecoveryTerminationTask: Task<Void, Never>?
@@ -263,6 +271,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             return false
         }
 
+        isYieldingToExistingInstance = true
         Logger.log("Yielding duplicate Phone Relay launch to existing instance pid=\(existing.processIdentifier).")
         existing.unhide()
         existing.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
@@ -292,6 +301,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     }
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        guard !isYieldingToExistingInstance else { return true }
         // Stay alive only while a USB↔Wi-Fi handoff or reconnect is mid-flight —
         // the brief windowless gap during a handoff must not quit the app. Once
         // the app is genuinely idle with no window, quit; otherwise it lurks
@@ -344,6 +354,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     }
 
     public func applicationDidBecomeActive(_ notification: Notification) {
+        guard !isYieldingToExistingInstance else { return }
         model.refreshLocalNetworkPermissionAfterSettingsReturn()
         if NSApp.keyWindow != nil {
             // The launch presentation accomplished its goal — ending it now
@@ -357,6 +368,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     }
 
     public func applicationDidResignActive(_ notification: Notification) {
+        guard !isYieldingToExistingInstance else { return }
         guard model.shouldPreserveForegroundLaunchPresentationAfterResign else {
             model.endForegroundLaunchPresentation()
             return
@@ -396,6 +408,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
     }
 
     public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !isYieldingToExistingInstance else { return false }
         // Behave like a normal app on every Dock-icon click — whether our window
         // is minimized, hidden behind another app, or simply not key.
         //
@@ -620,7 +633,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             NSEvent.removeMonitor(foregroundExitMonitor)
             self.foregroundExitMonitor = nil
         }
-        model.shutdown()
+        // A yielding duplicate never built a model; creating one here would
+        // start and stop a second connection stack beside the real instance.
+        if !isYieldingToExistingInstance {
+            model.shutdown()
+        }
         closeAllAppWindows()
     }
 
@@ -1168,7 +1185,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         // on a background queue and could fail, leaving its connection window
         // on screen next to the new instance's onboarding card.
         model.setFirstRunOnboardingActive(true)
-        model.stopMirroring()
+        model.stopMirroring(reason: "onboarding restarted")
         model.resetFirstTimeUserOnboardingState()
         window?.orderOut(nil)
         firstRunWindow?.orderOut(nil)
@@ -1179,7 +1196,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
 
 
     @objc private func toggleMirroring(_ sender: Any?) {
-        model.isMirroring ? model.stopMirroring() : model.startMirroring(manual: true)
+        model.isMirroring ? model.stopMirroring(reason: "menu toggle") : model.startMirroring(manual: true)
     }
 
     @objc private func goHome(_ sender: Any?) {

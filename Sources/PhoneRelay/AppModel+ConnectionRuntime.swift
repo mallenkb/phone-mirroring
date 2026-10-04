@@ -194,6 +194,20 @@ extension AppModel {
         }
     }
 
+    // MARK: - Local Network denial guidance
+
+    nonisolated static let localNetworkSplitDetail =
+        "macOS is blocking Local Network access for Phone Relay itself (its adb helper still works, so Wi-Fi keeps working). If Phone Relay is already switched on in System Settings > Privacy & Security > Local Network, older builds left extra Phone Relay rows there: select each one, click -, then relaunch Phone Relay and allow the prompt."
+
+    func installLocalNetworkDenialReporter() {
+        LocalNetworkDenialReporter.handler = { [weak self] source in
+            Task { @MainActor in
+                Logger.log("Local Network denial reported by \(source)")
+                self?.noteConnectionStall(.localNetworkDenied, detail: Self.localNetworkSplitDetail)
+            }
+        }
+    }
+
     // MARK: - Explicit device setup
 
     func requireExplicitDeviceSetup() {

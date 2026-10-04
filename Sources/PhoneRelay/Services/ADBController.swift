@@ -57,10 +57,10 @@ struct ADBController: Sendable {
         let output: String
         if Self.executionPolicy(for: arguments) == .serialized {
             Self.commandLock.lock()
-            output = Tooling.run("adb", arguments: arguments, timeout: timeout)
+            output = Self.asControllerCommand { Tooling.run("adb", arguments: arguments, timeout: timeout) }
             Self.commandLock.unlock()
         } else {
-            output = Tooling.run("adb", arguments: arguments, timeout: timeout)
+            output = Self.asControllerCommand { Tooling.run("adb", arguments: arguments, timeout: timeout) }
         }
         if command == "kill-server" {
             Self.invalidateServerPrime()
@@ -77,10 +77,10 @@ struct ADBController: Sendable {
         let result: Tooling.RunResult
         if Self.executionPolicy(for: arguments) == .serialized {
             Self.commandLock.lock()
-            result = Tooling.runResult("adb", arguments: arguments, timeout: timeout)
+            result = Self.asControllerCommand { Tooling.runResult("adb", arguments: arguments, timeout: timeout) }
             Self.commandLock.unlock()
         } else {
-            result = Tooling.runResult("adb", arguments: arguments, timeout: timeout)
+            result = Self.asControllerCommand { Tooling.runResult("adb", arguments: arguments, timeout: timeout) }
         }
         if command == "kill-server" {
             Self.invalidateServerPrime()
@@ -151,6 +151,27 @@ struct ADBController: Sendable {
     /// so fake-adb tests keep asserting exact command sequences;
     /// `WiFiSerialDiscoveryTests` turns it on to cover it.
     nonisolated(unsafe) static var primesServerBeforeFirstCommand = !Logger.isRunningUnderXCTest
+
+    private static let controllerCommandKey = "PhoneRelay.ADBController.command"
+
+    /// Marks the current thread as running a command for `ADBController`,
+    /// which already waited for the warm-up before taking `commandLock`.
+    /// Waiting again inside `Tooling` while holding that lock would deadlock
+    /// against the warm-up's own serialized `start-server`.
+    private static func asControllerCommand<T>(_ body: () -> T) -> T {
+        Thread.current.threadDictionary[controllerCommandKey] = true
+        defer { Thread.current.threadDictionary.removeObject(forKey: controllerCommandKey) }
+        return body()
+    }
+
+    /// Entry point for adb calls made straight through `Tooling` (mirror
+    /// start, notification polling, lock-state probes). Those used to skip the
+    /// warm-up and, at launch, auto-start a second daemon that raced for the
+    /// port and tried to claim the phone's USB interface.
+    static func prepareDirectToolingCommand(_ arguments: [String]) {
+        guard Thread.current.threadDictionary[controllerCommandKey] == nil else { return }
+        waitForServerPrimeIfNeeded(before: commandWord(in: arguments), controller: ADBController())
+    }
 
     private static func waitForServerPrimeIfNeeded(before command: String?, controller: ADBController) {
         guard shouldWaitForServerPrime(command: command) else { return }

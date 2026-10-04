@@ -1174,6 +1174,33 @@ extension AppModel {
     /// It defaults off because a daemon restart drops every adb transport. Only
     /// an explicit recovery action that has proven the app is quiescent may opt
     /// in; ordinary readiness and reconnect flows stay transport-local.
+    /// A route proven shell-ready this recently is reused instead of dialed
+    /// again. At launch with the cable in, the reconnect loop and the USB-side
+    /// preparation each verified the same address (three connect+shell rounds
+    /// queued behind the adb lock, about a second before first frame).
+    nonisolated static let recentWirelessVerificationWindow: TimeInterval = 3
+    /// Off under XCTest so fake-adb tests that reuse one address keep
+    /// asserting exact command sequences; covered by its own test.
+    nonisolated(unsafe) static var reusesRecentWirelessVerification = !Logger.isRunningUnderXCTest
+    private nonisolated static let recentWirelessVerificationLock = NSLock()
+    nonisolated(unsafe) private static var recentWirelessVerifications: [String: Date] = [:]
+
+    nonisolated static func noteWirelessRouteVerified(_ address: String, at date: Date = Date()) {
+        recentWirelessVerificationLock.withLock { recentWirelessVerifications[address] = date }
+    }
+
+    nonisolated static func forgetWirelessRouteVerification(_ address: String) {
+        recentWirelessVerificationLock.withLock { _ = recentWirelessVerifications.removeValue(forKey: address) }
+    }
+
+    nonisolated static func wasWirelessRouteVerifiedRecently(_ address: String, now: Date = Date()) -> Bool {
+        guard reusesRecentWirelessVerification else { return false }
+        return recentWirelessVerificationLock.withLock {
+            guard let verifiedAt = recentWirelessVerifications[address] else { return false }
+            return now.timeIntervalSince(verifiedAt) < recentWirelessVerificationWindow
+        }
+    }
+
     nonisolated static func waitForADBWirelessTargetReadiness(
         adb: ADBController,
         address: String,
@@ -1193,6 +1220,10 @@ extension AppModel {
                 connectAttempts: 0,
                 noRouteToHostFailures: 0
             )
+        }
+        if wasWirelessRouteVerifiedRecently(address) {
+            Logger.log("ADB Wi-Fi readiness reused a verification from the last \(Int(recentWirelessVerificationWindow))s address=\(address)")
+            return WirelessTargetReadiness(isReady: true, connectAttempts: 0, noRouteToHostFailures: 0)
         }
         let deadline = maximumDuration.map { Date().addingTimeInterval(max(0, $0)) }
         func remainingBudget() -> TimeInterval? {
@@ -1343,6 +1374,7 @@ extension AppModel {
             Logger.log("ADB Wi-Fi handoff shell readiness attempt \(attempt + 1)/\(attempts) address=\(address) output=\(shellOutput.trimmingCharacters(in: .whitespacesAndNewlines))")
             if shellResult.succeeded,
                shellOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "wifi-adb-ok" {
+                noteWirelessRouteVerified(address)
                 return WirelessTargetReadiness(
                     isReady: true,
                     connectAttempts: connectAttempts,
@@ -1354,6 +1386,7 @@ extension AppModel {
             if attempt + 1 < attempts,
                Self.shouldDropStaleWirelessTransport(shellOutput: shellOutput),
                let disconnectTimeout = boundedTimeout(shellTimeout) {
+                forgetWirelessRouteVerification(address)
                 let disconnectOutput = await Task.detached {
                     adb.run(["disconnect", address], timeout: disconnectTimeout)
                 }.value

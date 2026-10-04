@@ -1667,7 +1667,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             toolbar.orderOut(nil)
         }
         toolbarWindow = nil
-        session?.stop()
+        session?.stop(reason: "mirror window closed")
     }
 
     func windowWillMiniaturize(_ notification: Notification) {
