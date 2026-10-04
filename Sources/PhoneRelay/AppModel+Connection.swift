@@ -1424,7 +1424,15 @@ extension AppModel {
         // identity. A completed sweep with no identity match proves that this
         // phone has no usable :5555 listener, even when an unrelated phone or
         // development board happens to expose that port on the same LAN.
-        if outcome.address == nil && outcome.didSweep {
+        // A sleeping phone can miss every probe of a sweep while its adb
+        // transport is fine (observed 2026-10-04: sweep found nothing, the
+        // mirror started over Wi-Fi two seconds later). A live transport
+        // outranks the sweep.
+        let isLiveOnWiFi = Self.liveWirelessAuthorizedDevice(
+            for: record,
+            in: latestAuthorizedADBDevices
+        ) != nil
+        if outcome.address == nil && outcome.didSweep && !isLiveOnWiFi {
             if let closedHost = outcome.phoneHostWithClosedPort {
                 Logger.log("Wi-Fi recovery: \(record.displayName) is on this network at \(closedHost) with adb over Wi-Fi off (phone restarted?)")
             }
@@ -4595,6 +4603,18 @@ extension AppModel {
     /// A phone that just proved it can do adb over Wi-Fi is no longer "listener
     /// missing" — drop the verdict and retire the message that told the user to
     /// plug in.
+    /// A phone that adb lists live on Wi-Fi plainly has a listener, however
+    /// a sweep went; keep the "plug in once" verdict from outliving it.
+    func clearListenerMissingVerdictForLiveWirelessPhones(_ devices: [AuthorizedADBDevice]) {
+        guard !wirelessListenerMissingRecordIDs.isEmpty, devices.contains(where: { !$0.isUSB }) else { return }
+        for record in pairedPhones where wirelessListenerMissingRecordIDs.contains(record.id) {
+            if Self.liveWirelessAuthorizedDevice(for: record, in: devices) != nil {
+                wirelessListenerMissingRecordIDs.remove(record.id)
+                Logger.log("Cleared listener-missing verdict for \(record.displayName): adb lists it live on Wi-Fi")
+            }
+        }
+    }
+
     func clearWirelessListenerMissingState(usbSerial: String) {
         let recordIDs = pairedPhones
             .filter { $0.resolvedUSBSerial == usbSerial || $0.id == usbSerial }
@@ -4786,6 +4806,7 @@ extension AppModel {
         )
         recordADBHealth(output, authorizedDevices: devices)
         observeUSBTransportPresence(adbOutput: output)
+        clearListenerMissingVerdictForLiveWirelessPhones(devices)
         prefillWirelessRouteForPresentUSBDeviceIfNeeded(devices)
         if explicitDeviceSetupRequired,
            let usbDevice = devices.first(where: \.isUSB) {

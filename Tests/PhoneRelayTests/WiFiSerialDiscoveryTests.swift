@@ -390,3 +390,34 @@ private final class ProbeCallCounter2: @unchecked Sendable {
     func increment() { lock.withLock { count += 1 } }
     var value: Int { lock.withLock { count } }
 }
+
+/// A sweep that missed a sleeping phone must not park a phone adb lists live.
+final class ListenerMissingVerdictTests: XCTestCase {
+    @MainActor
+    func testLiveWiFiTransportClearsTheVerdict() {
+        let isolated = IsolatedPairedPhoneStore()
+        defer { isolated.cleanup() }
+        let record = PairedPhoneRecord(
+            id: "RFCT10ZLTAJ",
+            displayName: "SM S906B",
+            lastAddress: "192.168.68.50:5555",
+            usbSerial: "RFCT10ZLTAJ",
+            wifiAddress: "192.168.68.50:5555",
+            firstPaired: Date(timeIntervalSince1970: 0),
+            lastConnected: Date(timeIntervalSince1970: 0)
+        )
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [record], store: isolated.store)
+        model.connectionCoordinator.wirelessListenerMissingRecordIDs = ["RFCT10ZLTAJ"]
+
+        model.clearListenerMissingVerdictForLiveWirelessPhones([
+            AuthorizedADBDevice(serial: "RFCT10ZLTAJ", product: "g0sxxx", model: "SM S906B", isUSB: true)
+        ])
+        XCTAssertEqual(model.connectionCoordinator.wirelessListenerMissingRecordIDs, ["RFCT10ZLTAJ"],
+                       "a USB row says nothing about the Wi-Fi listener")
+
+        model.clearListenerMissingVerdictForLiveWirelessPhones([
+            AuthorizedADBDevice(serial: "192.168.68.50:5555", product: "g0sxxx", model: "SM S906B", isUSB: false)
+        ])
+        XCTAssertTrue(model.connectionCoordinator.wirelessListenerMissingRecordIDs.isEmpty)
+    }
+}
