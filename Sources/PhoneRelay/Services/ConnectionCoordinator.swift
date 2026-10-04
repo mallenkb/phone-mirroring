@@ -217,6 +217,8 @@ final class ConnectionCoordinator {
     /// The single in-flight lost-USB-transport repair episode.
     var usbTransportHealTask: Task<Void, Never>?
     var lastFixConnectionAt: Date?
+    /// USB serials already checked for Phone Relay Helper this session.
+    var helperPermissionCheckedSerials: Set<String> = []
     /// Last time the USB refresh re-read the phone's Wi-Fi MAC, per serial.
     var usbWiFiMACRefreshedAt: [String: Date] = [:]
     var fixConnectionStatusClearTask: Task<Void, Never>?

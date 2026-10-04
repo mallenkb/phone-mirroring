@@ -77,6 +77,12 @@ extension AppModel {
         if !vanished.isEmpty {
             scheduleUSBTransportHealthCheck(reason: "usb transport vanished")
         }
+        // An authorized cable connection is the one chance to grant Phone
+        // Relay Helper its adb-only permission.
+        let authorizedUSB = Set(Self.authorizedADBDevices(in: adbOutput).filter(\.isUSB).map(\.serial))
+        for serial in present.subtracting(previous).intersection(authorizedUSB) {
+            grantHelperPermissionIfNeeded(usbSerial: serial)
+        }
     }
 
     /// Starts one repair episode unless one is already running.

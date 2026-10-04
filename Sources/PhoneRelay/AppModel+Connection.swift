@@ -520,6 +520,24 @@ extension AppModel {
         }
     }
 
+    /// Why the loop has nothing to do, so a reconnect that never starts is
+    /// never silent in the log (2026-10-04: a parked phone made the loop exit
+    /// without a single line after a mirror dropped).
+    func automaticReconnectIdleReason() -> String {
+        if explicitDeviceSetupRequired { return "device setup required" }
+        if isFirstRunOnboardingActive || isAutoMirrorHeldForOnboarding { return "onboarding" }
+        if isMirroring || mirrorSession != nil || mirrorLaunchTask != nil { return "mirror active" }
+        if isPairing { return "pairing" }
+        if isAutoReconnectSuppressedForManualDisconnect { return "manually disconnected" }
+        if connectionCoordinator.hasManualConnectionWorkInFlight { return "manual connection in progress" }
+        let candidates = automaticWirelessReconnectRecords
+        if candidates.isEmpty { return "no phone that can be found over Wi-Fi" }
+        if candidates.allSatisfy({ connectionCoordinator.wirelessListenerMissingRecordIDs.contains($0.id) }) {
+            return "adb over Wi-Fi is off on the phone; plug in once to turn it back on"
+        }
+        return "no phone due for a retry"
+    }
+
     nonisolated static func automaticReconnectTriggerAllowed(
         explicitDeviceSetupRequired: Bool,
         isFirstRunOnboardingActive: Bool,
@@ -558,6 +576,7 @@ extension AppModel {
                   !isAutoReconnectSuppressedForManualDisconnect,
                   !connectionCoordinator.hasManualConnectionWorkInFlight,
                   let record = nextAutomaticReconnectRecord() else {
+                Logger.log("Automatic reconnect phase=idle reason=\(automaticReconnectIdleReason()) task=\(taskGeneration)")
                 if connectionCoordinator.ownsAutomaticReconnectTask(
                     taskGeneration: taskGeneration
                 ), connectionCoordinator.automaticReconnectState != .manuallyDisconnected {

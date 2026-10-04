@@ -421,3 +421,24 @@ final class ListenerMissingVerdictTests: XCTestCase {
         XCTAssertTrue(model.connectionCoordinator.wirelessListenerMissingRecordIDs.isEmpty)
     }
 }
+
+/// Detecting Phone Relay Helper and its permission from adb output.
+final class HelperAppDetectionTests: XCTestCase {
+    func testHelperInstalledIsAnExactPackageMatch() {
+        XCTAssertTrue(AppModel.isHelperInstalled(packageListOutput: "package:com.mallenkb.phonerelay.helper\n"))
+        XCTAssertFalse(AppModel.isHelperInstalled(packageListOutput: "package:com.mallenkb.phonerelay.helper.other\n"))
+        XCTAssertFalse(AppModel.isHelperInstalled(packageListOutput: ""))
+    }
+
+    func testPermissionGrantIsReadFromDumpsys() {
+        let granted = """
+          runtime permissions:
+            android.permission.WRITE_SECURE_SETTINGS: granted=true
+        """
+        let denied = """
+            android.permission.WRITE_SECURE_SETTINGS: granted=false
+        """
+        XCTAssertTrue(AppModel.isHelperPermissionGranted(dumpsysPackageOutput: granted))
+        XCTAssertFalse(AppModel.isHelperPermissionGranted(dumpsysPackageOutput: denied))
+    }
+}
