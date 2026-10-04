@@ -204,7 +204,15 @@ of these on purpose, update this file in the same commit.
     closed port means the phone is present with its `tcpip` listener gone
     (rebooted), which is a "plug in once" verdict, not an address. After a
     successful automatic Wi-Fi connect the observed IP and MAC are refreshed
-    over the wireless session.
+    over the wireless session. The "listener missing" verdict is never issued
+    or kept while adb lists the phone live on Wi-Fi: a dozing phone can miss
+    a whole sweep while its transport is fine.
+
+13c. **A duplicate launch must not build the model.** `AppDelegate.model` is
+    lazy and created after the duplicate-instance check; every lifecycle
+    callback that can fire during a yielding duplicate's exit returns early.
+    A model built first starts discovery, reconnect and notification polling,
+    and once auto-started a second mirror beside the running instance.
 
 13a. **Phone Files never trusts a lexical shared-storage prefix by itself.**
     Reject dot traversal, quote every phone-side shell value, and resolve each
