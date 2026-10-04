@@ -76,10 +76,26 @@ final class ScrcpyVideoStream {
 
     /// Stall watchdog: only valid once live audio is confirmed. Video can go
     /// quiet on a static screen, but Opus packets stream continuously when
-    /// audio capture is active, so an audio-data stall is a real disconnect.
-    private static let stallTimeout: TimeInterval = 5
+    /// audio capture is active (about 50 per second, even in silence and with
+    /// the screen off), so an audio-data stall is a real disconnect. Three
+    /// seconds is about 150 missing packets: far beyond Wi-Fi jitter or a mesh
+    /// node hand-off, and quick enough that a dropped phone is noticed within
+    /// 3.5s instead of 5-6s. The longest gap per session is logged so the
+    /// margin can be checked on a real network.
+    nonisolated static let stallTimeout: TimeInterval = 3
+    nonisolated static let stallCheckInterval: TimeInterval = 0.5
     private var lastDataAt = Date()
+    private var longestDataGap: TimeInterval = 0
     private var stallTimer: DispatchSourceTimer?
+
+    nonisolated static func isStalled(lastDataAt: Date, now: Date, timeout: TimeInterval = stallTimeout) -> Bool {
+        now.timeIntervalSince(lastDataAt) > timeout
+    }
+
+    private func logLongestDataGapIfWatched() {
+        guard stallTimer != nil else { return }
+        Logger.log("ScrcpyVideoStream longest data gap=\(String(format: "%.2f", longestDataGap))s (stall limit \(Int(Self.stallTimeout))s)")
+    }
 
     var onHeader: HeaderHandler?
     var onPacket: PacketHandler?
@@ -143,6 +159,7 @@ final class ScrcpyVideoStream {
         guard !isStopped || stopQueued else { return }
         isStopped = true
         stopQueued = false
+        logLongestDataGapIfWatched()
         stallTimer?.cancel()
         stallTimer = nil
         onHeader = nil
@@ -254,11 +271,12 @@ final class ScrcpyVideoStream {
             return
         }
         lastDataAt = Date()
+        longestDataGap = 0
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + 1, repeating: 1)
+        timer.schedule(deadline: .now() + Self.stallCheckInterval, repeating: Self.stallCheckInterval)
         timer.setEventHandler { [weak self] in
             guard let self, !self.isStopped else { return }
-            guard Date().timeIntervalSince(self.lastDataAt) > Self.stallTimeout else { return }
+            guard Self.isStalled(lastDataAt: self.lastDataAt, now: Date()) else { return }
             Logger.log("ScrcpyVideoStream stalled — no data for \(Int(Self.stallTimeout))s; ending session")
             self.failStream("connection lost (no data for \(Int(Self.stallTimeout))s)")
         }
@@ -279,7 +297,11 @@ final class ScrcpyVideoStream {
                 return
             }
             if let data, !data.isEmpty {
-                self.lastDataAt = Date()
+                let now = Date()
+                if self.stallTimer != nil {
+                    self.longestDataGap = max(self.longestDataGap, now.timeIntervalSince(self.lastDataAt))
+                }
+                self.lastDataAt = now
                 handler(data)
             }
             if isComplete {
@@ -472,6 +494,7 @@ final class ScrcpyVideoStream {
         videoBuffer.removeAll()
         audioBuffer.removeAll()
         isStopped = true
+        logLongestDataGapIfWatched()
         stallTimer?.cancel()
         stallTimer = nil
         let error = NSError(

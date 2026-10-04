@@ -442,3 +442,14 @@ final class HelperAppDetectionTests: XCTestCase {
         XCTAssertFalse(AppModel.isHelperPermissionGranted(dumpsysPackageOutput: denied))
     }
 }
+
+/// The audio-data watchdog that turns a silent Wi-Fi drop into a disconnect.
+final class StreamStallTests: XCTestCase {
+    func testStallLimitIsThreeSecondsCheckedTwicePerSecond() {
+        XCTAssertEqual(ScrcpyVideoStream.stallTimeout, 3)
+        XCTAssertEqual(ScrcpyVideoStream.stallCheckInterval, 0.5)
+        let start = Date()
+        XCTAssertFalse(ScrcpyVideoStream.isStalled(lastDataAt: start, now: start.addingTimeInterval(2.9)))
+        XCTAssertTrue(ScrcpyVideoStream.isStalled(lastDataAt: start, now: start.addingTimeInterval(3.1)))
+    }
+}
