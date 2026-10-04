@@ -142,6 +142,17 @@ of these on purpose, update this file in the same commit.
    developer reset `com.mallenkb.PhoneRelay`, relaunch the app, and approve a
    fresh Local Network prompt.
 
+9a. **The app process and its child processes can get different Local
+    Network verdicts.** Observed 2026-10-04: in-process `NWBrowser` got
+    `PolicyDenied` on every launch while the app-spawned adb daemon reached
+    the LAN, with ~16 stale "Phone Relay" rows all toggled on. The opposite
+    split happened in August. So no in-process probe may be the only evidence
+    that a phone is unreachable: `LANProbe` re-runs a probe whose path reports
+    `localNetworkDenied` in a helper process (`nc -z`), and a denied Bonjour
+    browser is recreated every 60s while discovery falls back to `adb mdns`.
+    A sweep that silently failed this way used to park the phone as
+    "listener missing".
+
 10. **The `defaults` CLI lies about this app.** A stale sandbox container at
     `~/Library/Containers/com.mallenkb.PhoneRelay` makes `defaults read`
     resolve into the (empty) container while the non-sandboxed app writes to
@@ -171,6 +182,19 @@ of these on purpose, update this file in the same commit.
     that hardware identity instead of an address or mDNS instance name. Optional
     identities may match only when the incoming value is non-nil; `nil == nil`
     must never merge two phone records.
+
+13b. **A phone is found by serial, not by its Wi-Fi address.** Android can
+    rotate a randomized MAC and DHCP moves the IP, so a record without a
+    verified `wifiAddress` stays an automatic-reconnect candidate when it has
+    a USB serial and either advertises `adb-<serial>` over mDNS or (legacy
+    mode) was seen on Wi-Fi before. Such a record is never dialed by its
+    `lastAddress` (a USB serial); it is reached through a serial-matched mDNS
+    endpoint or the recovery sweep, which accepts a MAC match only on a host
+    with the port open and otherwise confirms `ro.serialno`. A MAC match on a
+    closed port means the phone is present with its `tcpip` listener gone
+    (rebooted), which is a "plug in once" verdict, not an address. After a
+    successful automatic Wi-Fi connect the observed IP and MAC are refreshed
+    over the wireless session.
 
 13a. **Phone Files never trusts a lexical shared-storage prefix by itself.**
     Reject dot traversal, quote every phone-side shell value, and resolve each

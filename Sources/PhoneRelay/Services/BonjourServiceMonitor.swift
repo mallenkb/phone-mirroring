@@ -30,8 +30,16 @@ final class BonjourServiceMonitor: @unchecked Sendable {
 
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "phonerelay.bonjour-monitor", qos: .utility)
-    private var browsers: [NWBrowser] = []
+    private var browsers: [String: NWBrowser] = [:]
     private var started = false
+    /// Types whose browser is waiting on a Local Network policy denial.
+    /// macOS does not always move a denied browser to `.ready` after the user
+    /// fixes the permission, so these are torn down and recreated on a timer.
+    private var policyDeniedTypes: Set<String> = []
+    private var restartScheduledTypes: Set<String> = []
+    nonisolated static let policyDeniedRestartInterval: TimeInterval = 60
+    /// `kDNSServiceErr_PolicyDenied`: the Local Network privacy denial.
+    nonisolated static let policyDeniedErrorCode: Int32 = -65570
     /// Types whose browser hit `.failed`. While any browser is down the
     /// monitor reports unavailable so callers use the legacy dns-sd sweep —
     /// a partial view would silently hide, say, pairable phones from the QR
@@ -81,6 +89,22 @@ final class BonjourServiceMonitor: @unchecked Sendable {
         return failedTypes.isEmpty && unavailableTypes.isEmpty ? .warming : .unavailable
     }
 
+    /// True while any browser is blocked by the Local Network privacy check.
+    /// Discovery then slows its `dns-sd` fallback instead of spawning it on
+    /// every poll.
+    var isPolicyDenied: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !policyDeniedTypes.isEmpty
+    }
+
+    nonisolated static func isPolicyDenial(_ error: NWError) -> Bool {
+        if case .dns(let code) = error {
+            return code == policyDeniedErrorCode
+        }
+        return false
+    }
+
     private func startIfNeeded() {
         lock.lock()
         if started {
@@ -91,49 +115,91 @@ final class BonjourServiceMonitor: @unchecked Sendable {
         lock.unlock()
 
         for type in Self.serviceTypes {
-            let browser = NWBrowser(for: .bonjour(type: type, domain: nil), using: .tcp)
-            browser.browseResultsChangedHandler = { [weak self] results, _ in
-                self?.apply(results: results, forType: type)
+            startBrowser(type: type)
+        }
+    }
+
+    private func startBrowser(type: String) {
+        let browser = NWBrowser(for: .bonjour(type: type, domain: nil), using: .tcp)
+        browser.browseResultsChangedHandler = { [weak self] results, _ in
+            self?.apply(results: results, forType: type)
+        }
+        browser.stateUpdateHandler = { [weak self, weak browser] state in
+            guard let self else { return }
+            self.lock.lock()
+            // A replaced browser's late callbacks must not touch current state.
+            guard let browser, self.browsers[type] === browser else {
+                self.lock.unlock()
+                return
             }
-            browser.stateUpdateHandler = { [weak self] state in
-                guard let self else { return }
-                self.lock.lock()
-                switch state {
-                case .failed(let error):
-                    self.failedTypes.insert(type)
-                    self.unavailableTypes.insert(type)
-                    self.readyTypes.remove(type)
-                    self.lock.unlock()
-                    ADBController.notifyDiscoveryObservers()
-                    Logger.log("Bonjour monitor browser failed type=\(type) error=\(error)")
-                case .ready:
-                    self.failedTypes.remove(type)
-                    self.unavailableTypes.remove(type)
-                    self.readyTypes.insert(type)
-                    self.lock.unlock()
-                    ADBController.notifyDiscoveryObservers()
-                case .waiting(let error):
-                    // Local Network denied, no interface, etc. The browser
-                    // still reports zero services, so stop claiming authority
-                    // and let the caller sweep instead of showing nothing.
-                    self.unavailableTypes.insert(type)
-                    self.readyTypes.remove(type)
-                    self.lock.unlock()
-                    ADBController.notifyDiscoveryObservers()
-                    Logger.log("Bonjour monitor browser waiting type=\(type) error=\(error)")
-                case .cancelled:
-                    self.unavailableTypes.insert(type)
-                    self.readyTypes.remove(type)
-                    self.lock.unlock()
-                    ADBController.notifyDiscoveryObservers()
-                default:
-                    self.lock.unlock()
+            switch state {
+            case .failed(let error):
+                self.failedTypes.insert(type)
+                self.unavailableTypes.insert(type)
+                self.readyTypes.remove(type)
+                self.policyDeniedTypes.remove(type)
+                self.lock.unlock()
+                ADBController.notifyDiscoveryObservers()
+                Logger.log("Bonjour monitor browser failed type=\(type) error=\(error)")
+            case .ready:
+                let recovered = self.policyDeniedTypes.remove(type) != nil
+                self.failedTypes.remove(type)
+                self.unavailableTypes.remove(type)
+                self.readyTypes.insert(type)
+                self.lock.unlock()
+                ADBController.notifyDiscoveryObservers()
+                if recovered {
+                    Logger.log("Bonjour monitor browser ready type=\(type) after Local Network denial")
                 }
+            case .waiting(let error):
+                // Local Network denied, no interface, etc. The browser
+                // still reports zero services, so stop claiming authority
+                // and let the caller sweep instead of showing nothing.
+                self.unavailableTypes.insert(type)
+                self.readyTypes.remove(type)
+                let denied = Self.isPolicyDenial(error)
+                if denied {
+                    self.policyDeniedTypes.insert(type)
+                }
+                self.lock.unlock()
+                ADBController.notifyDiscoveryObservers()
+                Logger.log("Bonjour monitor browser waiting type=\(type) error=\(error)")
+                if denied {
+                    self.scheduleRestart(type: type)
+                }
+            case .cancelled:
+                self.unavailableTypes.insert(type)
+                self.readyTypes.remove(type)
+                self.lock.unlock()
+                ADBController.notifyDiscoveryObservers()
+            default:
+                self.lock.unlock()
             }
-            browser.start(queue: queue)
-            lock.lock()
-            browsers.append(browser)
+        }
+        lock.lock()
+        browsers[type] = browser
+        lock.unlock()
+        browser.start(queue: queue)
+    }
+
+    private func scheduleRestart(type: String) {
+        lock.lock()
+        guard !restartScheduledTypes.contains(type) else {
             lock.unlock()
+            return
+        }
+        restartScheduledTypes.insert(type)
+        lock.unlock()
+        queue.asyncAfter(deadline: .now() + Self.policyDeniedRestartInterval) { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            self.restartScheduledTypes.remove(type)
+            let stillDenied = self.policyDeniedTypes.contains(type)
+            let old = stillDenied ? self.browsers.removeValue(forKey: type) : nil
+            self.lock.unlock()
+            guard stillDenied else { return }
+            old?.cancel()
+            self.startBrowser(type: type)
         }
     }
 

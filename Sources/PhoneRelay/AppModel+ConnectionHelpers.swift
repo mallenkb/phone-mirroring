@@ -728,6 +728,61 @@ extension AppModel {
         record.resolvedWiFiAddress != nil
     }
 
+    /// adbd names its mDNS service after the phone's hardware serial:
+    /// `adb-<ro.serialno>` for legacy `tcpip` mode and
+    /// `adb-<ro.serialno>-<random>` for Wireless debugging. That serial equals
+    /// the USB serial, so it identifies the phone whatever IP or MAC address it
+    /// currently has.
+    nonisolated static func mdnsInstance(_ instance: String, matchesSerial serial: String) -> Bool {
+        let serial = serial.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !serial.isEmpty, !isWirelessADBTarget(serial) else { return false }
+        let prefix = "adb-" + serial
+        guard instance.hasPrefix(prefix) else { return false }
+        let rest = instance.dropFirst(prefix.count)
+        return rest.isEmpty || rest.hasPrefix("-") || rest.hasPrefix(".")
+    }
+
+    /// Hardware serials a record can be matched by in mDNS service names.
+    nonisolated static func identitySerials(for record: PairedPhoneRecord) -> [String] {
+        var serials: [String] = []
+        for candidate in [record.resolvedUSBSerial, record.id].compactMap({ $0 })
+        where !candidate.isEmpty && !isWirelessADBTarget(candidate) && !serials.contains(candidate) {
+            serials.append(candidate)
+        }
+        return serials
+    }
+
+    nonisolated static func serialMatchedPhone(
+        for record: PairedPhoneRecord,
+        in phones: [DiscoveredPhone]
+    ) -> DiscoveredPhone? {
+        let serials = identitySerials(for: record)
+        guard !serials.isEmpty else { return nil }
+        return phones.first { phone in
+            phone.kind.isConnectable
+                && serials.contains { mdnsInstance(phone.id, matchesSerial: $0) }
+        }
+    }
+
+    /// Records the automatic Wi-Fi reconnect may work on. A verified endpoint
+    /// qualifies as before. So does a phone with no verified endpoint (never
+    /// saved, or lost) when it can still be found by serial: it advertises
+    /// itself over mDNS right now, or, in legacy mode, it has been seen on
+    /// Wi-Fi before (an IP or MAC captured over USB), so a subnet sweep that
+    /// checks `ro.serialno` can find it. Without this, such a phone was
+    /// skipped by every automatic Wi-Fi path and only a cable brought it back.
+    nonisolated static func isAutomaticWirelessReconnectCandidate(
+        _ record: PairedPhoneRecord,
+        allowLegacyCompatibility: Bool,
+        discoveredPhones: [DiscoveredPhone]
+    ) -> Bool {
+        if isWirelessRecord(record) { return true }
+        guard !identitySerials(for: record).isEmpty else { return false }
+        if serialMatchedPhone(for: record, in: discoveredPhones) != nil { return true }
+        return allowLegacyCompatibility
+            && (record.observedWiFiIPAddress != nil || record.wifiMACAddress != nil)
+    }
+
     nonisolated static func rememberedConnectablePhone(
         for record: PairedPhoneRecord,
         in phones: [DiscoveredPhone],
@@ -736,6 +791,9 @@ extension AppModel {
         let connectablePhones = phones.filter { $0.kind.isConnectable }
         if let exact = connectablePhones.first(where: { $0.id == record.id }) {
             return exact
+        }
+        if let bySerial = serialMatchedPhone(for: record, in: connectablePhones) {
+            return bySerial
         }
         guard let wifiAddress = record.resolvedWiFiAddress else { return nil }
         guard let expectedHost = host(in: wifiAddress) else {
@@ -1065,39 +1123,8 @@ extension AppModel {
         guard let endpoint = localNetworkEndpointParts(from: address) else { return true }
         guard shouldProbeADBPort(host: endpoint.host) else { return true }
 
-        let connection = NWConnection(
-            host: NWEndpoint.Host(endpoint.host),
-            port: NWEndpoint.Port(rawValue: endpoint.port) ?? 5555,
-            using: .tcp
-        )
-        let queue = DispatchQueue(label: "PhoneRelay.adb-tcp-probe", qos: .utility)
-        let completion = OneShotCallback()
-
-        return await withCheckedContinuation { continuation in
-            let finish: @Sendable (Bool) -> Void = { ready in
-                completion.run {
-                    connection.cancel()
-                    continuation.resume(returning: ready)
-                }
-            }
-
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    finish(true)
-                case .failed, .cancelled:
-                    finish(false)
-                default:
-                    break
-                }
-            }
-
-            connection.start(queue: queue)
-            Task {
-                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
-                finish(false)
-            }
-        }
+        let timeout = TimeInterval(timeoutNanoseconds) / 1_000_000_000
+        return await LANProbe.isPortOpen(host: endpoint.host, port: endpoint.port, timeout: timeout)
     }
 
     nonisolated static func shouldProbeADBPort(host: String) -> Bool {

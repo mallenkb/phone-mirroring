@@ -221,11 +221,37 @@ final class WiFiAddressRecoveryTests: XCTestCase {
                 displayName: "Pixel 8",
                 lastKnownIP: "192.168.1.50:5555"
             ),
-            sweep: { _ in [] },
+            sweep: { _ in ["192.168.1.73"] },
             readARP: { ["192.168.1.73": "aa:bb:cc:dd:ee:ff"] },
             localSubnets: { ["192.168.1."] }
         )
         XCTAssertEqual(resolved, "192.168.1.73:5555")
+    }
+
+    /// The saved MAC answering ARP on a host whose :5555 is closed is a phone
+    /// that rebooted: present on the LAN, listener gone. Returning that address
+    /// only made every dial fail and hid the "plug in once" verdict.
+    func testRecoverReportsClosedListenerWhenMACHostHasNoOpenPort() async {
+        let outcome = await WiFiAddressRecovery.recoverDetailed(
+            adb: ADBController(),
+            target: .init(
+                macAddress: "AA:BB:CC:DD:EE:FF",
+                usbSerial: "SERIAL1",
+                displayName: "Pixel 8",
+                lastKnownIP: "192.168.1.50"
+            ),
+            sweep: { _ in [] },
+            readARP: { ["192.168.1.73": "aa:bb:cc:dd:ee:ff"] },
+            localSubnets: { ["192.168.1."] },
+            runADB: { _, _ in
+                XCTFail("A phone found by MAC with a closed port must not trigger identity dials")
+                return ""
+            }
+        )
+        XCTAssertNil(outcome.address)
+        XCTAssertTrue(outcome.didSweep)
+        XCTAssertEqual(outcome.phoneHostWithClosedPort, "192.168.1.73")
+        XCTAssertTrue(outcome.foundNoADBListener)
     }
 
     func testRecoverReturnsNilWhenNothingMatches() async {

@@ -2975,7 +2975,7 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         let model = AppModel(startBackgroundServices: false, pairedPhones: [samsung, huawei])
         model.legacyWirelessCompatibilityEnabled = true
-        defer { model.legacyWirelessCompatibilityEnabled = false }
+        defer { UserDefaults.standard.removeObject(forKey: AppModel.legacyWirelessCompatibilityDefaultsKey) }
         model.connect(record: huawei, transport: AppModel.SavedConnectionTransport.wifi)
 
         let startedAt = Date()
@@ -3418,7 +3418,7 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
         model.legacyWirelessCompatibilityEnabled = true
-        defer { model.legacyWirelessCompatibilityEnabled = false }
+        defer { UserDefaults.standard.removeObject(forKey: AppModel.legacyWirelessCompatibilityDefaultsKey) }
 
         model.connectViaUSB()
         let startedAt = Date()
@@ -3862,7 +3862,7 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
         model.legacyWirelessCompatibilityEnabled = true
-        defer { model.legacyWirelessCompatibilityEnabled = false }
+        defer { UserDefaults.standard.removeObject(forKey: AppModel.legacyWirelessCompatibilityDefaultsKey) }
         let usb = AuthorizedADBDevice(
             serial: "TESTDEVICE001",
             product: "raven",
@@ -3918,7 +3918,7 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
         model.legacyWirelessCompatibilityEnabled = true
-        defer { model.legacyWirelessCompatibilityEnabled = false }
+        defer { UserDefaults.standard.removeObject(forKey: AppModel.legacyWirelessCompatibilityDefaultsKey) }
         // First call is the pre-tcpip listener probe; the second is the first
         // readiness probe, by which point `adb tcpip` has restarted adbd and
         // (in production) killed the USB mirror — bump the generation exactly

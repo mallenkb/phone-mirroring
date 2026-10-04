@@ -541,6 +541,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         )
         let model = AppModel(startBackgroundServices: false, pairedPhones: [record])
         model.legacyWirelessCompatibilityEnabled = false
+        defer { UserDefaults.standard.removeObject(forKey: AppModel.legacyWirelessCompatibilityDefaultsKey) }
 
         XCTAssertTrue(model.hasSavedWirelessConnection)
         XCTAssertFalse(model.isWirelessConnectionAvailable)
@@ -559,7 +560,7 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertFalse(model.hasVisibleSavedWirelessConnection)
 
         model.legacyWirelessCompatibilityEnabled = true
-        defer { model.legacyWirelessCompatibilityEnabled = false }
+        defer { UserDefaults.standard.removeObject(forKey: AppModel.legacyWirelessCompatibilityDefaultsKey) }
         XCTAssertTrue(model.isWirelessConnectionAvailable)
         XCTAssertTrue(model.hasVisibleSavedWirelessConnection)
     }

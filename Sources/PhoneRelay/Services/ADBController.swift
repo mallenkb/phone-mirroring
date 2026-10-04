@@ -53,6 +53,7 @@ struct ADBController: Sendable {
     @discardableResult
     func run(_ arguments: [String], timeout: TimeInterval? = nil) -> String {
         let command = Self.commandWord(in: arguments)
+        Self.waitForInFlightServerPrimeIfNeeded(before: command)
         let output: String
         if Self.executionPolicy(for: arguments) == .serialized {
             Self.commandLock.lock()
@@ -72,6 +73,7 @@ struct ADBController: Sendable {
     /// the absence of an error substring in merged output.
     func runResult(_ arguments: [String], timeout: TimeInterval? = nil) -> Tooling.RunResult {
         let command = Self.commandWord(in: arguments)
+        Self.waitForInFlightServerPrimeIfNeeded(before: command)
         let result: Tooling.RunResult
         if Self.executionPolicy(for: arguments) == .serialized {
             Self.commandLock.lock()
@@ -108,6 +110,45 @@ struct ADBController: Sendable {
     /// invalidates this state immediately.
     nonisolated static let serverPrimeReuseWindow: TimeInterval = 2
 
+    /// Signalled whenever an in-flight warm-up ends, so commands that arrived
+    /// during a cold start can wait for it instead of auto-spawning their own
+    /// daemon. Two adb clients starting a server at the same moment race for
+    /// the listening port and the loser aborts (observed at launch, when the
+    /// warm-up, notification polling, and `adb mdns services` all start
+    /// together).
+    private static let serverPrimeFinished = NSCondition()
+    /// Upper bound on that wait: the warm-up's own `start-server` timeout plus
+    /// slack. A wedged warm-up must never block every adb caller indefinitely.
+    nonisolated static let serverPrimeWaitTimeout: TimeInterval = 7
+
+    /// Commands that manage the daemon itself never wait: `start-server` is
+    /// the warm-up, and `kill-server` must stay immediate.
+    nonisolated static func shouldWaitForServerPrime(command: String?) -> Bool {
+        command != "start-server" && command != "kill-server"
+    }
+
+    private static func isServerPrimeInFlight() -> Bool {
+        serverPrimeLock.lock()
+        defer { serverPrimeLock.unlock() }
+        return serverPrimeInFlight
+    }
+
+    private static func waitForInFlightServerPrimeIfNeeded(before command: String?) {
+        guard shouldWaitForServerPrime(command: command), isServerPrimeInFlight() else { return }
+        let deadline = Date().addingTimeInterval(serverPrimeWaitTimeout)
+        serverPrimeFinished.lock()
+        while isServerPrimeInFlight(), Date() < deadline {
+            serverPrimeFinished.wait(until: deadline)
+        }
+        serverPrimeFinished.unlock()
+    }
+
+    private static func signalServerPrimeFinished() {
+        serverPrimeFinished.lock()
+        serverPrimeFinished.broadcast()
+        serverPrimeFinished.unlock()
+    }
+
     private static func finishServerPrime(executablePath: String?) {
         serverPrimeLock.lock()
         guard serverPrimeExecutablePath == executablePath else {
@@ -117,6 +158,7 @@ struct ADBController: Sendable {
         serverPrimeInFlight = false
         serverPrimeCompletedAt = Date()
         serverPrimeLock.unlock()
+        signalServerPrimeFinished()
     }
 
     private static func invalidateServerPrime() {
@@ -126,6 +168,7 @@ struct ADBController: Sendable {
         serverPrimeCompletedAt = nil
         serverPrimeExecutablePath = nil
         serverPrimeLock.unlock()
+        signalServerPrimeFinished()
     }
 
     /// Synchronous so the lock is never held across a suspension point.
@@ -198,6 +241,15 @@ struct ADBController: Sendable {
     /// (the idle no-phone state), so cache the fallback result briefly instead
     /// of re-browsing the network on every poll.
     nonisolated static let dnsSDFallbackCacheWindow: TimeInterval = 4
+    /// While macOS denies the in-process browsers, they won't come back on
+    /// their own within seconds, and every idle poll would otherwise respawn
+    /// the sweep. `adb mdns services` still runs on every poll first, so a
+    /// newly advertising phone is not held back by this window.
+    nonisolated static let dnsSDPolicyDeniedCacheWindow: TimeInterval = 15
+
+    nonisolated static func dnsSDFallbackCacheWindow(policyDenied: Bool) -> TimeInterval {
+        policyDenied ? dnsSDPolicyDeniedCacheWindow : dnsSDFallbackCacheWindow
+    }
     private static let dnsSDFallbackLock = NSLock()
     nonisolated(unsafe) private static var dnsSDFallbackFetchedAt: Date?
     nonisolated(unsafe) private static var dnsSDFallbackPhones: [DiscoveredPhone] = []
@@ -214,8 +266,11 @@ struct ADBController: Sendable {
 
         // Legacy sweep — only when a persistent browser failed outright.
         dnsSDFallbackLock.lock()
+        let cacheWindow = dnsSDFallbackCacheWindow(
+            policyDenied: BonjourServiceMonitor.shared.isPolicyDenied
+        )
         if let fetchedAt = dnsSDFallbackFetchedAt,
-           now.timeIntervalSince(fetchedAt) < dnsSDFallbackCacheWindow {
+           now.timeIntervalSince(fetchedAt) < cacheWindow {
             let cached = dnsSDFallbackPhones
             dnsSDFallbackLock.unlock()
             return cached

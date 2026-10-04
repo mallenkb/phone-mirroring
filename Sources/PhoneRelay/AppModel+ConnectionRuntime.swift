@@ -179,4 +179,18 @@ extension AppModel {
     var autoConnectEligiblePairedPhones: [PairedPhoneRecord] {
         pairedPhones.filter { !sessionAutoConnectSuspendedRecordIDs.contains($0.id) }
     }
+
+    /// Eligible records the automatic Wi-Fi reconnect can find, most recent
+    /// first. See `isAutomaticWirelessReconnectCandidate`.
+    var automaticWirelessReconnectRecords: [PairedPhoneRecord] {
+        let legacy = legacyWirelessCompatibilityEnabled
+        let phones = discoveredPhones
+        return Self.recordsByMostRecent(autoConnectEligiblePairedPhones).filter { record in
+            Self.isAutomaticWirelessReconnectCandidate(
+                record,
+                allowLegacyCompatibility: legacy,
+                discoveredPhones: phones
+            )
+        }
+    }
 }

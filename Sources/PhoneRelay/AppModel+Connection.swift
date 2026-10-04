@@ -380,8 +380,7 @@ extension AppModel {
     }
 
     func nextAutomaticReconnectRecord(now: Date = Date()) -> PairedPhoneRecord? {
-        var records = Self.recordsByMostRecent(autoConnectEligiblePairedPhones)
-            .filter(Self.isWirelessRecord)
+        var records = automaticWirelessReconnectRecords
         guard !records.isEmpty else { return nil }
 
         // A record whose LAN sweep proved the adb listener gone is parked: no
@@ -475,8 +474,7 @@ extension AppModel {
               !isPairing,
               !isAutoReconnectSuppressedForManualDisconnect,
               !connectionCoordinator.hasManualConnectionWorkInFlight else { return }
-        let records = Self.recordsByMostRecent(autoConnectEligiblePairedPhones)
-            .filter(Self.isWirelessRecord)
+        let records = automaticWirelessReconnectRecords
         let allowSingleCandidateFallback = records.count == 1
         let discoveredAddress: String?
         if case .discovery(let address, _) = trigger {
@@ -719,9 +717,7 @@ extension AppModel {
         // discovery/preflight now so it overlaps that cold start; any later
         // serialized `adb connect` naturally waits behind the shared warm-up.
 
-        let allowsSingleLiveCandidate = autoConnectEligiblePairedPhones
-            .filter(Self.isWirelessRecord)
-            .count == 1
+        let allowsSingleLiveCandidate = automaticWirelessReconnectRecords.count == 1
         let authorizedCandidate = Self.liveWirelessAuthorizedDevice(
             for: record,
             in: latestAuthorizedADBDevices
@@ -746,7 +742,10 @@ extension AppModel {
         // only for the direct shell-ready fast path above and prefer discovery
         // for any reconnect command that follows.
         let liveAddress = discoveredAddress ?? authorizedAddress
-        let savedAddress = record.resolvedWiFiAddress ?? record.lastAddress
+        // Only a verified Wi-Fi endpoint is dialable. A record without one is
+        // found by serial instead (mDNS above, or the recovery sweep below);
+        // its `lastAddress` is a USB serial, never something to `adb connect`.
+        let savedAddress = record.resolvedWiFiAddress
         let currentNetworkFingerprint = WiFiAddressRecovery.currentNetworkFingerprint()
         let networkChanged = connectionCoordinator.preferCurrentNetworkForNextReconnect
             || (record.wifiNetworkFingerprint.flatMap { previous in
@@ -788,7 +787,7 @@ extension AppModel {
                 shellTimeout: Self.wirelessHandoffShellTimeout
             )
 
-            if result.connectedAddress == nil, !networkChanged {
+            if result.connectedAddress == nil, !networkChanged, let savedAddress {
                 let fallbackCandidates = Self.canonicalReconnectCandidateAddresses(
                     savedAddress: savedAddress,
                     liveAddress: nil,
@@ -823,7 +822,7 @@ extension AppModel {
                 connectAttempts: 0,
                 noRouteToHostFailures: 0
             )
-        } else {
+        } else if let savedAddress {
             let candidates = Self.canonicalReconnectCandidateAddresses(
                 savedAddress: savedAddress,
                 liveAddress: liveAddress,
@@ -842,6 +841,14 @@ extension AppModel {
                 },
                 connectTimeout: Self.wirelessHandoffConnectTimeout,
                 shellTimeout: Self.wirelessHandoffShellTimeout
+            )
+        } else {
+            // No live endpoint and nothing verified to dial: go straight to
+            // the serial-matched recovery below.
+            result = RememberedWirelessConnectResult(
+                connectedAddress: nil,
+                connectAttempts: 0,
+                noRouteToHostFailures: 0
             )
         }
         guard ownsAttempt() else { return .failed(.temporarilyUnavailable) }
@@ -975,6 +982,7 @@ extension AppModel {
             usbSerial: record.resolvedUSBSerial,
             wifiAddress: addressToPersist
         )
+        refreshWiFiIdentityAfterWirelessConnect(recordID: record.id, sessionAddress: sessionAddress)
         failedAutoConnectTargets.removeValue(forKey: record.lastAddress)
         failedAutoConnectTargets.removeValue(forKey: sessionAddress)
         activeError = nil
@@ -1005,6 +1013,51 @@ extension AppModel {
         ) else { return false }
         launchNativeMirror(serial: sessionAddress)
         return true
+    }
+
+    /// Waits for the mirror's first frame before spending adb round-trips on
+    /// the identity refresh.
+    nonisolated static let wifiIdentityRefreshDelayNanoseconds: UInt64 = 5_000_000_000
+
+    /// Re-reads the phone's current Wi-Fi IP and MAC over a verified wireless
+    /// session. Android can rotate a randomized MAC and DHCP can move the IP,
+    /// so values captured over USB weeks ago are only hints. Keeping the
+    /// freshest ones lets recovery's fast MAC lookup keep working; when they
+    /// are stale anyway, recovery still finds the phone by serial.
+    func refreshWiFiIdentityAfterWirelessConnect(recordID: String, sessionAddress: String) {
+        guard Self.localNetworkEndpointParts(from: sessionAddress) != nil else { return }
+        let adb = self.adb
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.wifiIdentityRefreshDelayNanoseconds)
+            guard !Task.isCancelled else { return }
+            let identity = await Task.detached { () -> (ip: String?, mac: String?) in
+                let route = adb.run(
+                    ["-s", sessionAddress, "shell", "ip", "route"],
+                    timeout: Self.wirelessHandoffRouteQueryTimeout
+                )
+                let ip = Self.wifiIPAddress(in: route)
+                let mac = Self.resolveWiFiMACAddress(adb: adb, serial: sessionAddress, routeOutput: route)
+                return (ip, mac)
+            }.value
+            guard let self,
+                  let record = self.pairedPhones.first(where: { $0.id == recordID }),
+                  identity.ip != nil || identity.mac != nil
+            else { return }
+            let mac = PairedPhoneRecord.normalizedMACAddress(identity.mac)
+            if (identity.ip ?? record.observedWiFiIPAddress) == record.observedWiFiIPAddress,
+               (mac ?? record.wifiMACAddress) == record.wifiMACAddress {
+                return
+            }
+            Logger.log("Wi-Fi identity refreshed for \(record.displayName): ip=\(identity.ip ?? "unchanged") mac=\(mac ?? "unchanged")")
+            self.touchPairedPhone(
+                id: record.id,
+                displayName: record.displayName,
+                address: record.resolvedUSBSerial ?? record.lastAddress,
+                usbSerial: record.resolvedUSBSerial,
+                observedWiFiIPAddress: identity.ip,
+                wifiMACAddress: mac
+            )
+        }
     }
 
     /// Gate for the old "adopt a single visible Wi-Fi target when the paired
@@ -1327,10 +1380,14 @@ extension AppModel {
         ignoreCooldown: Bool = false,
         prioritizeCurrentNetwork: Bool = false
     ) async -> String? {
-        guard legacyWirelessCompatibilityEnabled,
-              let savedAddress = record.resolvedWiFiAddress,
-              Self.isLegacyWirelessAddress(savedAddress)
-        else { return nil }
+        guard legacyWirelessCompatibilityEnabled else { return nil }
+        // A saved TLS endpoint belongs to Wireless debugging, whose port
+        // changes every session; this sweep only looks for :5555. A record
+        // with no verified endpoint at all is still hunted by MAC and serial.
+        if let savedAddress = record.resolvedWiFiAddress,
+           !Self.isLegacyWirelessAddress(savedAddress) {
+            return nil
+        }
         let now = Date()
         if Self.shouldThrottleWiFiRecovery(
             lastAttemptAt: wifiAddressRecoveryAttemptedAt[record.id],
@@ -1354,7 +1411,7 @@ extension AppModel {
             macAddress: record.wifiMACAddress,
             usbSerial: record.resolvedUSBSerial,
             displayName: record.displayName,
-            lastKnownIP: record.resolvedWiFiAddress ?? record.lastAddress
+            lastKnownIP: record.resolvedWiFiAddress ?? record.observedWiFiIPAddress
         )
         Logger.log("Wi-Fi recovery: hunting for \(record.displayName) (mac=\(record.wifiMACAddress ?? "nil"))")
 
@@ -1368,6 +1425,9 @@ extension AppModel {
         // phone has no usable :5555 listener, even when an unrelated phone or
         // development board happens to expose that port on the same LAN.
         if outcome.address == nil && outcome.didSweep {
+            if let closedHost = outcome.phoneHostWithClosedPort {
+                Logger.log("Wi-Fi recovery: \(record.displayName) is on this network at \(closedHost) with adb over Wi-Fi off (phone restarted?)")
+            }
             wirelessListenerMissingRecordIDs.insert(record.id)
         } else {
             wirelessListenerMissingRecordIDs.remove(record.id)

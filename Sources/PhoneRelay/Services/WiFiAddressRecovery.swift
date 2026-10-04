@@ -66,6 +66,10 @@ enum WiFiAddressRecovery {
         var didSweep = false
         var scannedHostCount = 0
         var openHostCount = 0
+        /// The phone's saved MAC answered ARP at this IP, but its port was
+        /// closed. The phone is on this network and its `tcpip` listener is
+        /// gone, the signature of a phone reboot. Dialing it cannot work.
+        var phoneHostWithClosedPort: String?
 
         var foundNoADBListener: Bool {
             address == nil && didSweep && openHostCount == 0
@@ -137,6 +141,19 @@ enum WiFiAddressRecovery {
             openHosts.append(contentsOf: await runSweep(hosts))
             let arp = readARPTable()
             if let ip = matchIP(forMAC: target.macAddress, in: arp, preferring: Set(openHosts)) {
+                guard openHosts.contains(ip) else {
+                    // One phone has one Wi-Fi IP, so it can't also be behind
+                    // another open host. Report the closed listener instead of
+                    // returning an address that every dial would fail on.
+                    Logger.log("Wi-Fi recovery: MAC \(target.macAddress ?? "?") is at \(ip) but :\(port) is closed; the phone's adb listener is off")
+                    return Outcome(
+                        address: nil,
+                        didSweep: true,
+                        scannedHostCount: scannedHosts,
+                        openHostCount: openHosts.count,
+                        phoneHostWithClosedPort: ip
+                    )
+                }
                 Logger.log("Wi-Fi recovery: MAC \(target.macAddress ?? "?") resolved to \(ip) after \(index + 1)/\(prefixes.count) subnet(s)")
                 return Outcome(
                     address: "\(ip):\(port)",
@@ -453,32 +470,13 @@ enum WiFiAddressRecovery {
         return openHosts
     }
 
-    /// One TCP connection attempt with a hard timeout. `.ready` = open; refused,
-    /// failed, or timed-out = closed. Either way the SYN has triggered ARP.
+    /// One TCP connection attempt with a hard timeout. Open = accepted;
+    /// refused, failed, or timed out = closed. Either way the SYN has triggered
+    /// ARP. Falls back to a helper process when macOS denies the app process
+    /// Local Network access (see `LANProbe`).
     static func isPortOpen(host: String, port: Int, timeout: TimeInterval) async -> Bool {
-        guard let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else { return false }
-        let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .tcp)
-        let queue = DispatchQueue(label: "WiFiAddressRecovery.probe")
-        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            let settled = OnceFlag()
-            let finish: @Sendable (Bool) -> Void = { open in
-                guard settled.set() else { return }
-                connection.cancel()
-                continuation.resume(returning: open)
-            }
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    finish(true)
-                case .failed, .cancelled, .waiting:
-                    finish(false)
-                default:
-                    break
-                }
-            }
-            connection.start(queue: queue)
-            queue.asyncAfter(deadline: .now() + timeout) { finish(false) }
-        }
+        guard let port = UInt16(exactly: port) else { return false }
+        return await LANProbe.isPortOpen(host: host, port: port, timeout: timeout)
     }
 
     /// Connects to each open host and matches its adb identity to the target.
@@ -560,17 +558,5 @@ private struct IPv4Address {
             (value >> 8) & 0xff,
             value & 0xff,
         ].map(String.init).joined(separator: ".")
-    }
-}
-
-/// Single-fire latch so a continuation resumes exactly once.
-private final class OnceFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var fired = false
-    func set() -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        if fired { return false }
-        fired = true
-        return true
     }
 }
