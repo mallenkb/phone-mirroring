@@ -153,6 +153,16 @@ of these on purpose, update this file in the same commit.
     A sweep that silently failed this way used to park the phone as
     "listener missing".
 
+9b. **The app's adb daemon uses the native macOS USB backend
+    (`ADB_LIBUSB=0`).** The libusb backend resets the phone's USB device when
+    it claims it; the S906B re-enumerates, the first read fails, and the daemon
+    drops the cable transport until a replug (2026-10-04). A paired phone that
+    macOS lists on USB (IORegistry serial) but `adb devices` does not is
+    repaired automatically: `reconnect offline`, then the guarded daemon
+    restart only while nothing is mirroring. Never start an adb client from a
+    shell without `-P 5038` against a running app: a second daemon on 5037
+    claims the phone's USB interface and the app loses the cable.
+
 10. **The `defaults` CLI lies about this app.** A stale sandbox container at
     `~/Library/Containers/com.mallenkb.PhoneRelay` makes `defaults read`
     resolve into the (empty) container while the non-sandboxed app writes to

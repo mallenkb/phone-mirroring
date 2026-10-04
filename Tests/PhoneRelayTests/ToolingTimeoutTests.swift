@@ -10,6 +10,12 @@ final class ToolingTimeoutTests: XCTestCase {
         XCTAssertNil(Tooling.processEnvironment(for: "unzip"))
     }
 
+    /// libusb resets the phone's USB device on claim, which made the daemon
+    /// lose the cable transport until a replug.
+    func testADBDaemonUsesNativeMacOSUSBBackend() {
+        XCTAssertEqual(Tooling.processEnvironment(for: "adb")?["ADB_LIBUSB"], "0")
+    }
+
     func testADBConnectCommandsAreSerialized() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PhoneRelayTests-\(UUID().uuidString)")

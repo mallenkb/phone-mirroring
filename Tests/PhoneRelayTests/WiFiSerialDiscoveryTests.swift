@@ -230,3 +230,75 @@ private final class ProbeCallCounter: @unchecked Sendable {
     func increment() { lock.withLock { count += 1 } }
     var value: Int { lock.withLock { count } }
 }
+
+/// Telling a lost USB transport apart from an unplugged cable.
+final class USBTransportHealingTests: XCTestCase {
+    func testADBUSBSerialsIncludeEveryCableStateButNotWiFi() {
+        let output = """
+        List of devices attached
+        RFCT10ZLTAJ            device usb:34603008X product:g0sxxx model:SM_S906B device:g0s transport_id:1
+        OTHERPHONE             unauthorized usb:2-1 transport_id:3
+        192.168.68.50:5555     device product:g0sxxx model:SM_S906B device:g0s transport_id:2
+        adb-RFCT10ZLTAJ-x._adb-tls-connect._tcp device product:g0sxxx transport_id:4
+        """
+        XCTAssertEqual(AppModel.adbUSBSerials(in: output), ["RFCT10ZLTAJ", "OTHERPHONE"])
+    }
+
+    func testIORegSerialNumbersAreParsed() {
+        let output = """
+        +-o SAMSUNG_Android@02100000  <class IOUSBHostDevice, id 0x100022b6a>
+            "USB Product Name" = "SAMSUNG_Android"
+            "USB Serial Number" = "RFCT10ZLTAJ"
+            "kUSBSerialNumberString" = "RFCT10ZLTAJ"
+        +-o Keyboard@01100000  <class IOUSBHostDevice>
+            "USB Serial Number" = "KB123"
+        """
+        XCTAssertEqual(AppModel.usbSerialNumbers(inIORegOutput: output), ["RFCT10ZLTAJ", "KB123"])
+    }
+
+    func testOnlyPairedPhonesOnTheCableWithoutAnADBTransportNeedRepair() {
+        XCTAssertEqual(
+            AppModel.usbPhonesMissingFromADB(
+                macUSBSerials: ["RFCT10ZLTAJ", "KB123"],
+                adbUSBSerials: [],
+                pairedUSBSerials: ["RFCT10ZLTAJ"]
+            ),
+            ["RFCT10ZLTAJ"]
+        )
+        // Unplugged: macOS no longer sees it, nothing to repair.
+        XCTAssertEqual(
+            AppModel.usbPhonesMissingFromADB(macUSBSerials: ["KB123"], adbUSBSerials: [], pairedUSBSerials: ["RFCT10ZLTAJ"]),
+            []
+        )
+        // Healthy, including an unauthorized row.
+        XCTAssertEqual(
+            AppModel.usbPhonesMissingFromADB(macUSBSerials: ["RFCT10ZLTAJ"], adbUSBSerials: ["RFCT10ZLTAJ"], pairedUSBSerials: ["RFCT10ZLTAJ"]),
+            []
+        )
+    }
+}
+
+/// The first adb command starts the shared daemon warm-up instead of letting
+/// the client auto-start a second daemon.
+final class ADBServerPrimeTests: XCTestCase {
+    func testFirstCommandStartsServerBeforeRunning() throws {
+        let fake = try FakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        exit 0
+        """)
+        defer { fake.cleanup() }
+        let original = ADBController.primesServerBeforeFirstCommand
+        ADBController.primesServerBeforeFirstCommand = true
+        defer { ADBController.primesServerBeforeFirstCommand = original }
+
+        let adb = ADBController()
+        _ = adb.run(["kill-server"], timeout: 2)   // resets the warm-up state
+        _ = adb.run(["devices", "-l"], timeout: 2)
+        _ = adb.run(["devices", "-l"], timeout: 2)
+
+        let calls = (try? String(contentsOf: fake.log, encoding: .utf8))?
+            .split(whereSeparator: \.isNewline).map(String.init) ?? []
+        XCTAssertEqual(calls, ["kill-server", "start-server", "devices -l", "devices -l"])
+    }
+}

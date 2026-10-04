@@ -19,6 +19,15 @@ enum Tooling {
         guard toolName == "adb" else { return nil }
         var environment = ProcessInfo.processInfo.environment
         environment["ANDROID_ADB_SERVER_PORT"] = privateADBServerPort
+        // Use adb's native macOS USB backend. The libusb backend resets the
+        // phone's USB device when it claims it; a Galaxy S22 then re-enumerates,
+        // the first read fails, and the server drops the transport and never
+        // picks it up again until the cable is replugged (observed 2026-10-04:
+        // cable in, macOS sees the phone, `adb devices` shows only Wi-Fi). Only
+        // a newly started daemon reads this.
+        if environment["ADB_LIBUSB"] == nil {
+            environment["ADB_LIBUSB"] = "0"
+        }
         return environment
     }
 

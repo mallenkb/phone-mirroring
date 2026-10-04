@@ -1874,6 +1874,9 @@ extension AppModel {
             // no devices. Warm it once (shared single-flight with connection
             // workflows) before the loop instead of burning polls on a race.
             await adb.primeServerIfNeeded()
+            // A phone already on the cable at launch never produces an attach
+            // event, so check its USB transport once.
+            self?.scheduleUSBTransportHealthCheck(reason: "launch")
             while !Task.isCancelled {
                 let output = await Task.detached {
                     adb.run(["devices", "-l"], timeout: Self.adbDeviceListTimeout)
@@ -2370,6 +2373,7 @@ extension AppModel {
             Logger.log("Fix Connection: mirror active — refreshing presence only (daemon restart skipped by rule 1)")
             scanADBDevices()
             wakeDeviceWatcher()
+            scheduleUSBTransportHealthCheck(reason: "fix-connection button")
             return
         }
         recoverADBDaemonIfSafe(force: true, reason: "fix-connection button")
@@ -2398,6 +2402,7 @@ extension AppModel {
         // very next poll instead of the 3s throttle window.
         lastPresenceAutoConnectAttemptAt = nil
         wakeDeviceWatcher()
+        scheduleUSBTransportHealthCheck(reason: "usb attach")
     }
 
     /// Device-watcher sleep that external events can cut short. All watcher
@@ -4746,6 +4751,7 @@ extension AppModel {
             isPathLossConfirmed: isNetworkPathLossConfirmed
         )
         recordADBHealth(output, authorizedDevices: devices)
+        observeUSBTransportPresence(adbOutput: output)
         prefillWirelessRouteForPresentUSBDeviceIfNeeded(devices)
         if explicitDeviceSetupRequired,
            let usbDevice = devices.first(where: \.isUSB) {

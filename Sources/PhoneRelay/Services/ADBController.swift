@@ -53,7 +53,7 @@ struct ADBController: Sendable {
     @discardableResult
     func run(_ arguments: [String], timeout: TimeInterval? = nil) -> String {
         let command = Self.commandWord(in: arguments)
-        Self.waitForInFlightServerPrimeIfNeeded(before: command)
+        Self.waitForServerPrimeIfNeeded(before: command, controller: self)
         let output: String
         if Self.executionPolicy(for: arguments) == .serialized {
             Self.commandLock.lock()
@@ -73,7 +73,7 @@ struct ADBController: Sendable {
     /// the absence of an error substring in merged output.
     func runResult(_ arguments: [String], timeout: TimeInterval? = nil) -> Tooling.RunResult {
         let command = Self.commandWord(in: arguments)
-        Self.waitForInFlightServerPrimeIfNeeded(before: command)
+        Self.waitForServerPrimeIfNeeded(before: command, controller: self)
         let result: Tooling.RunResult
         if Self.executionPolicy(for: arguments) == .serialized {
             Self.commandLock.lock()
@@ -135,9 +135,29 @@ struct ADBController: Sendable {
         return serverPrimeInFlight && serverPrimeExecutablePath == executablePath
     }
 
-    private static func waitForInFlightServerPrimeIfNeeded(before command: String?) {
+    /// True until this binary has been warmed once (and again after
+    /// `kill-server`), while no warm-up is running.
+    private static func needsServerPrime(executablePath: String?) -> Bool {
+        serverPrimeLock.lock()
+        defer { serverPrimeLock.unlock() }
+        guard !(serverPrimeInFlight && serverPrimeExecutablePath == executablePath) else { return false }
+        return serverPrimeCompletedAt == nil || serverPrimeExecutablePath != executablePath
+    }
+
+    /// When true, the first adb command of a session starts the shared
+    /// warm-up itself and waits for it, rather than letting the adb client
+    /// auto-start a daemon of its own alongside it (two daemons race for the
+    /// port and the phone's USB interface; the loser aborts). Off under XCTest
+    /// so fake-adb tests keep asserting exact command sequences;
+    /// `WiFiSerialDiscoveryTests` turns it on to cover it.
+    nonisolated(unsafe) static var primesServerBeforeFirstCommand = !Logger.isRunningUnderXCTest
+
+    private static func waitForServerPrimeIfNeeded(before command: String?, controller: ADBController) {
         guard shouldWaitForServerPrime(command: command) else { return }
         let executablePath = Tooling.toolPath(named: "adb")
+        if primesServerBeforeFirstCommand, needsServerPrime(executablePath: executablePath) {
+            _ = sharedServerPrimeTask(for: controller)
+        }
         guard isServerPrimeInFlight(executablePath: executablePath) else { return }
         let deadline = Date().addingTimeInterval(serverPrimeWaitTimeout)
         serverPrimeFinished.lock()

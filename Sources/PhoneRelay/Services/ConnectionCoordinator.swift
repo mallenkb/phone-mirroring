@@ -211,6 +211,11 @@ final class ConnectionCoordinator {
     var reconnectTask: Task<Void, Never>?
     var disconnectRecoveryTask: Task<Void, Never>?
     var adbDaemonRecoveryTask: Task<Void, Never>?
+    /// USB serials in the last `adb devices` output, so a vanished paired
+    /// phone can be told apart from one that was never on the cable.
+    var lastADBUSBSerials: Set<String> = []
+    /// The single in-flight lost-USB-transport repair episode.
+    var usbTransportHealTask: Task<Void, Never>?
     var automaticReconnectTask: Task<Void, Never>?
     var automaticReconnectState: AutomaticReconnectState = .idle
     var automaticReconnectGeneration = 0
