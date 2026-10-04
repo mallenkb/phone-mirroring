@@ -535,6 +535,42 @@ struct SettingsView: View {
                     detail: "Legacy ADB may require an authorized key, but its traffic is not TLS encrypted. Turn this off if you use only secure Wireless debugging."
                 )
             }
+
+            SettingsGroup(
+                title: "Reconnect after restarts",
+                footnote: "Optional. Without the helper, plug the phone in once after each restart."
+            ) {
+                toggleRow(
+                    icon: "arrow.clockwise",
+                    isOn: $model.installsHelperWhenPhoneConnects,
+                    title: "Use Phone Relay Helper",
+                    subtitle: "Installs a small app on your phone the next time it connects.",
+                    detail: "Android turns wireless connections off when the phone restarts. The helper turns them back on, only while USB debugging is on, so Phone Relay reconnects without a cable."
+                )
+
+                rowDivider
+
+                HStack(spacing: 10) {
+                    Text(model.helperAppStatus.summary)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if model.helperAppStatus == .installing || model.helperAppStatus == .needsPermission {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Button("Install Now") {
+                        model.installHelperAppNow()
+                    }
+                    .disabled(
+                        model.helperTargetSerial == nil
+                            || model.helperAppStatus == .ready
+                            || model.helperAppStatus == .installing
+                    )
+                    .help(model.helperTargetSerial == nil ? "Connect your phone first" : "Install Phone Relay Helper on the connected phone")
+                }
+                .padding(14)
+            }
         }
     }
 

@@ -543,6 +543,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var lastConnectionStall: ConnectionStall?
     /// What the last Fix Connection press did; shown next to the button.
     @Published var fixConnectionStatus: String?
+    /// Phone Relay Helper on the connected phone; see AppModel+HelperApp.swift.
+    @Published var helperAppStatus: HelperAppStatus = .unknown
+    @Published var installsHelperWhenPhoneConnects: Bool =
+        UserDefaults.standard.bool(forKey: AppModel.installsHelperWhenPhoneConnectsDefaultsKey) {
+        didSet {
+            UserDefaults.standard.set(installsHelperWhenPhoneConnects, forKey: Self.installsHelperWhenPhoneConnectsDefaultsKey)
+        }
+    }
     /// Most recent saved screenshot or screen recording, for "reveal in Finder".
     // Setter not private: written from AppModel+Capture.swift (pure-move
     // split); treat as private elsewhere.

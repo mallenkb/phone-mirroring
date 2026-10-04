@@ -11,7 +11,9 @@ final class ReleaseReadinessTests: XCTestCase {
         )
 
         let entries = manifest.split(whereSeparator: \.isNewline)
-        XCTAssertEqual(entries.count, 2)
+        // adb, scrcpy-server, and the bundled Phone Relay Helper APK.
+        XCTAssertEqual(entries.count, 3)
+        XCTAssertTrue(entries.contains { $0.hasSuffix("Sources/PhoneRelay/Resources/PhoneRelayHelper.apk") })
         for entry in entries {
             let fields = entry.split(maxSplits: 1, whereSeparator: \.isWhitespace)
             XCTAssertEqual(fields.count, 2, "Malformed release artifact manifest entry: \(entry)")

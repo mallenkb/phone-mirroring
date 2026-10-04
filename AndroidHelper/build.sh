@@ -54,3 +54,16 @@ fi
   --out "$APK" "$OUT/aligned.apk"
 "$BUILD_TOOLS/apksigner" verify "$APK"
 echo "Built $APK"
+
+# --bundle copies the APK into the Mac app's resources (Phone Relay installs it
+# from there) and refreshes its line in the tracked-artifact checksum list.
+if [[ "${1:-}" == "--bundle" ]]; then
+  ROOT="$(cd "$HERE/.." && pwd)"
+  RESOURCE="Sources/PhoneRelay/Resources/PhoneRelayHelper.apk"
+  MANIFEST="$ROOT/scripts/release-artifacts.sha256"
+  cp "$APK" "$ROOT/$RESOURCE"
+  grep -v " $RESOURCE\$" "$MANIFEST" > "$MANIFEST.tmp" || true
+  (cd "$ROOT" && shasum -a 256 "$RESOURCE") >> "$MANIFEST.tmp"
+  mv "$MANIFEST.tmp" "$MANIFEST"
+  echo "Bundled into $RESOURCE"
+fi

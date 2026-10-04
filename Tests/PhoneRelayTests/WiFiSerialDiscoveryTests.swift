@@ -453,3 +453,32 @@ final class StreamStallTests: XCTestCase {
         XCTAssertTrue(ScrcpyVideoStream.isStalled(lastDataAt: start, now: start.addingTimeInterval(3.1)))
     }
 }
+
+/// Optional helper install from onboarding and Settings.
+final class HelperOnboardingTests: XCTestCase {
+    func testOnboardingEndsWithTheOptionalHelperStep() {
+        XCTAssertEqual(FirstRunOnboardingView.Step.allCases, [.welcome, .permissions, .helper])
+    }
+
+    func testHelperIsBundledWithTheApp() throws {
+        let url = try XCTUnwrap(AppModel.bundledHelperAPKURL)
+        let size = try XCTUnwrap(try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int)
+        XCTAssertGreaterThan(size, 1_000)
+    }
+
+    func testInstallSuccessIsReadFromADBOutput() {
+        XCTAssertTrue(AppModel.adbInstallSucceeded("Performing Streamed Install\nSuccess\n"))
+        XCTAssertFalse(AppModel.adbInstallSucceeded("adb: failed to install x.apk: Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]"))
+    }
+
+    func testHelperIsOptInByDefault() {
+        let defaults = UserDefaults(suiteName: "PhoneRelayTests.helper.\(UUID().uuidString)")!
+        XCTAssertFalse(defaults.bool(forKey: AppModel.installsHelperWhenPhoneConnectsDefaultsKey))
+    }
+
+    func testStatusSummariesReadPlainly() {
+        XCTAssertEqual(HelperAppStatus.ready.summary, "Installed and active")
+        XCTAssertEqual(HelperAppStatus.notInstalled.summary, "Not installed")
+        XCTAssertTrue(HelperAppStatus.failed("x").summary.hasPrefix("Couldn't install"))
+    }
+}

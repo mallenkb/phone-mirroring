@@ -1158,6 +1158,8 @@ struct FirstRunOnboardingView: View {
     enum Step: Int, CaseIterable {
         case welcome
         case permissions
+        /// Optional: Phone Relay Helper for cable-free reconnect after restarts.
+        case helper
     }
 
     @EnvironmentObject private var model: AppModel
@@ -1195,7 +1197,8 @@ struct FirstRunOnboardingView: View {
 
             ZStack(alignment: .topLeading) {
                 stepSurface(welcomeContent, isActive: step == .welcome, hiddenOffset: -28)
-                stepSurface(permissionsContent, isActive: step == .permissions, hiddenOffset: 28)
+                stepSurface(permissionsContent, isActive: step == .permissions, hiddenOffset: step == .helper ? -28 : 28)
+                stepSurface(helperContent, isActive: step == .helper, hiddenOffset: 28)
             }
             .padding(.horizontal, panelPadding)
             .padding(.top, 28)
@@ -1251,6 +1254,9 @@ struct FirstRunOnboardingView: View {
 
             permissionBadges
                 .opacity(step == .permissions ? 1 : 0)
+
+            helperBadges
+                .opacity(step == .helper ? 1 : 0)
         }
         .frame(width: panelWidth, height: heroHeight)
         .clipped()
@@ -1327,6 +1333,15 @@ struct FirstRunOnboardingView: View {
             heroPermissionCircle(icon: "iphone.gen3.radiowaves.left.and.right", size: 132)
                 .zIndex(1)
             heroPermissionCircle(icon: "bell.badge", size: 106)
+        }
+    }
+
+    private var helperBadges: some View {
+        HStack(spacing: -18) {
+            heroPermissionCircle(icon: "arrow.clockwise", size: 106)
+            heroPermissionCircle(icon: "iphone.gen3", size: 132)
+                .zIndex(1)
+            heroPermissionCircle(icon: "wifi", size: 106)
         }
     }
 
@@ -1421,6 +1436,35 @@ struct FirstRunOnboardingView: View {
         .frame(width: innerWidth, alignment: .leading)
     }
 
+    private var helperContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            stepTitle("Reconnect after restarts")
+            stepSubtitle("Optional. A small helper app on your phone lets Phone Relay reconnect over Wi-Fi after the phone restarts, without plugging in.")
+
+            VStack(alignment: .leading, spacing: 16) {
+                setupRow(
+                    icon: "arrow.clockwise",
+                    title: "After a restart",
+                    detail: "Android turns wireless connections off when the phone restarts. The helper turns them back on."
+                )
+
+                setupRow(
+                    icon: "cable.connector",
+                    title: "Installed for you",
+                    detail: "Phone Relay installs it the next time your phone connects. Nothing to download."
+                )
+
+                setupRow(
+                    icon: "hand.raised",
+                    title: "Your choice",
+                    detail: "It only acts while USB debugging is on. You can install it later in Settings, or remove it from your phone."
+                )
+            }
+            .padding(.top, 24)
+        }
+        .frame(width: innerWidth, alignment: .leading)
+    }
+
     private func stepTitle(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 27, weight: .bold))
@@ -1479,15 +1523,46 @@ struct FirstRunOnboardingView: View {
 
                 Spacer()
 
-                Button("Get Started") {
+                Button("Continue") {
                     guard canContinue else { return }
-                    model.completeFirstTimeUserOnboarding()
+                    step = .helper
                 }
                 .buttonStyle(OnboardingPillButtonStyle(kind: .primary, isDarkMode: isEffectiveDarkMode))
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canContinue)
                 .opacity(canContinue ? 1 : 0.45)
-                .help(canContinue ? "Start using Phone Relay" : "Allow Local Network to continue")
+                .help(canContinue ? "Continue" : "Allow Local Network to continue")
+            case .helper:
+                Button {
+                    step = .permissions
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("Back")
+                    }
+                }
+                .buttonStyle(OnboardingPillButtonStyle(kind: .secondary, isDarkMode: isEffectiveDarkMode))
+
+                Spacer()
+
+                Button("Skip") {
+                    model.installsHelperWhenPhoneConnects = false
+                    model.completeFirstTimeUserOnboarding()
+                }
+                .buttonStyle(OnboardingPillButtonStyle(kind: .secondary, isDarkMode: isEffectiveDarkMode))
+                .help("Start without the helper. You'll plug in once after each phone restart.")
+
+                Button("Install When Connected") {
+                    model.installsHelperWhenPhoneConnects = true
+                    model.completeFirstTimeUserOnboarding()
+                    if model.helperTargetSerial != nil {
+                        model.installHelperAppNow()
+                    }
+                }
+                .buttonStyle(OnboardingPillButtonStyle(kind: .primary, isDarkMode: isEffectiveDarkMode))
+                .keyboardShortcut(.defaultAction)
+                .help("Phone Relay installs the helper the next time your phone connects")
             }
         }
         .overlay(stepIndicator)
