@@ -44,7 +44,9 @@ final class ReleaseReadinessTests: XCTestCase {
         )
         XCTAssertTrue(verifier.contains(#"[[ ! -x "$ADB_HELPER" ]]"#))
         XCTAssertTrue(verifier.contains(#"[[ ! -f "$SCRCPY_SERVER" ]]"#))
-        XCTAssertTrue(verifier.contains("lipo -verify_arch"))
+        // Each required architecture must be present in the bundled adb.
+        XCTAssertTrue(verifier.contains(#"lipo -archs "$ADB_HELPER""#))
+        XCTAssertTrue(verifier.contains("for architecture in x86_64 arm64"))
         XCTAssertTrue(verifier.contains("/usr/bin/unzip -tqq"))
     }
 

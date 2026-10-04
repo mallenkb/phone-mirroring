@@ -59,12 +59,11 @@ final class OnboardingMirrorHoldTests: XCTestCase {
     func testCompletionClearsOnboardingActiveAndArmsSettleWindow() {
         let defaults = UserDefaults.standard
         let seenKey = "hasSeenFirstTimeUserOnboarding"
-        let explicitKey = "MirrorBehavior.explicitDeviceSetupRequired"
         let previousSeen = defaults.object(forKey: seenKey)
-        let previousExplicit = defaults.object(forKey: explicitKey)
+        let explicitSetupSnapshot = ExplicitSetupFlagSnapshot()
         defer {
             restore(defaults, key: seenKey, value: previousSeen)
-            restore(defaults, key: explicitKey, value: previousExplicit)
+            explicitSetupSnapshot.restore()
         }
 
         let model = AppModel(startBackgroundServices: false)

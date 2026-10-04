@@ -24,14 +24,8 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     @MainActor
     func testClearAllDevicesResetsSelectedDeviceAndRequiresExplicitSetup() {
         let defaults = UserDefaults.standard
-        let previousExplicitSetup = defaults.object(forKey: explicitDeviceSetupRequiredDefaultsKey)
-        defer {
-            if let previousExplicitSetup {
-                defaults.set(previousExplicitSetup, forKey: explicitDeviceSetupRequiredDefaultsKey)
-            } else {
-                defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
-            }
-        }
+        let explicitSetupSnapshot = ExplicitSetupFlagSnapshot()
+        defer { explicitSetupSnapshot.restore() }
         defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
 
         let record = PairedPhoneRecord(
@@ -78,14 +72,8 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     @MainActor
     func testClearedDeviceStateAdoptsAuthorizedUSBPresenceImmediately() {
         let defaults = UserDefaults.standard
-        let previousExplicitSetup = defaults.object(forKey: explicitDeviceSetupRequiredDefaultsKey)
-        defer {
-            if let previousExplicitSetup {
-                defaults.set(previousExplicitSetup, forKey: explicitDeviceSetupRequiredDefaultsKey)
-            } else {
-                defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
-            }
-        }
+        let explicitSetupSnapshot = ExplicitSetupFlagSnapshot()
+        defer { explicitSetupSnapshot.restore() }
         defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
 
         let model = AppModel(startBackgroundServices: false)
@@ -105,24 +93,22 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     @MainActor
     func testUnsavedAuthorizedUSBPresenceCreatesOnlineDevicePill() {
         let defaults = UserDefaults.standard
-        let previousExplicitSetup = defaults.object(forKey: explicitDeviceSetupRequiredDefaultsKey)
-        defer {
-            if let previousExplicitSetup {
-                defaults.set(previousExplicitSetup, forKey: explicitDeviceSetupRequiredDefaultsKey)
-            } else {
-                defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
-            }
-        }
+        let explicitSetupSnapshot = ExplicitSetupFlagSnapshot()
+        defer { explicitSetupSnapshot.restore() }
         defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
+        let isolated = IsolatedPairedPhoneStore()
+        defer { isolated.cleanup() }
 
-        let model = AppModel(startBackgroundServices: false)
+        let model = AppModel(startBackgroundServices: false, pairedPhones: [], store: isolated.store)
 
         model.applyDevicePresence("""
         List of devices attached
         RFCT10ZLTAJ device usb:336592896X product:g0qxxx model:SM_S906B device:g0q transport_id:4
         """)
 
-        XCTAssertTrue(model.pairedPhones.isEmpty)
+        // An authorized USB phone is remembered by its serial as soon as it
+        // appears, unless the user cleared all devices.
+        XCTAssertEqual(model.pairedPhones.map(\.id), ["RFCT10ZLTAJ"])
         XCTAssertEqual(model.selectedDevice.adbSerial, "RFCT10ZLTAJ")
         XCTAssertEqual(model.selectedDevice.network, "USB debugging")
         XCTAssertTrue(model.isSelectedDeviceOnline)
@@ -396,7 +382,7 @@ final class MirrorReconnectBackoffTests: XCTestCase {
 
         XCTAssertTrue(source.contains("rememberedWirelessAutoConnectRecord"))
         XCTAssertTrue(source.contains("requestAutomaticReconnect(trigger:"))
-        XCTAssertTrue(source.contains("performAutomaticWirelessReconnect(record:"))
+        XCTAssertTrue(source.contains("performAutomaticWirelessReconnect("))
         XCTAssertTrue(helpers.contains("connectToRememberedWireless("))
         // Automatic reconnect must never share the wire with a user-initiated
         // connect flow: both the entry point and the loop guard on manual work.
@@ -2487,8 +2473,23 @@ final class MirrorReconnectBackoffTests: XCTestCase {
     // that address is persisted as the record's lastAddress — so reconnect dials
     // Wi-Fi instead of looping on the dead USB serial.
     @MainActor
-    func testLiveWiFiTransportReplacesAndPersistsOverStaleUSBSerial() {
-        withoutExplicitDeviceSetupRequired {
+    func testLiveWiFiTransportReplacesAndPersistsOverStaleUSBSerial() async throws {
+        // The listed Wi-Fi row is persisted only after it answers a fresh shell
+        // sentinel (INVARIANTS.md rule 13), so the fake phone answers one.
+        let fake = try FakeADB(script: """
+        #!/bin/sh
+        echo "$@" >> "$ADB_FAKE_LOG"
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+          echo "$5"
+          exit 0
+        fi
+        exit 0
+        """)
+        defer { fake.cleanup() }
+        let explicitSetupSnapshot = ExplicitSetupFlagSnapshot()
+        defer { explicitSetupSnapshot.restore() }
+        explicitSetupSnapshot.clear()
+        do {
             let record = PairedPhoneRecord(
                 id: "adb-RFCT10ZLTAJ",
                 displayName: "SM S906B",
@@ -2516,6 +2517,11 @@ final class MirrorReconnectBackoffTests: XCTestCase {
 
             XCTAssertTrue(model.isSelectedDeviceOnline)
             XCTAssertEqual(model.selectedDevice.adbSerial, "192.168.68.57:5555")
+            let startedAt = Date()
+            while model.pairedPhones.first?.lastAddress != "192.168.68.57:5555",
+                  Date().timeIntervalSince(startedAt) < 5 {
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
             XCTAssertEqual(model.pairedPhones.first?.lastAddress, "192.168.68.57:5555")
         }
     }

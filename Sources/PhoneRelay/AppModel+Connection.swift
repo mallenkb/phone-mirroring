@@ -3079,7 +3079,7 @@ extension AppModel {
             // and phone share a directly routable LAN. On another network the
             // exact same probe result means handoff cannot work, and restarting
             // adbd would only remove the usable USB transport.
-            guard Self.localIPv4Address(matchingRemoteAddress: legacyAddress) != nil else {
+            guard Self.localLANAddress(legacyAddress) != nil else {
                 Logger.log("Wi-Fi handoff phase=network-mismatch usb=\(usbDevice.serial) address=\(legacyAddress); preserving USB")
                 return false
             }
@@ -3883,7 +3883,11 @@ extension AppModel {
             return
         }
 
-        if let record, Self.isWirelessRecord(record) {
+        if let record, Self.isAutomaticWirelessReconnectCandidate(
+            record,
+            allowLegacyCompatibility: legacyWirelessCompatibilityEnabled,
+            discoveredPhones: discoveredPhones
+        ) {
             reconnectOverWiFi(
                 preferredRecord: record,
                 inlineUntilConnected: true,
@@ -4325,9 +4329,10 @@ extension AppModel {
                     self.showConnectionWindow(startsQRCodePairing: false)
                     return
                 }
+                let target = matchedRecord.map { "\($0.displayName) at \(address)" } ?? address
                 self.reportError(
                     Self.wifiConnectionNotReadyErrorTitle,
-                    "Phone Relay could not reach \(address). Keep both devices on the same Wi-Fi. Connect this phone by USB, approve USB debugging, and click Connect again so Phone Relay can enable the Wi-Fi connection. Check that the entered IP matches the phone's current Wi-Fi address."
+                    "Phone Relay could not reach \(target). Keep both devices on the same Wi-Fi. Connect this phone by USB, approve USB debugging, and click Connect again so Phone Relay can enable the Wi-Fi connection. Check that the entered IP matches the phone's current Wi-Fi address."
                 )
                 self.showConnectionWindow(startsQRCodePairing: false)
                 return

@@ -1389,7 +1389,7 @@ extension AppModel {
         wirelessAddress: String,
         timeout: TimeInterval = 2
     ) async {
-        guard let localAddress = localIPv4Address(matchingRemoteAddress: wirelessAddress) else {
+        guard let localAddress = localLANAddress(wirelessAddress) else {
             Logger.log("ADB Wi-Fi handoff route prime skipped: no local IPv4 address matches \(wirelessAddress)")
             return
         }
@@ -1415,6 +1415,14 @@ extension AppModel {
             timeout: 1.25
         )
         return result.output.localizedCaseInsensitiveContains("no route to host")
+    }
+
+    /// The Mac's own address on the phone's LAN, or nil when they share no
+    /// directly routable subnet. Replaceable so tests can model a same-LAN
+    /// phone at a documentation address without depending on the network the
+    /// test machine happens to be on.
+    nonisolated(unsafe) static var localLANAddress: @Sendable (String) -> String? = { remoteAddress in
+        localIPv4Address(matchingRemoteAddress: remoteAddress)
     }
 
     nonisolated static func localIPv4Address(matchingRemoteAddress remoteAddress: String) -> String? {

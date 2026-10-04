@@ -127,17 +127,21 @@ struct ADBController: Sendable {
         command != "start-server" && command != "kill-server"
     }
 
-    private static func isServerPrimeInFlight() -> Bool {
+    /// Only a warm-up of the same adb binary starts the daemon this command
+    /// will talk to; one for another binary must not hold it up.
+    private static func isServerPrimeInFlight(executablePath: String?) -> Bool {
         serverPrimeLock.lock()
         defer { serverPrimeLock.unlock() }
-        return serverPrimeInFlight
+        return serverPrimeInFlight && serverPrimeExecutablePath == executablePath
     }
 
     private static func waitForInFlightServerPrimeIfNeeded(before command: String?) {
-        guard shouldWaitForServerPrime(command: command), isServerPrimeInFlight() else { return }
+        guard shouldWaitForServerPrime(command: command) else { return }
+        let executablePath = Tooling.toolPath(named: "adb")
+        guard isServerPrimeInFlight(executablePath: executablePath) else { return }
         let deadline = Date().addingTimeInterval(serverPrimeWaitTimeout)
         serverPrimeFinished.lock()
-        while isServerPrimeInFlight(), Date() < deadline {
+        while isServerPrimeInFlight(executablePath: executablePath), Date() < deadline {
             serverPrimeFinished.wait(until: deadline)
         }
         serverPrimeFinished.unlock()
@@ -209,8 +213,14 @@ struct ADBController: Sendable {
     /// Keep it bounded so a wedged daemon cannot stall the fallback cycle.
     nonisolated static let mdnsServicesTimeout: TimeInterval = 2
 
+    /// Replaceable so tests can drive discovery through a fake
+    /// `adb mdns services` regardless of the test host's Local Network state.
+    nonisolated(unsafe) static var bonjourSnapshot: @Sendable () -> BonjourServiceMonitor.ServiceSnapshot = {
+        BonjourServiceMonitor.shared.serviceSnapshot()
+    }
+
     func mdnsServices() -> [DiscoveredPhone] {
-        let snapshot = BonjourServiceMonitor.shared.serviceSnapshot()
+        let snapshot = Self.bonjourSnapshot()
         switch snapshot {
         case .available(let services):
             // Resolution completion emits a wake event, so a newly-seen

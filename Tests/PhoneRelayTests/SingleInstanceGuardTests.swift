@@ -214,7 +214,7 @@ final class SingleInstanceGuardTests: XCTestCase {
         XCTAssertTrue(modelSource.contains("func mirrorLaunchFrameForNextSession() -> NSRect?"))
         XCTAssertTrue(modelSource.contains("return activeScreen.frame.intersects(candidate) ? candidate : nil"))
         XCTAssertFalse(modelSource.contains("?? (shouldAssertForegroundPresentation"))
-        XCTAssertTrue(modelSource.contains("?? Self.shouldKeepConnectionWindowVisibleDuringMirrorLaunch("))
+        XCTAssertTrue(modelSource.contains("|| Self.shouldKeepConnectionWindowVisibleDuringMirrorLaunch("))
         XCTAssertTrue(modelSource.contains("connectionWindowPresentation(appIsActive: shouldAssertForegroundPresentation)"))
         XCTAssertTrue(modelSource.contains("if shouldAssertForegroundPresentation {\n            NSApp?.activate(ignoringOtherApps: true)\n        }"))
         XCTAssertTrue(mirrorWindowSource.contains("if model.shouldAssertForegroundPresentation {\n            NSApp.activate(ignoringOtherApps: true)\n        }"))

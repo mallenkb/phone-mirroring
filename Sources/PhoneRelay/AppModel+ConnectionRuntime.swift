@@ -193,4 +193,40 @@ extension AppModel {
             )
         }
     }
+
+    // MARK: - Explicit device setup
+
+    func requireExplicitDeviceSetup() {
+        explicitDeviceSetupRequired = true
+        Self.setExplicitDeviceSetupRequiredPreference(true)
+    }
+
+    func clearExplicitDeviceSetupRequirement() {
+        explicitDeviceSetupRequired = false
+        Self.setExplicitDeviceSetupRequiredPreference(false)
+    }
+
+    nonisolated static func explicitDeviceSetupRequiredPreference() -> Bool {
+        if UserDefaults.standard.bool(forKey: explicitDeviceSetupRequiredDefaultsKey) {
+            return true
+        }
+        for suiteName in PairedPhoneStore.compatibilitySuites {
+            if UserDefaults(suiteName: suiteName)?.bool(forKey: explicitDeviceSetupRequiredDefaultsKey) == true {
+                return true
+            }
+        }
+        return false
+    }
+
+    nonisolated static func setExplicitDeviceSetupRequiredPreference(_ required: Bool) {
+        let defaults = [UserDefaults.standard]
+            + PairedPhoneStore.compatibilitySuites.compactMap { UserDefaults(suiteName: $0) }
+        for defaults in defaults {
+            if required {
+                defaults.set(true, forKey: explicitDeviceSetupRequiredDefaultsKey)
+            } else {
+                defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
+            }
+        }
+    }
 }

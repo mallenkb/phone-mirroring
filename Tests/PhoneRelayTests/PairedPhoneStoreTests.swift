@@ -354,13 +354,28 @@ final class PairedPhoneStoreTests: XCTestCase {
     }
 
     func testDefaultCompatibilitySuitesExcludeCurrentBundleDomain() {
-        XCTAssertFalse(PairedPhoneStore.compatibilitySuites.contains("com.mallenkb.PhoneRelay"))
+        XCTAssertFalse(PairedPhoneStore.legacyCompatibilitySuites.contains("com.mallenkb.PhoneRelay"))
         XCTAssertEqual(
-            PairedPhoneStore.compatibilitySuites.count,
-            Set(PairedPhoneStore.compatibilitySuites).count,
+            PairedPhoneStore.legacyCompatibilitySuites.count,
+            Set(PairedPhoneStore.legacyCompatibilitySuites).count,
             "Compatibility suites should be unique so migration does not read or clear a domain twice."
         )
-        XCTAssertTrue(PairedPhoneStore.compatibilitySuites.contains("com.mallenkb.AndroidMirrorScrcpy"))
+        XCTAssertTrue(PairedPhoneStore.legacyCompatibilitySuites.contains("com.mallenkb.AndroidMirrorScrcpy"))
+        XCTAssertEqual(
+            PairedPhoneStore.suites(isRunningUnderXCTest: false),
+            PairedPhoneStore.legacyCompatibilitySuites
+        )
+    }
+
+    /// Tests share these domain names with the installed app, so writing the
+    /// real ones from a test could make the real app wipe its saved phones.
+    func testTestRunsNeverTouchTheRealCompatibilityDomains() {
+        XCTAssertTrue(Logger.isRunningUnderXCTest)
+        XCTAssertTrue(Set(PairedPhoneStore.compatibilitySuites)
+            .isDisjoint(with: PairedPhoneStore.legacyCompatibilitySuites))
+        XCTAssertTrue(PairedPhoneStore.compatibilitySuites.allSatisfy {
+            $0.hasPrefix("PhoneRelayTests.")
+        })
     }
 
     func testLoadMergesCurrentUSBRecordWithHistoricalWirelessRecord() {

@@ -164,7 +164,7 @@ final class AppModel: ObservableObject {
     nonisolated static var canUseUserNotifications: Bool {
         Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app"
     }
-    private nonisolated static let explicitDeviceSetupRequiredDefaultsKey =
+    nonisolated static let explicitDeviceSetupRequiredDefaultsKey =
         "MirrorBehavior.explicitDeviceSetupRequired"
     private nonisolated static let localNetworkSettingsURL =
         URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!
@@ -1109,6 +1109,13 @@ final class AppModel: ObservableObject {
             return selectedDevice.network.localizedCaseInsensitiveContains("wi-fi")
                 || selectedDevice.network.localizedCaseInsensitiveContains("wireless")
         }
+        // A leftover :5555 transport is not a usable route while legacy
+        // compatibility is off, unless a mirror is already running on it.
+        if Self.isWirelessADBTarget(serial), !isMirroring, !Self.isAllowedWirelessAddress(
+            serial, allowLegacyCompatibility: legacyWirelessCompatibilityEnabled
+        ) {
+            return false
+        }
         return Self.isWirelessADBTarget(serial)
             || selectedDevice.network.localizedCaseInsensitiveContains("wi-fi")
             || selectedDevice.network.localizedCaseInsensitiveContains("wireless")
@@ -1816,9 +1823,16 @@ final class AppModel: ObservableObject {
         transportIntent = connectionIntent
         resumeDiscoveryAfterManualConnect()
 
-        let ordered = Self.recordsByMostRecent(pairedPhones).filter(Self.isWirelessRecord)
+        // Records without a verified endpoint are included when they can be
+        // found by serial; the dial loop skips them and recovery hunts for them.
+        let legacy = legacyWirelessCompatibilityEnabled
+        let phones = discoveredPhones
+        let isFindable: (PairedPhoneRecord) -> Bool = {
+            Self.isAutomaticWirelessReconnectCandidate($0, allowLegacyCompatibility: legacy, discoveredPhones: phones)
+        }
+        let ordered = Self.recordsByMostRecent(pairedPhones).filter(isFindable)
         let wirelessRecords: [PairedPhoneRecord]
-        if let preferredRecord, Self.isWirelessRecord(preferredRecord) {
+        if let preferredRecord, isFindable(preferredRecord) {
             wirelessRecords = restrictToPreferredRecord
                 ? [preferredRecord]
                 : [preferredRecord] + ordered.filter { $0.id != preferredRecord.id }
@@ -2156,40 +2170,6 @@ final class AppModel: ObservableObject {
             for target in targets {
                 let output = adb.run(["disconnect", target], timeout: 2)
                 Logger.log("Disconnected forgotten wireless ADB target \(target): \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
-            }
-        }
-    }
-
-    func requireExplicitDeviceSetup() {
-        explicitDeviceSetupRequired = true
-        Self.setExplicitDeviceSetupRequiredPreference(true)
-    }
-
-    func clearExplicitDeviceSetupRequirement() {
-        explicitDeviceSetupRequired = false
-        Self.setExplicitDeviceSetupRequiredPreference(false)
-    }
-
-    nonisolated static func explicitDeviceSetupRequiredPreference() -> Bool {
-        if UserDefaults.standard.bool(forKey: explicitDeviceSetupRequiredDefaultsKey) {
-            return true
-        }
-        for suiteName in PairedPhoneStore.compatibilitySuites {
-            if UserDefaults(suiteName: suiteName)?.bool(forKey: explicitDeviceSetupRequiredDefaultsKey) == true {
-                return true
-            }
-        }
-        return false
-    }
-
-    private nonisolated static func setExplicitDeviceSetupRequiredPreference(_ required: Bool) {
-        let defaults = [UserDefaults.standard]
-            + PairedPhoneStore.compatibilitySuites.compactMap { UserDefaults(suiteName: $0) }
-        for defaults in defaults {
-            if required {
-                defaults.set(true, forKey: explicitDeviceSetupRequiredDefaultsKey)
-            } else {
-                defaults.removeObject(forKey: explicitDeviceSetupRequiredDefaultsKey)
             }
         }
     }

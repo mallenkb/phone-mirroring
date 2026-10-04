@@ -7,6 +7,29 @@ final class ADBDeviceParsingTests: XCTestCase {
         _ = TestDomainHygiene.sweepOnce
     }
 
+    private var originalLocalLANAddress: (@Sendable (String) -> String?)!
+
+    /// Fake phones in this suite live on 192.0.2.0/24 (TEST-NET-1). Model the
+    /// Mac as sharing that LAN so the same-LAN proof in the handoff passes on
+    /// any test machine; other addresses keep the real check.
+    override func setUp() {
+        super.setUp()
+        originalLocalLANAddress = AppModel.localLANAddress
+        let real = AppModel.localLANAddress
+        AppModel.localLANAddress = { remote in
+            if AppModel.localNetworkEndpointParts(from: remote)?.host.hasPrefix("192.0.2.") == true
+                || remote.hasPrefix("192.0.2.") {
+                return "192.0.2.10"
+            }
+            return real(remote)
+        }
+    }
+
+    override func tearDown() {
+        AppModel.localLANAddress = originalLocalLANAddress
+        super.tearDown()
+    }
+
     private let explicitDeviceSetupRequiredDefaultsKey = "MirrorBehavior.explicitDeviceSetupRequired"
 
     private func withoutExplicitDeviceSetupRequired(_ body: () async throws -> Void) async rethrows {
@@ -53,7 +76,20 @@ final class ADBDeviceParsingTests: XCTestCase {
 
     @MainActor
     func testPresenceOfFreshWirelessADBDeviceCreatesRememberedPhone() async throws {
-        await withoutExplicitDeviceSetupRequired {
+        try await withoutExplicitDeviceSetupRequired {
+            // A listed wireless row is persisted only after it answers a fresh
+            // shell sentinel, so the fake phone must answer one. Without a fake
+            // this test reached the real adb server.
+            let fake = try installFakeADB(script: """
+            #!/bin/sh
+            echo "$@" >> "$ADB_FAKE_LOG"
+            if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ]; then
+              echo "$5"
+              exit 0
+            fi
+            exit 0
+            """)
+            defer { fake.cleanup() }
             let isolated = isolatedPairedPhoneStore()
             defer { isolated.cleanup() }
             let model = AppModel(startBackgroundServices: false, pairedPhones: [], store: isolated.store)
@@ -68,6 +104,7 @@ final class ADBDeviceParsingTests: XCTestCase {
             XCTAssertEqual(model.connectionPillState, .online)
             XCTAssertEqual(model.connectionDeviceLabel, "SM S906B")
             XCTAssertEqual(model.connectionChoiceTitle, "SM S906B is connected")
+            try await waitUntil(timeout: 5) { !model.pairedPhones.isEmpty }
             XCTAssertEqual(model.pairedPhones.count, 1)
             XCTAssertEqual(model.pairedPhones.first?.displayName, "SM S906B")
             XCTAssertEqual(model.pairedPhones.first?.wifiAddress, "192.168.68.54:5555")
@@ -476,7 +513,10 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(model.selectedDevice.adbSerial, "TESTDEVICE001")
         XCTAssertEqual(model.selectedDevice.network, "USB debugging")
         let calls = loggedCalls(fake.log)
-        XCTAssertTrue(calls.contains("kill-server"))
+        // Only offline transports are repaired; a global kill-server would
+        // drop every other phone's healthy route (INVARIANTS.md rule 1).
+        XCTAssertTrue(calls.contains("reconnect offline"))
+        XCTAssertFalse(calls.contains("kill-server"))
         XCTAssertTrue(calls.contains("start-server"))
         model.stopMirroring()
         try await Task.sleep(nanoseconds: 500_000_000)
@@ -553,7 +593,11 @@ final class ADBDeviceParsingTests: XCTestCase {
         let discoveredWiFi = try XCTUnwrap(
             body.range(of: "Self.rememberedConnectablePhone(", range: liveWiFi.upperBound..<body.endIndex)
         )
-        let savedWiFi = try XCTUnwrap(body.range(of: "reconnectOverWiFi("))
+        // The live branch also calls reconnectOverWiFi; the saved-route call is
+        // the one after discovery.
+        let savedWiFi = try XCTUnwrap(
+            body.range(of: "reconnectOverWiFi(", range: discoveredWiFi.upperBound..<body.endIndex)
+        )
         let liveUSB = try XCTUnwrap(body.range(of: "connectViaSavedUSB(record: record, explicit: false)"))
 
         XCTAssertLessThan(liveWiFi.lowerBound, discoveredWiFi.lowerBound)
@@ -940,7 +984,9 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         XCTAssertEqual(model.activeError?.title, AppModel.wifiConnectionNotReadyErrorTitle)
         let calls = loggedCalls(fake.log)
-        XCTAssertTrue(calls.contains("mdns services"))
+        // Discovery may answer from the in-process Bonjour browsers without an
+        // `adb mdns services` call, depending on the test host's Local Network
+        // state; what matters is which port gets dialed.
         XCTAssertTrue(calls.contains("connect 192.0.2.44:5555"))
         XCTAssertFalse(calls.contains("connect 192.0.2.44:43123"))
     }
@@ -3422,16 +3468,17 @@ final class ADBDeviceParsingTests: XCTestCase {
 
         model.connectViaUSB()
         let startedAt = Date()
-        while (!model.hasActiveMirrorSession || model.pairedPhones.first?.wifiAddress != "192.0.2.44:5555"),
+        while !model.hasActiveMirrorSession,
               Date().timeIntervalSince(startedAt) < 10 {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
         XCTAssertTrue(model.hasActiveMirrorSession)
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 3.5)
         XCTAssertEqual(model.selectedDevice.adbSerial, "TESTDEVICE001")
         XCTAssertEqual(model.pairedPhones.first?.usbSerial, "TESTDEVICE001")
-        XCTAssertEqual(model.pairedPhones.first?.wifiAddress, "192.0.2.44:5555")
-        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 3.5)
+        // Every Wi-Fi connect fails, so nothing is verified (INVARIANTS.md 13).
+        XCTAssertNil(model.pairedPhones.first?.wifiAddress)
         model.stopMirroring()
         try await Task.sleep(nanoseconds: 500_000_000)
     }
@@ -3478,7 +3525,10 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertEqual(model.manualADBTarget, "192.0.2.44")
         XCTAssertEqual(model.selectedDevice.adbSerial, "TESTDEVICE001")
         XCTAssertEqual(model.pairedPhones.first?.usbSerial, "TESTDEVICE001")
-        XCTAssertEqual(model.pairedPhones.first?.wifiAddress, "192.0.2.44:5555")
+        // No listener answered, so the IP is observation, not a verified
+        // endpoint (INVARIANTS.md rule 13).
+        XCTAssertEqual(model.pairedPhones.first?.observedWiFiIPAddress, "192.0.2.44")
+        XCTAssertNil(model.pairedPhones.first?.wifiAddress)
         try await Task.sleep(nanoseconds: 1_000_000_000)
         XCTAssertFalse(loggedCalls(fake.log).contains("-s TESTDEVICE001 tcpip 5555"))
         model.stopMirroring()
@@ -3518,16 +3568,14 @@ final class ADBDeviceParsingTests: XCTestCase {
         TESTDEVICE001 device usb:100000001X product:g0sxxx model:SM_S906B device:g0s transport_id:1
         """)
 
-        let startedAt = Date()
-        while model.pairedPhones.first?.wifiAddress != "192.0.2.44:5555",
-              Date().timeIntervalSince(startedAt) < 3 {
-            try await Task.sleep(nanoseconds: 50_000_000)
-        }
+        try await waitUntil(timeout: 3) { model.pairedPhones.first?.observedWiFiIPAddress != nil }
 
         XCTAssertEqual(model.manualADBTarget, "192.0.2.44")
         XCTAssertEqual(model.pairedPhones.first?.usbSerial, "TESTDEVICE001")
-        XCTAssertEqual(model.pairedPhones.first?.wifiAddress, "192.0.2.44:5555")
-        XCTAssertEqual(model.pairedPhones.first?.lastAddress, "192.0.2.44:5555")
+        // Observed over USB only; never promoted without a verified connect.
+        XCTAssertEqual(model.pairedPhones.first?.observedWiFiIPAddress, "192.0.2.44")
+        XCTAssertNil(model.pairedPhones.first?.wifiAddress)
+        XCTAssertEqual(model.pairedPhones.first?.lastAddress, "TESTDEVICE001")
         XCTAssertFalse(loggedCalls(fake.log).contains("tcpip 5555"))
         XCTAssertFalse(model.hasActiveMirrorSession)
     }
@@ -3664,6 +3712,10 @@ final class ADBDeviceParsingTests: XCTestCase {
         exit 0
         """)
         defer { fake.cleanup() }
+        // The fake phone already accepts connections on 5555.
+        let originalProbe = AppModel.adbTCPPortProbe
+        AppModel.adbTCPPortProbe = { _ in true }
+        defer { AppModel.adbTCPPortProbe = originalProbe }
 
         let model = AppModel(startBackgroundServices: false, pairedPhones: [])
 
@@ -3676,6 +3728,7 @@ final class ADBDeviceParsingTests: XCTestCase {
         XCTAssertTrue(model.hasActiveMirrorSession)
         XCTAssertEqual(model.selectedDevice.adbSerial, "TESTDEVICE001")
         XCTAssertEqual(model.selectedDevice.network, "USB debugging")
+        try await waitUntil(timeout: 5) { model.pairedPhones.first?.resolvedWiFiAddress != nil }
         XCTAssertEqual(model.pairedPhones.first?.resolvedWiFiAddress, "192.0.2.44:5555")
         try await Task.sleep(nanoseconds: 1_000_000_000)
         let calls = loggedCalls(fake.log)
@@ -3821,6 +3874,9 @@ final class ADBDeviceParsingTests: XCTestCase {
         let calls = loggedCalls(fake.log)
         XCTAssertFalse(calls.contains { $0.contains("tcpip 5555") })
         XCTAssertFalse(calls.contains { $0.contains("-s 192.0.2.44:5555 shell CLASSPATH=") })
+        // An explicit USB choice verifies an already-listening route in the
+        // background after the USB mirror starts.
+        try await waitUntil(timeout: 5) { model.pairedPhones.first?.resolvedWiFiAddress != nil }
         XCTAssertEqual(model.pairedPhones.first?.resolvedWiFiAddress, "192.0.2.44:5555")
         model.stopMirroring()
         try await Task.sleep(nanoseconds: 500_000_000)
@@ -3875,8 +3931,10 @@ final class ADBDeviceParsingTests: XCTestCase {
             .filter { $0 == "-s TESTDEVICE001 tcpip 5555" }.count
         XCTAssertEqual(tcpipAfterFirst, 1)
         XCTAssertTrue(model.legacyHandoffFailedSerialsForTesting.contains("TESTDEVICE001"))
-        // The current Wi-Fi IP is saved even though the handoff didn't complete.
-        XCTAssertTrue(model.pairedPhones.contains { $0.lastAddress == "192.0.2.44:5555" })
+        // The current Wi-Fi IP is saved as an observation even though the
+        // handoff didn't complete; it is not promoted to a dialable endpoint.
+        XCTAssertTrue(model.pairedPhones.contains { $0.observedWiFiIPAddress == "192.0.2.44" })
+        XCTAssertFalse(model.pairedPhones.contains { $0.lastAddress == "192.0.2.44:5555" })
 
         _ = await model.prepareWirelessHandoffForTesting(usb)
         let tcpipAfterSecond = loggedCalls(fake.log)
@@ -4141,6 +4199,11 @@ final class ADBDeviceParsingTests: XCTestCase {
         model.manualADBTarget = "192.168.68.67:37123"
         model.manualWirelessPairingCode = "123456"
         XCTAssertTrue(model.canPairManualWirelessTarget)
+        // The paired phone's connect service comes from the fake
+        // `adb mdns services`, so keep the host's real Bonjour out of it.
+        let originalSnapshot = ADBController.bonjourSnapshot
+        ADBController.bonjourSnapshot = { .unavailable }
+        defer { ADBController.bonjourSnapshot = originalSnapshot }
 
         model.pairManualWirelessTarget()
         let startedAt = Date()
@@ -4322,13 +4385,39 @@ final class ADBDeviceParsingTests: XCTestCase {
         })
     }
 
+    /// Polls `condition` on the main actor until it holds or `timeout` passes.
+    @MainActor
+    private func waitUntil(timeout: TimeInterval, _ condition: () -> Bool) async throws {
+        let startedAt = Date()
+        while !condition(), Date().timeIntervalSince(startedAt) < timeout {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+
+    /// Every real adb device answers `shell echo <sentinel>`, and the app's
+    /// strict USB readiness check requires that answer before it launches a
+    /// mirror. Fakes written before that check fell through to a silent
+    /// `exit 0` and failed readiness for reasons unrelated to what they test.
+    static func withShellEchoSentinel(_ script: String) -> String {
+        let sentinel = """
+        if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "echo" ] && [ "$5" = "phone-relay-usb-ok" ]; then
+          echo "phone-relay-usb-ok"
+          exit 0
+        fi
+        """
+        var lines = script.components(separatedBy: "\n")
+        let insertAt = (lines.firstIndex { $0.contains("ADB_FAKE_LOG") } ?? 0) + 1
+        lines.insert(sentinel, at: min(insertAt, lines.count))
+        return lines.joined(separator: "\n")
+    }
+
     private func installFakeADB(script: String) throws -> (log: URL, cleanup: () -> Void) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PhoneRelayTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let fakeADB = directory.appendingPathComponent("adb")
         let log = directory.appendingPathComponent("adb.log")
-        try script.write(to: fakeADB, atomically: true, encoding: .utf8)
+        try Self.withShellEchoSentinel(script).write(to: fakeADB, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755],
             ofItemAtPath: fakeADB.path

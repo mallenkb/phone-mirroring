@@ -480,8 +480,9 @@ final class MirrorWindowChromeTests: XCTestCase {
         let viewSource = try String(contentsOf: viewSourceURL, encoding: .utf8)
         let modelSource = try SourceTestSupport.appModelImplementation()
 
-        XCTAssertTrue(viewSource.contains("private var isUSBButtonBusy: Bool {\n        inlineConnectingTransport == .usb\n    }"))
-        XCTAssertTrue(viewSource.contains("private var isWirelessButtonBusy: Bool {\n        inlineConnectingTransport == .wifi\n    }"))
+        // A row stops spinning once the mirror is up.
+        XCTAssertTrue(viewSource.contains("private var isUSBButtonBusy: Bool {\n        inlineConnectingTransport == .usb && !model.isMirroring\n    }"))
+        XCTAssertTrue(viewSource.contains("private var isWirelessButtonBusy: Bool {\n        inlineConnectingTransport == .wifi && !model.isMirroring\n    }"))
         XCTAssertTrue(viewSource.contains("private var isChooserButtonDisabled: Bool"))
         XCTAssertTrue(viewSource.contains("isDisabled: isChooserButtonDisabled"))
         XCTAssertTrue(viewSource.contains("guard !isDisabled else { return }"))
@@ -498,7 +499,8 @@ final class MirrorWindowChromeTests: XCTestCase {
         XCTAssertTrue(viewSource.contains("network.localizedCaseInsensitiveContains(\"wireless\")"))
         XCTAssertTrue(viewSource.contains("Self.connectionOnlineGreen : .white"))
         XCTAssertTrue(viewSource.contains("model.connectViaAvailableWireless()"))
-        XCTAssertTrue(modelSource.contains("allowAddressRecovery: false"))
+        // Tapping Wi-Fi hunts for a phone whose IP changed (108e5da5).
+        XCTAssertTrue(modelSource.contains("allowAddressRecovery: true"))
         XCTAssertTrue(modelSource.contains("unavailableTitle: \"Wi-Fi unavailable\""))
         XCTAssertFalse(viewSource.contains("model.isManualUSBConnectDisabled"))
         // Per-row busy state now lives in the view as isUSBButtonBusy /

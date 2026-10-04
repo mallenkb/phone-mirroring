@@ -4,13 +4,26 @@ import Foundation
 /// per-device record Bluetooth keeps between sessions.
 struct PairedPhoneStore {
     static let defaultsKey = "AndroidMirror.PairedPhones.v1"
-    static let compatibilitySuites = [
+    /// Defaults domains older builds wrote to. These names are shared with
+    /// every installed copy of the app.
+    static let legacyCompatibilitySuites = [
         "com.mallenkb.AndroidMirrorScrcpy",
         "org.example.PhoneRelay",
         "org.example.AndroidMirrorScrcpy",
         "local.phonerelay",
         "PhoneRelay"
     ]
+    /// The domains the app actually reads and writes. Under XCTest they map to
+    /// test-owned names: tests that left `explicitDeviceSetupRequired` set in
+    /// the real domains made the installed app wipe the user's saved phones on
+    /// its next launch (observed 2026-09-06 and 2026-10-04).
+    static let compatibilitySuites: [String] = suites(isRunningUnderXCTest: Logger.isRunningUnderXCTest)
+
+    static func suites(isRunningUnderXCTest: Bool) -> [String] {
+        isRunningUnderXCTest
+            ? legacyCompatibilitySuites.map { "PhoneRelayTests.compat.\($0)" }
+            : legacyCompatibilitySuites
+    }
     private let primaryDefaults: UserDefaults
     private let suiteNames: [String]
 
