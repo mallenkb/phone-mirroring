@@ -143,7 +143,7 @@ struct SettingsView: View {
 
             SettingsGroup(
                 title: "Window chrome",
-                footnote: "Controls the floating bar above the mirrored phone window."
+                footnote: "Controls the title bar above the phone window."
             ) {
                 scrollingPickerRow(
                     icon: "macwindow",
@@ -151,6 +151,16 @@ struct SettingsView: View {
                     subtitle: "Always keep it visible, or reveal it when you hover near the top."
                 ) {
                     mirrorChromeBarVisibilityPicker
+                }
+
+                rowDivider
+
+                scrollingPickerRow(
+                    icon: "rectangle.topthird.inset.filled",
+                    title: "Style",
+                    subtitle: "Floating is a separate bar. Framed grows a title strip and thin rim out from behind the phone."
+                ) {
+                    mirrorChromeStylePicker
                 }
             }
 
@@ -1126,6 +1136,17 @@ struct SettingsView: View {
         Picker("", selection: $model.mirrorScrollFeel) {
             ForEach(MirrorScrollFeel.allCases) { feel in
                 Text(feel.title).tag(feel)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .fixedSize()
+    }
+
+    private var mirrorChromeStylePicker: some View {
+        Picker("", selection: $model.mirrorChromeStyle) {
+            ForEach(MirrorChromeStyle.allCases) { style in
+                Text(style.title).tag(style)
             }
         }
         .labelsHidden()

@@ -296,19 +296,6 @@ struct FigmaMirrorExperienceView: View {
                 }
 
                 VStack(spacing: 8 * scale) {
-                    Button {
-                        navigate(to: .wirelessPairing)
-                        model.ensureQRCodePairingSession()
-                    } label: {
-                        Text("Enter IP address")
-                            .font(.system(size: 14 * scale, weight: .regular))
-                            .foregroundStyle(accent)
-                            .underline()
-                            .frame(height: 28 * scale)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isChooserButtonDisabled)
-
                     Button(action: showConnectionHelpSheet) {
                         Text("Can't connect?")
                             .font(.system(size: 14 * scale, weight: .regular))

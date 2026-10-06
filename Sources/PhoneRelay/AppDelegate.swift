@@ -817,13 +817,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
                 keyEquivalent: "r"
             )
         )
-        viewMenu.addItem(
-            NSMenuItem(
-                title: "Start or Stop Mirroring",
-                action: #selector(toggleMirroring(_:)),
-                keyEquivalent: "m"
-            )
+        let toggleMirroringItem = NSMenuItem(
+            title: "Start or Stop Mirroring",
+            action: #selector(toggleMirroring(_:)),
+            keyEquivalent: "m"
         )
+        toggleMirroringItem.keyEquivalentModifierMask = [.command, .shift]
+        viewMenu.addItem(toggleMirroringItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(
             NSMenuItem(
@@ -833,6 +833,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             )
         )
         viewItem.submenu = viewMenu
+
+        let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+        mainMenu.addItem(windowItem)
+        let windowMenu = NSMenu(title: "Window")
+        let minimizeItem = NSMenuItem(
+            title: "Minimize",
+            action: #selector(NSWindow.performMiniaturize(_:)),
+            keyEquivalent: "m"
+        )
+        minimizeItem.keyEquivalentModifierMask = [.command]
+        windowMenu.addItem(minimizeItem)
+        windowItem.submenu = windowMenu
+        NSApp.windowsMenu = windowMenu
 
         let helpItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
         mainMenu.addItem(helpItem)
@@ -923,7 +936,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             case ("r", false):
                 self?.scanForAndroidDevices(nil)
                 return nil
-            case ("m", false):
+            case ("m", true):
                 self?.toggleMirroring(nil)
                 return nil
             case ("l", false):

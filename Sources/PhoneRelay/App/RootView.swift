@@ -103,8 +103,11 @@ struct WindowRegistrationView: NSViewRepresentable {
         private let chromeBar = MirrorChromeBar()
         private weak var parentWindow: NSWindow?
         private var toolbarWindow: NSWindow?
+        /// Non-nil while the toolbar uses `MirrorChromeStyle.framed`.
+        private var framedChromeView: MirrorFramedChromeView?
         private var alwaysOnTopToolbarCancellable: AnyCancellable?
         private var chromeBarVisibilityCancellable: AnyCancellable?
+        private var chromeStyleCancellable: AnyCancellable?
         private var revealMonitors: [Any] = []
         private var windowObservers: [NSObjectProtocol] = []
         private var hideWorkItem: DispatchWorkItem?
@@ -158,14 +161,20 @@ struct WindowRegistrationView: NSViewRepresentable {
             parentWindow = nil
             alwaysOnTopToolbarCancellable = nil
             chromeBarVisibilityCancellable = nil
+            chromeStyleCancellable = nil
+            framedChromeView = nil
+            chromeBar.removeFromSuperview()
         }
 
         private func install(parent: NSWindow, model: AppModel) {
             parentWindow = parent
             chromeBarVisibility = model.mirrorChromeBarVisibility
+            let isFramed = model.mirrorChromeStyle == .framed
+            chromeBar.isFramedStyle = isFramed
 
             chromeBar.translatesAutoresizingMaskIntoConstraints = true
-            chromeBar.autoresizingMask = [.width, .height]
+            chromeBar.autoresizingMask = isFramed ? [] : [.width, .height]
+            chromeBar.alphaValue = 1
             chromeBar.chromeHeight = MirrorContentWindowController.toolbarBarHeight
             chromeBar.configure(
                 deviceName: model.connectionWindowTitle,
@@ -224,10 +233,32 @@ struct WindowRegistrationView: NSViewRepresentable {
             toolbar.hasShadow = true
             toolbar.level = .normal
             toolbar.ignoresMouseEvents = false
-            toolbar.contentView = chromeBar
+            if isFramed {
+                let framedView = MirrorFramedChromeView(chromeBar: chromeBar)
+                framedView.phoneCornerRadius = MirrorContentWindowController.onboardingCornerRadius()
+                framedChromeView = framedView
+                // The phone window's shadow stays the only shadow, hovered or not.
+                toolbar.hasShadow = false
+                toolbar.orderedBelowWindow = parent
+                toolbar.contentView = framedView
+                // Collapsed, the window still spans the phone plus padding;
+                // it must not swallow clicks until it is revealed.
+                toolbar.ignoresMouseEvents = true
+            } else {
+                toolbar.contentView = chromeBar
+            }
             toolbar.alphaValue = 0
-            parent.addChildWindow(toolbar, ordered: .above)
+            parent.addChildWindow(toolbar, ordered: toolbarChildOrdering)
             toolbarWindow = toolbar
+            chromeStyleCancellable = model.$mirrorChromeStyle
+                .dropFirst()
+                .removeDuplicates()
+                .receive(on: RunLoop.main)
+                .sink { [weak self, weak parent, weak model] _ in
+                    guard let self, let parent, let model else { return }
+                    self.uninstall()
+                    self.install(parent: parent, model: model)
+                }
             chromeBarVisibilityCancellable = model.$mirrorChromeBarVisibility
                 .receive(on: RunLoop.main)
                 .sink { [weak self] visibility in
@@ -285,9 +316,17 @@ struct WindowRegistrationView: NSViewRepresentable {
             windowObservers.removeAll()
         }
 
+        private var toolbarChildOrdering: NSWindow.OrderingMode {
+            framedChromeView == nil ? .above : .below
+        }
+
         private func repositionToolbarWindow() {
             guard let parentWindow, let toolbarWindow else { return }
             let frame = parentWindow.frame
+            if framedChromeView != nil {
+                toolbarWindow.setFrame(MirrorFramedChromeView.windowFrame(around: frame), display: true)
+                return
+            }
             let toolbarWidth = toolbarWidth(for: parentWindow)
             var originY = frame.maxY + MirrorContentWindowController.toolbarGap
             if let visible = parentWindow.screen?.visibleFrame,
@@ -339,6 +378,9 @@ struct WindowRegistrationView: NSViewRepresentable {
 
         private func revealZoneContains(_ point: NSPoint) -> Bool {
             guard let parentWindow, let toolbarWindow else { return false }
+            if framedChromeView != nil {
+                return MirrorFramedChromeView.revealZone(above: parentWindow.frame).contains(point)
+            }
             let toolbarWidth = toolbarWidth(for: parentWindow)
             let phoneMinX = parentWindow.frame.midX - toolbarWidth / 2
             let zone = NSRect(
@@ -416,6 +458,11 @@ struct WindowRegistrationView: NSViewRepresentable {
             chromeVisible = visible
             guard let toolbarWindow else { return }
 
+            if let framedView = framedChromeView {
+                setFramedChromeVisible(visible, toolbar: toolbarWindow, framedView: framedView)
+                return
+            }
+
             if visible {
                 repositionToolbarWindow()
                 setOnboardingChromeControlsVisible(true)
@@ -448,8 +495,35 @@ struct WindowRegistrationView: NSViewRepresentable {
             }
         }
 
+        /// Framed style: the window stays opaque while the frame grows out
+        /// from behind the phone (or shrinks back), then goes transparent.
+        private func setFramedChromeVisible(
+            _ visible: Bool,
+            toolbar: NSWindow,
+            framedView: MirrorFramedChromeView
+        ) {
+            if visible {
+                repositionToolbarWindow()
+                setOnboardingChromeControlsVisible(true)
+                toolbar.alphaValue = 1
+                toolbar.ignoresMouseEvents = false
+                parentWindow?.orderFront(nil)
+                toolbar.orderFront(nil)
+            } else {
+                toolbar.ignoresMouseEvents = true
+            }
+            framedView.setExpanded(visible, animated: !Logger.isRunningUnderXCTest) { [weak self] in
+                Task { @MainActor in
+                    guard let self, !self.chromeVisible else { return }
+                    self.toolbarWindow?.alphaValue = 0
+                    self.setOnboardingChromeControlsVisible(false)
+                }
+            }
+        }
+
         private func hideChromeImmediately() {
             hideWorkItem?.cancel()
+            framedChromeView?.setExpanded(false, animated: false)
             chromeVisible = false
             isPointerInTopZone = false
             toolbarWindow?.alphaValue = 0
@@ -468,7 +542,7 @@ struct WindowRegistrationView: NSViewRepresentable {
 
         private func windowDidDeminiaturize() {
             guard let parentWindow, let toolbarWindow else { return }
-            parentWindow.addChildWindow(toolbarWindow, ordered: .above)
+            parentWindow.addChildWindow(toolbarWindow, ordered: toolbarChildOrdering)
             repositionToolbarWindow()
             toolbarWindow.ignoresMouseEvents = true
             if !isMirroring {

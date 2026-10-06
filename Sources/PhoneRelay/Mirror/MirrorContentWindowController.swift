@@ -151,6 +151,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private let rootView = MirrorRootView()
     private let chromeBar = MirrorChromeBar()
     private var toolbarWindow: NSWindow?
+    /// Non-nil while the toolbar uses `MirrorChromeStyle.framed`.
+    private var framedChromeView: MirrorFramedChromeView?
+    private var chromeStyleCancellable: AnyCancellable?
     private var revealMonitors: [Any] = []
     private var renderTopConstraint: NSLayoutConstraint?
     private var renderLeadingConstraint: NSLayoutConstraint?
@@ -163,6 +166,12 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private var isPointerInTopZone = false
     private var isInFullscreen = false
     private var normalWindowFrameBeforeFullscreen: NSRect?
+    /// Shell corner radius just before entering fullscreen, so exit can
+    /// animate the corners back to exactly where they were.
+    private var normalShellCornerRadiusBeforeFullscreen: CGFloat?
+    /// True while our own enter/exit animation runs. The shell (corners and
+    /// background) is animated by it, so other paths must not snap it.
+    private var isAnimatingFullscreenTransition = false
     private var mirrorAspect: CGFloat? = defaultMirrorAspect
     private let launchFrame: NSRect?
     private var hasUserMovedWindow = false
@@ -902,6 +911,13 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         // The toolbar lives in its own borderless child window floating above
         // the phone — not inside this content view.
         installToolbarWindow(parent: window)
+        chromeStyleCancellable = model.$mirrorChromeStyle
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.rebuildToolbarWindow()
+            }
         chromeBarVisibilityCancellable = model.$mirrorChromeBarVisibility
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
@@ -1083,7 +1099,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     private func handleRootHoverChange(_ inTopZone: Bool) {
-        guard inTopZone else {
+        guard inTopZone, framedChromeView == nil else {
             evaluateRevealZone()
             return
         }
@@ -1114,7 +1130,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     private func rootTopZoneContains(_ event: NSEvent) -> Bool {
-        guard rootView.chromeRevealEnabled else { return false }
+        guard rootView.chromeRevealEnabled, framedChromeView == nil else { return false }
         let point = rootView.convert(event.locationInWindow, from: nil)
         let toolbarZoneMinY = rootView.bounds.height - rootView.chromeActivationHeight
         return point.y > toolbarZoneMinY
@@ -1123,6 +1139,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private func shouldRevealChromeFromPointerEvent(_ event: MirrorRenderView.PointerEvent) -> Bool {
         guard event.kind == .down,
               rootView.chromeRevealEnabled,
+              framedChromeView == nil,
               window?.isMiniaturized != true,
               window?.isVisible == true,
               !isInFullscreen
@@ -1141,10 +1158,15 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     // MARK: - Floating toolbar window
 
     private func installToolbarWindow(parent: NSWindow) {
-        // The chrome bar becomes this window's content view, so let AppKit drive
-        // its frame directly instead of Auto Layout.
+        let isFramed = model.mirrorChromeStyle == .framed
+        chromeBar.isFramedStyle = isFramed
+        // The chrome bar becomes this window's content view (floating) or sits
+        // inside the frame view (framed), so let AppKit drive its frame.
         chromeBar.translatesAutoresizingMaskIntoConstraints = true
-        chromeBar.autoresizingMask = [.width, .height]
+        chromeBar.autoresizingMask = isFramed ? [] : [.width, .height]
+        chromeBar.alphaValue = 1
+        let framedView = isFramed ? MirrorFramedChromeView(chromeBar: chromeBar) : nil
+        framedChromeView = framedView
 
         let toolbar = MirrorToolbarWindow(
             contentRect: NSRect(x: 0, y: 0, width: parent.frame.width, height: Self.toolbarBarHeight),
@@ -1160,13 +1182,42 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         toolbar.acceptsMouseMovedEvents = true
         toolbar.ignoresMouseEvents = true
         toolbar.parentWindowToActivate = parent
-        toolbar.contentView = chromeBar
+        if let framedView {
+            // The phone window's shadow stays the only shadow, hovered or not.
+            toolbar.hasShadow = false
+            toolbar.orderedBelowWindow = parent
+            toolbar.contentView = framedView
+        } else {
+            toolbar.contentView = chromeBar
+        }
         toolbar.alphaValue = 0
-        parent.addChildWindow(toolbar, ordered: .above)
+        parent.addChildWindow(toolbar, ordered: toolbarChildOrdering)
         toolbarWindow = toolbar
         applyAlwaysOnTop(model.mirrorAlwaysOnTopEnabled)
         repositionToolbarWindow()
         startRevealMonitoring()
+    }
+
+    /// Switches between the floating and framed styles by rebuilding the
+    /// toolbar window around the same chrome bar.
+    private func rebuildToolbarWindow() {
+        guard let window else { return }
+        hideChromeImmediately(orderOutToolbar: true)
+        if let toolbar = toolbarWindow {
+            window.removeChildWindow(toolbar)
+            toolbar.orderOut(nil)
+            toolbar.contentView = nil
+        }
+        chromeBar.removeFromSuperview()
+        toolbarWindow = nil
+        framedChromeView = nil
+        installToolbarWindow(parent: window)
+        guard !isInFullscreen, window.isVisible, !window.isMiniaturized else { return }
+        applyChromeBarVisibility()
+    }
+
+    private var toolbarChildOrdering: NSWindow.OrderingMode {
+        framedChromeView == nil ? .above : .below
     }
 
     private func applyAlwaysOnTop(_ enabled: Bool) {
@@ -1177,11 +1228,15 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
 
     private func repositionToolbarWindow() {
         guard let window, let toolbar = toolbarWindow else { return }
+        framedChromeView?.phoneCornerRadius = rootView.layer?.cornerRadius ?? Self.cornerRadius
         toolbar.setFrame(toolbarVisibleFrame(for: window), display: true)
     }
 
     private func toolbarVisibleFrame(for window: NSWindow) -> NSRect {
         let frame = window.frame
+        if framedChromeView != nil {
+            return MirrorFramedChromeView.windowFrame(around: frame)
+        }
         var originY = frame.maxY + Self.toolbarGap
         if let visible = window.screen?.visibleFrame,
            originY + Self.toolbarBarHeight > visible.maxY {
@@ -1219,6 +1274,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private func revealZoneContains(_ point: NSPoint) -> Bool {
         guard let window else { return false }
         let frame = window.frame
+        if framedChromeView != nil {
+            return MirrorFramedChromeView.revealZone(above: frame).contains(point)
+        }
         let zone = NSRect(
             x: frame.minX,
             y: frame.maxY,
@@ -1421,6 +1479,11 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         let visibleFrame = window.map(toolbarVisibleFrame(for:)) ?? toolbar.frame
         toolbar.setFrame(visibleFrame, display: false)
 
+        if let framedView = framedChromeView {
+            setFramedChromeVisible(visible, toolbar: toolbar, framedView: framedView)
+            return
+        }
+
         if visible {
             if toolbar.alphaValue <= 0.01 {
                 // Coming from fully hidden: jump (no animation) to the tucked
@@ -1465,8 +1528,39 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         })
     }
 
+    /// Framed style: the window stays opaque while the frame grows out from
+    /// behind the phone (or shrinks back), then goes transparent once hidden
+    /// so its shadow doesn't double the phone's.
+    private func setFramedChromeVisible(
+        _ visible: Bool,
+        toolbar: NSWindow,
+        framedView: MirrorFramedChromeView
+    ) {
+        framedView.phoneCornerRadius = rootView.layer?.cornerRadius ?? Self.cornerRadius
+        if visible {
+            chromeBar.setControlsVisible(true)
+            toolbar.alphaValue = 1
+            toolbar.ignoresMouseEvents = false
+            toolbar.orderFront(nil)
+        } else {
+            toolbar.ignoresMouseEvents = true
+        }
+        toolbarAnimationGeneration += 1
+        let animationGeneration = toolbarAnimationGeneration
+        framedView.setExpanded(visible, animated: Self.shouldAnimateChromeForCurrentProcess) { [weak self] in
+            Task { @MainActor in
+                guard let self,
+                      self.toolbarAnimationGeneration == animationGeneration,
+                      !self.chromeVisible else { return }
+                self.toolbarWindow?.alphaValue = 0
+                self.chromeBar.setControlsVisible(false)
+            }
+        }
+    }
+
     private func hideChromeImmediately(orderOutToolbar: Bool = false) {
         hideWorkItem?.cancel()
+        framedChromeView?.setExpanded(false, animated: false)
         chromeVisible = false
         isPointerInTopZone = false
         toolbarWindow?.alphaValue = 0
@@ -1502,6 +1596,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         guard let window else { return }
         hideChromeImmediately()
         captureNormalWindowFrameBeforeFullscreen(from: window)
+        if !window.styleMask.contains(.fullScreen) {
+            isAnimatingFullscreenTransition = true
+        }
         setFullscreenChromeSuppressed(true)
         window.toggleFullScreen(nil)
     }
@@ -1515,6 +1612,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     private func captureNormalWindowFrameBeforeFullscreen(from window: NSWindow) {
         guard !window.styleMask.contains(.fullScreen), !isEffectivelyFullscreen(window) else { return }
         normalWindowFrameBeforeFullscreen = window.frame
+        if let radius = rootView.layer?.cornerRadius, radius > 0 {
+            normalShellCornerRadiusBeforeFullscreen = radius
+        }
     }
 
     private func restoreNormalWindowFrameAfterFullscreenIfNeeded(animated: Bool) {
@@ -1531,7 +1631,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     private func updateFullscreenPresentationIfNeeded() {
-        guard let window else { return }
+        guard let window, !isAnimatingFullscreenTransition else { return }
         let shouldSuppress = window.styleMask.contains(.fullScreen)
             || isEffectivelyFullscreen(window)
         if shouldSuppress != isInFullscreen {
@@ -1562,11 +1662,9 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             hideChromeImmediately()
             stopRevealMonitoring()
             toolbarWindow?.orderOut(nil)
-            window?.backgroundColor = .black
-            rootView.layer?.cornerRadius = 0
-            rootView.layer?.backgroundColor = NSColor.black.cgColor
-            rootView.layer?.borderWidth = 0
-            renderView.cornerRadius = 0
+            if !isAnimatingFullscreenTransition {
+                applyFullscreenShell(true, animationDuration: nil)
+            }
             renderTopConstraint?.constant = 0
             renderLeadingConstraint?.constant = 0
             renderTrailingConstraint?.constant = 0
@@ -1578,23 +1676,23 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
                 height: CGFloat.greatestFiniteMagnitude
             )
         } else {
-            window?.backgroundColor = .clear
             chromeBar.setControlsVisible(false)
             chromeBar.setBarBackgroundVisible(true, animated: false)
-            rootView.layer?.cornerRadius = Self.cornerRadius
-            rootView.layer?.backgroundColor = Self.normalShellColor(for: rootView)
-            rootView.layer?.borderColor = Self.shellBorderColor(for: rootView)
-            rootView.layer?.borderWidth = MirrorShellStyle.borderWidth
-            applyScaledChromeHeight()
-            applyScaledRenderInsets()
+            if !isAnimatingFullscreenTransition {
+                applyFullscreenShell(false, animationDuration: nil)
+            }
+            // Restore size limits *before* the insets: the corner radius is
+            // derived from them, and fullscreen had opened them right up.
             if let window, let aspect = mirrorAspect {
                 let contentHeight = max(1, window.frame.height - Self.verticalShellInset)
                 let outerWidth = contentHeight * aspect + Self.horizontalShellInset
                 window.contentAspectRatio = NSSize(width: outerWidth, height: window.frame.height)
                 applyWindowSizeLimits(to: window, aspect: aspect)
             }
+            applyScaledChromeHeight()
+            applyScaledRenderInsets()
             if let window, let toolbar = toolbarWindow {
-                window.addChildWindow(toolbar, ordered: .above)
+                window.addChildWindow(toolbar, ordered: toolbarChildOrdering)
             }
             repositionToolbarWindow()
             startRevealMonitoring()
@@ -1604,6 +1702,82 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         rootView.needsLayout = true
         rootView.layoutSubtreeIfNeeded()
         renderView.updateVideoLayerFrame()
+    }
+
+    static let fullscreenTiming = CAMediaTimingFunction(controlPoints: 0.32, 0.72, 0, 1)
+
+    /// Finish slightly before the system's own deadline so the space switch
+    /// never catches the window mid-move.
+    private static func fullscreenAnimationDuration(systemDuration: TimeInterval) -> TimeInterval {
+        min(0.5, max(0.2, systemDuration - 0.05))
+    }
+
+    private func runFullscreenFrameAnimation(to frame: NSRect, duration: TimeInterval) {
+        guard let window else { return }
+        isApplyingProgrammaticFrame = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = Self.fullscreenTiming
+            context.allowsImplicitAnimation = true
+            window.animator().setFrame(frame, display: true)
+        } completionHandler: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isApplyingProgrammaticFrame = false
+                self.rootView.layoutSubtreeIfNeeded()
+                self.renderView.updateVideoLayerFrame()
+            }
+        }
+    }
+
+    /// Fullscreen is square and black; windowed is the rounded shell. With a
+    /// duration, the corners and background ease between the two in step with
+    /// the frame animation instead of snapping at either end.
+    private func applyFullscreenShell(_ fullscreen: Bool, animationDuration: TimeInterval?) {
+        guard let rootLayer = rootView.layer else { return }
+        let radius = fullscreen ? 0 : (normalShellCornerRadiusBeforeFullscreen ?? Self.cornerRadius)
+        let background = fullscreen ? NSColor.black.cgColor : Self.normalShellColor(for: rootView)
+        let fromRootRadius = rootLayer.presentation()?.cornerRadius ?? rootLayer.cornerRadius
+        let fromRenderRadius = renderView.layer.map { $0.presentation()?.cornerRadius ?? $0.cornerRadius }
+        let fromBackground = rootLayer.presentation()?.backgroundColor ?? rootLayer.backgroundColor
+
+        // Corners outside the rounded mask must show the desktop while
+        // windowed; go black only once fully in fullscreen.
+        if !fullscreen || animationDuration == nil {
+            window?.backgroundColor = fullscreen ? .black : .clear
+        }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        rootLayer.cornerRadius = radius
+        rootLayer.backgroundColor = background
+        rootLayer.borderColor = Self.shellBorderColor(for: rootView)
+        rootLayer.borderWidth = fullscreen ? 0 : MirrorShellStyle.borderWidth
+        renderView.cornerRadius = radius
+        CATransaction.commit()
+
+        guard let animationDuration, animationDuration > 0 else { return }
+        func animate(_ layer: CALayer?, _ keyPath: String, from: Any?, to: Any?) {
+            guard let layer, let from else { return }
+            let animation = CABasicAnimation(keyPath: keyPath)
+            animation.fromValue = from
+            animation.toValue = to
+            animation.duration = animationDuration
+            animation.timingFunction = Self.fullscreenTiming
+            layer.add(animation, forKey: "fullscreenShell.\(keyPath)")
+        }
+        animate(rootLayer, "cornerRadius", from: fromRootRadius, to: radius)
+        animate(rootLayer, "backgroundColor", from: fromBackground, to: background)
+        animate(renderView.layer, "cornerRadius", from: fromRenderRadius, to: radius)
+        if radius == 0 {
+            // `renderView.cornerRadius = 0` turned its mask off; keep it on
+            // while the corners are still easing to square.
+            renderView.layer?.masksToBounds = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + animationDuration) { [weak self] in
+                guard let self, self.isInFullscreen else { return }
+                self.renderView.layer?.masksToBounds = false
+            }
+        }
     }
 
     func setFullscreenChromeSuppressedForTesting(_ suppressed: Bool) {
@@ -1685,7 +1859,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     func windowDidBecomeKey(_ notification: Notification) {
         guard !isInFullscreen, window?.isMiniaturized != true else { return }
         if let window, let toolbar = toolbarWindow {
-            window.addChildWindow(toolbar, ordered: .above)
+            window.addChildWindow(toolbar, ordered: toolbarChildOrdering)
         }
         repositionToolbarWindow()
         startRevealMonitoring()
@@ -1699,7 +1873,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     func windowDidDeminiaturize(_ notification: Notification) {
         guard let window else { return }
         if let toolbar = toolbarWindow {
-            window.addChildWindow(toolbar, ordered: .above)
+            window.addChildWindow(toolbar, ordered: toolbarChildOrdering)
         }
         repositionToolbarWindow()
         startRevealMonitoring()
@@ -1774,7 +1948,52 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         setFullscreenChromeSuppressed(true)
     }
 
+    // The system transition animates a snapshot, then our rounded shell snaps
+    // to square-and-black (enter) or back to rounded (exit) at the very end.
+    // Driving the transition ourselves lets the frame, corners and background
+    // all move together on one curve.
+    func customWindowsToEnterFullScreen(for window: NSWindow) -> [NSWindow]? {
+        guard window.screen != nil else { return nil }
+        isAnimatingFullscreenTransition = true
+        return [window]
+    }
+
+    func customWindowsToExitFullScreen(for window: NSWindow) -> [NSWindow]? {
+        guard normalWindowFrameBeforeFullscreen != nil else { return nil }
+        isAnimatingFullscreenTransition = true
+        return [window]
+    }
+
+    func window(_ window: NSWindow, startCustomAnimationToEnterFullScreenWithDuration duration: TimeInterval) {
+        guard let screenFrame = window.screen?.frame else { return }
+        window.styleMask.insert(.fullScreen)
+        let animationDuration = Self.fullscreenAnimationDuration(systemDuration: duration)
+        applyFullscreenShell(true, animationDuration: animationDuration)
+        runFullscreenFrameAnimation(to: screenFrame, duration: animationDuration)
+    }
+
+    func window(_ window: NSWindow, startCustomAnimationToExitFullScreenWithDuration duration: TimeInterval) {
+        guard let normalFrame = normalWindowFrameBeforeFullscreen else { return }
+        window.styleMask.remove(.fullScreen)
+        let animationDuration = Self.fullscreenAnimationDuration(systemDuration: duration)
+        applyFullscreenShell(false, animationDuration: animationDuration)
+        runFullscreenFrameAnimation(to: normalFrame, duration: animationDuration)
+    }
+
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        isAnimatingFullscreenTransition = false
+        setFullscreenChromeSuppressed(false)
+        applyFullscreenShell(false, animationDuration: nil)
+    }
+
+    func windowDidFailToExitFullScreen(_ window: NSWindow) {
+        isAnimatingFullscreenTransition = false
+        applyFullscreenShell(true, animationDuration: nil)
+    }
+
     func windowDidEnterFullScreen(_ notification: Notification) {
+        isAnimatingFullscreenTransition = false
+        applyFullscreenShell(true, animationDuration: nil)
         // No manual setFrame — AppKit already sized us to the fullscreen space.
         // Just relayout the content to whatever size it gave us.
         rootView.layoutSubtreeIfNeeded()
@@ -1786,6 +2005,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
+        isAnimatingFullscreenTransition = false
         setFullscreenChromeSuppressed(false)
         // AppKit's native exit already animated back to the pre-fullscreen
         // frame, so this is just an instant snap-correct for the rare case it
@@ -1811,9 +2031,23 @@ private final class MirrorContentWindow: NSWindow {
 /// it never becomes main so the mirror window remains the primary document.
 final class MirrorToolbarWindow: NSWindow {
     weak var parentWindowToActivate: NSWindow?
+    /// Set for the framed style: the frame must stay *behind* this window (the
+    /// phone), so bringing the toolbar forward orders it just below instead.
+    weak var orderedBelowWindow: NSWindow?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    override func orderFront(_ sender: Any?) {
+        guard let anchor = orderedBelowWindow else {
+            super.orderFront(sender)
+            return
+        }
+        if parent == nil {
+            anchor.addChildWindow(self, ordered: .below)
+        }
+        order(.below, relativeTo: anchor.windowNumber)
+    }
 
     override func sendEvent(_ event: NSEvent) {
         if event.type == .leftMouseDown || event.type == .rightMouseDown || event.type == .otherMouseDown {
@@ -2008,6 +2242,23 @@ final class MirrorChromeBar: NSView {
     private static let titleLeadingAfterTrafficLights: CGFloat = 12
     private static let trailingPadding: CGFloat = (MirrorContentWindowController.toolbarBarHeight - MirrorChromeOutlineButton.touchHeight) / 2
     private var controlsVisible = false
+    /// In the framed style the bar sits inside `MirrorFramedChromeView`, which
+    /// draws the surface, so the bar drops its own capsule and title.
+    var isFramedStyle = false {
+        didSet {
+            guard isFramedStyle != oldValue else { return }
+            setBarBackgroundVisible(!isFramedStyle, animated: false)
+            setControlsVisible(controlsVisible)
+        }
+    }
+    /// Top corner radius of the surrounding frame in the framed style. The
+    /// last button's hover follows it, inset by the gap between them.
+    var framedTopCornerRadius: CGFloat = 0 {
+        didSet {
+            guard framedTopCornerRadius != oldValue else { return }
+            updateTrailingActionHoverCorners()
+        }
+    }
     private var trailingActionsMode: TrailingActionsMode = .full
     private var recordingActive = false
     /// Corner radius of the detached floating bar.
@@ -2210,7 +2461,7 @@ final class MirrorChromeBar: NSView {
     func setControlsVisible(_ visible: Bool) {
         controlsVisible = visible
         trafficLights.isHidden = !visible
-        titleLabel.isHidden = !visible
+        titleLabel.isHidden = !visible || isFramedStyle
         applyActionVisibility()
     }
 
@@ -2245,6 +2496,22 @@ final class MirrorChromeBar: NSView {
         let actionButtons = [alwaysOnTopBtn, screenshotBtn, recentAppsBtn, homeBtn]
         for button in actionButtons {
             button.setHoverCornerRadius(MirrorChromeOutlineButton.defaultHoverCornerRadius)
+        }
+        // Framed: the highlight keeps the same gap above, below and to the
+        // right of it (rim + trailing padding), so trim it vertically to match.
+        let framedEdgeGap = Self.trailingPadding + MirrorFramedChromeView.rimWidth
+        let barVerticalGap = (MirrorContentWindowController.toolbarBarHeight - MirrorChromeOutlineButton.touchHeight) / 2
+        for button in actionButtons {
+            button.hoverVerticalInset = isFramedStyle ? max(0, framedEdgeGap - barVerticalGap) : 0
+        }
+        if isFramedStyle {
+            // Concentric with the frame's top-right corner: the frame radius
+            // minus the (now equal) gap between them.
+            let radius = framedTopCornerRadius - framedEdgeGap
+            rightmostActionButtonForCurrentMode()?.setHoverTopTrailingCornerRadius(
+                max(MirrorChromeOutlineButton.defaultHoverCornerRadius, radius)
+            )
+            return
         }
         rightmostActionButtonForCurrentMode()?.setHoverCornerRadius(
             Self.controlHoverCornerRadius,
@@ -2328,6 +2595,22 @@ final class MirrorChromeBar: NSView {
 
     var backgroundCornerRadiusForTesting: CGFloat {
         backgroundView.layer?.cornerRadius ?? 0
+    }
+
+    var backgroundOpacityForTesting: Float {
+        backgroundView.layer?.opacity ?? 0
+    }
+
+    var isTitleHiddenForTesting: Bool {
+        titleLabel.isHidden
+    }
+
+    var rightmostTopTrailingHoverRadiusForTesting: CGFloat? {
+        rightmostActionButtonForCurrentMode()?.hoverTopTrailingCornerRadiusForTesting
+    }
+
+    var rightmostHoverFrameForTesting: CGRect? {
+        rightmostActionButtonForCurrentMode()?.hoverFrameForTesting
     }
 
     var trafficLightLeadingPaddingForTesting: CGFloat {
@@ -2471,6 +2754,7 @@ final class MirrorChromeBar: NSView {
     /// from the current presentation values, so rapid hover-in/out reads
     /// fluidly with no snap.
     func setBarBackgroundVisible(_ visible: Bool, animated: Bool = true) {
+        let visible = visible && !isFramedStyle
         CATransaction.begin()
         if !animated {
             CATransaction.setDisableActions(true)
@@ -2850,6 +3134,16 @@ final class MirrorChromeOutlineButton: NSView {
     private var iconSource: IconSource
     private var hoverCornerRadius: CGFloat
     private var hoverLeadingCornerRadius: CGFloat?
+    /// Overrides only the top-trailing corner, so the last button in the
+    /// framed header can follow the frame's rounded top-right corner.
+    private var hoverTopTrailingCornerRadius: CGFloat?
+    /// Shrinks the hover highlight vertically (the touch rect is unchanged).
+    var hoverVerticalInset: CGFloat = 0 {
+        didSet {
+            guard hoverVerticalInset != oldValue else { return }
+            needsLayout = true
+        }
+    }
     private let hoverRoundedCorners: CACornerMask
     private var lastActionTime: TimeInterval = 0
     var action: (() -> Void)?
@@ -2875,6 +3169,15 @@ final class MirrorChromeOutlineButton: NSView {
 
     var hoverLeadingCornerRadiusForTesting: CGFloat? {
         hoverLeadingCornerRadius
+    }
+
+    var hoverTopTrailingCornerRadiusForTesting: CGFloat? {
+        hoverTopTrailingCornerRadius
+    }
+
+    var hoverFrameForTesting: CGRect {
+        layoutSubtreeIfNeeded()
+        return hoverBackgroundLayer.frame
     }
 
     var hoverRoundedCornersForTesting: CACornerMask {
@@ -2968,12 +3271,13 @@ final class MirrorChromeOutlineButton: NSView {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        let hoverRect = bounds
+        let hoverRect = bounds.insetBy(dx: 0, dy: min(hoverVerticalInset, bounds.height / 2))
         hoverBackgroundLayer.frame = hoverRect
         hoverBackgroundLayer.path = Self.hoverPath(
             in: CGRect(origin: .zero, size: hoverRect.size),
             radius: hoverCornerRadius,
             leadingRadius: hoverLeadingCornerRadius,
+            topTrailingRadius: hoverTopTrailingCornerRadius,
             roundedCorners: hoverRoundedCorners
         )
         CATransaction.commit()
@@ -2988,6 +3292,13 @@ final class MirrorChromeOutlineButton: NSView {
     func setHoverCornerRadius(_ radius: CGFloat, leadingRadius: CGFloat? = nil) {
         hoverCornerRadius = radius
         hoverLeadingCornerRadius = leadingRadius
+        hoverTopTrailingCornerRadius = nil
+        needsLayout = true
+    }
+
+    func setHoverTopTrailingCornerRadius(_ radius: CGFloat?) {
+        guard hoverTopTrailingCornerRadius != radius else { return }
+        hoverTopTrailingCornerRadius = radius
         needsLayout = true
     }
 
@@ -3026,6 +3337,7 @@ final class MirrorChromeOutlineButton: NSView {
         in rect: CGRect,
         radius requestedRadius: CGFloat,
         leadingRadius requestedLeadingRadius: CGFloat?,
+        topTrailingRadius requestedTopTrailingRadius: CGFloat? = nil,
         roundedCorners: CACornerMask
     ) -> CGPath {
         // Each corner is limited by the vertical edge it shares (height / 2).
@@ -3041,6 +3353,11 @@ final class MirrorChromeOutlineButton: NSView {
             radius *= widthScale
             leadingRadius *= widthScale
         }
+        // The top-trailing override may exceed height / 2: it only has to
+        // leave room for the bottom-trailing and top-leading corners.
+        let topTrailingRadius = requestedTopTrailingRadius.map {
+            max(0, min($0, rect.height - radius, rect.width - leadingRadius))
+        } ?? radius
         let minXMinY = roundedCorners.contains(.layerMinXMinYCorner)
         let maxXMinY = roundedCorners.contains(.layerMaxXMinYCorner)
         let maxXMaxY = roundedCorners.contains(.layerMaxXMaxYCorner)
@@ -3058,10 +3375,10 @@ final class MirrorChromeOutlineButton: NSView {
             path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
         }
 
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - (maxXMaxY ? radius : 0)))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - (maxXMaxY ? topTrailingRadius : 0)))
         if maxXMaxY {
             path.addQuadCurve(
-                to: CGPoint(x: rect.maxX - radius, y: rect.maxY),
+                to: CGPoint(x: rect.maxX - topTrailingRadius, y: rect.maxY),
                 control: CGPoint(x: rect.maxX, y: rect.maxY)
             )
         } else {

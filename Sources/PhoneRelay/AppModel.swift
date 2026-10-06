@@ -53,6 +53,23 @@ enum MirrorChromeBarVisibility: String, CaseIterable, Identifiable {
     }
 }
 
+/// How the hover title bar is drawn. `.floating` is the original detached
+/// capsule above the phone; `.framed` grows a solid frame (title strip plus a
+/// thin rim) out from behind the phone, like macOS iPhone Mirroring.
+enum MirrorChromeStyle: String, CaseIterable, Identifiable {
+    case floating
+    case framed
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .floating: return "Floating"
+        case .framed: return "Framed"
+        }
+    }
+}
+
 enum ScreenRecordingTouchSize: String, CaseIterable, Identifiable, Sendable {
     case small
     case medium
@@ -145,6 +162,7 @@ final class AppModel: ObservableObject {
     nonisolated static let mirrorScrollSpeedDefaultsKey = "MirrorBehavior.scrollSpeedPercent"
     nonisolated static let mirrorScrollFeelDefaultsKey = "MirrorBehavior.scrollFeel"
     nonisolated static let mirrorChromeBarVisibilityDefaultsKey = "MirrorBehavior.chromeBarVisibility"
+    nonisolated static let mirrorChromeStyleDefaultsKey = "MirrorBehavior.chromeStyle"
     nonisolated static let mirrorAlwaysOnTopDefaultsKey = "MirrorBehavior.alwaysOnTopEnabled"
     nonisolated static let mirrorProfileDefaultsKey = "MirrorQuality.profile"
     nonisolated static let legacyWirelessCompatibilityDefaultsKey = "Connection.allowLegacyADBWireless"
@@ -192,6 +210,14 @@ final class AppModel: ObservableObject {
             return .onHover
         }
         return visibility
+    }
+
+    nonisolated static func defaultMirrorChromeStyle(storedValue: Any?) -> MirrorChromeStyle {
+        guard let rawValue = storedValue as? String,
+              let style = MirrorChromeStyle(rawValue: rawValue) else {
+            return .floating
+        }
+        return style
     }
 
     nonisolated static func defaultScreenRecordingTouchSize(storedValue: Any?) -> ScreenRecordingTouchSize {
@@ -352,6 +378,14 @@ final class AppModel: ObservableObject {
                 mirrorChromeBarVisibility.rawValue,
                 forKey: Self.mirrorChromeBarVisibilityDefaultsKey
             )
+        }
+    }
+    @Published var mirrorChromeStyle: MirrorChromeStyle =
+        AppModel.defaultMirrorChromeStyle(
+            storedValue: UserDefaults.standard.object(forKey: AppModel.mirrorChromeStyleDefaultsKey)
+        ) {
+        didSet {
+            UserDefaults.standard.set(mirrorChromeStyle.rawValue, forKey: Self.mirrorChromeStyleDefaultsKey)
         }
     }
     /// Mirrors Android notifications into macOS Notification Center by polling

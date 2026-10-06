@@ -12,7 +12,7 @@ struct ShortcutReference: Identifiable {
 enum KeyboardShortcutsCatalog {
     static let groups: [(title: String, items: [ShortcutReference])] = [
         ("Mirroring", [
-            ShortcutReference(keys: "⌘M", action: "Start or stop mirroring"),
+            ShortcutReference(keys: "⇧⌘M", action: "Start or stop mirroring"),
             ShortcutReference(keys: "⌘R", action: "Scan for Android devices"),
             ShortcutReference(keys: "⌘+", action: "Zoom in"),
             ShortcutReference(keys: "⌘−", action: "Zoom out"),
