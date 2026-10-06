@@ -46,6 +46,7 @@ jobs:
               assets: [.assets[] | {
                 name: .name,
                 size: .size,
+                digest: .digest,
                 browser_download_url: .browser_download_url
               }]
             }' > docs/release.json; then

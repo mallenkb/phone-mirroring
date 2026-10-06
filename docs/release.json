@@ -1,26 +1,26 @@
 {
-  "tag_name": "v1.0.44",
-  "name": "Phone Relay v1.0.44",
-  "html_url": "https://github.com/mallenkb/phone-mirroring/releases/tag/v1.0.44",
-  "published_at": "2026-09-04T22:37:47Z",
   "assets": [
     {
-      "name": "PhoneRelay-1.0.44.dmg",
-      "size": 20363712,
-      "digest": "sha256:d2f806b0f3eb5887ca613f5777b5c24eed18d549415d71bb2eca1a85f2f66e58",
-      "browser_download_url": "https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.44/PhoneRelay-1.0.44.dmg"
-    },
-    {
-      "name": "PhoneRelay-1.0.44.zip",
-      "size": 19704322,
-      "digest": "sha256:7f1ae303807cf3750338ffa9ca38f5da62e9279f16270f7ab9759a0f893cdef6",
-      "browser_download_url": "https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.44/PhoneRelay-1.0.44.zip"
-    },
-    {
+      "browser_download_url": "https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.45/appcast.xml",
+      "digest": "sha256:557e5c8837bf5ec8cbbbaccd181091ebcb2acef74c3532000ade8b4e6433f984",
       "name": "appcast.xml",
-      "size": 902,
-      "digest": "sha256:44cce80e4b78da79e0a280b27428b00a48e0a09b5125b96daa6cb0fb9c655b6d",
-      "browser_download_url": "https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.44/appcast.xml"
+      "size": 902
+    },
+    {
+      "browser_download_url": "https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.45/PhoneRelay-1.0.45.dmg",
+      "digest": "sha256:14a1344f662e6a83a8183726bda280e503af2a7be04f31670906f2f9737aeac7",
+      "name": "PhoneRelay-1.0.45.dmg",
+      "size": 20516660
+    },
+    {
+      "browser_download_url": "https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.45/PhoneRelay-1.0.45.zip",
+      "digest": "sha256:7267e719ab7ef4d504dbe54d0c33a8cf74276b89bb60432397a62cd181dd0433",
+      "name": "PhoneRelay-1.0.45.zip",
+      "size": 19862572
     }
-  ]
+  ],
+  "html_url": "https://github.com/mallenkb/phone-mirroring/releases/tag/v1.0.45",
+  "name": "Phone Relay v1.0.45",
+  "published_at": "2026-10-06T06:49:00Z",
+  "tag_name": "v1.0.45"
 }
