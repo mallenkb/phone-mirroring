@@ -1102,18 +1102,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             return
         }
 
-        let browserModel = FileBrowserModel(serialProvider: { [weak model = self.model] in
-            model?.selectedDevice.adbSerial
-        })
+        let browserModel = FileBrowserModel(
+            serialProvider: { [weak model = self.model] in
+                model?.selectedDevice.adbSerial
+            },
+            deviceSummaryProvider: { [weak model = self.model] in
+                guard let model else { return nil }
+                return (model.selectedDevice.name, model.selectedDevice.network)
+            }
+        )
         filesModel = browserModel
         let hostingView = NSHostingView(rootView: FileBrowserView(model: browserModel))
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 460),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            contentRect: NSRect(x: 0, y: 0, width: 980, height: 640),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "Phone Files"
+        // Finder-style: the sidebar runs the full height under the traffic lights.
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
         window.identifier = FileBrowserView.windowIdentifier
         window.contentView = hostingView
         window.isReleasedWhenClosed = false

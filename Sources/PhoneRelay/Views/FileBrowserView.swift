@@ -60,15 +60,88 @@ final class FileBrowserModel: ObservableObject {
     /// Called on the main actor only; AppDelegate injects the live AppModel
     /// serial so the window always follows the currently connected phone.
     private let serialProvider: () -> String?
+    /// Phone name and how it's connected ("Wi-Fi", "USB"), for the sidebar.
+    private let deviceSummaryProvider: () -> (name: String, connection: String?)?
     private var loadGeneration = 0
     private var quickLookController: FileQuickLookController?
 
-    init(serialProvider: @escaping () -> String?) {
+    /// Finder-style history: Back returns to the previous folder, not
+    /// necessarily the parent (sidebar jumps skip levels).
+    @Published private(set) var backStack: [String] = []
+    @Published private(set) var forwardStack: [String] = []
+    /// Filters the current folder by name; cleared on navigation.
+    @Published var searchText = ""
+    @Published var showHiddenFiles: Bool = UserDefaults.standard.bool(forKey: FileBrowserModel.showHiddenDefaultsKey) {
+        didSet { UserDefaults.standard.set(showHiddenFiles, forKey: Self.showHiddenDefaultsKey) }
+    }
+    static let showHiddenDefaultsKey = "PhoneFiles.showHiddenFiles"
+
+    init(
+        serialProvider: @escaping () -> String?,
+        deviceSummaryProvider: @escaping () -> (name: String, connection: String?)? = { nil }
+    ) {
         self.serialProvider = serialProvider
+        self.deviceSummaryProvider = deviceSummaryProvider
     }
 
-    var canGoBack: Bool {
-        PhoneFileBrowserService.parent(of: path) != nil
+    var deviceSummary: (name: String, connection: String?)? { deviceSummaryProvider() }
+    var isPhoneConnected: Bool { !(serialProvider() ?? "").isEmpty }
+
+    var canGoBack: Bool { !backStack.isEmpty }
+    var canGoForward: Bool { !forwardStack.isEmpty }
+    var canGoUp: Bool { PhoneFileBrowserService.parent(of: path) != nil }
+
+    /// Entries after the hidden-file and search filters, in sort order.
+    var visibleEntries: [PhoneFileEntry] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return sortedEntries.filter { entry in
+            (showHiddenFiles || !FileBrowserPresentation.isHidden(entry))
+                && (query.isEmpty || entry.name.localizedCaseInsensitiveContains(query))
+        }
+    }
+
+    var hiddenEntryCount: Int {
+        showHiddenFiles ? 0 : entries.filter(FileBrowserPresentation.isHidden).count
+    }
+
+    /// Moves to `newPath`, recording history unless Back/Forward did it.
+    func navigate(to newPath: String, recordHistory: Bool = true) {
+        guard !isBusy, newPath != path, PhoneFileBrowserService.isPathAllowed(newPath) else { return }
+        if recordHistory {
+            backStack.append(path)
+            forwardStack.removeAll()
+        }
+        path = newPath
+        searchText = ""
+        entries = []
+        refresh()
+    }
+
+    func goForward() {
+        guard !isBusy, let next = forwardStack.popLast() else { return }
+        backStack.append(path)
+        navigate(to: next, recordHistory: false)
+    }
+
+    func goUp() {
+        guard let parent = PhoneFileBrowserService.parent(of: path) else { return }
+        navigate(to: parent)
+    }
+
+    /// Opens a sidebar place, trying its paths in order until one exists.
+    func open(_ place: FileBrowserPlace) {
+        guard !isBusy, let serial = serialOrExplain else { return }
+        guard place.paths.count > 1 else {
+            if let only = place.paths.first { navigate(to: only) }
+            return
+        }
+        let candidates = place.paths
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let found = candidates.first { candidate in
+                PhoneFileBrowserService.statPath(serial: serial, path: candidate)?.isNavigable == true
+            } ?? candidates[0]
+            await MainActor.run { [weak self] in self?.navigate(to: found) }
+        }
     }
 
     var displayPath: String {
@@ -195,9 +268,7 @@ final class FileBrowserModel: ObservableObject {
             openFile(entry)
             return
         }
-        path = PhoneFileBrowserService.joined(path, entry.name)
-        entries = []
-        refresh()
+        navigate(to: PhoneFileBrowserService.joined(path, entry.name))
     }
 
     func preview(_ entry: PhoneFileEntry) {
@@ -269,10 +340,13 @@ final class FileBrowserModel: ObservableObject {
     }
 
     func goBack() {
-        guard !isBusy, let parent = PhoneFileBrowserService.parent(of: path) else { return }
-        path = parent
-        entries = []
-        refresh()
+        guard !isBusy else { return }
+        guard let previous = backStack.popLast() else {
+            goUp()
+            return
+        }
+        forwardStack.append(path)
+        navigate(to: previous, recordHistory: false)
     }
 
     func download(_ entry: PhoneFileEntry) {
@@ -569,21 +643,33 @@ struct FileBrowserView: View {
     @State private var selectedEntryIDs: Set<PhoneFileEntry.ID> = []
     @State private var selectionAnchorID: PhoneFileEntry.ID?
     @State private var keyMonitor: Any?
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
+        HStack(spacing: 0) {
+            sidebar
             Divider()
-            if let message = model.errorMessage {
-                errorBanner(message)
+            VStack(spacing: 0) {
+                header
+                Divider()
+                if let message = model.errorMessage, model.isPhoneConnected {
+                    errorBanner(message)
+                }
+                if !model.isPhoneConnected {
+                    noPhoneState
+                } else {
+                    if model.viewMode == .list {
+                        columnHeaders
+                        Divider()
+                    }
+                    content
+                    Divider()
+                    footer
+                }
             }
-            columnHeaders
-            Divider()
-            content
-            Divider()
-            footer
         }
-        .frame(minWidth: 560, minHeight: 360)
+        .frame(minWidth: 820, minHeight: 480)
+        .ignoresSafeArea(.container, edges: .top)
         .background {
             FileBrowserDropCaptureView(
                 isTargeted: $isDropTargeted,
@@ -659,57 +745,251 @@ struct FileBrowserView: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 10) {
-            Button {
-                model.goBack()
-            } label: {
-                Image(systemName: "chevron.left")
+    // MARK: - Sidebar
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            deviceCard
+                .padding(.horizontal, 10)
+                .padding(.top, 44)  // clears the traffic lights
+                .padding(.bottom, 14)
+
+            Text("Locations")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 18)
+                .padding(.bottom, 4)
+
+            VStack(spacing: 1) {
+                ForEach(FileBrowserPlace.all) { place in
+                    sidebarRow(place)
+                }
             }
-            .disabled(!model.canGoBack || model.isBusy)
-            .help("Back")
+            .padding(.horizontal, 8)
 
-            Text(model.displayPath)
-                .font(.system(size: 13, weight: .medium))
-                .lineLimit(1)
-                .truncationMode(.head)
+            Spacer(minLength: 12)
 
-            Spacer()
+            if let storage = model.storage, model.isPhoneConnected {
+                storageCard(storage)
+                    .padding(10)
+            }
+        }
+        .frame(width: 216)
+        .background(Color.primary.opacity(0.035))
+    }
 
-            if let summary = model.storageSummary {
-                Text(summary)
+    private var deviceCard: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "smartphone")
+                .font(.system(size: 18))
+                .foregroundStyle(model.isPhoneConnected ? Color.primary : Color.secondary)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.deviceSummary?.name ?? "Android phone")
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(model.isPhoneConnected ? Color.green : Color.secondary.opacity(0.6))
+                        .frame(width: 7, height: 7)
+                    Text(connectionText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(.background, in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Color.primary.opacity(0.07)))
+    }
+
+    private var connectionText: String {
+        guard model.isPhoneConnected else { return "Not connected" }
+        guard let connection = model.deviceSummary?.connection, !connection.isEmpty else { return "Connected" }
+        let lower = connection.lowercased()
+        if lower.contains("usb") { return "Connected by USB" }
+        if lower.contains("wi-fi") || lower.contains("wifi") || lower.contains("wireless") { return "Connected over Wi-Fi" }
+        return "Connected"
+    }
+
+    private func sidebarRow(_ place: FileBrowserPlace) -> some View {
+        let isCurrent = FileBrowserPlace.current(for: model.path)?.id == place.id
+        return Button {
+            model.open(place)
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: place.symbol)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 18)
+                Text(place.title)
+                    .font(.system(size: 13, weight: isCurrent ? .medium : .regular))
+                    .foregroundStyle(Color.primary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isCurrent ? Color.primary.opacity(0.08) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!model.isPhoneConnected || model.isBusy)
+        .opacity(model.isPhoneConnected ? 1 : 0.45)
+    }
+
+    private func storageCard(_ storage: PhoneStorageInfo) -> some View {
+        let used = FileBrowserPresentation.usedFraction(storage)
+        let level = FileBrowserPresentation.storageLevel(storage)
+        let tint: Color = level == .almostFull ? .red : (level == .low ? .orange : .accentColor)
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Storage")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text("\(Int((used * 100).rounded()))% full")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
-
-            Picker("", selection: $model.viewMode) {
-                Image(systemName: "list.bullet").tag(FileBrowserModel.ViewMode.list)
-                Image(systemName: "square.grid.2x2").tag(FileBrowserModel.ViewMode.gallery)
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.1))
+                    Capsule().fill(tint).frame(width: max(4, proxy.size.width * used))
+                }
             }
-            .pickerStyle(.segmented)
-            .frame(width: 70)
-            .help("List or gallery view")
+            .frame(height: 6)
+            .accessibilityElement()
+            .accessibilityLabel("Storage \(Int((used * 100).rounded())) percent full")
+            Text(FileBrowserPresentation.storageSummary(storage))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            if level == .almostFull {
+                Label("Almost full", systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(12)
+        .background(.background, in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Color.primary.opacity(0.07)))
+    }
+
+    // MARK: - Toolbar
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            Button {
+                model.goBack()
+            } label: {
+                Image(systemName: "chevron.left").frame(width: 24, height: 22)
+            }
+            .disabled(!(model.canGoBack || model.canGoUp) || model.isBusy || !model.isPhoneConnected)
+            .help("Back (⌘[)")
 
             Button {
-                newFolderText = ""
-                isNamingFolder = true
+                model.goForward()
             } label: {
-                Image(systemName: "folder.badge.plus")
+                Image(systemName: "chevron.right").frame(width: 24, height: 22)
             }
-            .disabled(model.isBusy)
-            .help("New folder")
+            .disabled(!model.canGoForward || model.isBusy || !model.isPhoneConnected)
+            .help("Forward (⌘])")
 
-            Button {
-                model.refresh()
-            } label: {
-                Image(systemName: "arrow.clockwise")
+            pathBar
+                .padding(.leading, 2)
+
+            Spacer(minLength: 8)
+
+            if model.isPhoneConnected {
+                HStack(spacing: 5) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    TextField("Search \(FileBrowserPresentation.title(for: model.path))", text: $model.searchText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13))
+                        .focused($isSearchFocused)
+                        .onExitCommand { model.searchText = ""; isSearchFocused = false }
+                    if !model.searchText.isEmpty {
+                        Button {
+                            model.searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Clear search")
+                    }
+                }
+                .padding(.horizontal, 8)
+                .frame(width: 210, height: 26)
+                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+                .help("Search this folder (⌘F)")
+
+                Picker("", selection: $model.viewMode) {
+                    Image(systemName: "list.bullet").tag(FileBrowserModel.ViewMode.list)
+                    Image(systemName: "square.grid.2x2").tag(FileBrowserModel.ViewMode.gallery)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 72)
+                .help("List or gallery view")
+
+                Button {
+                    newFolderText = ""
+                    isNamingFolder = true
+                } label: {
+                    Image(systemName: "folder.badge.plus").frame(width: 26, height: 22)
+                }
+                .disabled(model.isBusy)
+                .help("New folder (⇧⌘N)")
+
+                Button {
+                    model.refresh()
+                } label: {
+                    Image(systemName: "arrow.clockwise").frame(width: 26, height: 22)
+                }
+                .disabled(model.isBusy)
+                .help("Refresh (⌘R)")
             }
-            .disabled(model.isBusy)
-            .help("Refresh")
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .frame(height: 52)
+    }
+
+    /// Clickable path: every ancestor jumps straight there.
+    private var pathBar: some View {
+        let segments = model.isPhoneConnected
+            ? FileBrowserPresentation.pathSegments(for: model.path)
+            : [FileBrowserPresentation.PathSegment(title: "Phone Files", path: "")]
+        return HStack(spacing: 2) {
+            ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
+                if index > 0 {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                if index == segments.count - 1 {
+                    Text(segment.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(model.isPhoneConnected ? Color.primary : Color.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .padding(.horizontal, 4)
+                } else {
+                    Button(segment.title) { model.navigate(to: segment.path) }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .padding(.horizontal, 4)
+                        .disabled(model.isBusy)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -718,17 +998,15 @@ struct FileBrowserView: View {
             if model.isLoading && model.entries.isEmpty {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if model.entries.isEmpty {
-                Text(model.errorMessage == nil ? "This folder is empty." : "")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.visibleEntries.isEmpty {
+                emptyFolderState
             } else if model.viewMode == .gallery {
                 ScrollView {
                     LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 110), spacing: 12)],
+                        columns: [GridItem(.adaptive(minimum: 116), spacing: 12)],
                         spacing: 12
                     ) {
-                        ForEach(model.sortedEntries) { entry in
+                        ForEach(model.visibleEntries) { entry in
                             galleryCell(entry)
                         }
                     }
@@ -736,12 +1014,12 @@ struct FileBrowserView: View {
                 }
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(model.sortedEntries) { entry in
-                            rowView(entry)
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(model.visibleEntries.enumerated()), id: \.element.id) { index, entry in
+                            rowView(entry, isStriped: index % 2 == 1)
                         }
                     }
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                 }
             }
@@ -763,14 +1041,18 @@ struct FileBrowserView: View {
         HStack(spacing: 8) {
             sortHeader("Name", field: .name)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 34)
+                .padding(.leading, 30)
+            Text("Kind")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: FileBrowserRow.kindWidth, alignment: .leading)
             sortHeader("Size", field: .size)
-                .frame(width: 90, alignment: .trailing)
-            sortHeader("Modified", field: .modified)
-                .frame(width: 130, alignment: .trailing)
+                .frame(width: FileBrowserRow.sizeWidth, alignment: .trailing)
+            sortHeader("Date Modified", field: .modified)
+                .frame(width: FileBrowserRow.dateWidth, alignment: .trailing)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 18)
+        .frame(height: 26)
     }
 
     private func sortHeader(_ title: String, field: FileBrowserModel.SortField) -> some View {
@@ -784,7 +1066,7 @@ struct FileBrowserView: View {
                         .font(.system(size: 8, weight: .semibold))
                 }
             }
-            .font(.system(size: 11))
+            .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(model.sortField == field ? Color.primary : Color.secondary)
         }
         .buttonStyle(.plain)
@@ -792,26 +1074,111 @@ struct FileBrowserView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if let summary = selectionFooterSummary {
-                Text(summary)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            Text(statusText)
+                .font(.system(size: 11, weight: selectedEntryIDs.isEmpty ? .regular : .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer(minLength: 8)
+
+            if !selectedEntries.isEmpty {
+                Button("Delete…") { entriesToDelete = selectedEntries }
+                    .controlSize(.small)
+                    .disabled(model.isBusy)
+                Button {
+                    model.download(selectedEntries)
+                } label: {
+                    Label("Download to Mac", systemImage: "arrow.down.to.line")
+                }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+                .disabled(model.isBusy)
             } else {
-                Text("Drop files here to copy them to this folder")
+                if model.hiddenEntryCount > 0 {
+                    Button("Show \(model.hiddenEntryCount) hidden \(model.hiddenEntryCount == 1 ? "item" : "items")") {
+                        model.showHiddenFiles = true
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.accentColor)
+                    .help("Show files whose names start with a dot (⇧⌘.)")
+                } else if model.showHiddenFiles {
+                    Button("Hide hidden items") { model.showHiddenFiles = false }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.accentColor)
+                }
+                Divider().frame(height: 12)
+                Label("Drop files to copy here", systemImage: "square.and.arrow.down")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                    .labelStyle(.titleAndIcon)
             }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 14)
+        .frame(height: selectedEntries.isEmpty ? 28 : 40)
+    }
+
+    /// "14 items · 5.2 GB available", or a summary of the selection.
+    private var statusText: String {
+        if let summary = selectionFooterSummary { return summary }
+        var parts: [String] = []
+        let visible = model.visibleEntries.count
+        if model.searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+            parts.append(FileBrowserPresentation.itemCount(visible))
+        } else {
+            parts.append("\(visible) of \(FileBrowserPresentation.itemCount(model.entries.count)) match")
+        }
+        if let storage = model.storage {
+            parts.append("\(FileBrowserPresentation.gigabytes(storage.freeBytes)) available")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var emptyFolderState: some View {
+        let searching = !model.searchText.trimmingCharacters(in: .whitespaces).isEmpty
+        return VStack(spacing: 10) {
+            Image(systemName: searching ? "magnifyingglass" : "folder")
+                .font(.system(size: 34, weight: .light))
+                .foregroundStyle(.tertiary)
+            if model.errorMessage == nil {
+                Text(searching ? "No matches for \u{201C}\(model.searchText)\u{201D}" : "This folder is empty")
+                    .font(.system(size: 14, weight: .semibold))
+                Text(searching
+                     ? "Only this folder is searched."
+                     : (model.hiddenEntryCount > 0 ? "It only has hidden items." : "Drop files here to copy them to the phone."))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var noPhoneState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "smartphone.slash")
+                .font(.system(size: 40, weight: .light))
+                .foregroundStyle(.secondary)
+                .frame(width: 84, height: 84)
+                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 22))
+            Text("Your phone isn\u{2019}t connected")
+                .font(.system(size: 18, weight: .semibold))
+            Text("Connect it with a USB cable, or make sure it\u{2019}s on the same Wi-Fi as this Mac. Its files show up here as soon as it connects.")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 380)
+            Button("Try Again") { model.refresh() }
+                .buttonStyle(.borderedProminent)
+                .padding(.top, 4)
+        }
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var selectedEntries: [PhoneFileEntry] {
-        model.sortedEntries.filter { selectedEntryIDs.contains($0.id) }
+        model.visibleEntries.filter { selectedEntryIDs.contains($0.id) }
     }
 
     private var selectionFooterSummary: String? {
@@ -914,10 +1281,10 @@ struct FileBrowserView: View {
     }
 
     @ViewBuilder
-    private func rowView(_ entry: PhoneFileEntry) -> some View {
+    private func rowView(_ entry: PhoneFileEntry, isStriped: Bool) -> some View {
         interactive(
             entry: entry,
-            base: FileBrowserRow(entry: entry, isSelected: selectedEntryIDs.contains(entry.id))
+            base: FileBrowserRow(entry: entry, isSelected: selectedEntryIDs.contains(entry.id), isStriped: isStriped)
         )
     }
 
@@ -1034,7 +1401,7 @@ struct FileBrowserView: View {
     }
 
     private func selectRange(from anchorID: PhoneFileEntry.ID, to targetID: PhoneFileEntry.ID) {
-        let ids = model.sortedEntries.map(\.id)
+        let ids = model.visibleEntries.map(\.id)
         guard let anchorIndex = ids.firstIndex(of: anchorID),
               let targetIndex = ids.firstIndex(of: targetID)
         else {
@@ -1100,7 +1467,7 @@ struct FileBrowserView: View {
     private func previewSelectedEntry() {
         guard selectedEntryIDs.count == 1,
               let selectedEntryID = selectedEntryIDs.first,
-              let entry = model.sortedEntries.first(where: { $0.id == selectedEntryID })
+              let entry = model.visibleEntries.first(where: { $0.id == selectedEntryID })
         else { return }
         model.preview(entry)
     }
@@ -1108,7 +1475,7 @@ struct FileBrowserView: View {
     private func openSelectedEntry() {
         guard selectedEntryIDs.count == 1,
               let selectedEntryID = selectedEntryIDs.first,
-              let entry = model.sortedEntries.first(where: { $0.id == selectedEntryID })
+              let entry = model.visibleEntries.first(where: { $0.id == selectedEntryID })
         else { return }
         model.open(entry)
     }
@@ -1116,10 +1483,35 @@ struct FileBrowserView: View {
     private func installKeyMonitor() {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard NSApp.keyWindow?.identifier == Self.windowIdentifier,
-                  event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
-                  !isTextEditingFirstResponder
-            else { return event }
+            guard NSApp.keyWindow?.identifier == Self.windowIdentifier else { return event }
+            let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+            // Finder shortcuts work even while the search field has focus.
+            if flags == .command {
+                switch event.keyCode {
+                case 33: model.goBack(); return nil                       // ⌘[
+                case 30: model.goForward(); return nil                    // ⌘]
+                case 126: model.goUp(); return nil                        // ⌘↑
+                case 125: openSelectedEntry(); return nil                 // ⌘↓
+                case 3: isSearchFocused = true; return nil                // ⌘F
+                case 15: model.refresh(); return nil                      // ⌘R
+                case 51:                                                  // ⌘⌫
+                    guard !isTextEditingFirstResponder, !selectedEntries.isEmpty else { return event }
+                    entriesToDelete = selectedEntries
+                    return nil
+                default: break
+                }
+            }
+            if flags == [.command, .shift] {
+                switch event.keyCode {
+                case 47: model.showHiddenFiles.toggle(); return nil       // ⇧⌘.
+                case 45:                                                  // ⇧⌘N
+                    newFolderText = ""
+                    isNamingFolder = true
+                    return nil
+                default: break
+                }
+            }
+            guard flags.isEmpty, !isTextEditingFirstResponder else { return event }
             switch event.keyCode {
             case 36:
                 openSelectedEntry()
@@ -1359,46 +1751,46 @@ private struct FileBrowserGalleryCell: View {
     @State private var isHovering = false
 
     var body: some View {
-        VStack(spacing: 6) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
+        VStack(spacing: 4) {
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 9)
                     .fill(tileFill)
                 if let thumbnail {
                     Image(nsImage: thumbnail)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
-                        .frame(width: 96, height: 96)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .frame(width: 104, height: 104)
+                        .clipShape(RoundedRectangle(cornerRadius: 9))
                 } else {
-                    Image(systemName: entry.isNavigable ? "folder.fill" : fallbackIcon)
-                        .font(.system(size: 34))
-                        .foregroundStyle(
-                            entry.isNavigable ? Color.accentColor : Color.secondary
-                        )
+                    FileBrowserEntryIcon(entry: entry, size: 40)
+                        .frame(width: 104, height: 104)
+                }
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 18))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(Color.white, Color.accentColor)
+                        .padding(6)
                 }
             }
-            .frame(width: 96, height: 96)
+            .frame(width: 104, height: 104)
             .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(tileStroke, lineWidth: isSelected ? 1.5 : 1)
+                RoundedRectangle(cornerRadius: 9)
+                    .strokeBorder(isSelected ? Color.accentColor : (isHovering ? Color.primary.opacity(0.18) : Color.clear),
+                                  lineWidth: isSelected ? 3 : 1)
             }
             Text(entry.name)
-                .font(.system(size: 11))
-                .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(0.92))
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
+                .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                .lineLimit(1)
                 .truncationMode(.middle)
+                .padding(.top, 2)
+            Text(FileBrowserPresentation.friendlyDate(entry.modifiedText))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
-        .frame(width: 110)
-        .padding(.vertical, 7)
-        .background {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(cellFill)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(cellStroke, lineWidth: isSelected ? 1.5 : 1)
-        }
+        .frame(width: 116)
+        .padding(.vertical, 6)
         .animation(.easeOut(duration: 0.08), value: isHovering)
         .animation(.easeOut(duration: 0.08), value: isSelected)
         .onHover { isHovering = $0 }
@@ -1418,143 +1810,90 @@ private struct FileBrowserGalleryCell: View {
         }
     }
 
-    private var cellFill: Color {
-        if isSelected {
-            return Color.accentColor.opacity(0.20)
-        }
-        if isHovering {
-            return Color.accentColor.opacity(0.10)
-        }
-        return .clear
-    }
-
-    private var cellStroke: Color {
-        if isSelected {
-            return Color.accentColor.opacity(0.62)
-        }
-        if isHovering {
-            return Color.accentColor.opacity(0.28)
-        }
-        return .clear
-    }
-
     private var tileFill: Color {
-        if isSelected {
-            return Color.accentColor.opacity(0.16)
+        if entry.isNavigable && thumbnail == nil {
+            return isHovering ? Color.primary.opacity(0.06) : .clear
         }
-        if isHovering {
-            return Color.secondary.opacity(0.14)
-        }
-        return Color.secondary.opacity(0.08)
+        return isHovering ? Color.primary.opacity(0.09) : Color.primary.opacity(0.05)
     }
 
-    private var tileStroke: Color {
-        if isSelected {
-            return Color.accentColor.opacity(0.78)
-        }
-        if isHovering {
-            return Color.secondary.opacity(0.24)
-        }
-        return .clear
-    }
-
-    private var fallbackIcon: String {
-        switch (entry.name as NSString).pathExtension.lowercased() {
-        case "jpg", "jpeg", "png", "gif", "heic", "webp", "bmp":
-            return "photo"
-        case "mp4", "mov", "mkv", "webm", "3gp", "m4v":
-            return "film"
-        case "mp3", "m4a", "ogg", "opus", "flac", "wav", "aac":
-            return "music.note"
-        case "pdf":
-            return "doc.richtext"
-        case "zip", "rar", "7z", "tar", "gz":
-            return "doc.zipper"
-        case "apk":
-            return "shippingbox"
-        default:
-            return "doc"
-        }
-    }
 }
 
-private struct FileBrowserRow: View {
+struct FileBrowserRow: View {
+    static let kindWidth: CGFloat = 110
+    static let sizeWidth: CGFloat = 76
+    static let dateWidth: CGFloat = 170
+
     let entry: PhoneFileEntry
     let isSelected: Bool
+    var isStriped = false
     @State private var isHovering = false
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: iconName)
-                .foregroundStyle(entry.isNavigable ? Color.accentColor : Color.secondary)
-                .frame(width: 18)
+            HStack(spacing: 8) {
+                FileBrowserEntryIcon(entry: entry, size: 18, isOnSelection: isSelected)
+                Text(entry.name)
+                    .font(.system(size: 13, weight: isSelected ? .medium : .regular))
+                    .foregroundStyle(isSelected ? Color.white : Color.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .opacity(FileBrowserPresentation.isHidden(entry) && !isSelected ? 0.6 : 1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text(entry.name)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
+            Text(FileBrowserPresentation.kind(for: entry))
+                .frame(width: Self.kindWidth, alignment: .leading)
             Text(entry.isNavigable ? "—" : PhoneFileBrowserService.formattedSize(entry.sizeBytes))
-                .foregroundStyle(.secondary)
-                .frame(width: 90, alignment: .trailing)
-
-            Text(entry.modifiedText)
-                .foregroundStyle(.secondary)
-                .frame(width: 130, alignment: .trailing)
+                .frame(width: Self.sizeWidth, alignment: .trailing)
+            Text(FileBrowserPresentation.friendlyDate(entry.modifiedText))
+                .frame(width: Self.dateWidth, alignment: .trailing)
         }
-        .font(.system(size: 13))
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
+        .font(.system(size: 12))
+        .foregroundStyle(isSelected ? Color.white.opacity(0.88) : Color.secondary)
+        .lineLimit(1)
+        .padding(.horizontal, 10)
+        .frame(height: 28)
         .background {
-            RoundedRectangle(cornerRadius: 5)
+            RoundedRectangle(cornerRadius: 6)
                 .fill(rowFill)
         }
-        .overlay {
-            RoundedRectangle(cornerRadius: 5)
-                .strokeBorder(rowStroke, lineWidth: isSelected ? 1.5 : 1)
-        }
         .animation(.easeOut(duration: 0.08), value: isHovering)
-        .animation(.easeOut(duration: 0.08), value: isSelected)
         .onHover { isHovering = $0 }
     }
 
     private var rowFill: Color {
-        if isSelected {
-            return Color.accentColor.opacity(0.20)
-        }
-        if isHovering {
-            return Color.accentColor.opacity(0.12)
-        }
-        return .clear
+        if isSelected { return Color.accentColor }
+        if isHovering { return Color.primary.opacity(0.06) }
+        return isStriped ? Color.primary.opacity(0.03) : .clear
     }
+}
 
-    private var rowStroke: Color {
-        if isSelected {
-            return Color.accentColor.opacity(0.62)
-        }
-        if isHovering {
-            return Color.accentColor.opacity(0.28)
-        }
-        return .clear
-    }
+/// Folder (with a badge for well-known folders) or file-type icon.
+struct FileBrowserEntryIcon: View {
+    let entry: PhoneFileEntry
+    var size: CGFloat = 18
+    var isOnSelection = false
 
-    private var iconName: String {
-        guard !entry.isNavigable else { return "folder" }
-        switch (entry.name as NSString).pathExtension.lowercased() {
-        case "jpg", "jpeg", "png", "gif", "heic", "webp", "bmp":
-            return "photo"
-        case "mp4", "mov", "mkv", "webm", "3gp", "m4v":
-            return "film"
-        case "mp3", "m4a", "ogg", "opus", "flac", "wav", "aac":
-            return "music.note"
-        case "pdf":
-            return "doc.richtext"
-        case "zip", "rar", "7z", "tar", "gz":
-            return "doc.zipper"
-        case "apk":
-            return "shippingbox"
-        default:
-            return "doc"
+    var body: some View {
+        if entry.isNavigable {
+            ZStack {
+                Image(systemName: "folder.fill")
+                    .font(.system(size: size))
+                    .foregroundStyle(isOnSelection ? Color.white.opacity(0.9) : Color(red: 0.42, green: 0.68, blue: 0.96))
+                if let badge = FileBrowserPresentation.folderBadgeSymbol(for: entry.name) {
+                    Image(systemName: badge)
+                        .font(.system(size: size * 0.42, weight: .bold))
+                        .foregroundStyle(isOnSelection ? Color.accentColor : Color(red: 0.13, green: 0.40, blue: 0.75))
+                        .offset(y: size * 0.07)
+                }
+            }
+            .frame(width: size + 4)
+        } else {
+            Image(systemName: FileBrowserPresentation.fileSymbol(for: entry.name))
+                .font(.system(size: size * 0.85))
+                .foregroundStyle(isOnSelection ? Color.white : Color.secondary)
+                .frame(width: size + 4)
         }
     }
 }
