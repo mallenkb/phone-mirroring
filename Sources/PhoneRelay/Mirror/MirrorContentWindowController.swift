@@ -3355,10 +3355,30 @@ final class MirrorChromeOutlineButton: NSView {
         }
     }
 
+    /// Icon color for the bar's appearance: white icons vanished on the light
+    /// light-mode bar, so light mode uses dark icons.
+    static func idleIconColor(isDark: Bool) -> NSColor {
+        isDark ? NSColor.white.withAlphaComponent(0.72) : NSColor.black.withAlphaComponent(0.62)
+    }
+
+    static func highlightColor(isDark: Bool, pressed: Bool) -> NSColor {
+        let base: NSColor = isDark ? .white : .black
+        return base.withAlphaComponent(isDark ? (pressed ? 0.22 : 0.12) : (pressed ? 0.14 : 0.07))
+    }
+
+    private var isDarkAppearance: Bool {
+        effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+    }
+
     private func applyTint() {
         imageView.contentTintColor = isActive
             ? NSColor.systemRed
-            : NSColor.white.withAlphaComponent(0.72)
+            : Self.idleIconColor(isDark: isDarkAppearance)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyTint()
     }
 
     private static func hoverPath(
@@ -3448,13 +3468,13 @@ final class MirrorChromeOutlineButton: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        hoverBackgroundLayer.fillColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        hoverBackgroundLayer.fillColor = Self.highlightColor(isDark: isDarkAppearance, pressed: false).cgColor
     }
     override func mouseExited(with event: NSEvent) {
         hoverBackgroundLayer.fillColor = nil
     }
     override func mouseDown(with event: NSEvent) {
-        hoverBackgroundLayer.fillColor = NSColor.white.withAlphaComponent(0.22).cgColor
+        hoverBackgroundLayer.fillColor = Self.highlightColor(isDark: isDarkAppearance, pressed: true).cgColor
     }
     override func mouseUp(with event: NSEvent) {
         hoverBackgroundLayer.fillColor = nil
