@@ -2855,9 +2855,7 @@ final class MirrorTrafficLightButton: NSView {
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
         layer?.cornerRadius = Self.dotDiameter / 2
-        layer?.borderWidth = 0.5
-        layer?.borderColor = NSColor.black.withAlphaComponent(0.12).cgColor
-        layer?.backgroundColor = fillColor.cgColor
+        applyColors()
         NSLayoutConstraint.activate([
             widthAnchor.constraint(equalToConstant: Self.dotDiameter),
             heightAnchor.constraint(equalToConstant: Self.dotDiameter),
@@ -2882,12 +2880,42 @@ final class MirrorTrafficLightButton: NSView {
         glyph.isHidden = !visible
     }
 
+    /// macOS's own traffic-light fills.
     private var fillColor: NSColor {
         switch kind {
-        case .close: return NSColor(red: 1.0, green: 0.37, blue: 0.34, alpha: 1)
-        case .minimize: return NSColor(red: 1.0, green: 0.74, blue: 0.17, alpha: 1)
-        case .zoom: return NSColor(red: 0.15, green: 0.78, blue: 0.25, alpha: 1)
+        case .close: return NSColor(srgbRed: 1.0, green: 0.373, blue: 0.341, alpha: 1)      // #FF5F57
+        case .minimize: return NSColor(srgbRed: 0.996, green: 0.737, blue: 0.180, alpha: 1) // #FEBC2E
+        case .zoom: return NSColor(srgbRed: 0.157, green: 0.784, blue: 0.251, alpha: 1)     // #28C840
         }
+    }
+
+    /// The ring macOS draws in light mode: a darker shade of the same color.
+    /// A faint black outline vanished on the white light-mode bar and left
+    /// the lights looking soft and flat.
+    private var lightModeRimColor: NSColor {
+        switch kind {
+        case .close: return NSColor(srgbRed: 0.878, green: 0.267, blue: 0.243, alpha: 1)    // #E0443E
+        case .minimize: return NSColor(srgbRed: 0.871, green: 0.631, blue: 0.137, alpha: 1) // #DEA123
+        case .zoom: return NSColor(srgbRed: 0.102, green: 0.671, blue: 0.161, alpha: 1)     // #1AAB29
+        }
+    }
+
+    static func isDarkAppearance(_ appearance: NSAppearance) -> Bool {
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+    }
+
+    private func applyColors() {
+        let isDark = Self.isDarkAppearance(effectiveAppearance)
+        layer?.backgroundColor = fillColor.cgColor
+        layer?.borderWidth = isDark ? 0.5 : 0.6
+        layer?.borderColor = isDark
+            ? NSColor.black.withAlphaComponent(0.22).cgColor
+            : lightModeRimColor.cgColor
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyColors()
     }
 
     override func mouseDown(with event: NSEvent) {
