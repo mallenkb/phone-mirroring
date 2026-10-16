@@ -49,7 +49,21 @@ struct FileTransferActivity: Equatable {
 @MainActor
 final class FileBrowserModel: ObservableObject {
     @Published private(set) var path = PhoneFileBrowserService.defaultRoot
-    @Published private(set) var entries: [PhoneFileEntry] = []
+    @Published private(set) var entries: [PhoneFileEntry] = [] {
+        didSet {
+            entryIDs = Set(entries.map(\.id))
+            entriesRevision += 1
+            rebuildVisibleEntries()
+        }
+    }
+    /// Bumped whenever `entries` changes. The view watches this instead of
+    /// diffing thousands of IDs on every redraw.
+    @Published private(set) var entriesRevision = 0
+    private(set) var entryIDs: Set<PhoneFileEntry.ID> = []
+    /// Entries after the hidden-file and search filters, in sort order.
+    /// Stored, not computed: sorting a 7,000-photo Camera folder with
+    /// localizedStandardCompare on every redraw stalled scrolling.
+    @Published private(set) var visibleEntries: [PhoneFileEntry] = []
     @Published private(set) var isLoading = false
     @Published private(set) var storage: PhoneStorageInfo?
     /// Non-nil while a push/pull/delete runs; the UI overlays progress and
@@ -63,6 +77,10 @@ final class FileBrowserModel: ObservableObject {
     /// Phone name and how it's connected ("Wi-Fi", "USB"), for the sidebar.
     private let deviceSummaryProvider: () -> (name: String, connection: String?)?
     private var loadGeneration = 0
+    /// Folders already loaded in this window, shown at once on Back,
+    /// Forward and revisits while a fresh load runs behind them.
+    private var listingCache = FolderListingCache()
+    private var didPrefetchPlaces = false
     private var quickLookController: FileQuickLookController?
 
     /// Finder-style history: Back returns to the previous folder, not
@@ -70,9 +88,14 @@ final class FileBrowserModel: ObservableObject {
     @Published private(set) var backStack: [String] = []
     @Published private(set) var forwardStack: [String] = []
     /// Filters the current folder by name; cleared on navigation.
-    @Published var searchText = ""
+    @Published var searchText = "" {
+        didSet { if searchText != oldValue { rebuildVisibleEntries() } }
+    }
     @Published var showHiddenFiles: Bool = UserDefaults.standard.bool(forKey: FileBrowserModel.showHiddenDefaultsKey) {
-        didSet { UserDefaults.standard.set(showHiddenFiles, forKey: Self.showHiddenDefaultsKey) }
+        didSet {
+            UserDefaults.standard.set(showHiddenFiles, forKey: Self.showHiddenDefaultsKey)
+            rebuildVisibleEntries()
+        }
     }
     static let showHiddenDefaultsKey = "PhoneFiles.showHiddenFiles"
 
@@ -91,13 +114,13 @@ final class FileBrowserModel: ObservableObject {
     var canGoForward: Bool { !forwardStack.isEmpty }
     var canGoUp: Bool { PhoneFileBrowserService.parent(of: path) != nil }
 
-    /// Entries after the hidden-file and search filters, in sort order.
-    var visibleEntries: [PhoneFileEntry] {
+    private func rebuildVisibleEntries() {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return sortedEntries.filter { entry in
-            (showHiddenFiles || !FileBrowserPresentation.isHidden(entry))
-                && (query.isEmpty || entry.name.localizedCaseInsensitiveContains(query))
-        }
+        visibleEntries = FileBrowserPresentation.sorted(entries, by: sortField, ascending: sortAscending)
+            .filter { entry in
+                (showHiddenFiles || !FileBrowserPresentation.isHidden(entry))
+                    && (query.isEmpty || entry.name.localizedCaseInsensitiveContains(query))
+            }
     }
 
     var hiddenEntryCount: Int {
@@ -113,7 +136,7 @@ final class FileBrowserModel: ObservableObject {
         }
         path = newPath
         searchText = ""
-        entries = []
+        entries = serialProvider().flatMap { listingCache.entries(serial: $0, path: newPath) } ?? []
         refresh()
     }
 
@@ -133,6 +156,10 @@ final class FileBrowserModel: ObservableObject {
         guard !isBusy, let serial = serialOrExplain else { return }
         guard place.paths.count > 1 else {
             if let only = place.paths.first { navigate(to: only) }
+            return
+        }
+        if let known = place.paths.first(where: { listingCache.entries(serial: serial, path: $0) != nil }) {
+            navigate(to: known)
             return
         }
         let candidates = place.paths
@@ -182,33 +209,19 @@ final class FileBrowserModel: ObservableObject {
         return (serial, path)
     }
 
-    @Published private(set) var sortField: SortField = .name
-    @Published private(set) var sortAscending = true
-
-    /// Folders always group above files (like Finder's folders-first
-    /// preference); the chosen field orders within each group.
-    var sortedEntries: [PhoneFileEntry] {
-        entries.sorted { a, b in
-            if a.isNavigable != b.isNavigable { return a.isNavigable }
-            let ordered: Bool
-            switch sortField {
-            case .name:
-                ordered = a.name.localizedStandardCompare(b.name) == .orderedAscending
-            case .size:
-                ordered = (a.sizeBytes ?? -1) < (b.sizeBytes ?? -1)
-            case .modified:
-                ordered = a.modifiedText < b.modifiedText
-            }
-            return sortAscending ? ordered : !ordered
-        }
+    @Published private(set) var sortField: SortField = .name {
+        didSet { rebuildVisibleEntries() }
+    }
+    @Published private(set) var sortAscending = true {
+        didSet { rebuildVisibleEntries() }
     }
 
     func toggleSort(_ field: SortField) {
         if sortField == field {
             sortAscending.toggle()
         } else {
-            sortField = field
             sortAscending = field == .name
+            sortField = field
         }
     }
 
@@ -245,18 +258,50 @@ final class FileBrowserModel: ObservableObject {
         let generation = loadGeneration
         let target = path
         Task.detached(priority: .userInitiated) { [weak self] in
-            let listing = PhoneFileBrowserService.listDirectory(serial: serial, path: target)
-            let storage = PhoneFileBrowserService.storageInfo(serial: serial, path: target)
+            let load = PhoneFileBrowserService.loadFolder(serial: serial, path: target)
             await MainActor.run { [weak self] in
-                guard let self, self.loadGeneration == generation else { return }
+                guard let self else { return }
+                if case .success(let result) = load.listing {
+                    self.listingCache.store(result.entries, serial: serial, path: target)
+                }
+                guard self.loadGeneration == generation else { return }
                 self.isLoading = false
-                self.storage = storage
-                switch listing {
+                if let storage = load.storage { self.storage = storage }
+                switch load.listing {
                 case .success(let result):
-                    self.entries = result.entries
+                    if result.entries != self.entries { self.entries = result.entries }
                 case .failure(let error):
                     self.entries = []
                     self.errorMessage = error.message
+                }
+                self.prefetchPlacesIfNeeded(serial: serial)
+            }
+        }
+    }
+
+    /// After the first folder shows, loads the sidebar places one at a time
+    /// in the background so clicking Camera (thousands of photos, about two
+    /// seconds of phone-side work) paints from the cache instead of waiting.
+    private func prefetchPlacesIfNeeded(serial: String) {
+        guard !didPrefetchPlaces else { return }
+        didPrefetchPlaces = true
+        let places = FileBrowserPlace.all
+        Task.detached(priority: .utility) { [weak self] in
+            for place in places {
+                for candidate in place.paths {
+                    let alreadyCached = await MainActor.run { [weak self] in
+                        self?.listingCache.entries(serial: serial, path: candidate) != nil
+                    }
+                    if alreadyCached { break }
+                    let load = PhoneFileBrowserService.loadFolder(serial: serial, path: candidate)
+                    guard case .success(let result) = load.listing else { continue }
+                    let stillOpen = await MainActor.run { [weak self] () -> Bool in
+                        guard let self else { return false }
+                        self.listingCache.store(result.entries, serial: serial, path: candidate)
+                        return true
+                    }
+                    if !stillOpen { return }
+                    break
                 }
             }
         }
@@ -686,7 +731,8 @@ struct FileBrowserView: View {
         .onChange(of: model.path) { _ in
             clearSelection()
         }
-        .onChange(of: model.entries.map(\.id)) { ids in
+        .onChange(of: model.entriesRevision) { _ in
+            let ids = model.entryIDs
             selectedEntryIDs = selectedEntryIDs.intersection(ids)
             if let selectionAnchorID, !ids.contains(selectionAnchorID) {
                 self.selectionAnchorID = selectedEntryIDs.first

@@ -199,41 +199,117 @@ enum PhoneFileBrowserService {
         }
     }
 
-    /// Lists a phone directory. The trailing slash forces the shell to
-    /// dereference symlinked directories (like /sdcard itself) instead of
-    /// stat-ing the link.
+    /// One folder as the browser shows it: the listing plus the free space
+    /// of the volume it lives on.
+    struct FolderLoad: Sendable {
+        var resolvedPath: String
+        var listing: Result<ListingParseResult, ServiceError>
+        var storage: PhoneStorageInfo?
+    }
+
+    nonisolated static let listingMarker = "__PHONERELAY_LS__"
+    nonisolated static let storageMarker = "__PHONERELAY_DF__"
+
+    /// The phone-side script behind `loadFolder`. Resolving, listing and
+    /// `df` used to be three `adb shell` calls (about 100 ms each over
+    /// Wi-Fi); one script pays that round trip once. The shell refuses to
+    /// list a target that resolves outside shared storage, and
+    /// `parseFolderLoad` checks the resolved path again on the Mac.
+    /// `-n` skips the uid-to-name lookups, which the browser never shows.
+    /// The trailing slash makes `ls` follow a symlinked directory (like
+    /// /sdcard itself) instead of listing the link.
+    nonisolated static func folderLoadScript(path: String) -> String {
+        [
+            "r=$(readlink -f \(shellQuoted(path))) || exit 2",
+            #"case "$r" in /sdcard|/sdcard/*|/storage|/storage/*) ;; *) echo "$r"; exit 3;; esac"#,
+            #"echo "$r""#,
+            "echo \(listingMarker)",
+            #"ls -l -a -n "$r/" 2>&1"#,
+            "echo \"\(listingMarker) $?\"",
+            "echo \(storageMarker)",
+            #"df -k "$r" 2>/dev/null"#,
+        ].joined(separator: "; ")
+    }
+
+    /// Splits `folderLoadScript` output. Nil means the resolve step failed
+    /// or landed outside shared storage, so nothing should be shown.
+    nonisolated static func parseFolderLoad(_ output: String) -> FolderLoad? {
+        let lines = output.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+            .map { $0.replacingOccurrences(of: "\r", with: "") }
+        guard let listStart = lines.firstIndex(of: listingMarker),
+              let resolved = lines[..<listStart].last(where: { !$0.isEmpty })?
+                .trimmingCharacters(in: .whitespaces),
+              isPathAllowed(resolved)
+        else { return nil }
+
+        let statusPrefix = listingMarker + " "
+        let listEnd = lines[listStart...].firstIndex { $0.hasPrefix(statusPrefix) } ?? lines.endIndex
+        let listingText = lines[(listStart + 1)..<listEnd].joined(separator: "\n")
+        let status = listEnd < lines.endIndex
+            ? Int(lines[listEnd].dropFirst(statusPrefix.count).trimmingCharacters(in: .whitespaces))
+            : nil
+        let parsed = parseListing(listingText)
+
+        // toybox exits 1 when it can't stat some children but still prints
+        // the rest, so only a non-zero status with nothing listed is a failure.
+        let listing: Result<ListingParseResult, ServiceError>
+        if status == 0 || !parsed.entries.isEmpty {
+            listing = .success(parsed)
+        } else {
+            let detail = oneLine(listingText)
+            listing = .failure(.operationFailed(detail.isEmpty ? "Couldn't list this folder." : detail))
+        }
+
+        var storage: PhoneStorageInfo?
+        if let dfStart = lines.firstIndex(of: storageMarker) {
+            storage = parseStorageInfo(lines[(dfStart + 1)...].joined(separator: "\n"))
+        }
+        return FolderLoad(resolvedPath: resolved, listing: listing, storage: storage)
+    }
+
+    /// Lists a phone folder and reads its volume's free space in a single
+    /// `adb shell` round trip.
+    nonisolated static func loadFolder(serial: String, path: String) -> FolderLoad {
+        guard isPathAllowed(path) else {
+            return FolderLoad(resolvedPath: path, listing: .failure(.pathNotAllowed), storage: nil)
+        }
+        let result = Tooling.runResult(
+            "adb",
+            arguments: ["-s", serial, "shell", folderLoadScript(path: path)],
+            timeout: 20
+        )
+        if let load = parseFolderLoad(result.output) { return load }
+        let listing: Result<ListingParseResult, ServiceError> = result.exitCode == 3
+            ? .failure(.pathNotAllowed)
+            : .failure(.operationFailed(oneLine(result.output)))
+        return FolderLoad(resolvedPath: path, listing: listing, storage: nil)
+    }
+
     nonisolated static func listDirectory(
         serial: String,
         path: String
     ) -> Result<ListingParseResult, ServiceError> {
-        guard let resolvedPath = resolvedAllowedPath(serial: serial, path: path) else {
-            return .failure(.pathNotAllowed)
-        }
-        let target = resolvedPath.hasSuffix("/") ? resolvedPath : resolvedPath + "/"
-        let result = Tooling.runResult(
-            "adb",
-            arguments: ["-s", serial, "shell", "ls", "-l", "-a", shellQuoted(target)],
-            timeout: 20
-        )
-        guard result.succeeded else {
-            return .failure(.operationFailed(oneLine(result.output)))
-        }
-        // Permission-denied noise for individual children arrives on the same
-        // merged stream; parseListing already skips those lines.
-        return .success(parseListing(result.output))
+        loadFolder(serial: serial, path: path).listing
     }
 
     /// Stats a single path via `ls -l -d` (one listing row, same parser).
     /// Returns nil when the path doesn't exist or isn't readable.
     nonisolated static func statPath(serial: String, path: String) -> PhoneFileEntry? {
-        guard let resolvedPath = resolvedAllowedPath(serial: serial, path: path) else { return nil }
-        let result = Tooling.runResult(
-            "adb",
-            arguments: ["-s", serial, "shell", "ls", "-l", "-d", shellQuoted(resolvedPath)],
-            timeout: 10
-        )
+        guard isPathAllowed(path) else { return nil }
+        // Same resolve-then-check as folderLoadScript, in one round trip.
+        let script = [
+            "r=$(readlink -f \(shellQuoted(path))) || exit 2",
+            #"case "$r" in /sdcard|/sdcard/*|/storage|/storage/*) ;; *) exit 3;; esac"#,
+            #"echo "$r""#,
+            #"ls -l -d -n "$r""#,
+        ].joined(separator: "; ")
+        let result = Tooling.runResult("adb", arguments: ["-s", serial, "shell", script], timeout: 10)
         guard result.succeeded else { return nil }
-        guard var entry = parseListing(result.output).entries.first else { return nil }
+        let lines = result.output.split(whereSeparator: \.isNewline).map(String.init)
+        guard lines.count >= 2,
+              isPathAllowed(lines[0].trimmingCharacters(in: .whitespacesAndNewlines)),
+              var entry = parseListing(lines.dropFirst().joined(separator: "\n")).entries.first
+        else { return nil }
         // `ls -d` echoes the full path as the name; callers want the leaf.
         entry.name = (entry.name as NSString).lastPathComponent
         return entry

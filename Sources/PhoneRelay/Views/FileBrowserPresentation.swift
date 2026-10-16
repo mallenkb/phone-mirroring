@@ -27,6 +27,38 @@ struct FileBrowserPlace: Identifiable, Equatable {
     }
 }
 
+/// Listings the Phone Files window has already loaded, newest last. Keyed
+/// by phone so switching phones never shows the other phone's folders.
+struct FolderListingCache {
+    private var serial: String?
+    private var listings: [String: [PhoneFileEntry]] = [:]
+    private var order: [String] = []
+    let limit: Int
+
+    init(limit: Int = 40) {
+        self.limit = limit
+    }
+
+    func entries(serial: String, path: String) -> [PhoneFileEntry]? {
+        guard serial == self.serial else { return nil }
+        return listings[path]
+    }
+
+    mutating func store(_ entries: [PhoneFileEntry], serial: String, path: String) {
+        if serial != self.serial {
+            self.serial = serial
+            listings = [:]
+            order = []
+        }
+        listings[path] = entries
+        order.removeAll { $0 == path }
+        order.append(path)
+        while order.count > limit {
+            listings[order.removeFirst()] = nil
+        }
+    }
+}
+
 /// Pure formatting for the Phone Files window, kept out of the view so it
 /// can be tested.
 enum FileBrowserPresentation {
@@ -137,6 +169,41 @@ enum FileBrowserPresentation {
 
     static func isHidden(_ entry: PhoneFileEntry) -> Bool {
         entry.name.hasPrefix(".")
+    }
+
+    // MARK: Sorting
+
+    /// Folders always group above files (like Finder's folders-first
+    /// preference); the chosen field orders within each group. Listings
+    /// arrive from `parseListing` already in name order, so the default sort
+    /// returns them untouched instead of re-running localizedStandardCompare
+    /// over thousands of names.
+    static func sorted(
+        _ entries: [PhoneFileEntry],
+        by field: FileBrowserModel.SortField,
+        ascending: Bool
+    ) -> [PhoneFileEntry] {
+        if field == .name, ascending, isInListingOrder(entries) { return entries }
+        return entries.sorted { a, b in
+            if a.isNavigable != b.isNavigable { return a.isNavigable }
+            let ordered: Bool
+            switch field {
+            case .name:
+                ordered = a.name.localizedStandardCompare(b.name) == .orderedAscending
+            case .size:
+                ordered = (a.sizeBytes ?? -1) < (b.sizeBytes ?? -1)
+            case .modified:
+                ordered = a.modifiedText < b.modifiedText
+            }
+            return ascending ? ordered : !ordered
+        }
+    }
+
+    /// Cheap check that folders come first; full name order is trusted
+    /// because only `parseListing` produces entries.
+    private static func isInListingOrder(_ entries: [PhoneFileEntry]) -> Bool {
+        guard let firstFile = entries.firstIndex(where: { !$0.isNavigable }) else { return true }
+        return !entries[firstFile...].contains(where: \.isNavigable)
     }
 
     // MARK: Storage
