@@ -1286,6 +1286,34 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
         return zone.contains(point) || toolbarVisibleFrame(for: window).contains(point)
     }
 
+    /// True when another window (Phone Files, another app) sits in front of
+    /// the mirror at `point`. The reveal zone is pure geometry, so without
+    /// this the hover bar floated over whatever window covered the mirror.
+    private func isCoveredByWindowAbove(at point: NSPoint) -> Bool {
+        guard let window, window.windowNumber > 0,
+              let info = CGWindowListCopyWindowInfo(
+                [.optionOnScreenAboveWindow, .excludeDesktopElements],
+                CGWindowID(window.windowNumber)
+              ) as? [[String: Any]]
+        else { return false }
+        let ownWindows = Set([window.windowNumber, toolbarWindow?.windowNumber].compactMap { $0 })
+        let screenTop = NSScreen.screens.first?.frame.maxY ?? 0
+        return info.contains { entry in
+            guard let number = entry[kCGWindowNumber as String] as? Int, !ownWindows.contains(number),
+                  let layer = entry[kCGWindowLayer as String] as? Int,
+                  // Ordinary and floating windows only; the menu bar, Dock and
+                  // status items live on higher layers and never cover a window.
+                  layer >= 0, layer < Int(CGWindowLevelForKey(.dockWindow)),
+                  (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+                  let boundsDict = entry[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
+            else { return false }
+            // Quartz measures from the top of the main screen; AppKit from the bottom.
+            let frame = NSRect(x: bounds.minX, y: screenTop - bounds.maxY, width: bounds.width, height: bounds.height)
+            return frame.contains(point)
+        }
+    }
+
     private var isMirrorWindowActiveForChrome: Bool {
         guard NSApp.isActive else { return false }
         return window?.isKeyWindow == true || toolbarWindow?.isKeyWindow == true
@@ -1311,7 +1339,7 @@ final class MirrorContentWindowController: NSWindowController, NSWindowDelegate 
             setChromeVisible(true)
             return
         }
-        if revealZoneContains(mouseLocation) {
+        if revealZoneContains(mouseLocation), !isCoveredByWindowAbove(at: mouseLocation) {
             isPointerInTopZone = true
             hideWorkItem?.cancel()
             setChromeVisible(true, requireActiveMirrorWindow: false)
