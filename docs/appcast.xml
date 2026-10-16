@@ -3,13 +3,13 @@
     <channel>
         <title>PhoneRelay</title>
         <item>
-            <title>1.0.45</title>
-            <pubDate>Tue, 06 Oct 2026 06:49:25 +0000</pubDate>
-            <link>https://github.com/mallenkb/phone-mirroring/releases/tag/v1.0.45</link>
-            <sparkle:version>45</sparkle:version>
-            <sparkle:shortVersionString>1.0.45</sparkle:shortVersionString>
+            <title>1.0.46</title>
+            <pubDate>Fri, 16 Oct 2026 18:51:58 +0000</pubDate>
+            <link>https://github.com/mallenkb/phone-mirroring/releases/tag/v1.0.46</link>
+            <sparkle:version>46</sparkle:version>
+            <sparkle:shortVersionString>1.0.46</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.45/PhoneRelay-1.0.45.zip" length="19862572" type="application/octet-stream" sparkle:edSignature="UQ0tWUkBSUU2b/DoaL0Lnn6asbpg6cuSPA7PvrnsQQO4cmTmcxbOAQB5iBzFNL2mqnpoLuigRqcGVO/Mz0rECQ=="/>
+            <enclosure url="https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.46/PhoneRelay-1.0.46.zip" length="20099928" type="application/octet-stream" sparkle:edSignature="sWY+PS0UK40I90SBvP6eiXTXzKqNGeE2z2e5aDNrAKSNcSYHriBtmWOHgvmyhaAaJVGCgdbGDkjFvzvB36yLBQ=="/>
         </item>
     </channel>
 </rss>

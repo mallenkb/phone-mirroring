@@ -1,26 +1,26 @@
 {
   "assets": [
     {
-      "browser_download_url": "https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.45/appcast.xml",
-      "digest": "sha256:557e5c8837bf5ec8cbbbaccd181091ebcb2acef74c3532000ade8b4e6433f984",
+      "browser_download_url": "https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.46/appcast.xml",
+      "digest": "sha256:7e3ee0ed8ae031aa63a59e53dc7d47400b0da02e1427f95d0057798981075595",
       "name": "appcast.xml",
       "size": 902
     },
     {
-      "browser_download_url": "https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.45/PhoneRelay-1.0.45.dmg",
-      "digest": "sha256:14a1344f662e6a83a8183726bda280e503af2a7be04f31670906f2f9737aeac7",
-      "name": "PhoneRelay-1.0.45.dmg",
-      "size": 20516660
+      "browser_download_url": "https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.46/PhoneRelay-1.0.46.dmg",
+      "digest": "sha256:d8a62d615f92e94cafe07d30b985dd35cf5487f6315d3bee5738c1c1a6a6e857",
+      "name": "PhoneRelay-1.0.46.dmg",
+      "size": 20753357
     },
     {
-      "browser_download_url": "https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.45/PhoneRelay-1.0.45.zip",
-      "digest": "sha256:7267e719ab7ef4d504dbe54d0c33a8cf74276b89bb60432397a62cd181dd0433",
-      "name": "PhoneRelay-1.0.45.zip",
-      "size": 19862572
+      "browser_download_url": "https://github.com/mallenkb/phone-mirroring/releases/download/v1.0.46/PhoneRelay-1.0.46.zip",
+      "digest": "sha256:30d91f3e634352246c009f16fa1f0ddd9417b5446f6837163030b97203fc6dcb",
+      "name": "PhoneRelay-1.0.46.zip",
+      "size": 20099928
     }
   ],
-  "html_url": "https://github.com/mallenkb/phone-mirroring/releases/tag/v1.0.45",
-  "name": "Phone Relay v1.0.45",
-  "published_at": "2026-10-06T06:49:00Z",
-  "tag_name": "v1.0.45"
+  "html_url": "https://github.com/mallenkb/phone-mirroring/releases/tag/v1.0.46",
+  "name": "Phone Relay v1.0.46",
+  "published_at": "2026-10-16T18:51:14Z",
+  "tag_name": "v1.0.46"
 }
